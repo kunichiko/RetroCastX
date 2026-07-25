@@ -57,9 +57,22 @@ BOM/ネットリストまで生成される。エンドポイントは `ATO_SERV
    (上記LCSC ID)で取り込み、`main.ato` のスタブcomponentを置き換える
 2. **ピン配置の照合**: VGA-002・DC005・PZ254V のピン番号は代表的な配列を仮定している。
    取り込んだフットプリントの実ピン番号と必ず照合すること
+## Colorlight i5 EXTボードとの接続(2026-07-25 調査確定)
+
+- **EXTボードにRJ45は無い**。i5モジュール上のGbE PHY×2の差動ペア(MDI)はヘッダ**P1**に
+  出ているだけなので、**パルストランス内蔵RJ45(MagJack)基板の外付けが必須**
+  (先行事例: kazkojima氏のi5用Ethernet拡張)。次リビジョンで本基板にMagJack同居も検討
+- EXTボードのGPIOヘッダは P2–P6(2×16メス、計~40 GPIO)。USB-C が電源+DAPLink
+  (JTAG書き込み+UARTコンソール)。HDMIは出力のみ。SDスロット無し
+- **ECP5のクロック対応(PCLK)ボールが出ているヘッダ**(prjtrellis DB照合結果):
+  - P2: J20(PCLKT2_0), K20(PCLKC2_0), L20(PCLKT3_1), L18(GR_PCLK3_1)
+  - P3: E2(PCLKC7_0)
+  - **P4: F2(PCLKT7_0), F1(PCLKC6_1), F3(PCLKC7_1), G3(PCLKT7_1), H4(GR_PCLK7_1)** ← 最多
+  - P6: J18(GR_PCLK2_0)
+- 推奨マッピング: J2→P2, J3→P3, J4→P5, **J5(DATACLK含む)→P4のPCLKボール**, J6→P6
+
 3. **レイアウト注意**:
-   - DATACLK は i5 側で**クロック対応ピン(GPLL入力)**に接続(EXTボードのPMODピン→
-     SODIMM→BG381ピンの対応表を要作成)
+   - DATACLK は i5 側で**クロック対応ピン(PCLK/GPLL入力)**に接続(上記対応表参照)
    - AZ1117H-ADJ は約0.9W発熱: SOT-223のタブに銅箔ベタ+サーマルビア
    - TVP7002 の露出パッドはGNDベタにはんだ付け(熱・電気両方の要件)
    - アナロググラウンドは入力コネクタ周りでベタを分離しすぎない(1点で結合)
