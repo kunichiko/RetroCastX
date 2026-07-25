@@ -1,0 +1,610 @@
+#pragma experiment("BRIDGE_CONNECT")
+#pragma experiment("FOR_LOOP")
+
+import ElectricPower
+import Resistor
+import Capacitor
+
+# =============================================================================
+# WiTranX ADC front-end: TVP7002 breakout for Colorlight i5 EXT board
+#
+# Retro PC analog RGB (VGA HD-15) -> TVP7002 (triple ADC + H-PLL) ->
+# 24bit parallel + DATACLK/HSOUT/VSOUT/SOGOUT -> PMOD-style 2x6 headers.
+#
+# 回路の根拠:
+#  - TI TVP7002 datasheet SLES206C(電源系統・PLLフィルタ・入力終端)
+#  - OSSC rev1.8 (marqs85/ossc_pcb) の実機BOM(同期系・ESD・フェライト)
+# =============================================================================
+
+
+# --- Parts (footprints: VS Code上で `ato create part` により後付けする) -----
+
+component Tvp7002:
+    """TI TVP7002 triple 8/10-bit 165/110MSPS video digitizer w/ H-PLL.
+
+    HTQFP-100 (PZP). LCSC: C3824085 / DigiKey: TVP7002PZPR
+    """
+
+    # Analog inputs
+    signal sogin_1 ~ pin 1
+    signal gin_1 ~ pin 2
+    signal rin_3 ~ pin 9
+    signal rin_2 ~ pin 10
+    signal rin_1 ~ pin 11
+    signal bin_3 ~ pin 16
+    signal bin_2 ~ pin 17
+    signal bin_1 ~ pin 18
+    signal gin_4 ~ pin 96
+    signal sogin_3 ~ pin 97
+    signal gin_3 ~ pin 98
+    signal sogin_2 ~ pin 99
+    signal gin_2 ~ pin 100
+
+    # Power: A33VDD (analog 3.3V)
+    signal a33vdd ~ pin 13
+    a33vdd ~ pin 14
+    a33vdd ~ pin 93
+    a33vdd ~ pin 94
+    signal a33gnd ~ pin 12
+    a33gnd ~ pin 15
+    a33gnd ~ pin 92
+    a33gnd ~ pin 95
+
+    # Power: AVDD (analog core 1.9V)
+    signal avdd ~ pin 4
+    avdd ~ pin 6
+    avdd ~ pin 7
+    avdd ~ pin 19
+    signal agnd ~ pin 3
+    agnd ~ pin 5
+    agnd ~ pin 8
+    agnd ~ pin 20
+
+    # Power: PLL AVDD (1.9V)
+    signal pll_avdd ~ pin 84
+    pll_avdd ~ pin 85
+    signal pll_agnd ~ pin 83
+    pll_agnd ~ pin 86
+    pll_agnd ~ pin 90
+
+    # Power: DVDD (digital core 1.9V)
+    signal dvdd ~ pin 39
+    dvdd ~ pin 69
+    signal dgnd ~ pin 40
+    dgnd ~ pin 68
+
+    # Power: IOVDD (output drivers 3.3V)
+    signal iovdd ~ pin 26
+    iovdd ~ pin 41
+    iovdd ~ pin 53
+    iovdd ~ pin 66
+    signal iognd ~ pin 27
+    iognd ~ pin 42
+    iognd ~ pin 54
+    iognd ~ pin 60
+    iognd ~ pin 67
+
+    # Substrate -> analog ground
+    signal nsub ~ pin 21
+    nsub ~ pin 91
+
+    # Digital video outputs (B/G/R 10bit each, MSB=_9)
+    signal b0 ~ pin 29
+    signal b1 ~ pin 30
+    signal b2 ~ pin 31
+    signal b3 ~ pin 32
+    signal b4 ~ pin 33
+    signal b5 ~ pin 34
+    signal b6 ~ pin 35
+    signal b7 ~ pin 36
+    signal b8 ~ pin 37
+    signal b9 ~ pin 38
+    signal g0 ~ pin 43
+    signal g1 ~ pin 44
+    signal g2 ~ pin 45
+    signal g3 ~ pin 46
+    signal g4 ~ pin 47
+    signal g5 ~ pin 48
+    signal g6 ~ pin 49
+    signal g7 ~ pin 50
+    signal g8 ~ pin 51
+    signal g9 ~ pin 52
+    signal r0 ~ pin 55
+    signal r1 ~ pin 56
+    signal r2 ~ pin 57
+    signal r3 ~ pin 58
+    signal r4 ~ pin 59
+    signal r5 ~ pin 61
+    signal r6 ~ pin 62
+    signal r7 ~ pin 63
+    signal r8 ~ pin 64
+    signal r9 ~ pin 65
+
+    # Timing / status outputs
+    signal fidout ~ pin 22
+    signal vsout ~ pin 23
+    signal hsout ~ pin 24
+    signal sogout ~ pin 25
+    signal dataclk ~ pin 28
+
+    # Control
+    signal pwdn ~ pin 70
+    signal resetb ~ pin 71
+    signal tms ~ pin 72
+    signal i2ca ~ pin 73
+    signal scl ~ pin 74
+    signal sda ~ pin 75
+    signal clamp ~ pin 76
+    signal coast ~ pin 77
+
+    # Sync inputs / ext clock
+    signal vsync_a ~ pin 78
+    signal vsync_b ~ pin 79
+    signal ext_clk ~ pin 80
+    signal hsync_a ~ pin 81
+    signal hsync_b ~ pin 82
+
+    # H-PLL loop filter
+    signal filt1 ~ pin 87
+    signal filt2 ~ pin 88
+    signal pll_f ~ pin 89
+
+
+component Lvc2g17:
+    """TI SN74LVC2G17 dual Schmitt-trigger buffer (5V-tolerant inputs).
+
+    SOT-23-6. LCSC: C10429
+    """
+    signal in_a ~ pin 1
+    signal gnd ~ pin 2
+    signal in_b ~ pin 3
+    signal out_b ~ pin 4
+    signal vcc ~ pin 5
+    signal out_a ~ pin 6
+
+
+component Az1117Fixed33:
+    """Diodes AZ1117H-3.3 LDO 800mA, SOT-223. LCSC: C92517"""
+    signal gnd ~ pin 1
+    signal out ~ pin 2
+    signal vin ~ pin 3
+    out ~ pin 4  # tab
+
+
+component Az1117Adj:
+    """Diodes AZ1117H-ADJ LDO 800mA (Vref=1.25V), SOT-223. LCSC: C92103"""
+    signal adj ~ pin 1
+    signal out ~ pin 2
+    signal vin ~ pin 3
+    out ~ pin 4  # tab
+
+
+component Tlv70019:
+    """TI TLV70019 1.9V 200mA LDO, SOT-23-5. LCSC: C2862411"""
+    signal vin ~ pin 1
+    signal gnd ~ pin 2
+    signal en ~ pin 3
+    signal out ~ pin 5
+
+
+component FerriteBead:
+    """TDK MPZ1608S221A 220ohm@100MHz, 0603. LCSC: C76815"""
+    signal p1 ~ pin 1
+    signal p2 ~ pin 2
+
+
+component EsdArray4:
+    """Nexperia PESD5V0U4BW-compatible quad ESD array (low-cap, for video).
+
+    SOT-553. LCSC: C5182054
+    """
+    signal io1 ~ pin 1
+    signal io2 ~ pin 2
+    signal gnd ~ pin 3
+    signal io3 ~ pin 4
+    signal io4 ~ pin 5
+
+
+component Osc27M:
+    """YXC 27MHz 3.3V CMOS oscillator, SMD3225-4P. LCSC: C9008"""
+    signal en ~ pin 1
+    signal gnd ~ pin 2
+    signal out ~ pin 3
+    signal vcc ~ pin 4
+
+
+component VgaConnector:
+    """HD-15 (3-row D-sub 15) female VGA connector. LCSC: C138387"""
+    signal red ~ pin 1
+    signal green ~ pin 2
+    signal blue ~ pin 3
+    signal id2 ~ pin 4
+    signal gnd ~ pin 5
+    signal red_rtn ~ pin 6
+    signal green_rtn ~ pin 7
+    signal blue_rtn ~ pin 8
+    signal key ~ pin 9
+    signal sync_gnd ~ pin 10
+    signal id0 ~ pin 11
+    signal sda ~ pin 12
+    signal hsync ~ pin 13
+    signal vsync ~ pin 14
+    signal scl ~ pin 15
+    signal shield ~ pin 16
+
+
+component PmodHeader:
+    """2x6 pin header, 2.54mm (PMOD互換配列). LCSC: C492420"""
+    signal io1 ~ pin 1
+    signal io2 ~ pin 2
+    signal io3 ~ pin 3
+    signal io4 ~ pin 4
+    signal gnd1 ~ pin 5
+    signal vcc1 ~ pin 6
+    signal io5 ~ pin 7
+    signal io6 ~ pin 8
+    signal io7 ~ pin 9
+    signal io8 ~ pin 10
+    signal gnd2 ~ pin 11
+    signal vcc2 ~ pin 12
+
+
+component DcJack:
+    """DC005 barrel jack (5V in). LCSC: C431533"""
+    signal center ~ pin 1
+    signal sleeve ~ pin 2
+    signal switch ~ pin 3
+
+
+# --- Sub-circuits ------------------------------------------------------------
+
+module VideoInputChannel:
+    """1ch分のアナログ入力段: 75Ω終端 -> 100nF ACカップリング -> TVP入力。"""
+    signal input
+    signal output
+    power = new ElectricPower  # 終端のグラウンド基準
+
+    r_term = new Resistor
+    r_term.resistance = 75ohm +/- 1%
+    r_term.package = "0402"
+    input ~> r_term ~> power.lv
+
+    c_ac = new Capacitor
+    c_ac.capacitance = 100nF +/- 10%
+    c_ac.package = "0402"
+    input ~> c_ac ~> output
+
+
+module PowerTree:
+    """5V入力 -> 3.3V(IO/デジタル) + 3.3V(アナログ) + 1.9V(AVDD/PLL) + 1.9V(DVDD)。
+
+    OSSCの電源系を簡略化した構成。AVDD系はAZ1117H-ADJ(分圧で1.9V)を5Vから
+    直接落とす(損失~0.9W: SOT-223 + 銅箔ベタで放熱すること)。
+    """
+    power_5v = new ElectricPower
+    p3v3_io = new ElectricPower
+    p3v3_a = new ElectricPower
+    p1v9_a = new ElectricPower
+    p1v9_d = new ElectricPower
+
+    ldo_io = new Az1117Fixed33
+    ldo_a33 = new Az1117Fixed33
+    ldo_a19 = new Az1117Adj
+    ldo_d19 = new Tlv70019
+
+    # 共通GND
+    signal gnd
+    gnd ~ power_5v.lv
+    gnd ~ p3v3_io.lv
+    gnd ~ p3v3_a.lv
+    gnd ~ p1v9_a.lv
+    gnd ~ p1v9_d.lv
+    gnd ~ ldo_io.gnd
+    gnd ~ ldo_a33.gnd
+    gnd ~ ldo_d19.gnd
+
+    ldo_io.vin ~ power_5v.hv
+    ldo_io.out ~ p3v3_io.hv
+    ldo_a33.vin ~ power_5v.hv
+    ldo_a33.out ~ p3v3_a.hv
+    ldo_a19.vin ~ power_5v.hv
+    ldo_a19.out ~ p1v9_a.hv
+    ldo_d19.vin ~ p3v3_io.hv
+    ldo_d19.en ~ p3v3_io.hv
+    ldo_d19.out ~ p1v9_d.hv
+
+    # AZ1117-ADJ 分圧: Vout = 1.25 * (1 + R2/R1) = 1.25 * (1 + 62/120) ≈ 1.896V
+    r_fb_top = new Resistor  # OUT -> ADJ
+    r_fb_top.resistance = 120ohm +/- 1%
+    r_fb_top.package = "0402"
+    r_fb_bot = new Resistor  # ADJ -> GND
+    r_fb_bot.resistance = 62ohm +/- 1%
+    r_fb_bot.package = "0402"
+    ldo_a19.out ~> r_fb_top ~> ldo_a19.adj
+    ldo_a19.adj ~> r_fb_bot ~> gnd
+
+    # 入出力バルクコンデンサ(AZ1117は出力に≥10µFのESR安定性要求あり)
+    bulk_caps = new Capacitor[5]
+    for c in bulk_caps:
+        c.capacitance = 10uF +/- 20%
+        c.package = "0805"
+    power_5v.hv ~> bulk_caps[0] ~> gnd
+    p3v3_io.hv ~> bulk_caps[1] ~> gnd
+    p3v3_a.hv ~> bulk_caps[2] ~> gnd
+    p1v9_a.hv ~> bulk_caps[3] ~> gnd
+    p1v9_d.hv ~> bulk_caps[4] ~> gnd
+
+    assert power_5v.voltage within 4.5V to 5.5V
+
+
+# --- Top level ----------------------------------------------------------------
+
+module App:
+    tvp = new Tvp7002
+    vga = new VgaConnector
+    buf_sync = new Lvc2g17
+    osc = new Osc27M
+    jack = new DcJack
+    supply = new PowerTree
+
+    # 電源レール
+    power_5v = new ElectricPower
+    p3v3_io = new ElectricPower
+    p3v3_a = new ElectricPower
+    p1v9_a = new ElectricPower
+    p1v9_d = new ElectricPower
+    power_5v ~ supply.power_5v
+    p3v3_io ~ supply.p3v3_io
+    p3v3_a ~ supply.p3v3_a
+    p1v9_a ~ supply.p1v9_a
+    p1v9_d ~ supply.p1v9_d
+
+    signal gnd
+    gnd ~ power_5v.lv
+    jack.center ~ power_5v.hv
+    jack.sleeve ~ gnd
+
+    power_5v.voltage = 5V +/- 5%
+    p3v3_io.voltage = 3.3V +/- 3%
+    p3v3_a.voltage = 3.3V +/- 3%
+    p1v9_a.voltage = 1.9V +/- 5%
+    p1v9_d.voltage = 1.9V +/- 3%
+    assert p1v9_a.voltage within 1.8V to 2.0V
+    assert p1v9_d.voltage within 1.8V to 2.0V
+
+    # TVP7002 電源接続(AVDD/PLL_AVDDはフェライトビーズで分離)
+    fb_avdd = new FerriteBead
+    fb_pll = new FerriteBead
+    p1v9_a.hv ~ fb_avdd.p1
+    fb_avdd.p2 ~ tvp.avdd
+    p1v9_a.hv ~ fb_pll.p1
+    fb_pll.p2 ~ tvp.pll_avdd
+
+    tvp.a33vdd ~ p3v3_a.hv
+    tvp.dvdd ~ p1v9_d.hv
+    tvp.iovdd ~ p3v3_io.hv
+    tvp.a33gnd ~ gnd
+    tvp.agnd ~ gnd
+    tvp.pll_agnd ~ gnd
+    tvp.dgnd ~ gnd
+    tvp.iognd ~ gnd
+    tvp.nsub ~ gnd
+
+    # デカップリング(各電源ピン群に100nF)
+    dec_caps = new Capacitor[14]
+    for c in dec_caps:
+        c.capacitance = 100nF +/- 20%
+        c.package = "0402"
+    tvp.a33vdd ~> dec_caps[0] ~> gnd
+    tvp.a33vdd ~> dec_caps[1] ~> gnd
+    tvp.avdd ~> dec_caps[2] ~> gnd
+    tvp.avdd ~> dec_caps[3] ~> gnd
+    tvp.avdd ~> dec_caps[4] ~> gnd
+    tvp.avdd ~> dec_caps[5] ~> gnd
+    tvp.pll_avdd ~> dec_caps[6] ~> gnd
+    tvp.pll_avdd ~> dec_caps[7] ~> gnd
+    tvp.dvdd ~> dec_caps[8] ~> gnd
+    tvp.dvdd ~> dec_caps[9] ~> gnd
+    tvp.iovdd ~> dec_caps[10] ~> gnd
+    tvp.iovdd ~> dec_caps[11] ~> gnd
+    tvp.iovdd ~> dec_caps[12] ~> gnd
+    tvp.iovdd ~> dec_caps[13] ~> gnd
+
+    # --- アナログRGB入力(VGA -> RIN_3/GIN_3/BIN_3) ---
+    ch_r = new VideoInputChannel
+    ch_g = new VideoInputChannel
+    ch_b = new VideoInputChannel
+    ch_r.power ~ p3v3_a
+    ch_g.power ~ p3v3_a
+    ch_b.power ~ p3v3_a
+
+    esd_rgb = new EsdArray4
+    esd_rgb.gnd ~ gnd
+    vga.red ~ esd_rgb.io1
+    vga.green ~ esd_rgb.io2
+    vga.blue ~ esd_rgb.io3
+
+    vga.red ~ ch_r.input
+    vga.green ~ ch_g.input
+    vga.blue ~ ch_b.input
+    ch_r.output ~ tvp.rin_3
+    ch_g.output ~ tvp.gin_3
+    ch_b.output ~ tvp.bin_3
+
+    # VGA green -> SOGIN_3 (Sync-on-Green / アナログcsync対応): 1nF結合
+    c_sog3 = new Capacitor
+    c_sog3.capacitance = 1nF +/- 10%
+    c_sog3.package = "0402"
+    vga.green ~> c_sog3 ~> tvp.sogin_3
+
+    # VGAのGND (リターン・シールド)
+    vga.gnd ~ gnd
+    vga.red_rtn ~ gnd
+    vga.green_rtn ~ gnd
+    vga.blue_rtn ~ gnd
+    vga.sync_gnd ~ gnd
+    vga.shield ~ gnd
+
+    # --- TTL同期入力 (HS/VS or csync-on-HSYNC) ---
+    esd_sync = new EsdArray4
+    esd_sync.gnd ~ gnd
+    vga.hsync ~ esd_sync.io1
+    vga.vsync ~ esd_sync.io2
+
+    # VSYNCはRC遅延(220Ω+1nF)を通す: VSYNC立ち上がりがHSYNCと完全一致すると
+    # 内部同期処理が誤動作するため(datasheet推奨)
+    r_vs = new Resistor
+    r_vs.resistance = 220ohm +/- 5%
+    r_vs.package = "0402"
+    c_vs = new Capacitor
+    c_vs.capacitance = 1nF +/- 10%
+    c_vs.package = "0402"
+    signal vs_delayed
+    vga.vsync ~> r_vs ~> vs_delayed
+    vs_delayed ~> c_vs ~> gnd
+
+    buf_sync.vcc ~ p3v3_io.hv
+    buf_sync.gnd ~ gnd
+    c_buf = new Capacitor
+    c_buf.capacitance = 100nF +/- 20%
+    c_buf.package = "0402"
+    buf_sync.vcc ~> c_buf ~> gnd
+    vga.hsync ~ buf_sync.in_a
+    vs_delayed ~ buf_sync.in_b
+    buf_sync.out_a ~ tvp.hsync_a
+    buf_sync.out_b ~ tvp.vsync_a
+
+    # 未使用同期入力はGND
+    tvp.hsync_b ~ gnd
+    tvp.vsync_b ~ gnd
+
+    # --- H-PLL ループフィルタ (FILT1 -> 1.5kΩ + 100nF -> PLL_F, FILT2 -> 4.7nF -> PLL_F) ---
+    r_filt = new Resistor
+    r_filt.resistance = 1.5kohm +/- 1%
+    r_filt.package = "0402"
+    c_filt1 = new Capacitor
+    c_filt1.capacitance = 100nF +/- 10%
+    c_filt1.package = "0402"
+    c_filt2 = new Capacitor
+    c_filt2.capacitance = 4.7nF +/- 10%
+    c_filt2.package = "0402"
+    signal filt_mid
+    tvp.filt1 ~> r_filt ~> filt_mid
+    filt_mid ~> c_filt1 ~> tvp.pll_f
+    tvp.filt2 ~> c_filt2 ~> tvp.pll_f
+
+    # --- 27MHz基準クロック(モード検出の安定化用) ---
+    osc.vcc ~ p3v3_io.hv
+    osc.en ~ p3v3_io.hv
+    osc.gnd ~ gnd
+    osc.out ~ tvp.ext_clk
+    c_osc = new Capacitor
+    c_osc.capacitance = 100nF +/- 20%
+    c_osc.package = "0402"
+    osc.vcc ~> c_osc ~> gnd
+
+    # --- 未使用アナログ入力の処理(datasheet: video系10nF, SOG系1nFをGNDへ) ---
+    nc_caps = new Capacitor[7]
+    for c in nc_caps:
+        c.capacitance = 10nF +/- 20%
+        c.package = "0402"
+    tvp.rin_1 ~> nc_caps[0] ~> gnd
+    tvp.rin_2 ~> nc_caps[1] ~> gnd
+    tvp.bin_1 ~> nc_caps[2] ~> gnd
+    tvp.bin_2 ~> nc_caps[3] ~> gnd
+    tvp.gin_1 ~> nc_caps[4] ~> gnd
+    tvp.gin_2 ~> nc_caps[5] ~> gnd
+    tvp.gin_4 ~> nc_caps[6] ~> gnd
+
+    nc_sog_caps = new Capacitor[2]
+    for c in nc_sog_caps:
+        c.capacitance = 1nF +/- 10%
+        c.package = "0402"
+    tvp.sogin_1 ~> nc_sog_caps[0] ~> gnd
+    tvp.sogin_2 ~> nc_sog_caps[1] ~> gnd
+
+    # --- 制御ピンのストラップ ---
+    tvp.pwdn ~ gnd     # 常時動作
+    tvp.tms ~ gnd      # スキャンテスト無効
+    tvp.clamp ~ gnd    # クランプは内部タイミング使用
+    tvp.coast ~ gnd
+
+    # I2CA -> GND: I2Cアドレス 0xB8 (7bit: 0x5C)
+    r_i2ca = new Resistor
+    r_i2ca.resistance = 2.2kohm +/- 5%
+    r_i2ca.package = "0402"
+    tvp.i2ca ~> r_i2ca ~> gnd
+
+    # I2C プルアップ
+    r_sda = new Resistor
+    r_sda.resistance = 2.2kohm +/- 5%
+    r_sda.package = "0402"
+    r_scl = new Resistor
+    r_scl.resistance = 2.2kohm +/- 5%
+    r_scl.package = "0402"
+    tvp.sda ~> r_sda ~> p3v3_io.hv
+    tvp.scl ~> r_scl ~> p3v3_io.hv
+
+    # RESETB: プルダウン(FPGAがHighに駆動して解除)
+    r_rst = new Resistor
+    r_rst.resistance = 2.2kohm +/- 5%
+    r_rst.package = "0402"
+    tvp.resetb ~> r_rst ~> gnd
+
+    # --- FPGA接続ヘッダ (PMOD配列 2x6 x5) ---
+    # 注意: DATACLK は Colorlight i5 側でクロック対応ピン(GPLL入力)に入れること
+    hdr_r = new PmodHeader
+    hdr_g = new PmodHeader
+    hdr_b = new PmodHeader
+    hdr_sync = new PmodHeader
+    hdr_ctrl = new PmodHeader
+
+    hdr_r.io1 ~ tvp.r9
+    hdr_r.io2 ~ tvp.r8
+    hdr_r.io3 ~ tvp.r7
+    hdr_r.io4 ~ tvp.r6
+    hdr_r.io5 ~ tvp.r5
+    hdr_r.io6 ~ tvp.r4
+    hdr_r.io7 ~ tvp.r3
+    hdr_r.io8 ~ tvp.r2
+    hdr_r.gnd1 ~ gnd
+    hdr_r.gnd2 ~ gnd
+
+    hdr_g.io1 ~ tvp.g9
+    hdr_g.io2 ~ tvp.g8
+    hdr_g.io3 ~ tvp.g7
+    hdr_g.io4 ~ tvp.g6
+    hdr_g.io5 ~ tvp.g5
+    hdr_g.io6 ~ tvp.g4
+    hdr_g.io7 ~ tvp.g3
+    hdr_g.io8 ~ tvp.g2
+    hdr_g.gnd1 ~ gnd
+    hdr_g.gnd2 ~ gnd
+
+    hdr_b.io1 ~ tvp.b9
+    hdr_b.io2 ~ tvp.b8
+    hdr_b.io3 ~ tvp.b7
+    hdr_b.io4 ~ tvp.b6
+    hdr_b.io5 ~ tvp.b5
+    hdr_b.io6 ~ tvp.b4
+    hdr_b.io7 ~ tvp.b3
+    hdr_b.io8 ~ tvp.b2
+    hdr_b.gnd1 ~ gnd
+    hdr_b.gnd2 ~ gnd
+
+    hdr_sync.io1 ~ tvp.dataclk
+    hdr_sync.io2 ~ tvp.hsout
+    hdr_sync.io3 ~ tvp.vsout
+    hdr_sync.io4 ~ tvp.sogout
+    hdr_sync.io5 ~ tvp.fidout
+    hdr_sync.gnd1 ~ gnd
+    hdr_sync.gnd2 ~ gnd
+
+    hdr_ctrl.io1 ~ tvp.sda
+    hdr_ctrl.io2 ~ tvp.scl
+    hdr_ctrl.io3 ~ tvp.resetb
+    hdr_ctrl.gnd1 ~ gnd
+    hdr_ctrl.gnd2 ~ gnd
+    # hdr_ctrl.vcc1/vcc2 は未接続(EXTボード側3.3Vと本ボードのLDOを衝突させない)
+
+    gnd.override_net_name = "gnd"
