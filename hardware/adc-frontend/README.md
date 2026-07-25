@@ -37,6 +37,8 @@ Colorlight i5 EXTボードに渡すブレークアウト基板。回路は `main
 | J1 | VGA-002 | C138387 | HD-15メス |
 | J2–J6 | PZ254V-12-6P | C492420 | 2x6ヘッダ(PMOD配列) |
 | J7 | DC005 | C431533 | 5V入力 |
+| J8 | 2×15 ピンヘッダ 2.54mm | 汎用 | EXT P1対応(GbE差動ペア受け) |
+| J9 | HanRun HR911130A | C54408 | 1000BASE-T MagJack(トランス内蔵RJ45) |
 
 抵抗・コンデンサは値・パッケージ指定済み(Atopileのピッカーが実部品を自動選定)。
 
@@ -59,9 +61,12 @@ BOM/ネットリストまで生成される。エンドポイントは `ATO_SERV
    取り込んだフットプリントの実ピン番号と必ず照合すること
 ## Colorlight i5 EXTボードとの接続(2026-07-25 調査確定)
 
-- **EXTボードにRJ45は無い**。i5モジュール上のGbE PHY×2の差動ペア(MDI)はヘッダ**P1**に
-  出ているだけなので、**パルストランス内蔵RJ45(MagJack)基板の外付けが必須**
-  (先行事例: kazkojima氏のi5用Ethernet拡張)。次リビジョンで本基板にMagJack同居も検討
+- **EXTボードにRJ45は無い**。i5モジュール上のGbE PHY×2の差動ペア(MDI)はヘッダ**P1**
+  (2×15)に出ているだけ。→ **本基板にMagJack(J8+J9)を搭載済み**。回路は
+  [kazkojima氏 i5ether](https://github.com/kazkojima/colorlight-i5-tips)準拠
+  (1000BASE-T netboot/nfsroot動作実績あり):MDIはDC結合のまま、PHY側CTは各0.1µF→GND
+  (B50612Dは内部バイアスで無給電可)、Bob-SmithはMagJack内蔵、GND-シャーシ間4.7nF/2kV×2。
+  **ETH2側ペア=LiteXのphy0** を使用(PHY番号とコネクタ名の対応は逆転に注意)
 - EXTボードのGPIOヘッダは P2–P6(2×16メス、計~40 GPIO)。USB-C が電源+DAPLink
   (JTAG書き込み+UARTコンソール)。HDMIは出力のみ。SDスロット無し
 - **ECP5のクロック対応(PCLK)ボールが出ているヘッダ**(prjtrellis DB照合結果):
