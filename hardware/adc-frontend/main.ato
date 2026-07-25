@@ -233,20 +233,80 @@ component VgaConnector:
     signal shield ~ pin 16
 
 
-component PmodHeader:
-    """2x6 pin header, 2.54mm (PMOD互換配列). LCSC: C492420"""
-    signal io1 ~ pin 1
-    signal io2 ~ pin 2
-    signal io3 ~ pin 3
-    signal io4 ~ pin 4
-    signal gnd1 ~ pin 5
-    signal vcc1 ~ pin 6
-    signal io5 ~ pin 7
-    signal io6 ~ pin 8
-    signal io7 ~ pin 9
-    signal io8 ~ pin 10
-    signal gnd2 ~ pin 11
-    signal vcc2 ~ pin 12
+component HeaderExtP2:
+    """EXTボード P2 を1対1ミラーする 2×15 ヘッダ(GPIO 20本)。
+
+    信号名はECP5(BG381)のボール名。ピン番号は wuxx pinout 図の並び
+    (左→右、奇数=外側列)を仮定 — レイアウト時に実基板と要照合。
+    """
+    signal io_j20 ~ pin 1
+    signal io_g20 ~ pin 2
+    signal io_l18 ~ pin 3
+    signal io_k20 ~ pin 4
+    signal io_m18 ~ pin 5
+    signal io_l20 ~ pin 6
+    signal io_n17 ~ pin 7
+    signal io_n18 ~ pin 8
+    signal gnd ~ pin 9
+    gnd ~ pin 10
+    signal p3v3_ext ~ pin 11
+    p3v3_ext ~ pin 12
+    signal io_u17 ~ pin 13
+    signal io_p18 ~ pin 14
+    signal p5v_ext ~ pin 15
+    gnd ~ pin 16
+    signal io_t17 ~ pin 17
+    signal io_u18 ~ pin 18
+    signal io_p17 ~ pin 19
+    signal io_m17 ~ pin 20
+    signal io_r18 ~ pin 21
+    signal io_r17 ~ pin 22
+    signal io_c18 ~ pin 23
+    signal io_t18 ~ pin 24
+    signal io_u16 ~ pin 25
+    signal io_k18 ~ pin 26
+    gnd ~ pin 27
+    gnd ~ pin 28
+    p3v3_ext ~ pin 29
+    p3v3_ext ~ pin 30
+
+
+component HeaderExtP4:
+    """EXTボード P4 を1対1ミラーする 2×15 ヘッダ(GPIO 18本)。
+
+    PCLK対応ボール: F2(PCLKT7_0), F1(PCLKC6_1), F3(PCLKC7_1),
+    G3(PCLKT7_1), H4(GR_PCLK7_1) — DATACLKはF2へ。
+    """
+    signal p3v3_ext ~ pin 1
+    p3v3_ext ~ pin 2
+    signal gnd ~ pin 3
+    gnd ~ pin 4
+    signal io_e1 ~ pin 5
+    signal io_f2 ~ pin 6
+    signal io_e4 ~ pin 7
+    signal io_f1 ~ pin 8
+    signal io_f3 ~ pin 9
+    signal io_g3 ~ pin 10
+    signal io_h3 ~ pin 11
+    signal io_h4 ~ pin 12
+    signal io_h5 ~ pin 13
+    signal io_j4 ~ pin 14
+    gnd ~ pin 15
+    signal p5v_ext ~ pin 16
+    signal io_j5 ~ pin 17
+    signal io_k3 ~ pin 18
+    p3v3_ext ~ pin 19
+    p3v3_ext ~ pin 20
+    gnd ~ pin 21
+    gnd ~ pin 22
+    signal io_a2 ~ pin 23
+    signal io_k5 ~ pin 24
+    signal io_k4 ~ pin 25
+    signal io_b3 ~ pin 26
+    signal io_b2 ~ pin 27
+    signal io_e19 ~ pin 28
+    signal nc29 ~ pin 29
+    signal nc30 ~ pin 30
 
 
 component DcJack:
@@ -664,61 +724,51 @@ module App:
     r_rst.package = "0402"
     tvp.resetb ~> r_rst ~> gnd
 
-    # --- FPGA接続ヘッダ (PMOD配列 2x6 x5) ---
-    # 注意: DATACLK は Colorlight i5 側でクロック対応ピン(GPLL入力)に入れること
-    hdr_r = new PmodHeader
-    hdr_g = new PmodHeader
-    hdr_b = new PmodHeader
-    hdr_sync = new PmodHeader
-    hdr_ctrl = new PmodHeader
+    # --- FPGA接続 (EXT P2/P4 を1対1ミラーする 2×15 ×2) ---
+    # EXT側1ヘッダのGPIOは18-20本のため、RGB24bit+制御は P2+P4 の2本に集約。
+    # 直挿し(ハット)でもリボンケーブルでも同じネットで成立する。
+    # 3V3/5Vピンは意図的に未接続(EXT側電源と本基板LDOを衝突させない)。GNDは共通化。
+    hdr_p2 = new HeaderExtP2
+    hdr_p4 = new HeaderExtP4
+    hdr_p2.gnd ~ gnd
+    hdr_p4.gnd ~ gnd
 
-    hdr_r.io1 ~ tvp.r9
-    hdr_r.io2 ~ tvp.r8
-    hdr_r.io3 ~ tvp.r7
-    hdr_r.io4 ~ tvp.r6
-    hdr_r.io5 ~ tvp.r5
-    hdr_r.io6 ~ tvp.r4
-    hdr_r.io7 ~ tvp.r3
-    hdr_r.io8 ~ tvp.r2
-    hdr_r.gnd1 ~ gnd
-    hdr_r.gnd2 ~ gnd
+    # J2 (P2ミラー): R/G 全8bit + B上位4bit = 20 GPIO
+    hdr_p2.io_j20 ~ tvp.r9
+    hdr_p2.io_g20 ~ tvp.r8
+    hdr_p2.io_l18 ~ tvp.r7
+    hdr_p2.io_k20 ~ tvp.r6
+    hdr_p2.io_m18 ~ tvp.r5
+    hdr_p2.io_l20 ~ tvp.r4
+    hdr_p2.io_n17 ~ tvp.r3
+    hdr_p2.io_n18 ~ tvp.r2
+    hdr_p2.io_u17 ~ tvp.g9
+    hdr_p2.io_p18 ~ tvp.g8
+    hdr_p2.io_t17 ~ tvp.g7
+    hdr_p2.io_u18 ~ tvp.g6
+    hdr_p2.io_p17 ~ tvp.g5
+    hdr_p2.io_m17 ~ tvp.g4
+    hdr_p2.io_r18 ~ tvp.g3
+    hdr_p2.io_r17 ~ tvp.g2
+    hdr_p2.io_c18 ~ tvp.b9
+    hdr_p2.io_t18 ~ tvp.b8
+    hdr_p2.io_u16 ~ tvp.b7
+    hdr_p2.io_k18 ~ tvp.b6
 
-    hdr_g.io1 ~ tvp.g9
-    hdr_g.io2 ~ tvp.g8
-    hdr_g.io3 ~ tvp.g7
-    hdr_g.io4 ~ tvp.g6
-    hdr_g.io5 ~ tvp.g5
-    hdr_g.io6 ~ tvp.g4
-    hdr_g.io7 ~ tvp.g3
-    hdr_g.io8 ~ tvp.g2
-    hdr_g.gnd1 ~ gnd
-    hdr_g.gnd2 ~ gnd
-
-    hdr_b.io1 ~ tvp.b9
-    hdr_b.io2 ~ tvp.b8
-    hdr_b.io3 ~ tvp.b7
-    hdr_b.io4 ~ tvp.b6
-    hdr_b.io5 ~ tvp.b5
-    hdr_b.io6 ~ tvp.b4
-    hdr_b.io7 ~ tvp.b3
-    hdr_b.io8 ~ tvp.b2
-    hdr_b.gnd1 ~ gnd
-    hdr_b.gnd2 ~ gnd
-
-    hdr_sync.io1 ~ tvp.dataclk
-    hdr_sync.io2 ~ tvp.hsout
-    hdr_sync.io3 ~ tvp.vsout
-    hdr_sync.io4 ~ tvp.sogout
-    hdr_sync.io5 ~ tvp.fidout
-    hdr_sync.gnd1 ~ gnd
-    hdr_sync.gnd2 ~ gnd
-
-    hdr_ctrl.io1 ~ tvp.sda
-    hdr_ctrl.io2 ~ tvp.scl
-    hdr_ctrl.io3 ~ tvp.resetb
-    hdr_ctrl.gnd1 ~ gnd
-    hdr_ctrl.gnd2 ~ gnd
-    # hdr_ctrl.vcc1/vcc2 は未接続(EXTボード側3.3Vと本ボードのLDOを衝突させない)
+    # J4 (P4ミラー): B下位4bit + タイミング + I2C/リセット = 12/18 GPIO
+    hdr_p4.io_f2 ~ tvp.dataclk   # F2 = PCLKT7_0(クロック専用入力ボール)
+    hdr_p4.io_e1 ~ tvp.b5
+    hdr_p4.io_e4 ~ tvp.b4
+    hdr_p4.io_h3 ~ tvp.b3
+    hdr_p4.io_h5 ~ tvp.b2
+    hdr_p4.io_j5 ~ tvp.hsout
+    hdr_p4.io_a2 ~ tvp.vsout
+    hdr_p4.io_k4 ~ tvp.sogout
+    hdr_p4.io_b2 ~ tvp.fidout
+    hdr_p4.io_k3 ~ tvp.sda
+    hdr_p4.io_k5 ~ tvp.scl
+    hdr_p4.io_b3 ~ tvp.resetb
+    # 空き: F1, F3, G3, H4, J4, E19(将来: 10bit化 R/G/B[1:0] 等に使用可)
 
     # --- GbE出口 (EXT P1 -> J8 -> MagJack) ---
     eth = new EthernetPort
