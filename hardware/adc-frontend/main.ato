@@ -256,6 +256,70 @@ component DcJack:
     signal switch ~ pin 3
 
 
+component GbeMagJack:
+    """1000BASE-T MagJack(トランス・チョーク・Bob-Smith内蔵RJ45)。
+
+    HanRun HR911130A 想定。LCSC: C54408
+    注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
+    """
+    signal mdi0_p ~ pin 1
+    signal mdi0_ct ~ pin 2
+    signal mdi0_n ~ pin 3
+    signal mdi1_p ~ pin 4
+    signal mdi1_ct ~ pin 5
+    signal mdi1_n ~ pin 6
+    signal mdi2_p ~ pin 7
+    signal mdi2_ct ~ pin 8
+    signal mdi2_n ~ pin 9
+    signal mdi3_p ~ pin 10
+    signal mdi3_ct ~ pin 11
+    signal mdi3_n ~ pin 12
+    signal led_g_a ~ pin 13
+    signal led_g_k ~ pin 14
+    signal led_y_a ~ pin 15
+    signal led_y_k ~ pin 16
+    signal shield ~ pin 17
+    shield ~ pin 18
+
+
+component HeaderP1:
+    """EXTボード P1 と1対1対応の 2×15 ヘッダ(GbE差動ペア受け)。
+
+    汎用2.54mmピンヘッダ 2×15(2×40の切断可)。ピン配置は
+    kazkojima i5ether / wuxx pinout 図で確定した EXT P1 実配置に一致。
+    """
+    signal p3v3 ~ pin 1
+    p3v3 ~ pin 2
+    signal gnd ~ pin 3
+    gnd ~ pin 4
+    signal eth2_2p ~ pin 5
+    signal eth2_4p ~ pin 6
+    signal eth2_2n ~ pin 7
+    signal eth2_4n ~ pin 8
+    signal eth2_1n ~ pin 9
+    signal eth2_3n ~ pin 10
+    signal eth2_1p ~ pin 11
+    signal eth2_3p ~ pin 12
+    signal nc13 ~ pin 13
+    signal nc14 ~ pin 14
+    signal p5v ~ pin 15
+    gnd ~ pin 16
+    signal nc17 ~ pin 17
+    signal nc18 ~ pin 18
+    p3v3 ~ pin 19
+    p3v3 ~ pin 20
+    gnd ~ pin 21
+    gnd ~ pin 22
+    signal eth1_1p ~ pin 23
+    signal eth1_3p ~ pin 24
+    signal eth1_1n ~ pin 25
+    signal eth1_3n ~ pin 26
+    signal eth1_2n ~ pin 27
+    signal eth1_4n ~ pin 28
+    signal eth1_2p ~ pin 29
+    signal eth1_4p ~ pin 30
+
+
 # --- Sub-circuits ------------------------------------------------------------
 
 module VideoInputChannel:
@@ -335,6 +399,55 @@ module PowerTree:
     p1v9_d.hv ~> bulk_caps[4] ~> gnd
 
     assert power_5v.voltage within 4.5V to 5.5V
+
+
+module EthernetPort:
+    """GbE出口: EXT P1 の ETH2 側ペア(LiteXデフォルト phy0)を MagJack へ。
+
+    回路は kazkojima 氏 i5ether(1000BASE-T netboot/nfsroot 実績あり)に準拠:
+    - MDIペアは PHY から DC結合のまま(直列部品なし)
+    - PHY側センタータップ: 各0.1µF→GND のみ(B50612D は内部バイアスで無給電可)
+    - Bob-Smith終端(75Ω+1nF)は HR911130A 内蔵
+    - 論理GND-シャーシ間: 4.7nF/2kV ×2(1812)
+    - ETH1 側ペアは J8 に来ているが未使用(将来の2ポート化用)
+    - LED: PHYのLED信号はP1に出ていないため未接続
+    """
+    signal gnd
+    signal chassis
+    signal p5v_from_ext  # EXT P1-15の5V。給電に使う場合のみAppで接続(通常は未使用)
+
+    j8 = new HeaderP1
+    jack = new GbeMagJack
+
+    j8.gnd ~ gnd
+    j8.p5v ~ p5v_from_ext
+
+    j8.eth2_1p ~ jack.mdi0_p
+    j8.eth2_1n ~ jack.mdi0_n
+    j8.eth2_2p ~ jack.mdi1_p
+    j8.eth2_2n ~ jack.mdi1_n
+    j8.eth2_3p ~ jack.mdi2_p
+    j8.eth2_3n ~ jack.mdi2_n
+    j8.eth2_4p ~ jack.mdi3_p
+    j8.eth2_4n ~ jack.mdi3_n
+
+    ct_caps = new Capacitor[4]
+    for c in ct_caps:
+        c.capacitance = 100nF +/- 20%
+        c.package = "0402"
+    jack.mdi0_ct ~> ct_caps[0] ~> gnd
+    jack.mdi1_ct ~> ct_caps[1] ~> gnd
+    jack.mdi2_ct ~> ct_caps[2] ~> gnd
+    jack.mdi3_ct ~> ct_caps[3] ~> gnd
+
+    jack.shield ~ chassis
+    bridge_caps = new Capacitor[2]
+    for c in bridge_caps:
+        c.capacitance = 4.7nF +/- 20%
+        c.package = "1812"
+        c.max_voltage = 2000V to 4000V
+    chassis ~> bridge_caps[0] ~> gnd
+    chassis ~> bridge_caps[1] ~> gnd
 
 
 # --- Top level ----------------------------------------------------------------
@@ -606,5 +719,12 @@ module App:
     hdr_ctrl.gnd1 ~ gnd
     hdr_ctrl.gnd2 ~ gnd
     # hdr_ctrl.vcc1/vcc2 は未接続(EXTボード側3.3Vと本ボードのLDOを衝突させない)
+
+    # --- GbE出口 (EXT P1 -> J8 -> MagJack) ---
+    eth = new EthernetPort
+    eth.gnd ~ gnd
+    # eth.p5v_from_ext は未接続(本基板はDCジャックから給電。
+    # EXTボードのUSB-C 5Vから給電したい場合のみ power_5v.hv へ接続を検討)
+    eth.chassis.override_net_name = "chassis"
 
     gnd.override_net_name = "gnd"
