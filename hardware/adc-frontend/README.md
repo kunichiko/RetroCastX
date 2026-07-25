@@ -35,7 +35,7 @@ Colorlight i5 EXTボードに渡すブレークアウト基板。回路は `main
 | D1,D2 | PESD5V0U4BW | C5182054 | 映像/同期ESD |
 | X1 | X322527MSB4SI | C9008 | 27MHz 3.3V CMOS |
 | J1 | VGA-002 | C138387 | HD-15メス |
-| J2–J6 | PZ254V-12-6P | C492420 | 2x6ヘッダ(PMOD配列) |
+| J2, J4 | 2×15 ピンヘッダ/ソケット 2.54mm | 汎用 | EXT P2/P4ミラー(直挿しハット時はソケット) |
 | J7 | DC005 | C431533 | 5V入力 |
 | J8 | 2×15 ピンヘッダ 2.54mm | 汎用 | EXT P1対応(GbE差動ペア受け) |
 | J9 | HanRun HR911130A | C54408 | 1000BASE-T MagJack(トランス内蔵RJ45) |
@@ -74,7 +74,11 @@ BOM/ネットリストまで生成される。エンドポイントは `ATO_SERV
   - P3: E2(PCLKC7_0)
   - **P4: F2(PCLKT7_0), F1(PCLKC6_1), F3(PCLKC7_1), G3(PCLKT7_1), H4(GR_PCLK7_1)** ← 最多
   - P6: J18(GR_PCLK2_0)
-- 推奨マッピング: J2→P2, J3→P3, J4→P5, **J5(DATACLK含む)→P4のPCLKボール**, J6→P6
+- **接続はEXTのP2/P4を1対1ミラーする2×15ヘッダ×2に集約**(EXT側1ヘッダのGPIOは18〜20本で
+  RGB24bitは1本に収まらないため)。直挿しハット/リボンケーブル両対応:
+  - **J2 = P2ミラー**: R9-R2→J20,G20,L18,K20,M18,L20,N17,N18 / G9-G2→U17,P18,T17,U18,P17,M17,R18,R17 / B9-B6→C18,T18,U16,K18
+  - **J4 = P4ミラー**: DATACLK→**F2(PCLKT7_0)**、B5-B2→E1,E4,H3,H5、HSOUT→J5、VSOUT→A2、
+    SOGOUT→K4、FIDOUT→B2、SDA→K3、SCL→K5、RESETB→B3(空き: F1,F3,G3,H4,J4,E19)
 
 3. **レイアウト注意**:
    - DATACLK は i5 側で**クロック対応ピン(PCLK/GPLL入力)**に接続(上記対応表参照)
