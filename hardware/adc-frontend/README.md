@@ -44,8 +44,12 @@ Colorlight i5 EXTボードに渡すブレークアウト基板。回路は `main
 
 `ato build` は **Verify electrical design(電気設計検証)まで全ステージ通過済み**。
 最終段の部品選定(Picking parts)は atopile の部品API
-(components.atopileapi.com)への接続が必要で、本環境からは現在到達できず未実行。
-ネットワークが通る環境で `ato build` を再実行すれば BOM/ネットリストまで生成される。
+(components.atopileapi.com)が必要だが、**2026-07-18頃からDNSレコード消失により
+全世界的に停止中**([atopile#1829](https://github.com/atopile/atopile/issues/1829)、
+0.15.7/main 両方で再現、回避策なし)。復旧後に `ato build` を再実行すれば
+BOM/ネットリストまで生成される。エンドポイントは `ATO_SERVICES_COMPONENTS_URL`
+環境変数または ato.yaml の `services.components.url` で差し替え可能(代替URLが
+案内された場合用)。
 
 ## 残作業(発注前に必須)
 
