@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# FPGA build artifacts
+gateware/build/
+
+# Receiver dumps
+*.ppm
+
+# macOS
+.DS_Store
+
+# Claude Code local settings
+.claude/settings.local.json
