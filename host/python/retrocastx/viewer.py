@@ -1,7 +1,7 @@
 """Live viewer (optional; requires pygame: pip install pygame).
 
 Usage:
-    python3 -m witranx.viewer [--port 34600] [--scale 0]   # scale 0 = auto integer scale
+    python3 -m retrocastx.viewer [--port 34600] [--scale 0]   # scale 0 = auto integer scale
 """
 import argparse
 import socket
@@ -56,7 +56,7 @@ def main():
                 if scale <= 0:
                     scale = max(1, min(1280 // w, 960 // h))
                 screen = pygame.display.set_mode((w * scale, h * scale))
-                pygame.display.set_caption("WiTranX %dx%d x%d" % (w, h, scale))
+                pygame.display.set_caption("RetroCastX %dx%d x%d" % (w, h, scale))
             surf = pygame.surfarray.make_surface(latest.swapaxes(0, 1))
             if scale != 1:
                 surf = pygame.transform.scale(surf, (w * scale, h * scale))

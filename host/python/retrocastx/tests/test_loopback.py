@@ -1,6 +1,6 @@
 """End-to-end loopback test: Sender -> real UDP socket -> FrameAssembler.
 
-Run:  python3 -m witranx.tests.test_loopback
+Run:  python3 -m retrocastx.tests.test_loopback
 Exits non-zero on failure.
 """
 import socket
@@ -87,8 +87,8 @@ def run_announce_case() -> bool:
     tx.close()
 
     ok = (t1 == proto.TYPE_INFO
-          and ann.mac == bytes([0x02, 0x57, 0x54, 0x58, 0x00, 0x01])
-          and ann.name == "witranx-sim"
+          and ann.mac == bytes([0x02, 0x52, 0x43, 0x58, 0x00, 0x01])
+          and ann.name == "retrocastx-sim"
           and ann.udp_port == proto.DEFAULT_PORT
           and t2 == proto.TYPE_SUBSCRIBE
           and addr[0] == "127.0.0.1")

@@ -1,4 +1,4 @@
-# WiTranX
+# RetroCastX
 
 レトロPC(X68000 / PC-98 など)のアナログRGB信号を、フレームバッファレスで PC/Mac に伝送・表示するプロジェクト。
 
@@ -11,7 +11,7 @@ Retro PC ──アナログRGB──▶ ADC(TVP7002) ──24bit+PCLK──▶ F
 一般的なアップスキャンコンバータは変換器内でフレームバッファを構築し標準的なHDMI信号に整形するため、
 機種固有のタイミング情報が失われ、遅延・モード切替時のブラックアウト・価格の問題が生じる。
 
-WiTranX は「変換器は馬鹿に徹し、知性はPC側に置く」:
+RetroCastX は「変換器は馬鹿に徹し、知性はPC側に置く」:
 
 - ADC でドットクロックを再生してサンプリングした**生のピクセルデータを、タイミング情報ごと**
   「1パケット≒1ライン」の UDP で送出する(FPGA はラインFIFO程度しか持たない)
@@ -41,9 +41,9 @@ host/python/        PC側リファレンス実装(送信シミュレータ・受
 
 ```sh
 cd host/python
-python3 -m witranx.tests.test_loopback   # プロトコルのE2E検証
-python3 -m witranx.sender_sim &          # テストパターンをUDP送出
-python3 -m witranx.receiver --dump out   # 受信して out/frame_NNNN.ppm に保存
+python3 -m retrocastx.tests.test_loopback   # プロトコルのE2E検証
+python3 -m retrocastx.sender_sim &          # テストパターンをUDP送出
+python3 -m retrocastx.receiver --dump out   # 受信して out/frame_NNNN.ppm に保存
 ```
 
 ## ハードウェア(フェーズ1〜2 想定)

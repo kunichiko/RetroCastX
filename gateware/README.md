@@ -1,11 +1,11 @@
-# WiTranX ゲートウェア(Colorlight i5 / LiteX)
+# RetroCastX ゲートウェア(Colorlight i5 / LiteX)
 
 **ステータス: step1(ANNOUNCEビーコン)のビットストリーム生成に成功**(実機は入手待ち)。
 ローカル環境: `~/opt/oss-cad-suite` + `gateware/.venv`(LiteX一式、gitignore済み)。
 
 ```sh
 export PATH="$HOME/opt/oss-cad-suite/bin:$PATH"
-.venv/bin/python witranx_stream.py --build   # -> build/colorlight_i5/gateware/colorlight_i5.bit
+.venv/bin/python retrocastx_stream.py --build   # -> build/colorlight_i5/gateware/colorlight_i5.bit
 ```
 
 タイミング収束済み: **eth_rx 133.1MHz(制約125)/ sys 52.3MHz(制約50)**。
@@ -24,7 +24,7 @@ sysは50MHz×32bit=200MB/sでGbE線速(125MB/s)に対し十分。
 
 ## ネットワーク設計(2026-07-26 決定)
 
-- **MAC**: ローカル管理アドレス `02:57:54:58:00:01`(ボードに不揮発IDが無いため。
+- **MAC**: ローカル管理アドレス `02:52:43:58:00:01`(ボードに不揮発IDが無いため。
   複数台対応はSPIフラッシュ設定ページで将来対応)
 - **IP**: 既定は静的 192.168.10.50。**DHCPはLiteEth同梱のハードウェアクライアント
   (`liteeth/core/dhcp.py`)でフェーズ2導入予定**
@@ -36,10 +36,10 @@ sysは50MHz×32bit=200MB/sでGbE線速(125MB/s)に対し十分。
 ## ブリングアップ計画
 
 1. **step0**: LED点滅 + JTAG書き込み確認(`--build --load`)
-2. **step1**: `witranx_stream.py` — 固定ペイロードのUDPパケットをPCへ連続送出、
+2. **step1**: `retrocastx_stream.py` — 固定ペイロードのUDPパケットをPCへ連続送出、
    PC側 `tcpdump` / receiver で受信確認(いまここのコードがある)
 3. **step2**: テストパターン生成器 + プロトコルv0のLINE/MODEパケタイザを実装、
-   `host/python/witranx/receiver.py` でパターンが表示されることを確認
+   `host/python/retrocastx/receiver.py` でパターンが表示されることを確認
 4. **step3**: SODIMM I/O にTVP7002ブレークアウトを接続、実信号キャプチャへ
 
 ## ツールチェーン(macOS)
@@ -58,7 +58,7 @@ python3 litex_setup.py --init --install
 ## ビルド・書き込み(ボード入手後)
 
 ```sh
-python3 witranx_stream.py --build            # bitstream生成
+python3 retrocastx_stream.py --build            # bitstream生成
 openFPGALoader -b colorlight-i5 build/colorlight_i5/gateware/colorlight_i5.bit   # SRAMへロード(揮発)
 openFPGALoader -b colorlight-i5 -f build/... # SPIフラッシュへ書き込み(元のLED受信カードFWは事前に --dump-flash で退避推奨)
 ```

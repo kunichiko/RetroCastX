@@ -1,4 +1,4 @@
-"""WiTranX protocol v0: packet pack/unpack.
+"""RetroCastX protocol v0: packet pack/unpack.
 
 See docs/protocol-v0.md. All fields little-endian.
 """
@@ -6,7 +6,7 @@ import struct
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-MAGIC = 0x57
+MAGIC = 0x52
 VERSION = 0
 DEFAULT_PORT = 34600
 

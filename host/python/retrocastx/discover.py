@@ -1,7 +1,7 @@
-"""Board discovery: listen for WiTranX ANNOUNCE broadcasts and list boards.
+"""Board discovery: listen for RetroCastX ANNOUNCE broadcasts and list boards.
 
 Usage:
-    python3 -m witranx.discover [--port 34600] [--timeout 0]
+    python3 -m retrocastx.discover [--port 34600] [--timeout 0]
 
 The board broadcasts a TYPE_INFO packet every second. This tool prints each
 board (source IP is authoritative; the payload ip is advisory) and can also
@@ -32,7 +32,7 @@ def main():
     seq = 0
     last_probe = 0.0
     deadline = time.monotonic() + args.timeout if args.timeout > 0 else None
-    print("probing for WiTranX boards on UDP %d (broadcast DISCOVER) ..." % args.port)
+    print("probing for RetroCastX boards on UDP %d (broadcast DISCOVER) ..." % args.port)
     try:
         while deadline is None or time.monotonic() < deadline:
             now = time.monotonic()

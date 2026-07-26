@@ -1,4 +1,4 @@
-# WiTranX 伝送プロトコル v0(ドラフト)
+# RetroCastX 伝送プロトコル v0(ドラフト)
 
 RFC 4175(RTP Payload Format for Uncompressed Video)の「ライン単位パケット化 + ピクセルオフセット」
 の考え方を下敷きにした、UDP 上の独自軽量プロトコル。将来 RTP でラップして標準ツールと接続する余地を残す。
@@ -12,7 +12,7 @@ RFC 4175(RTP Payload Format for Uncompressed Video)の「ライン単位パケ�
 
 | offset | size | field | 説明 |
 |---|---|---|---|
-| 0 | u8 | magic | `0x57` ('W') |
+| 0 | u8 | magic | `0x52` ('R') |
 | 1 | u8 | version | `0x00` |
 | 2 | u8 | type | 0=LINE, 1=MODE, 2=AUDIO(予約), 3=INFO(予約) |
 | 3 | u8 | flags | type 依存(下記) |
@@ -82,7 +82,7 @@ flags: bit0 = LAST_FRAGMENT(このパケットでラインが完結)、bit1 = FI
 ## アドレッシングと発見の設計
 
 - **MACアドレス**: ボードに不揮発IDが無いため、ローカル管理アドレス
-  `02:57:54:58:xx:xx`("WTX")を使用。既定は `02:57:54:58:00:01`。
+  `02:52:43:58:xx:xx`("RCX")を使用。既定は `02:52:43:58:00:01`。
   複数台運用時はSPIフラッシュの設定ページで個体別に上書き(将来)
 - **発見はアプリ起点**: アプリが `255.255.255.255:34600` へ SUBSCRIBE(ANNOUNCE_ONLY) を
   ブロードキャスト → ボードがユニキャストで ANNOUNCE 返信。

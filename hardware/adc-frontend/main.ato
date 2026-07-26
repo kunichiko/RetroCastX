@@ -6,7 +6,7 @@ import Resistor
 import Capacitor
 
 # =============================================================================
-# WiTranX ADC front-end: TVP7002 breakout for Colorlight i5 EXT board
+# RetroCastX ADC front-end: TVP7002 breakout for Colorlight i5 EXT board
 #
 # Retro PC analog RGB (VGA HD-15) -> TVP7002 (triple ADC + H-PLL) ->
 # 24bit parallel + DATACLK/HSOUT/VSOUT/SOGOUT -> PMOD-style 2x6 headers.

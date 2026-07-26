@@ -1,4 +1,4 @@
-# WiTranX ADC フロントエンド(TVP7002 ブレークアウト)
+# RetroCastX ADC フロントエンド(TVP7002 ブレークアウト)
 
 レトロPCのアナログRGB(VGA HD-15経由)を TI TVP7002 でデジタル化し、
 24bitパラレル + DATACLK/HSOUT/VSOUT/SOGOUT を Colorlight i5 EXTボードへ渡す

@@ -1,4 +1,4 @@
-# WiTranX ハードウェア調査レポート(2026-07-25)
+# RetroCastX ハードウェア調査レポート(2026-07-25)
 
 FPGA直接変換構成(ADC → FPGA → GbE → UDP → PC/Mac)に向けた部品・ボード調査の結果。
 4テーマ:①Colorlight 5A-75B リビジョン事情、②I/O入力化改造、③ADCフロントエンド入手性、④代替FPGAボード。

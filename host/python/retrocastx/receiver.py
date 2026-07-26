@@ -1,7 +1,7 @@
-"""Receiver: reassembles WiTranX v0 UDP packets into frames.
+"""Receiver: reassembles RetroCastX v0 UDP packets into frames.
 
 Usage:
-    python3 -m witranx.receiver [--bind 0.0.0.0] [--port 34600]
+    python3 -m retrocastx.receiver [--bind 0.0.0.0] [--port 34600]
         [--dump DIR] [--every 30]
 
 Prints per-second stats; with --dump writes every Nth completed frame to

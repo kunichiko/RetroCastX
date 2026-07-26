@@ -1,10 +1,10 @@
-"""Sender simulator: emits a test pattern as WiTranX v0 UDP packets.
+"""Sender simulator: emits a test pattern as RetroCastX v0 UDP packets.
 
 Stands in for the FPGA until real hardware exists; also documents the exact
 packetization the gateware must implement.
 
 Usage:
-    python3 -m witranx.sender_sim [--dest 127.0.0.1] [--port 34600]
+    python3 -m retrocastx.sender_sim [--dest 127.0.0.1] [--port 34600]
         [--width 512] [--height 512] [--fps 30] [--pixfmt rgb888|rgb555]
         [--mtu 1500] [--frames 0]
 """
@@ -54,9 +54,9 @@ class Sender:
     def send_announce(self):
         """実機ではブロードキャスト。シミュレータではdest宛のユニキャストで代用。"""
         ann = proto.Announce(
-            mac=bytes([0x02, 0x57, 0x54, 0x58, 0x00, 0x01]),  # locally administered "WTX"
+            mac=bytes([0x02, 0x52, 0x43, 0x58, 0x00, 0x01]),  # locally administered "RCX"
             ip="0.0.0.0", udp_port=proto.DEFAULT_PORT,
-            fw_version=0x0001, caps=0x0000, name="witranx-sim")
+            fw_version=0x0001, caps=0x0000, name="retrocastx-sim")
         self._send(ann.pack(self.seq))
 
     def send_frame(self, img: np.ndarray, frame_idx: int):

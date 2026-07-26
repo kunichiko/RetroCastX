@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""WiTranX gateware step1: ANNOUNCE beacon on Colorlight i5.
+"""RetroCastX gateware step1: ANNOUNCE beacon on Colorlight i5.
 
 プロトコルv0の ANNOUNCE(TYPE_INFO)パケットを毎秒UDP送出する最小構成。
-PC側の `python3 -m witranx.discover` がこれを受信できればstep1完了。
+PC側の `python3 -m retrocastx.discover` がこれを受信できればstep1完了。
 (ブロードキャスト送信はLiteEthの通常UDPパスに無いため、step1では
  HOST_IP宛ユニキャスト。step2でSUBSCRIBE受信→送り先切替を実装する)
 
 Build:
-    .venv/bin/python witranx_stream.py --build
+    .venv/bin/python retrocastx_stream.py --build
 Load (board via EXT DAPLink):
     openFPGALoader -c cmsisdap build/colorlight_i5/gateware/colorlight_i5.bit
 """
@@ -27,18 +27,18 @@ from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
 from liteeth.core import LiteEthUDPIPCore
 
 # --- ネットワーク設定(暫定; 将来はSPIフラッシュの設定ページから読む) ---
-MAC_ADDRESS = 0x025754580001          # ローカル管理アドレス "WTX"
+MAC_ADDRESS = 0x025243580001          # ローカル管理アドレス "RCX"
 FPGA_IP     = "192.168.10.50"
 HOST_IP     = "192.168.10.1"
 UDP_PORT    = 34600
 
 
 def make_announce_packet() -> bytes:
-    """host/python/witranx/protocol.py の Announce と同一フォーマット(40B)。"""
-    common = struct.pack("<BBBBHH", 0x57, 0x00, 3, 0, 0, 0)  # magic,ver,INFO,flags,frame,seq
-    mac = bytes([0x02, 0x57, 0x54, 0x58, 0x00, 0x01])
+    """host/python/retrocastx/protocol.py の Announce と同一フォーマット(40B)。"""
+    common = struct.pack("<BBBBHH", 0x52, 0x00, 3, 0, 0, 0)  # magic,ver,INFO,flags,frame,seq
+    mac = bytes([0x02, 0x52, 0x43, 0x58, 0x00, 0x01])
     ip = bytes(int(x) for x in FPGA_IP.split("."))
-    info = struct.pack("<6s4sHHH16s", mac, ip, UDP_PORT, 0x0001, 0x0000, b"witranx-i5")
+    info = struct.pack("<6s4sHHH16s", mac, ip, UDP_PORT, 0x0001, 0x0000, b"retrocastx-i5")
     return common + info
 
 
@@ -107,12 +107,12 @@ class _CRG(LiteXModule):
         pll.create_clkout(self.cd_sys, sys_clk_freq)
 
 
-class WiTranXStream(SoCMini):
+class RetroCastXStream(SoCMini):
     def __init__(self, revision="7.0", sys_clk_freq=int(50e6)):
         platform = colorlight_i5.Platform(board="i5", revision=revision,
                                           toolchain="trellis")
         SoCMini.__init__(self, platform, sys_clk_freq,
-                         ident="WiTranX announce beacon (step1)")
+                         ident="RetroCastX announce beacon (step1)")
         self.crg = _CRG(platform, sys_clk_freq)
 
         # Ethernet PHY (RGMII) + hardware UDP/IP core
@@ -142,7 +142,7 @@ def main():
     # seedは今後のリグレッション時の調整用ノブとして残す
     ap.add_argument("--seed", type=int, default=2, help="nextpnr placement seed")
     args = ap.parse_args()
-    soc = WiTranXStream(revision=args.revision)
+    soc = RetroCastXStream(revision=args.revision)
     builder = Builder(soc, output_dir="build/colorlight_i5", compile_software=False)
     builder.build(run=args.build, seed=args.seed)
 
