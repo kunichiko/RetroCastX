@@ -2,7 +2,31 @@
 
 レトロPCのアナログRGB(VGA HD-15経由)を TI TVP7002 でデジタル化し、
 24bitパラレル + DATACLK/HSOUT/VSOUT/SOGOUT を Colorlight i5 EXTボードへ渡す
-**HAT基板**(EXTのP1/P2/P4に直接スタック)。GbE MagJack搭載。回路は `main.ato`(Atopile)。
+**HAT基板**(EXTのP1/P2/P4に直接スタック)。GbE MagJack・**音声入力3系統**・
+ArgusX制御コネクタ搭載。回路は `main.ato`(Atopile)。
+
+## 音声入力(3系統)
+
+| 系統 | 経路 | 変換 |
+|---|---|---|
+| RGB端子音声 | J1(D-SUB15)ピン4=L/11=R → SJ2/SJ3 → U11 PCM1808 | 16bit/48kHz I2S |
+| LINE入力 | J12(3.5mmステレオ) → U12 PCM1808 | 16bit/48kHz I2S |
+| 光デジタル | J13(TOSLINKモジュール) → FPGA直結 | S/PDIFをゲートウェアでデコード |
+
+- **クロック**: X2(12.288MHz XO =256fs@48kHz)→ 両ADCのSCKIとFPGA(F1=PCLKC6_1)。
+  BCK/LRCKはFPGAがMCLKから分周して共通供給。**DOUTのみ個別**なので
+  アナログ2系統は同時キャプチャ可能。S/PDIFのDIRチップは不要(FPGAでデコード)
+- **SJ2/SJ3(既定: 閉)**: D-SUB15のピン4/11はVGA規格ではID/DDC。音声結線のある
+  レトロPC用ケーブルでは閉、一般VGAケーブル(DDC結線あり)を挿す運用では開ける
+- どの系統を転送するかはアプリからCONFIGパケットで選択(複数同時も可)。
+  詳細は `docs/protocol-v0.md` の AUDIO / CONFIG 参照
+
+## ArgusX(RGBセレクタ、別プロジェクト)連携
+
+J11(1×4: 3V3/SDA/SCL/GND)にTVP7002と共有のI2Cバスを引き出し。アプリからの
+CONFIGパケット(target=ArgusX)をゲートウェアがI2C書き込みに中継し、セレクタの
+入力切替をアプリから行える。ArgusXのI2Cアドレス/レジスタマップは同プロジェクト側で
+確定後に反映(TVP7002は0xB8を使用中なので衝突回避のこと)。
 
 ## 回路の構成(根拠: TVP7002データシート SLES206C / OSSC rev1.8 実機回路)
 
@@ -46,6 +70,12 @@
 | J10 | TYPE-C-31-M-12 | C165948 | USB-C電源入力(Rd 5.1kΩ×2実装、C-C/PD充電器対応) |
 | J8 | 2×15 ピンヘッダ 2.54mm | 汎用 | EXT P1対応(GbE差動ペア受け) |
 | J9 | HanRun HR911130A | C54408 | 1000BASE-T MagJack(トランス内蔵RJ45) |
+| U11,U12 | PCM1808PWR | 要選定 | 音声ADC(RGB端子音声 / LINE入力) |
+| X2 | 12.288MHz XO 3225 | 要選定 | 音声マスタークロック(256fs@48kHz) |
+| J11 | 1×4 ピンヘッダ 2.54mm | 汎用 | ArgusX制御(I2C引き出し) |
+| J12 | 3.5mmステレオジャック | 要選定(PJ-320A系) | LINE入力 |
+| J13 | TOSLINK受信モジュール | 要選定(PLR135/T8等) | 光デジタル入力 |
+| SJ2,SJ3 | はんだジャンパ | — | D-SUB15ピン4/11の音声結線(既定: 閉) |
 
 抵抗・コンデンサは値・パッケージ指定済み(Atopileのピッカーが実部品を自動選定)。
 
@@ -71,8 +101,12 @@ BOM/ネットリストまで生成される。エンドポイントは `ATO_SERV
    - AZ1117H-ADJ は約0.9W発熱: SOT-223のタブに銅箔ベタ+サーマルビア
    - TVP7002 の露出パッドはGNDベタにはんだ付け(熱・電気両方の要件)
    - アナロググラウンドは入力コネクタ周りでベタを分離しすぎない(1点で結合)
-4. **色深度**: 配線は各色上位8bit(R/G/B[9:2])。10bit化したい場合は
-   J4(P4ミラー)の空きボール(F1,F3,G3,H4,J4,E19)に [1:0] を追加配線する
+4. **色深度**: 配線は各色上位8bit(R/G/B[9:2])。J4の空き6ピンは音声系で
+   使い切ったため、10bit化する場合はP6ミラーヘッダの追加が必要
+5. **音声まわり**: PCM1808のVCC(5Vアナログ)はFB経由で分離済み。レイアウトでは
+   ADC・XOをGbE/映像系から離し、D-SUB音声の引き回しは映像RGBと並走させない。
+   PCM1808/TOSLINK/3.5mmジャック/12.288MHz XOのスタブはピン番号仮割り当てなので
+   フットプリント取り込み時にデータシート照合(main.ato内の注意書き参照)
 
 ## Colorlight i5 EXTボードとの接続(2026-07-25 調査確定)
 
@@ -100,5 +134,7 @@ BOM/ネットリストまで生成される。エンドポイントは `ATO_SERV
 - 信号は P2/P4 の2ヘッダに集約(EXT側1ヘッダのGPIOは18〜20本でRGB24bitは1本に収まらない):
   - **J2 = P2ミラー**: R9-R2→J20,G20,L18,K20,M18,L20,N17,N18 / G9-G2→U17,P18,T17,U18,P17,M17,R18,R17 / B9-B6→C18,T18,U16,K18
   - **J4 = P4ミラー**: DATACLK→**F2(PCLKT7_0)**、B5-B2→E1,E4,H3,H5、HSOUT→J5、VSOUT→A2、
-    SOGOUT→K4、FIDOUT→B2、SDA→K3、SCL→K5、RESETB→B3(空き: F1,F3,G3,H4,J4,E19)
+    SOGOUT→K4、FIDOUT→B2、SDA→K3、SCL→K5、RESETB→B3、
+    音声: MCLK→**F1(PCLKC6_1)**、BCK→G3、LRCK→H4、DOUT(DSUB音声)→F3、
+    DOUT(LINE)→J4、S/PDIF→E19(空きなし)
 

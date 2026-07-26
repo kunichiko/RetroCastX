@@ -31,8 +31,10 @@ RetroCastX は「変換器は馬鹿に徹し、知性はPC側に置く」:
 docs/
   protocol-v0.md    伝送プロトコル仕様 v0(ドラフト)
   research/         部品・ボード調査レポート
-gateware/           FPGA側(LiteX / Colorlight i5)※骨格のみ、実機未検証
+gateware/           FPGA側(LiteX / Colorlight i5)※sim検証済み、実機未検証
+hardware/           ADCフロントエンド基板(Atopile、HAT形式)
 host/python/        PC側リファレンス実装(送信シミュレータ・受信・検証)
+client/             ビューアアプリ(Rust + eframe/egui、Mac/Win/Linux)
 ```
 
 ## クイックスタート(ハードウェア不要)
@@ -59,8 +61,12 @@ python3 -m retrocastx.receiver --dump out   # 受信して out/frame_NNNN.ppm �
 ## ステータス
 
 - [x] 構想・部品調査
-- [x] プロトコル v0 ドラフト
+- [x] プロトコル v0 ドラフト(映像 LINE/MODE + 音声 AUDIO + 発見/購読 + CONFIG)
 - [x] PC側リファレンス実装(シミュレータ + 受信器)
-- [ ] LiteX ゲートウェア(テストパターン送出)実機動作
-- [ ] TVP7002 ブレークアウト設計
+- [x] LiteX ゲートウェア step2(テストパターン送出+購読) — sim検証・ビットストリーム生成済み
+- [x] TVP7002 ブレークアウト設計(音声3系統・ArgusX制御含む、電気設計検証まで)
+- [x] ビューアアプリ雛形(Rust + eframe、sender_sim相手にE2E確認済み)
+- [ ] ゲートウェア実機動作(ボード入手待ち)
+- [ ] 基板発注(atopile部品API復旧後にフットプリント紐付け)
+- [ ] 音声キャプチャ(gateware step4)・音声再生(client)
 - [ ] 実機キャプチャ(X68000 / PC-98)

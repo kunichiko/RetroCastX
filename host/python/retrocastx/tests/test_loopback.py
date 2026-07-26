@@ -98,9 +98,48 @@ def run_announce_case() -> bool:
     return ok
 
 
+def run_audio_config_case() -> bool:
+    """AUDIO/CONFIG round-trip: pack -> UDP -> parse."""
+    rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rx.bind(("127.0.0.1", 0))
+    rx.settimeout(1.0)
+    tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    samples = np.arange(480, dtype="<i2").tobytes()  # 240サンプルフレーム(L/R)
+    tx.sendto(proto.pack_audio(3, 7, proto.AUDIO_SRC_SPDIF, 44100, 0x12345678,
+                               samples), rx.getsockname())
+    tx.sendto(proto.pack_config(8, proto.CFG_TARGET_BOARD, proto.CFG_OP_SET,
+                                proto.CFG_KEY_AUDIO_ENABLE, 0b101), rx.getsockname())
+    tx.sendto(proto.pack_config(8, proto.CFG_TARGET_ARGUSX, proto.CFG_OP_GET,
+                                proto.CFG_KEY_ARGUSX_INPUT, 2, reply=True),
+              rx.getsockname())
+
+    t1, aud = proto.parse(rx.recvfrom(4096)[0])
+    t2, cfg_set = proto.parse(rx.recvfrom(2048)[0])
+    t3, cfg_rep = proto.parse(rx.recvfrom(2048)[0])
+    rx.close()
+    tx.close()
+
+    ok = (t1 == proto.TYPE_AUDIO
+          and (aud.source, aud.format, aud.nsamples) == (proto.AUDIO_SRC_SPDIF,
+                                                         proto.AUDIO_FMT_PCM16, 240)
+          and (aud.rate_hz, aud.timestamp) == (44100, 0x12345678)
+          and aud.samples == samples
+          and t2 == proto.TYPE_CONFIG and not cfg_set.is_reply
+          and (cfg_set.target, cfg_set.op, cfg_set.key, cfg_set.value)
+              == (proto.CFG_TARGET_BOARD, proto.CFG_OP_SET,
+                  proto.CFG_KEY_AUDIO_ENABLE, 0b101)
+          and t3 == proto.TYPE_CONFIG and cfg_rep.is_reply and cfg_rep.value == 2)
+    if not ok:
+        print("  audio=%r cfg_set=%r cfg_rep=%r" % (aud, cfg_set, cfg_rep))
+    print("%s audio/config round-trip" % ("PASS" if ok else "FAIL"))
+    return ok
+
+
 def main():
     results = [
         run_announce_case(),
+        run_audio_config_case(),
         run_case("rgb888 320x240 mtu1500 (single fragment)",
                  320, 240, proto.PIXFMT_RGB888, 1500),
         run_case("rgb888 768x512 mtu1500 (fragmented lines)",

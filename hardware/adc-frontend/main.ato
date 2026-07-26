@@ -309,6 +309,67 @@ component HeaderExtP4:
     signal nc30 ~ pin 30
 
 
+component Pcm1808:
+    """TI PCM1808 stereo audio ADC (24bit ΔΣ, I2S/スレーブ動作), TSSOP-14。
+
+    LCSC: 要選定(PCM1808PWR)。
+    注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシート(SLES177)と必ず照合。
+    """
+    signal scki ~ pin 1    # システムクロック(256/384/512fs, スレーブ時自動判別)
+    signal bck ~ pin 2     # ビットクロック(64fs)
+    signal lrc ~ pin 3     # LRクロック(fs)
+    signal dgnd ~ pin 4
+    signal vdd ~ pin 5     # デジタル3.3V
+    signal dout ~ pin 6    # I2Sデータ出力
+    signal fmt ~ pin 7     # 0=I2S
+    signal md1 ~ pin 8     # MD1:MD0=00 でスレーブ
+    signal md0 ~ pin 9
+    signal vcc ~ pin 10    # アナログ5V
+    signal agnd ~ pin 11
+    signal vref ~ pin 12   # 基準電圧デカップリング
+    signal vinr ~ pin 13
+    signal vinl ~ pin 14
+
+
+component SpdifRxModule:
+    """光デジタル(TOSLINK)受信モジュール、3.3V動作。
+
+    候補: Everlight PLR135/T8 / CLIFF FC684205R。LCSC: 要選定。
+    注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
+    """
+    signal out ~ pin 1     # S/PDIFビットストリーム(TTL)
+    signal gnd ~ pin 2
+    signal vcc ~ pin 3
+
+
+component AudioJack35:
+    """3.5mm ステレオTRSジャック(LINE入力用)。候補: PJ-320A系。LCSC: 要選定。
+
+    注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
+    """
+    signal tip ~ pin 1     # L
+    signal ring ~ pin 2    # R
+    signal sleeve ~ pin 3  # GND
+    signal tip_sw ~ pin 4
+    signal ring_sw ~ pin 5
+
+
+component Xo12M288:
+    """12.288MHz 3.3V CMOS オシレータ(=256fs @48kHz)、SMD3225-4P。LCSC: 要選定。"""
+    signal en ~ pin 1
+    signal gnd ~ pin 2
+    signal out ~ pin 3
+    signal vcc ~ pin 4
+
+
+component HeaderArgus:
+    """ArgusX(RGBセレクタ、別プロジェクト)制御用 1×4 ヘッダ(I2Cバス引き出し)。"""
+    signal p3v3 ~ pin 1
+    signal sda ~ pin 2
+    signal scl ~ pin 3
+    signal gnd ~ pin 4
+
+
 component DcJack:
     """DC005 barrel jack (5V in)。EXT給電運用時は未実装可。LCSC: C431533"""
     signal center ~ pin 1
@@ -422,6 +483,53 @@ module VideoInputChannel:
     c_ac.capacitance = 100nF +/- 10%
     c_ac.package = "0402"
     input ~> c_ac ~> output
+
+
+module AudioAdc:
+    """PCM1808 1個分: ACカップリング + VREF/電源デカップリング + モードストラップ。
+
+    スレーブ・I2S固定(FMT/MD1/MD0=GND)。SCKI/BCK/LRCはFPGA側と共有バスで受ける。
+    """
+    adc = new Pcm1808
+    signal gnd
+    signal in_l
+    signal in_r
+    power_5va = new ElectricPower   # オーディオアナログ5V(ビーズ分離後)
+    power_3v3 = new ElectricPower
+
+    adc.vcc ~ power_5va.hv
+    adc.vdd ~ power_3v3.hv
+    adc.agnd ~ gnd
+    adc.dgnd ~ gnd
+    adc.fmt ~ gnd
+    adc.md1 ~ gnd
+    adc.md0 ~ gnd
+
+    # 入力ACカップリング(PCM1808は内部バイアス、データシート標準回路は直列1µF)
+    c_in_l = new Capacitor
+    c_in_l.capacitance = 1uF +/- 20%
+    c_in_l.package = "0603"
+    c_in_r = new Capacitor
+    c_in_r.capacitance = 1uF +/- 20%
+    c_in_r.package = "0603"
+    in_l ~> c_in_l ~> adc.vinl
+    in_r ~> c_in_r ~> adc.vinr
+
+    # VREF・電源デカップリング
+    c_vref_a = new Capacitor
+    c_vref_a.capacitance = 10uF +/- 20%
+    c_vref_a.package = "0805"
+    c_vref_b = new Capacitor
+    c_vref_b.capacitance = 100nF +/- 20%
+    c_vref_b.package = "0402"
+    adc.vref ~> c_vref_a ~> gnd
+    adc.vref ~> c_vref_b ~> gnd
+    dec = new Capacitor[2]
+    for c in dec:
+        c.capacitance = 100nF +/- 20%
+        c.package = "0402"
+    adc.vcc ~> dec[0] ~> gnd
+    adc.vdd ~> dec[1] ~> gnd
 
 
 module PowerTree:
@@ -820,7 +928,98 @@ module App:
     hdr_p4.io_k3 ~ tvp.sda
     hdr_p4.io_k5 ~ tvp.scl
     hdr_p4.io_b3 ~ tvp.resetb
-    # 空き: F1, F3, G3, H4, J4, E19(将来: 10bit化 R/G/B[1:0] 等に使用可)
+    # 残り6ピンは音声系で使用(下記)。10bit化にはP6ミラーヘッダの追加が必要になった。
+
+    # --- 音声入力(3系統: DSUB15音声 / LINE入力 / S/PDIF光) ---
+    # クロック系: 12.288MHz XO(=256fs@48kHz)を両ADCのSCKIとFPGA(F1=PCLKC6_1)へ。
+    # BCK(64fs)/LRCK(fs)はFPGAがMCLKから分周して両ADCへ共通供給。DOUTのみ個別
+    # → 2系統のアナログ音声を同時キャプチャ可能。S/PDIFはゲートウェアでデコード。
+    signal audio_mclk
+    signal audio_bck
+    signal audio_lrck
+    xo_audio = new Xo12M288
+    xo_audio.vcc ~ p3v3_io.hv
+    xo_audio.en ~ p3v3_io.hv
+    xo_audio.gnd ~ gnd
+    xo_audio.out ~ audio_mclk
+    c_xo_audio = new Capacitor
+    c_xo_audio.capacitance = 100nF +/- 20%
+    c_xo_audio.package = "0402"
+    xo_audio.vcc ~> c_xo_audio ~> gnd
+
+    # オーディオアナログ5V(ビーズでデジタル5Vから分離)
+    p5v_audio = new ElectricPower
+    p5v_audio.lv ~ gnd
+    fb_audio = new FerriteBead
+    power_5v.hv ~ fb_audio.p1
+    fb_audio.p2 ~ p5v_audio.hv
+    c_5va = new Capacitor
+    c_5va.capacitance = 10uF +/- 20%
+    c_5va.package = "0805"
+    p5v_audio.hv ~> c_5va ~> gnd
+
+    # ADC A: D-SUB15の音声(ピン4=L, ピン11=R と仮定)。SJ2/SJ3で切り離し可能
+    # (DDC/ID結線のある一般VGAケーブルを挿す場合は開ける)
+    adc_dsub = new AudioAdc
+    adc_dsub.gnd ~ gnd
+    adc_dsub.power_5va ~ p5v_audio
+    adc_dsub.power_3v3 ~ p3v3_io
+    sj_aud_l = new SolderJumper
+    sj_aud_r = new SolderJumper
+    vga.id2 ~ sj_aud_l.a      # DSUB15 pin4
+    sj_aud_l.b ~ adc_dsub.in_l
+    vga.id0 ~ sj_aud_r.a      # DSUB15 pin11
+    sj_aud_r.b ~ adc_dsub.in_r
+
+    # ADC B: 基板上の3.5mmステレオLINE入力
+    adc_line = new AudioAdc
+    adc_line.gnd ~ gnd
+    adc_line.power_5va ~ p5v_audio
+    adc_line.power_3v3 ~ p3v3_io
+    jack_line = new AudioJack35
+    jack_line.sleeve ~ gnd
+    jack_line.tip ~ adc_line.in_l
+    jack_line.ring ~ adc_line.in_r
+
+    # 音声入力のESD(4ライン: DSUB音声L/R + LINE L/R)
+    esd_audio = new EsdArray4
+    esd_audio.gnd ~ gnd
+    adc_dsub.in_l ~ esd_audio.io1
+    adc_dsub.in_r ~ esd_audio.io2
+    jack_line.tip ~ esd_audio.io3
+    jack_line.ring ~ esd_audio.io4
+
+    # I2S共有バス
+    audio_mclk ~ adc_dsub.adc.scki
+    audio_mclk ~ adc_line.adc.scki
+    audio_bck ~ adc_dsub.adc.bck
+    audio_bck ~ adc_line.adc.bck
+    audio_lrck ~ adc_dsub.adc.lrc
+    audio_lrck ~ adc_line.adc.lrc
+
+    # S/PDIF光受信(デコードはFPGA内)
+    spdif = new SpdifRxModule
+    spdif.vcc ~ p3v3_io.hv
+    spdif.gnd ~ gnd
+    c_spdif = new Capacitor
+    c_spdif.capacitance = 100nF +/- 20%
+    c_spdif.package = "0402"
+    spdif.vcc ~> c_spdif ~> gnd
+
+    # J4 空きピンへの割当(音声で6本使い切り)
+    hdr_p4.io_f1 ~ audio_mclk           # F1 = PCLKC6_1(クロック対応ボール)
+    hdr_p4.io_g3 ~ audio_bck            # FPGA出力
+    hdr_p4.io_h4 ~ audio_lrck           # FPGA出力
+    hdr_p4.io_f3 ~ adc_dsub.adc.dout    # I2Sデータ(DSUB音声)
+    hdr_p4.io_j4 ~ adc_line.adc.dout    # I2Sデータ(LINE入力)
+    hdr_p4.io_e19 ~ spdif.out           # S/PDIFビットストリーム
+
+    # --- ArgusX(RGBセレクタ)制御コネクタ: I2CバスをTVP7002と共有 ---
+    j11_argus = new HeaderArgus
+    j11_argus.p3v3 ~ p3v3_io.hv
+    j11_argus.gnd ~ gnd
+    j11_argus.sda ~ tvp.sda
+    j11_argus.scl ~ tvp.scl
 
     # --- GbE出口 (EXT P1 -> J8 -> MagJack) ---
     eth = new EthernetPort

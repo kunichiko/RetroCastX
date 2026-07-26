@@ -66,6 +66,11 @@ sysは50MHz×32bit=200MB/sでGbE線速(125MB/s)に対し十分。
    実機での `receiver --subscribe` 表示確認が残タスク)
 4. **step3**: SODIMM I/O にTVP7002ブレークアウトを接続、実信号キャプチャへ
    (DATACLKのクロック対応ピン割当は hardware/adc-frontend の J4=F2/PCLKT7_0 で確定済み)
+5. **step4(音声+CONFIG)**: I2Sキャプチャ×2(BCK/LRCKはMCLK 12.288MHz
+   =F1/PCLKC6_1 から分周生成、DOUT→F3/J4取り込み)+ S/PDIFデコーダ(E19、
+   sysクロックでオーバーサンプリング)→ AUDIOパケット送出。
+   CONFIGパケット受信 → 音声ソース選択 / I2Cマスター経由でTVP7002・ArgusX設定
+   (プロトコルは docs/protocol-v0.md の AUDIO / CONFIG で定義済み)
 
 ## ツールチェーン(macOS)
 

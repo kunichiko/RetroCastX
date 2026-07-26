@@ -14,7 +14,7 @@ RFC 4175(RTP Payload Format for Uncompressed Video)の「ライン単位パケ�
 |---|---|---|---|
 | 0 | u8 | magic | `0x52` ('R') |
 | 1 | u8 | version | `0x00` |
-| 2 | u8 | type | 0=LINE, 1=MODE, 2=AUDIO(予約), 3=INFO(予約) |
+| 2 | u8 | type | 0=LINE, 1=MODE, 2=AUDIO, 3=INFO, 4=SUBSCRIBE, 5=CONFIG |
 | 3 | u8 | flags | type 依存(下記) |
 | 4 | u16 | frame | フレームカウンタ(VSYNC ごとに +1、ラップあり) |
 | 6 | u16 | seq | 全パケット共通のシーケンス番号(ロス検出用、ラップあり) |
@@ -58,6 +58,49 @@ flags: bit0 = LAST_FRAGMENT(このパケットでラインが完結)、bit1 = FI
 | 24 | u32 | hfreq_mhz_x1000 | 水平周波数 [mHz](=Hz×1000、実測) |
 | 28 | u32 | vfreq_mhz_x1000 | 垂直周波数 [mHz](=Hz×1000、実測) |
 
+## AUDIO パケット(type=2)
+
+音声サンプル。入力は3系統あり(基板仕様)、**複数系統の同時転送も可**
+(パケットごとに `source` が付くため受信側で分離できる)。どの系統を送るかは
+CONFIG(key 0x0001)で選択する。
+
+| offset | size | field | 説明 |
+|---|---|---|---|
+| 8 | u8 | source | 0=RGB端子(D-SUB15)音声, 1=LINE入力, 2=S/PDIF |
+| 9 | u8 | format | 0=PCM s16le 2ch(L/Rインターリーブ) |
+| 10 | u16 | nsamples | このパケットのサンプルフレーム数(L+Rで1) |
+| 12 | u32 | rate_hz | 実サンプルレート(アナログ=48000、S/PDIFは受信ストリームの実測) |
+| 16 | u32 | timestamp | 先頭サンプル取得時点の**ドットクロックカウンタ**(LINEと同一カウンタ → A/V同期はこれで取る) |
+| 20 | ... | samples | L0 R0 L1 R1 ... (s16le) |
+
+- 目安: 48kHz で 240サンプル/パケット(5ms) → 980B、200pkt/s、~1.6Mbps/系統
+- flags: 予約(0)
+- S/PDIFの44.1kHz等は `rate_hz` で通知(受信側でリサンプルするか、そのまま再生)
+
+## CONFIG パケット(type=5)
+
+アプリ→ボードの設定読み書き。ボードは同レイアウトに flags bit0(REPLY)を立て、
+`value` に現在値(SET後は反映値)を入れてユニキャスト返信する。応答が来なければ
+アプリが再送する(冪等)。
+
+| offset | size | field | 説明 |
+|---|---|---|---|
+| 8 | u8 | target | 0=キャプチャボード, 1=ArgusX(RGBセレクタ、I2C経由) |
+| 9 | u8 | op | 0=SET, 1=GET |
+| 10 | u16 | key | 下表 |
+| 12 | u32 | value | SET時の設定値 / 応答時の現在値 |
+
+キー(ドラフト):
+
+| target | key | 意味 |
+|---|---|---|
+| 0 (board) | 0x0001 | audio_enable_mask: bit0=RGB端子音声, bit1=LINE, bit2=S/PDIF |
+| 1 (ArgusX) | 0x0001 | 映像入力選択(値の意味はArgusX側仕様で定義) |
+
+- ArgusX宛のCONFIGは、ゲートウェアがI2Cバス(TVP7002と共有、J11コネクタ)経由で
+  ArgusXへ中継する。ArgusXのI2Cアドレス・レジスタマップはArgusX側で確定後に反映
+- 認証なし(同一LAN前提)。SETは全て冪等な値設定のみとする
+
 ## INFO / ANNOUNCE パケット(type=3)
 
 ボードの自己紹介。**発見(Discovery)と生存確認**に使う。共通ヘッダに続き 32 bytes:
@@ -68,7 +111,7 @@ flags: bit0 = LAST_FRAGMENT(このパケットでラインが完結)、bit1 = FI
 | 14 | 4B | ip | ボードが自認するIPv4(参考値。**受信側はUDP送信元アドレスを正とする**) |
 | 18 | u16 | udp_port | データ/制御ポート |
 | 20 | u16 | fw_version | ファームウェアバージョン |
-| 22 | u16 | caps | 能力ビット(bit0=TVP7002搭載, 予約) |
+| 22 | u16 | caps | 能力ビット(bit0=TVP7002, bit1=アナログ音声, bit2=S/PDIF, bit3=ArgusX接続) |
 | 24 | 16B | name | ASCII名(NUL詰め) |
 
 ## SUBSCRIBE パケット(type=4)
@@ -115,7 +158,8 @@ flags: bit0 = LAST_FRAGMENT(このパケットでラインが完結)、bit1 = FI
 
 ## 未決事項(v1 へ向けて)
 
-- AUDIO パケットの形式(ADPCM/PCM、タイムスタンプの共有クロック化)
+- AUDIO: 24bit対応(format=1)、ADPCM等の圧縮形式の要否
+- CONFIG: ArgusX側のI2Cアドレス・レジスタマップ確定後のキー定義
 - FRAME_END / ブランキング明示パケットの要否
 - 前方誤り訂正(FEC)や XOR パリティラインの要否(GbE 有線ではロスは稀の想定)
 - RTP ヘッダでのラップ(Wireshark での解析性と標準ツール接続のため)
