@@ -322,6 +322,25 @@ component SolderJumper:
     signal b ~ pin 2
 
 
+component UsbCPowerReceptacle:
+    """USB-C レセプタクル(USB2.0 16pin級)、電源入力用。TYPE-C-31-M-12 想定。LCSC: C165948
+
+    注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
+    """
+    signal gnd ~ pin 1
+    signal vbus ~ pin 2
+    signal cc1 ~ pin 5
+    signal dp ~ pin 6
+    signal dn ~ pin 7
+    signal sbu1 ~ pin 8
+    signal sbu2 ~ pin 9
+    signal cc2 ~ pin 12
+    vbus ~ pin 15
+    gnd ~ pin 16
+    signal shell ~ pin 17
+    shell ~ pin 18
+
+
 component GbeMagJack:
     """1000BASE-T MagJack(トランス・チョーク・Bob-Smith内蔵RJ45)。
 
@@ -541,9 +560,25 @@ module App:
     signal gnd
     gnd ~ power_5v.lv
 
-    # 5V給電は2系統から選択(排他。両方同時に生かさないこと):
-    #  (a) EXTボード経由: USB-C 5V が P1/P2/P4 の5Vピンに出ている → SJ1を閉じる(デフォルト)
-    #  (b) スタンドアロン: J7 DCジャック(EXT非接続でのベンチ検証用)。この場合SJ1は開放
+    # 5V給電: 本基板が電源マスター(既定)。
+    #   J10 USB-C(CCにRd 5.1kΩ実装済み → PD充電器+C-Cケーブルで5V/3A可)から給電し、
+    #   SJ1(閉=既定)でヘッダ5Vピン経由でEXTボードへ「逆給電」する。
+    #   この運用ではEXTボードのスライドスイッチS1をOFFにし、EXTのUSB-CはJTAG/UARTデータ専用とする
+    #   (EXT側USB-CはCC未接続のためC-Cケーブルでは受電できない、という実測済みの制約への対策)。
+    #   代替入力: J7 DCジャック。J10とJ7は同時使用不可。
+    usbc = new UsbCPowerReceptacle
+    usbc.vbus ~ power_5v.hv
+    usbc.gnd ~ gnd
+    usbc.shell ~ gnd
+    r_cc1 = new Resistor
+    r_cc1.resistance = 5.1kohm +/- 1%
+    r_cc1.package = "0402"
+    r_cc2 = new Resistor
+    r_cc2.resistance = 5.1kohm +/- 1%
+    r_cc2.package = "0402"
+    usbc.cc1 ~> r_cc1 ~> gnd
+    usbc.cc2 ~> r_cc2 ~> gnd
+
     signal p5v_ext
     sj_ext5v = new SolderJumper
     p5v_ext ~ sj_ext5v.a
