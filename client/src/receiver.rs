@@ -52,7 +52,16 @@ pub fn spawn(
     shared: Arc<Shared>,
     repaint: impl Fn() + Send + 'static,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
-    let sock = UdpSocket::bind(("0.0.0.0", cfg.port))?;
+    // 500Mbps級のバーストに耐えるよう受信バッファを拡大(OSデフォルトは
+    // 数十KBで、フレームクローン等で受信スレッドが一瞬停まるだけで溢れる)
+    let raw = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    raw.set_recv_buffer_size(8 << 20)?;
+    raw.bind(&std::net::SocketAddr::from(([0, 0, 0, 0], cfg.port)).into())?;
+    let sock: UdpSocket = raw.into();
     sock.set_read_timeout(Some(Duration::from_millis(200)))?;
     if cfg.subscribe_to.is_some() {
         sock.set_broadcast(true)?;

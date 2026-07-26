@@ -65,7 +65,10 @@ sysは50MHz×32bit=200MB/sでGbE線速(125MB/s)に対し十分。
    (**コード実装済み・シミュレーションでPC側実装とビット一致を検証済み**。
    実機での `receiver --subscribe` 表示確認が残タスク)
 4. **step3**: SODIMM I/O にTVP7002ブレークアウトを接続、実信号キャプチャへ
-   (DATACLKのクロック対応ピン割当は hardware/adc-frontend の J4=F2/PCLKT7_0 で確定済み)
+   (DATACLKのクロック対応ピン割当は hardware/adc-frontend の J4=F2/PCLKT7_0 で確定済み)。
+   **ライン断片化の実装が必要**: step2のパケタイザは1ライン=1パケット前提
+   (768px RGB888 = 2324B > MTU1500。クライアント側は断片化受信を
+   768×512@55.46/533Mbpsで検証済みなので、ゲートウェア側のみ)
 5. **step4(音声+CONFIG)**: I2Sキャプチャ×2(BCK/LRCKはMCLK 12.288MHz
    =F1/PCLKC6_1 から分周生成、DOUT→F3/J4取り込み)+ S/PDIFデコーダ(E19、
    sysクロックでオーバーサンプリング)→ AUDIOパケット送出。

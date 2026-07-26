@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 eframe = "0.35.0"
+socket2 = "0.6.5"
