@@ -1,14 +1,37 @@
 # RetroCastX ゲートウェア(Colorlight i5 / LiteX)
 
-**ステータス: step1(ANNOUNCEビーコン)のビットストリーム生成に成功**(実機は入手待ち)。
+**ステータス: step2(テストパターン・ストリーマ)実装済み・シミュレーション検証済み**(実機は入手待ち)。
 ローカル環境: `~/opt/oss-cad-suite` + `gateware/.venv`(LiteX一式、gitignore済み)。
 
 ```sh
 export PATH="$HOME/opt/oss-cad-suite/bin:$PATH"
 .venv/bin/python retrocastx_stream.py --build   # -> build/colorlight_i5/gateware/colorlight_i5.bit
+.venv/bin/python sim_stream.py                  # 実機不要のプロトコル検証(Migenシミュレーション)
 ```
 
-タイミング収束済み: **eth_rx 133.1MHz(制約125)/ sys 52.3MHz(制約50)**。
+step2 の内容(全てハードウェア実装、CPU不介在):
+
+- **SUBSCRIBE受信**: 映像の送り先をSUBSCRIBE送信元(IP/ポート)に動的切替。
+  最後のSUBSCRIBEから10秒で購読失効(PC側が2秒ごとに再送)
+- **ANNOUNCE**: 毎秒送出 + SUBSCRIBE受信時に送信元へ即時ユニキャスト返信(発見用)
+- **MODE**: 購読開始時に即時送出 + 毎秒再送
+- **LINE**: テストパターン(`host/python` の `pattern.make_frame` と同一)を
+  RGB555・512×512・30fps で 1ライン=1パケット送出(~126 Mbps)
+
+`sim_stream.py` は UDPポート直結のシミュレーションで、生成パケットを
+PC側実装(`protocol.py`/`receiver.FrameAssembler`)にそのまま食わせ、
+再構成フレームが `pattern.make_frame` と(RGB555量子化を除き)**ビット一致**する
+こと、MODEがLINEに先行すること、購読タイムアウトで停止することを確認する。
+
+実機到着後の疎通手順:
+
+```sh
+# PC側(同一L2セグメント、192.168.10.x を推奨。発見だけなら食い違っていても可)
+python3 -m retrocastx.discover                        # ANNOUNCEが見えること
+python3 -m retrocastx.receiver --subscribe --dump out # SUBSCRIBE送出+パターン受信
+```
+
+タイミング収束済み(step2, seed=3): **eth_rx 130.8MHz(制約125)/ sys 52.9MHz(制約50)**。
 ポイントは `LiteEthUDPIPCore(..., with_sys_datapath=True)`(CRC等の広幅処理をsysドメインへ
 移し、125MHzのethドメインは8bit幅の軽い経路のみにする)。これ無しではeth_rxが93MHz止まり。
 sysは50MHz×32bit=200MB/sでGbE線速(125MB/s)に対し十分。
@@ -36,11 +59,13 @@ sysは50MHz×32bit=200MB/sでGbE線速(125MB/s)に対し十分。
 ## ブリングアップ計画
 
 1. **step0**: LED点滅 + JTAG書き込み確認(`--build --load`)
-2. **step1**: `retrocastx_stream.py` — 固定ペイロードのUDPパケットをPCへ連続送出、
-   PC側 `tcpdump` / receiver で受信確認(いまここのコードがある)
-3. **step2**: テストパターン生成器 + プロトコルv0のLINE/MODEパケタイザを実装、
-   `host/python/retrocastx/receiver.py` でパターンが表示されることを確認
+2. **step1**: 固定ペイロード(ANNOUNCE)のUDP連続送出、PC側で受信確認
+   (step2のコードに置き換え済み。ANNOUNCEビーコンとしてstep2にも含まれる)
+3. **step2**: テストパターン生成器 + プロトコルv0のLINE/MODEパケタイザ + SUBSCRIBE購読
+   (**コード実装済み・シミュレーションでPC側実装とビット一致を検証済み**。
+   実機での `receiver --subscribe` 表示確認が残タスク)
 4. **step3**: SODIMM I/O にTVP7002ブレークアウトを接続、実信号キャプチャへ
+   (DATACLKのクロック対応ピン割当は hardware/adc-frontend の J4=F2/PCLKT7_0 で確定済み)
 
 ## ツールチェーン(macOS)
 

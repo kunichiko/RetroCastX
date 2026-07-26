@@ -2,10 +2,14 @@
 
 Usage:
     python3 -m retrocastx.receiver [--bind 0.0.0.0] [--port 34600]
-        [--dump DIR] [--every 30]
+        [--dump DIR] [--every 30] [--subscribe [BOARD_IP]]
 
 Prints per-second stats; with --dump writes every Nth completed frame to
 DIR/frame_NNNNNN.ppm (dependency-free PPM, viewable with Preview/ffplay).
+
+--subscribe sends a SUBSCRIBE every 2s (board expires subscriptions after 10s)
+to direct the video stream to this host. Without an IP it broadcasts, which is
+fine on a single-board LAN; sender_sim ignores it.
 """
 import argparse
 import os
@@ -51,8 +55,12 @@ class FrameAssembler:
         except ValueError:
             return []
         completed = []
+        if ptype == proto.TYPE_INFO:
+            # ANNOUNCEもボードの共通seq空間を消費する: 追跡しないと偽ロスになる
+            self._track_seq(pkt.seq)
+            return completed
         if ptype not in (proto.TYPE_LINE, proto.TYPE_MODE):
-            return completed  # ANNOUNCE等はフレーム再構成に関与しない
+            return completed  # SUBSCRIBE等はフレーム再構成に関与しない
         if ptype == proto.TYPE_MODE:
             self._track_seq(pkt.seq)
             if self.mode is None or pkt.mode_id != self.mode.mode_id:
@@ -109,10 +117,16 @@ def main():
     ap.add_argument("--port", type=int, default=proto.DEFAULT_PORT)
     ap.add_argument("--dump", metavar="DIR", help="save completed frames as PPM")
     ap.add_argument("--every", type=int, default=30, help="dump every Nth frame")
+    ap.add_argument("--subscribe", metavar="BOARD_IP", nargs="?",
+                    const="255.255.255.255", default=None,
+                    help="direct the stream here: send SUBSCRIBE every 2s "
+                         "(broadcast if no IP given)")
     args = ap.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 << 20)
+    if args.subscribe:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.bind((args.bind, args.port))
     sock.settimeout(1.0)
     if args.dump:
@@ -122,9 +136,18 @@ def main():
     n_frames = 0
     last_report = time.monotonic()
     frames_since = 0
+    sub_seq = 0
+    last_subscribe = None  # None = 未送信(初回は即送る)
     print("listening on %s:%d" % (args.bind, args.port))
     try:
         while True:
+            if args.subscribe is not None:
+                now = time.monotonic()
+                if last_subscribe is None or now - last_subscribe >= 2.0:
+                    sock.sendto(proto.pack_subscribe(sub_seq),
+                                (args.subscribe, args.port))
+                    sub_seq = (sub_seq + 1) & 0xFFFF
+                    last_subscribe = now
             try:
                 datagram, _ = sock.recvfrom(65535)
             except socket.timeout:
