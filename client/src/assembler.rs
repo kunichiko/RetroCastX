@@ -1,0 +1,213 @@
+//! Frame reassembly (mirror of `host/python/retrocastx/receiver.py` FrameAssembler).
+//! Output is RGBA8 so the frame can go straight to a GPU texture.
+
+use crate::protocol::{self as proto, Packet};
+
+pub struct CompletedFrame {
+    pub frame_idx: u16,
+    pub width: usize,
+    pub height: usize,
+    pub rgba: Vec<u8>,
+    pub fill_ratio: f32,
+}
+
+#[derive(Default)]
+pub struct Stats {
+    pub lost_packets: u64,
+    pub orphan_lines: u64,
+    pub packets: u64,
+    pub bytes: u64,
+    pub frames: u64,
+}
+
+pub struct FrameAssembler {
+    pub mode: Option<proto::Mode>,
+    pub stats: Stats,
+    fb: Vec<u8>, // RGBA
+    width: usize,
+    height: usize,
+    cur_frame: Option<u16>,
+    px_filled: usize,
+    last_seq: Option<u16>,
+}
+
+impl FrameAssembler {
+    pub fn new() -> Self {
+        Self {
+            mode: None,
+            stats: Stats::default(),
+            fb: Vec::new(),
+            width: 0,
+            height: 0,
+            cur_frame: None,
+            px_filled: 0,
+            last_seq: None,
+        }
+    }
+
+    fn track_seq(&mut self, seq: u16) {
+        if let Some(last) = self.last_seq {
+            let gap = seq.wrapping_sub(last);
+            if gap == 0 || gap > 0x8000 {
+                return; // duplicate or reordered
+            }
+            self.stats.lost_packets += (gap - 1) as u64;
+        }
+        self.last_seq = Some(seq);
+    }
+
+    /// Feed one datagram; returns a frame completed by this packet, if any.
+    pub fn feed(&mut self, datagram: &[u8]) -> Option<CompletedFrame> {
+        let pkt = proto::parse(datagram).ok()?;
+        self.stats.packets += 1;
+        self.stats.bytes += datagram.len() as u64;
+        match pkt {
+            Packet::Announce(a) => {
+                self.track_seq(a.seq); // ANNOUNCEも共通seq空間を消費する
+                None
+            }
+            Packet::Mode(m) => {
+                self.track_seq(m.seq);
+                if self.mode.as_ref().map(|c| c.mode_id) != Some(m.mode_id) {
+                    self.width = m.hactive as usize;
+                    self.height = m.vactive as usize;
+                    self.fb = vec![0u8; self.width * self.height * 4];
+                    // alpha=255 で初期化
+                    for px in self.fb.chunks_exact_mut(4) {
+                        px[3] = 255;
+                    }
+                    self.cur_frame = None;
+                    self.px_filled = 0;
+                    self.mode = Some(m);
+                }
+                None
+            }
+            Packet::Line(l) => {
+                self.track_seq(l.seq);
+                let mode = match &self.mode {
+                    Some(m) if m.mode_id == l.mode_id => m,
+                    _ => {
+                        self.stats.orphan_lines += 1;
+                        return None;
+                    }
+                };
+                let (hactive, vactive) = (mode.hactive, mode.vactive);
+                let mut completed = None;
+                if let Some(cur) = self.cur_frame {
+                    if l.frame != cur {
+                        completed = Some(self.emit());
+                    }
+                }
+                if self.cur_frame.is_none() {
+                    self.cur_frame = Some(l.frame);
+                }
+                if l.line >= vactive || l.offset_px as usize + l.count_px as usize > hactive as usize {
+                    return completed; // out of range for the current mode; drop
+                }
+                let base = (l.line as usize * self.width + l.offset_px as usize) * 4;
+                match l.pixfmt {
+                    proto::PIXFMT_RGB888 => {
+                        for (i, px) in l.pixels.chunks_exact(3).enumerate() {
+                            let o = base + i * 4;
+                            self.fb[o..o + 3].copy_from_slice(px);
+                        }
+                    }
+                    proto::PIXFMT_RGB555 => {
+                        for (i, px) in l.pixels.chunks_exact(2).enumerate() {
+                            let v = u16::from_le_bytes([px[0], px[1]]);
+                            let (r5, g5, b5) = ((v >> 10) & 0x1F, (v >> 5) & 0x1F, v & 0x1F);
+                            let o = base + i * 4;
+                            // 5bit→8bit はビット複製(受信リファレンスと同一)
+                            self.fb[o] = ((r5 << 3) | (r5 >> 2)) as u8;
+                            self.fb[o + 1] = ((g5 << 3) | (g5 >> 2)) as u8;
+                            self.fb[o + 2] = ((b5 << 3) | (b5 >> 2)) as u8;
+                        }
+                    }
+                    _ => return completed,
+                }
+                self.px_filled += l.count_px as usize;
+                completed
+            }
+            Packet::Other(_) => None,
+        }
+    }
+
+    fn emit(&mut self) -> CompletedFrame {
+        let total = (self.width * self.height).max(1);
+        let f = CompletedFrame {
+            frame_idx: self.cur_frame.unwrap_or(0),
+            width: self.width,
+            height: self.height,
+            rgba: self.fb.clone(),
+            fill_ratio: self.px_filled as f32 / total as f32,
+        };
+        self.stats.frames += 1;
+        self.cur_frame = None;
+        self.px_filled = 0;
+        f
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::testutil::{pack_line, pack_mode};
+    use crate::protocol::{Mode, PIXFMT_RGB555};
+
+    fn test_mode() -> Mode {
+        Mode {
+            mode_id: 1, pixfmt: PIXFMT_RGB555, mflags: 0,
+            hactive: 4, htotal: 5, vactive: 2, vtotal: 3,
+            dotclk_hz: 450, hfreq_mhz_x1000: 90_000, vfreq_mhz_x1000: 30_000,
+            seq: 0,
+        }
+    }
+
+    fn rgb555(r8: u8, g8: u8, b8: u8) -> [u8; 2] {
+        let v = ((r8 as u16 >> 3) << 10) | ((g8 as u16 >> 3) << 5) | (b8 as u16 >> 3);
+        v.to_le_bytes()
+    }
+
+    #[test]
+    fn assembles_full_frames_and_counts_losses() {
+        let mut asm = FrameAssembler::new();
+        let mut seq = 0u16;
+        let mut send = |asm: &mut FrameAssembler, d: Vec<u8>| asm.feed(&d);
+
+        assert!(send(&mut asm, pack_mode(&test_mode(), 0, seq)).is_none());
+        for frame in 0..2u16 {
+            for line in 0..2u16 {
+                seq += 1;
+                let px: Vec<u8> = (0..4)
+                    .flat_map(|x| rgb555(x * 8 + frame as u8, 0, line as u8 * 8))
+                    .collect();
+                let got = send(&mut asm, pack_line(frame, seq, line, 0, PIXFMT_RGB555, 1, 0, &px));
+                if frame == 1 && line == 0 {
+                    // 次フレームの最初のLINEで前フレームが完成する
+                    let f = got.expect("frame 0 should complete");
+                    assert_eq!((f.frame_idx, f.width, f.height), (0, 4, 2));
+                    assert_eq!(f.fill_ratio, 1.0);
+                    // 先頭ピクセル: r8=0→0, b8=0→0 のビット複製
+                    assert_eq!(&f.rgba[..4], &[0, 0, 0, 255]);
+                    // x=3: r8=24→r5=3→(3<<3)|(3>>2)=24
+                    assert_eq!(f.rgba[3 * 4], 24);
+                } else {
+                    assert!(got.is_none());
+                }
+            }
+        }
+        assert_eq!(asm.stats.lost_packets, 0);
+        assert_eq!(asm.stats.orphan_lines, 0);
+
+        // seqを2飛ばすと1ロス
+        seq += 2;
+        let px: Vec<u8> = (0..4).flat_map(|_| rgb555(0, 0, 0)).collect();
+        send(&mut asm, pack_line(1, seq, 1, 0, PIXFMT_RGB555, 1, 0, &px));
+        assert_eq!(asm.stats.lost_packets, 1);
+
+        // 未知mode_idのLINEは迷子扱い
+        seq += 1;
+        send(&mut asm, pack_line(1, seq, 0, 0, PIXFMT_RGB555, 9, 0, &px));
+        assert_eq!(asm.stats.orphan_lines, 1);
+    }
+}

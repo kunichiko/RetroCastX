@@ -24,3 +24,6 @@ standalone/
 gateware/.venv/
 gateware/litex-src/
 gateware/litex_setup.py
+
+# Rust client
+client/target/
