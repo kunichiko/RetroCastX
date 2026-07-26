@@ -51,6 +51,14 @@ class Sender:
     def send_mode(self, frame_idx: int):
         self._send(self.mode.pack(frame_idx, self.seq))
 
+    def send_announce(self):
+        """実機ではブロードキャスト。シミュレータではdest宛のユニキャストで代用。"""
+        ann = proto.Announce(
+            mac=bytes([0x02, 0x57, 0x54, 0x58, 0x00, 0x01]),  # locally administered "WTX"
+            ip="0.0.0.0", udp_port=proto.DEFAULT_PORT,
+            fw_version=0x0001, caps=0x0000, name="witranx-sim")
+        self._send(ann.pack(self.seq))
+
     def send_frame(self, img: np.ndarray, frame_idx: int):
         m = self.mode
         if self.pixfmt == proto.PIXFMT_RGB555:
@@ -100,6 +108,7 @@ def main():
         while args.frames <= 0 or frame_idx < args.frames:
             now = time.monotonic()
             if last_mode_at is None or now - last_mode_at >= 1.0:
+                sender.send_announce()
                 sender.send_mode(frame_idx)
                 last_mode_at = now
             sender.send_frame(pattern.make_frame(args.width, args.height, frame_idx),

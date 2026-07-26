@@ -51,6 +51,8 @@ class FrameAssembler:
         except ValueError:
             return []
         completed = []
+        if ptype not in (proto.TYPE_LINE, proto.TYPE_MODE):
+            return completed  # ANNOUNCE等はフレーム再構成に関与しない
         if ptype == proto.TYPE_MODE:
             self._track_seq(pkt.seq)
             if self.mode is None or pkt.mode_id != self.mode.mode_id:

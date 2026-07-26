@@ -69,8 +69,38 @@ def run_case(name: str, width: int, height: int, pixfmt: int, mtu: int) -> bool:
     return ok
 
 
+def run_announce_case() -> bool:
+    """ANNOUNCE/SUBSCRIBE round-trip: pack -> UDP -> parse."""
+    rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rx.bind(("127.0.0.1", 0))
+    rx.settimeout(1.0)
+    tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sender = Sender(tx, rx.getsockname(), 320, 240, 60.0, proto.PIXFMT_RGB888, 1500)
+    sender.send_announce()
+    tx.sendto(proto.pack_subscribe(1), rx.getsockname())
+
+    d1, addr = rx.recvfrom(2048)
+    t1, ann = proto.parse(d1)
+    d2, _ = rx.recvfrom(2048)
+    t2, _ = proto.parse(d2)
+    rx.close()
+    tx.close()
+
+    ok = (t1 == proto.TYPE_INFO
+          and ann.mac == bytes([0x02, 0x57, 0x54, 0x58, 0x00, 0x01])
+          and ann.name == "witranx-sim"
+          and ann.udp_port == proto.DEFAULT_PORT
+          and t2 == proto.TYPE_SUBSCRIBE
+          and addr[0] == "127.0.0.1")
+    if not ok:
+        print("  announce=%r type2=%r" % (ann, t2))
+    print("%s announce/subscribe round-trip" % ("PASS" if ok else "FAIL"))
+    return ok
+
+
 def main():
     results = [
+        run_announce_case(),
         run_case("rgb888 320x240 mtu1500 (single fragment)",
                  320, 240, proto.PIXFMT_RGB888, 1500),
         run_case("rgb888 768x512 mtu1500 (fragmented lines)",

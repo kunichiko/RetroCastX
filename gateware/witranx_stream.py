@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""WiTranX gateware step1: UDP packet streamer on Colorlight i5.
+"""WiTranX gateware step1: ANNOUNCE beacon on Colorlight i5.
 
-*** UNTESTED SKELETON — ボード未入手のため実機・ビルド未検証 ***
-
-構成は enjoy-digital/colorlite(5A-75B での LiteEth UDP デモ)と
-litex-boards の colorlight_i5 ターゲットに倣う。まずは固定ペイロードの
-UDP パケットを一定周期で送出し、PC 側で受信できることを確認する(step1)。
-その後、プロトコル v0 の MODE/LINE パケタイザに置き換える(step2)。
+プロトコルv0の ANNOUNCE(TYPE_INFO)パケットを毎秒UDP送出する最小構成。
+PC側の `python3 -m witranx.discover` がこれを受信できればstep1完了。
+(ブロードキャスト送信はLiteEthの通常UDPパスに無いため、step1では
+ HOST_IP宛ユニキャスト。step2でSUBSCRIBE受信→送り先切替を実装する)
 
 Build:
-    python3 witranx_stream.py --build
+    .venv/bin/python witranx_stream.py --build
+Load (board via EXT DAPLink):
+    openFPGALoader -c cmsisdap build/colorlight_i5/gateware/colorlight_i5.bit
 """
 import argparse
+import struct
 
 from migen import *
 
 from litex.gen import LiteXModule
-from litex.build.io import DDROutput
 from litex_boards.platforms import colorlight_i5
 
 from litex.soc.cores.clock import ECP5PLL
@@ -26,11 +26,76 @@ from litex.soc.integration.builder import Builder
 from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
 from liteeth.core import LiteEthUDPIPCore
 
-# ネットワーク設定(暫定): FPGA=192.168.10.50 -> PC=192.168.10.1:34600
-FPGA_IP = "192.168.10.50"
-HOST_IP = "192.168.10.1"
-UDP_PORT = 34600
-MAC_ADDRESS = 0x10E2D5000001
+# --- ネットワーク設定(暫定; 将来はSPIフラッシュの設定ページから読む) ---
+MAC_ADDRESS = 0x025754580001          # ローカル管理アドレス "WTX"
+FPGA_IP     = "192.168.10.50"
+HOST_IP     = "192.168.10.1"
+UDP_PORT    = 34600
+
+
+def make_announce_packet() -> bytes:
+    """host/python/witranx/protocol.py の Announce と同一フォーマット(40B)。"""
+    common = struct.pack("<BBBBHH", 0x57, 0x00, 3, 0, 0, 0)  # magic,ver,INFO,flags,frame,seq
+    mac = bytes([0x02, 0x57, 0x54, 0x58, 0x00, 0x01])
+    ip = bytes(int(x) for x in FPGA_IP.split("."))
+    info = struct.pack("<6s4sHHH16s", mac, ip, UDP_PORT, 0x0001, 0x0000, b"witranx-i5")
+    return common + info
+
+
+class AnnounceBeacon(LiteXModule):
+    """固定40byteのANNOUNCEパケットを period_s ごとにUDP送出する。
+
+    32bitデータパス。ワード内バイト順(リトルエンディアン詰め)は
+    実機のWiresharkで要確認(逆なら struct.unpack の "<" を ">" に変える)。
+    """
+    def __init__(self, udp_port, dst_ip, dst_udp_port, sys_clk_freq, period_s=1.0):
+        payload = make_announce_packet()
+        assert len(payload) % 4 == 0
+        words = [int.from_bytes(payload[i:i+4], "little") for i in range(0, len(payload), 4)]
+        n_words = len(words)
+        rom = Array(Constant(w, bits_sign=32) for w in words)
+
+        word_idx = Signal(max=n_words)
+        tick = Signal(32)
+        period_ticks = int(sys_clk_freq * period_s)
+
+        sink = udp_port.sink
+        self.comb += [
+            sink.ip_address.eq(convert_ip(dst_ip)),
+            sink.src_port.eq(dst_udp_port),
+            sink.dst_port.eq(dst_udp_port),
+            sink.length.eq(len(payload)),
+            sink.data.eq(rom[word_idx]),
+            sink.last_be.eq(0b1000),
+        ]
+
+        self.fsm = fsm = FSM(reset_state="WAIT")
+        fsm.act("WAIT",
+            NextValue(tick, tick + 1),
+            If(tick >= period_ticks - 1,
+                NextValue(tick, 0),
+                NextValue(word_idx, 0),
+                NextState("SEND"),
+            ),
+        )
+        fsm.act("SEND",
+            sink.valid.eq(1),
+            sink.last.eq(word_idx == n_words - 1),
+            If(sink.ready,
+                If(word_idx == n_words - 1,
+                    NextState("WAIT"),
+                ).Else(
+                    NextValue(word_idx, word_idx + 1),
+                ),
+            ),
+        )
+
+
+def convert_ip(ip_str):
+    ip = 0
+    for x in ip_str.split("."):
+        ip = (ip << 8) | int(x)
+    return ip
 
 
 class _CRG(LiteXModule):
@@ -42,79 +107,28 @@ class _CRG(LiteXModule):
         pll.create_clkout(self.cd_sys, sys_clk_freq)
 
 
-class CounterPayloadStreamer(LiteXModule):
-    """step1: 32bitカウンタを含む固定長UDPパケットを周期送出する。
-
-    LiteEth の UDP user port (sink) は param として ip_address / src_port /
-    dst_port / length を取り、data ストリームを流し込むとカプセル化される。
-    step2 ではここをプロトコル v0 の MODE/LINE パケタイザに差し替える。
-    """
-    PAYLOAD_WORDS = 16  # 64 bytes
-
-    def __init__(self, udp_port, host_ip, udp_dst, sys_clk_freq, period_s=0.001):
-        counter = Signal(32)
-        word = Signal(max=self.PAYLOAD_WORDS)
-        tick = Signal(max=int(sys_clk_freq * period_s))
-
-        sink = udp_port.sink
-        self.comb += [
-            sink.ip_address.eq(host_ip),
-            sink.src_port.eq(udp_dst),
-            sink.dst_port.eq(udp_dst),
-            sink.length.eq(self.PAYLOAD_WORDS * 4),
-            sink.data.eq(counter),
-            sink.last_be.eq(0b1000),  # 32bit datapath, full last word
-        ]
-
-        self.fsm = fsm = FSM(reset_state="WAIT")
-        fsm.act("WAIT",
-            NextValue(tick, tick + 1),
-            If(tick == int(sys_clk_freq * period_s) - 1,
-                NextValue(tick, 0),
-                NextValue(word, 0),
-                NextState("SEND"),
-            ),
-        )
-        fsm.act("SEND",
-            sink.valid.eq(1),
-            sink.last.eq(word == self.PAYLOAD_WORDS - 1),
-            If(sink.ready,
-                NextValue(counter, counter + 1),
-                NextValue(word, word + 1),
-                If(word == self.PAYLOAD_WORDS - 1,
-                    NextState("WAIT"),
-                ),
-            ),
-        )
-
-
 class WiTranXStream(SoCMini):
     def __init__(self, revision="7.0", sys_clk_freq=int(60e6)):
-        platform = colorlight_i5.Platform(board="i5", revision=revision)
-        self.crg = _CRG(platform, sys_clk_freq)
+        platform = colorlight_i5.Platform(board="i5", revision=revision,
+                                          toolchain="trellis")
         SoCMini.__init__(self, platform, sys_clk_freq,
-                         ident="WiTranX UDP streamer (step1)")
+                         ident="WiTranX announce beacon (step1)")
+        self.crg = _CRG(platform, sys_clk_freq)
 
         # Ethernet PHY (RGMII) + hardware UDP/IP core
         self.ethphy = LiteEthPHYRGMII(
-            clock_pads=platform.request("eth_clocks", 0),
-            pads=platform.request("eth", 0),
-            tx_delay=0e-9)
+            clock_pads = platform.request("eth_clocks", 0),
+            pads       = platform.request("eth", 0),
+            tx_delay   = 0e-9)
         self.ethcore = LiteEthUDPIPCore(
-            phy=self.ethphy,
-            mac_address=MAC_ADDRESS,
-            ip_address=FPGA_IP,
-            clk_freq=sys_clk_freq,
-            dw=32)
+            phy         = self.ethphy,
+            mac_address = MAC_ADDRESS,
+            ip_address  = FPGA_IP,
+            clk_freq    = sys_clk_freq,
+            dw          = 32)
 
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
-        host_ip = int.from_bytes(bytes(map(int, HOST_IP.split("."))), "big")
-        self.streamer = CounterPayloadStreamer(
-            udp_port, host_ip, UDP_PORT, sys_clk_freq)
-
-        # 動作表示LED(パケット送出でトグル)
-        # TODO: i5のLEDピン名をプラットフォーム定義で確認
-        # led = platform.request("user_led_n", 0)
+        self.beacon = AnnounceBeacon(udp_port, HOST_IP, UDP_PORT, sys_clk_freq)
 
 
 def main():
@@ -123,7 +137,7 @@ def main():
     ap.add_argument("--revision", default="7.0", help="i5 board revision")
     args = ap.parse_args()
     soc = WiTranXStream(revision=args.revision)
-    builder = Builder(soc, output_dir="build/colorlight_i5")
+    builder = Builder(soc, output_dir="build/colorlight_i5", compile_software=False)
     builder.build(run=args.build)
 
 

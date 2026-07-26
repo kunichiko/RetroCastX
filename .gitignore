@@ -19,3 +19,8 @@ gateware/build/
 hardware/*/build/
 .ato/
 standalone/
+
+# gateware dev env
+gateware/.venv/
+gateware/litex-src/
+gateware/litex_setup.py
