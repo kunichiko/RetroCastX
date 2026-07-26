@@ -108,7 +108,7 @@ class _CRG(LiteXModule):
 
 
 class WiTranXStream(SoCMini):
-    def __init__(self, revision="7.0", sys_clk_freq=int(60e6)):
+    def __init__(self, revision="7.0", sys_clk_freq=int(50e6)):
         platform = colorlight_i5.Platform(board="i5", revision=revision,
                                           toolchain="trellis")
         SoCMini.__init__(self, platform, sys_clk_freq,
@@ -125,7 +125,10 @@ class WiTranXStream(SoCMini):
             mac_address = MAC_ADDRESS,
             ip_address  = FPGA_IP,
             clk_freq    = sys_clk_freq,
-            dw          = 32)
+            dw          = 32,
+            # 幅変換・CRC等をsysドメインで実行(eth_rx/txドメインは8bit@125MHzの軽い経路のみ
+            # にする。これ無しだとeth_rxの125MHzタイミングが閉じない: 実測93MHz)
+            with_sys_datapath = True)
 
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
         self.beacon = AnnounceBeacon(udp_port, HOST_IP, UDP_PORT, sys_clk_freq)
@@ -135,10 +138,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", action="store_true")
     ap.add_argument("--revision", default="7.0", help="i5 board revision")
+    # タイミングは with_sys_datapath=True + sys 50MHz で収束(eth_rx 133/125MHz, sys 52/50MHz)。
+    # seedは今後のリグレッション時の調整用ノブとして残す
+    ap.add_argument("--seed", type=int, default=2, help="nextpnr placement seed")
     args = ap.parse_args()
     soc = WiTranXStream(revision=args.revision)
     builder = Builder(soc, output_dir="build/colorlight_i5", compile_software=False)
-    builder.build(run=args.build)
+    builder.build(run=args.build, seed=args.seed)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,17 @@
 # WiTranX ゲートウェア(Colorlight i5 / LiteX)
 
-**ステータス: 骨格のみ・実機未検証**(ボード入手待ち)。
+**ステータス: step1(ANNOUNCEビーコン)のビットストリーム生成に成功**(実機は入手待ち)。
+ローカル環境: `~/opt/oss-cad-suite` + `gateware/.venv`(LiteX一式、gitignore済み)。
+
+```sh
+export PATH="$HOME/opt/oss-cad-suite/bin:$PATH"
+.venv/bin/python witranx_stream.py --build   # -> build/colorlight_i5/gateware/colorlight_i5.bit
+```
+
+タイミング収束済み: **eth_rx 133.1MHz(制約125)/ sys 52.3MHz(制約50)**。
+ポイントは `LiteEthUDPIPCore(..., with_sys_datapath=True)`(CRC等の広幅処理をsysドメインへ
+移し、125MHzのethドメインは8bit幅の軽い経路のみにする)。これ無しではeth_rxが93MHz止まり。
+sysは50MHz×32bit=200MB/sでGbE線速(125MB/s)に対し十分。
 
 ## 構成
 
@@ -10,6 +21,17 @@
     「ADC→ラインFIFO→UDP送出」を全てゲートウェアで完結できる
 - 参考実装: [enjoy-digital/colorlite](https://github.com/enjoy-digital/colorlite)
   (5A-75B 上の LiteEth UDP/Etherbone デモ。CRG・PHY 配線はこれに倣う)
+
+## ネットワーク設計(2026-07-26 決定)
+
+- **MAC**: ローカル管理アドレス `02:57:54:58:00:01`(ボードに不揮発IDが無いため。
+  複数台対応はSPIフラッシュ設定ページで将来対応)
+- **IP**: 既定は静的 192.168.10.50。**DHCPはLiteEth同梱のハードウェアクライアント
+  (`liteeth/core/dhcp.py`)でフェーズ2導入予定**
+- **発見**: アプリがSUBSCRIBE(ANNOUNCE_ONLY)をブロードキャスト → ボードがANNOUNCEを
+  ユニキャスト返信(受信は `with_broadcast=True` で対応済み。LiteEthの通常UDP送信パスに
+  ブロードキャストの特別扱いが無いため、ボード発ブロードキャストは使わない設計)
+- **ストリーム送り先**: SUBSCRIBE送信元に動的設定(step2で実装)。PC側のIP固定は不要になる
 
 ## ブリングアップ計画
 
