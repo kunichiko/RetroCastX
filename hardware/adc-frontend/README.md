@@ -1,8 +1,8 @@
 # WiTranX ADC フロントエンド(TVP7002 ブレークアウト)
 
 レトロPCのアナログRGB(VGA HD-15経由)を TI TVP7002 でデジタル化し、
-24bitパラレル + DATACLK/HSOUT/VSOUT/SOGOUT を PMOD配列ヘッダ×5 で
-Colorlight i5 EXTボードに渡すブレークアウト基板。回路は `main.ato`(Atopile)。
+24bitパラレル + DATACLK/HSOUT/VSOUT/SOGOUT を Colorlight i5 EXTボードへ渡す
+**HAT基板**(EXTのP1/P2/P4に直接スタック)。GbE MagJack搭載。回路は `main.ato`(Atopile)。
 
 ## 回路の構成(根拠: TVP7002データシート SLES206C / OSSC rev1.8 実機回路)
 
@@ -13,7 +13,10 @@ Colorlight i5 EXTボードに渡すブレークアウト基板。回路は `main
   複合同期(csync)はHSYNCピンに入れれば内部セパレータが分離する(4線モード)
 - **H-PLLループフィルタ**(唯一の必須外付け): FILT1→1.5kΩ+100nF→PLL_F、FILT2→4.7nF→PLL_F
 - **27MHz発振器** → EXT_CLK(モード検出の安定化用。動作自体は同期駆動で可)
-- **電源**: 5V入力(DCジャック)→
+- **電源**: 5V入力は2系統から選択(排他): **(a) EXTボード経由**(USB-CのVBUSがP1/P2/P4の5Vピンに
+  出ているのを3ヘッダ束ねて受け、SJ1経由で5Vレールへ。既定)/ **(b) J7 DCジャック**
+  (スタンドアロン検証用)。合計消費 ≈1.2A(i5+EXT込み)なのでUSB-C電源(5V/3A)推奨、
+  PCのUSB-A→C給電(900mA)は不可。5Vレールから →
   - AZ1117H-3.3 → 3.3V IO系(IOVDD、発振器、バッファ、プルアップ)
   - AZ1117H-3.3(別個)→ 3.3Vアナログ(A33VDD)
   - AZ1117H-ADJ + 120Ω/62Ω分圧 ≈1.896V → AVDD・PLL_AVDD(各フェライトビーズ経由)
@@ -36,7 +39,8 @@ Colorlight i5 EXTボードに渡すブレークアウト基板。回路は `main
 | X1 | X322527MSB4SI | C9008 | 27MHz 3.3V CMOS |
 | J1 | VGA-002 | C138387 | HD-15メス |
 | J2, J4 | 2×15 ピンヘッダ/ソケット 2.54mm | 汎用 | EXT P2/P4ミラー(直挿しハット時はソケット) |
-| J7 | DC005 | C431533 | 5V入力 |
+| J7 | DC005 | C431533 | 5V入力(EXT給電運用時は未実装可) |
+| SJ1 | はんだジャンパ | — | 給電元選択: 閉=EXT USB-C 5V(既定)/ 開+J7=スタンドアロン |
 | J8 | 2×15 ピンヘッダ 2.54mm | 汎用 | EXT P1対応(GbE差動ペア受け) |
 | J9 | HanRun HR911130A | C54408 | 1000BASE-T MagJack(トランス内蔵RJ45) |
 
@@ -59,6 +63,14 @@ BOM/ネットリストまで生成される。エンドポイントは `ATO_SERV
    (上記LCSC ID)で取り込み、`main.ato` のスタブcomponentを置き換える
 2. **ピン配置の照合**: VGA-002・DC005・PZ254V のピン番号は代表的な配列を仮定している。
    取り込んだフットプリントの実ピン番号と必ず照合すること
+3. **レイアウト注意**:
+   - DATACLK は i5 側で**クロック対応ピン(PCLK/GPLL入力)**に接続(上記対応表参照)
+   - AZ1117H-ADJ は約0.9W発熱: SOT-223のタブに銅箔ベタ+サーマルビア
+   - TVP7002 の露出パッドはGNDベタにはんだ付け(熱・電気両方の要件)
+   - アナロググラウンドは入力コネクタ周りでベタを分離しすぎない(1点で結合)
+4. **色深度**: 配線は各色上位8bit(R/G/B[9:2])。10bit化したい場合は
+   J4(P4ミラー)の空きボール(F1,F3,G3,H4,J4,E19)に [1:0] を追加配線する
+
 ## Colorlight i5 EXTボードとの接続(2026-07-25 調査確定)
 
 - **EXTボードにRJ45は無い**。i5モジュール上のGbE PHY×2の差動ペア(MDI)はヘッダ**P1**
@@ -67,7 +79,7 @@ BOM/ネットリストまで生成される。エンドポイントは `ATO_SERV
   (1000BASE-T netboot/nfsroot動作実績あり):MDIはDC結合のまま、PHY側CTは各0.1µF→GND
   (B50612Dは内部バイアスで無給電可)、Bob-SmithはMagJack内蔵、GND-シャーシ間4.7nF/2kV×2。
   **ETH2側ペア=LiteXのphy0** を使用(PHY番号とコネクタ名の対応は逆転に注意)
-- EXTボードのGPIOヘッダは P2–P6(2×16メス、計~40 GPIO)。USB-C が電源+DAPLink
+- EXTボードのGPIOヘッダは P2–P6(各2×15メス、GPIOは1ヘッダあたり18〜20本)。USB-C が電源+DAPLink
   (JTAG書き込み+UARTコンソール)。HDMIは出力のみ。SDスロット無し
 - **ECP5のクロック対応(PCLK)ボールが出ているヘッダ**(prjtrellis DB照合結果):
   - P2: J20(PCLKT2_0), K20(PCLKC2_0), L20(PCLKT3_1), L18(GR_PCLK3_1)
@@ -83,10 +95,3 @@ BOM/ネットリストまで生成される。エンドポイントは `ATO_SERV
   - **J4 = P4ミラー**: DATACLK→**F2(PCLKT7_0)**、B5-B2→E1,E4,H3,H5、HSOUT→J5、VSOUT→A2、
     SOGOUT→K4、FIDOUT→B2、SDA→K3、SCL→K5、RESETB→B3(空き: F1,F3,G3,H4,J4,E19)
 
-3. **レイアウト注意**:
-   - DATACLK は i5 側で**クロック対応ピン(PCLK/GPLL入力)**に接続(上記対応表参照)
-   - AZ1117H-ADJ は約0.9W発熱: SOT-223のタブに銅箔ベタ+サーマルビア
-   - TVP7002 の露出パッドはGNDベタにはんだ付け(熱・電気両方の要件)
-   - アナロググラウンドは入力コネクタ周りでベタを分離しすぎない(1点で結合)
-4. **色深度**: 配線は各色上位8bit(R/G/B[9:2])。10bit化したい場合は
-   hdr_sync/hdr_ctrl の空きピンに [1:0] を追加配線する

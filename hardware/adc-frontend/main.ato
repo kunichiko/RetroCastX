@@ -310,10 +310,16 @@ component HeaderExtP4:
 
 
 component DcJack:
-    """DC005 barrel jack (5V in). LCSC: C431533"""
+    """DC005 barrel jack (5V in)。EXT給電運用時は未実装可。LCSC: C431533"""
     signal center ~ pin 1
     signal sleeve ~ pin 2
     signal switch ~ pin 3
+
+
+component SolderJumper:
+    """はんだジャンパ(2パッド)。フットプリントはKiCad標準 SolderJumper-2 を想定。"""
+    signal a ~ pin 1
+    signal b ~ pin 2
 
 
 component GbeMagJack:
@@ -534,6 +540,14 @@ module App:
 
     signal gnd
     gnd ~ power_5v.lv
+
+    # 5V給電は2系統から選択(排他。両方同時に生かさないこと):
+    #  (a) EXTボード経由: USB-C 5V が P1/P2/P4 の5Vピンに出ている → SJ1を閉じる(デフォルト)
+    #  (b) スタンドアロン: J7 DCジャック(EXT非接続でのベンチ検証用)。この場合SJ1は開放
+    signal p5v_ext
+    sj_ext5v = new SolderJumper
+    p5v_ext ~ sj_ext5v.a
+    sj_ext5v.b ~ power_5v.hv
     jack.center ~ power_5v.hv
     jack.sleeve ~ gnd
 
@@ -732,6 +746,9 @@ module App:
     hdr_p4 = new HeaderExtP4
     hdr_p2.gnd ~ gnd
     hdr_p4.gnd ~ gnd
+    # EXTの5Vピン(3ヘッダ分を束ねて電流を分散)→ SJ1 → 5Vレール
+    hdr_p2.p5v_ext ~ p5v_ext
+    hdr_p4.p5v_ext ~ p5v_ext
 
     # J2 (P2ミラー): R/G 全8bit + B上位4bit = 20 GPIO
     hdr_p2.io_j20 ~ tvp.r9
@@ -773,8 +790,7 @@ module App:
     # --- GbE出口 (EXT P1 -> J8 -> MagJack) ---
     eth = new EthernetPort
     eth.gnd ~ gnd
-    # eth.p5v_from_ext は未接続(本基板はDCジャックから給電。
-    # EXTボードのUSB-C 5Vから給電したい場合のみ power_5v.hv へ接続を検討)
+    eth.p5v_from_ext ~ p5v_ext  # P1の5Vピンも束ねる
     eth.chassis.override_net_name = "chassis"
 
     gnd.override_net_name = "gnd"
