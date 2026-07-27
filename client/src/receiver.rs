@@ -15,6 +15,9 @@ pub struct Config {
     pub port: u16,
     /// SUBSCRIBE keepalive の宛先。None なら購読しない(sender_sim等の受け専用)。
     pub subscribe_to: Option<String>,
+    /// 購読対象ボードのMAC。None ならワイルドカード(単一ボードLAN専用)。
+    /// 複数ボード環境では discover で得たMACを指名する。
+    pub target_mac: Option<[u8; 6]>,
 }
 
 #[derive(Default, Clone)]
@@ -83,7 +86,11 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         if let Some(dest) = &cfg.subscribe_to {
             let due = last_subscribe.map_or(true, |t| t.elapsed() >= Duration::from_secs(2));
             if due {
-                let _ = sock.send_to(&proto::pack_subscribe(sub_seq, false), (dest.as_str(), cfg.port));
+                let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
+                let _ = sock.send_to(
+                    &proto::pack_subscribe(sub_seq, false, &mac),
+                    (dest.as_str(), cfg.port),
+                );
                 sub_seq = sub_seq.wrapping_add(1);
                 last_subscribe = Some(Instant::now());
             }

@@ -158,13 +158,19 @@ pub fn parse(d: &[u8]) -> Result<Packet<'_>, &'static str> {
 
 pub const CFG_FLAG_REPLY: u8 = 0x01;
 
-pub fn pack_subscribe(seq: u16, announce_only: bool) -> [u8; 8] {
-    let mut p = [0u8; 8];
+/// 全ボードに向けるワイルドカード宛先MAC(発見用/単一ボードLAN専用)。
+pub const WILDCARD_MAC: [u8; 6] = [0xFF; 6];
+
+/// SUBSCRIBE(16B): 共通ヘッダ8B + 宛先MAC 6B + 予約2B。
+/// mac で宛先ボードを指名する(WILDCARD_MAC で全ボード)。
+pub fn pack_subscribe(seq: u16, announce_only: bool, mac: &[u8; 6]) -> [u8; 16] {
+    let mut p = [0u8; 16];
     p[0] = MAGIC;
     p[1] = VERSION;
     p[2] = TYPE_SUBSCRIBE;
     p[3] = if announce_only { 1 } else { 0 };
     p[6..8].copy_from_slice(&seq.to_le_bytes());
+    p[8..14].copy_from_slice(mac);
     p
 }
 
@@ -217,9 +223,14 @@ mod tests {
 
     #[test]
     fn subscribe_roundtrip_shape() {
-        let p = pack_subscribe(7, true);
+        let mac = [0x02, 0x52, 0x43, 0x58, 0x00, 0x01];
+        let p = pack_subscribe(7, true, &mac);
         assert_eq!(&p[..4], &[MAGIC, VERSION, TYPE_SUBSCRIBE, 1]);
         assert_eq!(u16le(&p, 6), 7);
+        assert_eq!(&p[8..14], &mac);
+        // ワイルドカードも parse できる形であること(受信側では自身は判定しないが)
+        let w = pack_subscribe(0, false, &WILDCARD_MAC);
+        assert_eq!(&w[8..14], &[0xFF; 6]);
     }
 
     #[test]

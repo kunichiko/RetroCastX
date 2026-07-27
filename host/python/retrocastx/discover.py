@@ -37,8 +37,9 @@ def main():
         while deadline is None or time.monotonic() < deadline:
             now = time.monotonic()
             if now - last_probe >= 1.0:
-                # アプリ側から問いかける(ボードの受信はブロードキャスト対応)
-                sock.sendto(proto.pack_subscribe(seq, announce_only=True),
+                # 全ボードへ問いかける(ワイルドカードMAC+ブロードキャスト、発見のみ)
+                sock.sendto(proto.pack_subscribe(seq, announce_only=True,
+                                                 mac=proto.WILDCARD_MAC),
                             ("255.255.255.255", args.port))
                 seq += 1
                 last_probe = now
@@ -58,7 +59,9 @@ def main():
                 print("FOUND %-15s  mac=%s  name=%r  port=%d  fw=0x%04x  caps=0x%04x"
                       % (addr[0], mac, pkt.name, pkt.udp_port, pkt.fw_version, pkt.caps))
                 if args.subscribe:
-                    sock.sendto(proto.pack_subscribe(seq), (addr[0], pkt.udp_port))
+                    # 発見したボードのMACを指名して購読(複数ボードLANでも安全)
+                    sock.sendto(proto.pack_subscribe(seq, mac=pkt.mac),
+                                (addr[0], pkt.udp_port))
                     seq += 1
                     print("  -> SUBSCRIBE sent (stream will be directed here)")
             seen[key] = time.monotonic()

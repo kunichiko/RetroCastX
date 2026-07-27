@@ -6,7 +6,10 @@
 //! paint callback(egui_wgpu::Callback)へ移行して実装する。
 //!
 //! Usage:
-//!   cargo run --release -- [--board IP] [--port 34600] [--no-subscribe]
+//!   cargo run --release -- [--board IP] [--mac AA:BB:..] [--port 34600] [--no-subscribe]
+//!
+//! --mac は購読対象ボードのMACを指名する(複数ボードLANで必須。省略時は
+//! ワイルドカード=全ボード、単一ボードLAN専用)。
 //!
 //! 既定ではSUBSCRIBEを255.255.255.255にブロードキャストし、ボードの
 //! ストリームを自分に向ける。sender_sim相手なら --no-subscribe でよい
@@ -28,10 +31,12 @@ fn main() -> eframe::Result {
     let mut headless_secs: Option<u64> = None;
     let mut no_vsync = false;
     let mut fullscreen_mode = false;
+    let mut target_mac: Option<[u8; 6]> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--board" => subscribe_to = Some(args.next().expect("--board needs an IP")),
+            "--mac" => target_mac = Some(parse_mac(&args.next().expect("--mac needs AA:BB:.."))),
             "--port" => port = args.next().expect("--port needs a value").parse().unwrap(),
             "--no-subscribe" => subscribe_to = None,
             "--headless" => {
@@ -50,10 +55,10 @@ fn main() -> eframe::Result {
     }
 
     if let Some(secs) = headless_secs {
-        return run_headless(port, subscribe_to, secs);
+        return run_headless(port, subscribe_to, target_mac, secs);
     }
     if fullscreen_mode {
-        fullscreen::run(port, subscribe_to); // 戻らない
+        fullscreen::run(port, subscribe_to, target_mac); // 戻らない
     }
 
     let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
@@ -71,15 +76,33 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "RetroCastX Viewer",
         options,
-        Box::new(move |cc| Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, no_vsync)))),
+        Box::new(move |cc| {
+            Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, no_vsync)))
+        }),
     )
 }
 
+/// "AA:BB:CC:DD:EE:FF" → [u8; 6](区切りは ':' or '-')。
+fn parse_mac(s: &str) -> [u8; 6] {
+    let parts: Vec<&str> = s.split([':', '-']).collect();
+    assert_eq!(parts.len(), 6, "MAC must have 6 octets: {s}");
+    let mut mac = [0u8; 6];
+    for (i, p) in parts.iter().enumerate() {
+        mac[i] = u8::from_str_radix(p, 16).expect("bad MAC octet");
+    }
+    mac
+}
+
 /// GUIなしで受信パイプラインだけ動かし、毎秒統計を出力する(検証・CI用)。
-fn run_headless(port: u16, subscribe_to: Option<String>, secs: u64) -> eframe::Result {
+fn run_headless(
+    port: u16,
+    subscribe_to: Option<String>,
+    target_mac: Option<[u8; 6]>,
+    secs: u64,
+) -> eframe::Result {
     let shared = Arc::new(receiver::Shared::default());
     receiver::spawn(
-        receiver::Config { port, subscribe_to },
+        receiver::Config { port, subscribe_to, target_mac },
         shared.clone(),
         || {},
     )
@@ -168,12 +191,13 @@ impl ViewerApp {
         cc: &eframe::CreationContext<'_>,
         port: u16,
         subscribe_to: Option<String>,
+        target_mac: Option<[u8; 6]>,
         no_vsync: bool,
     ) -> Self {
         let shared = Arc::new(receiver::Shared::default());
         let ctx = cc.egui_ctx.clone();
         let rx_error = receiver::spawn(
-            receiver::Config { port, subscribe_to: subscribe_to.clone() },
+            receiver::Config { port, subscribe_to: subscribe_to.clone(), target_mac },
             shared.clone(),
             move || ctx.request_repaint(),
         )

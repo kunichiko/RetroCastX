@@ -76,21 +76,23 @@ def run_announce_case() -> bool:
     rx.settimeout(1.0)
     tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sender = Sender(tx, rx.getsockname(), 320, 240, 60.0, proto.PIXFMT_RGB888, 1500)
+    board_mac = bytes([0x02, 0x52, 0x43, 0x58, 0x00, 0x01])
     sender.send_announce()
-    tx.sendto(proto.pack_subscribe(1), rx.getsockname())
+    tx.sendto(proto.pack_subscribe(1, mac=board_mac), rx.getsockname())
 
     d1, addr = rx.recvfrom(2048)
     t1, ann = proto.parse(d1)
     d2, _ = rx.recvfrom(2048)
-    t2, _ = proto.parse(d2)
+    t2, sub = proto.parse(d2)
     rx.close()
     tx.close()
 
     ok = (t1 == proto.TYPE_INFO
-          and ann.mac == bytes([0x02, 0x52, 0x43, 0x58, 0x00, 0x01])
+          and ann.mac == board_mac
           and ann.name == "retrocastx-sim"
           and ann.udp_port == proto.DEFAULT_PORT
           and t2 == proto.TYPE_SUBSCRIBE
+          and sub.mac == board_mac
           and addr[0] == "127.0.0.1")
     if not ok:
         print("  announce=%r type2=%r" % (ann, t2))
@@ -108,11 +110,13 @@ def run_audio_config_case() -> bool:
     samples = np.arange(480, dtype="<i2").tobytes()  # 240サンプルフレーム(L/R)
     tx.sendto(proto.pack_audio(3, 7, proto.AUDIO_SRC_SPDIF, 44100, 0x12345678,
                                samples), rx.getsockname())
+    board_mac = bytes([0x02, 0x52, 0x43, 0x58, 0x00, 0x01])
     tx.sendto(proto.pack_config(8, proto.CFG_TARGET_BOARD, proto.CFG_OP_SET,
-                                proto.CFG_KEY_AUDIO_ENABLE, 0b101), rx.getsockname())
-    tx.sendto(proto.pack_config(8, proto.CFG_TARGET_ARGUSX, proto.CFG_OP_GET,
-                                proto.CFG_KEY_ARGUSX_INPUT, 2, reply=True),
+                                proto.CFG_KEY_AUDIO_ENABLE, 0b101, mac=board_mac),
               rx.getsockname())
+    tx.sendto(proto.pack_config(8, proto.CFG_TARGET_ARGUSX, proto.CFG_OP_GET,
+                                proto.CFG_KEY_ARGUSX_INPUT, 2, reply=True,
+                                mac=board_mac), rx.getsockname())
 
     t1, aud = proto.parse(rx.recvfrom(4096)[0])
     t2, cfg_set = proto.parse(rx.recvfrom(2048)[0])
@@ -126,10 +130,12 @@ def run_audio_config_case() -> bool:
           and (aud.rate_hz, aud.timestamp) == (44100, 0x12345678)
           and aud.samples == samples
           and t2 == proto.TYPE_CONFIG and not cfg_set.is_reply
+          and cfg_set.mac == board_mac
           and (cfg_set.target, cfg_set.op, cfg_set.key, cfg_set.value)
               == (proto.CFG_TARGET_BOARD, proto.CFG_OP_SET,
                   proto.CFG_KEY_AUDIO_ENABLE, 0b101)
-          and t3 == proto.TYPE_CONFIG and cfg_rep.is_reply and cfg_rep.value == 2)
+          and t3 == proto.TYPE_CONFIG and cfg_rep.is_reply and cfg_rep.value == 2
+          and cfg_rep.mac == board_mac)
     if not ok:
         print("  audio=%r cfg_set=%r cfg_rep=%r" % (aud, cfg_set, cfg_rep))
     print("%s audio/config round-trip" % ("PASS" if ok else "FAIL"))

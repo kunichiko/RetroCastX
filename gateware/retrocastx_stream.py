@@ -118,7 +118,13 @@ class RetroCastXStreamer(LiteXModule):
                  announce_period=1.0, mode_period=1.0, sub_timeout=10.0,
                  announce_ip=HOST_IP, udp_port_nr=UDP_PORT,
                  mtu_payload=1472, interlace=False,
-                 audio_sources=None, audio_nsamples=240):
+                 audio_sources=None, audio_nsamples=240,
+                 mac_address=MAC_ADDRESS):
+        # 自MAC(SUBSCRIBE/CONFIGの宛先照合とCONFIG応答に使用)。
+        # リトルエンディアンのワード表現(伝送バイト順=MAC表記順)
+        mac_bytes = mac_address.to_bytes(6, "big")
+        my_mac_lo = int.from_bytes(mac_bytes[0:4], "little")
+        my_mac_hi = int.from_bytes(mac_bytes[4:6], "little")
         # audio_sources: [(stream.Endpoint(AUDIO_LAYOUT/sysドメイン), rate_hz), ...]
         #   インデックスがプロトコルのsource値(0=RGB端子音声,1=LINE,2=S/PDIF)。
         #   rate_hz は int 定数(水晶由来)または Signal(32)(S/PDIF実測)
@@ -191,68 +197,90 @@ class RetroCastXStreamer(LiteXModule):
         sub_valid = Signal()
         self.comb += sub_valid.eq(sub_timer != 0)
 
-        # --- RX: SUBSCRIBE / CONFIG(先頭ワードに magic/version/type/flags が揃う) ---
+        # --- RX: SUBSCRIBE(16B=4ワード) / CONFIG(24B=6ワード)。いずれも
+        #     w2/w3に宛先MACを含み、自MACかFF×6(ワイルドカード)のみ受理する ---
         rx = udp_port.source
         rx_first = Signal(reset=1)
         self.comb += rx.ready.eq(1)
         self.sync += If(rx.valid, rx_first.eq(rx.last))
         rx_magic_ok = (rx.data[0:8] == 0x52) & (rx.data[8:16] == 0x00)
-        rx_is_sub = rx.valid & rx_first & rx_magic_ok & (rx.data[16:24] == 4)
-        sub_hit = rx_is_sub & ~rx.data[24]       # flags bit0 = ANNOUNCE_ONLY
-        self.sync += [
-            If(rx_is_sub,
-                ann_ip.eq(rx.ip_address),
-                ann_port.eq(rx.src_port),
-            ),
-            If(sub_hit,
-                sub_ip.eq(rx.ip_address),
-                sub_port.eq(rx.src_port),
-                sub_timer.eq(int(sys_clk_freq * sub_timeout) - 1),
-            ).Elif(sub_timer != 0,
-                sub_timer.eq(sub_timer - 1),
-            ),
-        ]
 
-        # --- CONFIG受信(16B=4ワード)と設定レジスタ ---
-        audio_mask = Signal(3, reset=0b111)      # key 0x0001: 音声ソース有効マスク
-        argus_reg = Signal(32)                   # target=1(ArgusX)の仮レジスタ
-                                                 # (実機step4でI2C書き込みに置換)
-        rx_is_cfg = rx.valid & rx_first & rx_magic_ok & (rx.data[16:24] == 5)
-        in_cfg = Signal()
-        rx_widx = Signal(2)                      # 先頭以降のワード番号(1..3)
+        in_pkt = Signal()                        # magic/version OK
+        rx_type = Signal(8)
+        rx_flags = Signal(8)
+        rx_widx = Signal(3)                      # 先頭以降のワード番号(1..7飽和)
+        rx_src_ip = Signal(32)
+        rx_src_port = Signal(16)
+        rx_mac_lo = Signal(32)
         cfg_target = Signal(8)
         cfg_op = Signal(8)
         cfg_key = Signal(16)
+        cfg_mac_ok = Signal()                    # CONFIG: w3時点でMAC確定
         cfg_ip = Signal(32)
         cfg_port = Signal(16)
-        cfg_done = rx.valid & rx.last & in_cfg & (rx_widx == 3)
+
+        # SUBSCRIBEはMAC上位2BがW3=最終ビートに乗るため、その場で判定する
+        sub_done = rx.valid & rx.last & in_pkt & (rx_type == 4) & (rx_widx == 3)
+        sub_mac_ok = (((rx_mac_lo == my_mac_lo) & (rx.data[0:16] == my_mac_hi)) |
+                      ((rx_mac_lo == 0xFFFFFFFF) & (rx.data[0:16] == 0xFFFF)))
+        sub_hit_any = sub_done & sub_mac_ok
+        sub_hit = sub_hit_any & ~rx_flags[0]     # flags bit0 = ANNOUNCE_ONLY
+        cfg_done = (rx.valid & rx.last & in_pkt & (rx_type == 5) &
+                    (rx_widx == 5) & cfg_mac_ok)
+
+        audio_mask = Signal(3, reset=0b111)      # key 0x0001: 音声ソース有効マスク
+        argus_reg = Signal(32)                   # target=1(ArgusX)の仮レジスタ
+                                                 # (実機step4でI2C書き込みに置換)
         self.sync += [
             If(rx.valid,
                 If(rx_first,
                     rx_widx.eq(1),
-                    in_cfg.eq(0),
-                    If(rx_is_cfg,
-                        in_cfg.eq(1),
-                        cfg_ip.eq(rx.ip_address),
-                        cfg_port.eq(rx.src_port),
-                    ),
+                    in_pkt.eq(rx_magic_ok),
+                    rx_type.eq(rx.data[16:24]),
+                    rx_flags.eq(rx.data[24:32]),
+                    rx_src_ip.eq(rx.ip_address),
+                    rx_src_port.eq(rx.src_port),
                 ).Else(
-                    If(rx_widx != 3, rx_widx.eq(rx_widx + 1)),
-                    If(in_cfg & (rx_widx == 2),
+                    If(rx_widx != 7, rx_widx.eq(rx_widx + 1)),
+                    If(in_pkt & (rx_widx == 2), rx_mac_lo.eq(rx.data)),
+                    If(in_pkt & (rx_widx == 3),
+                        cfg_mac_ok.eq(
+                            ((rx_mac_lo == my_mac_lo) &
+                             (rx.data[0:16] == my_mac_hi)) |
+                            ((rx_mac_lo == 0xFFFFFFFF) &
+                             (rx.data[0:16] == 0xFFFF))),
+                    ),
+                    If(in_pkt & (rx_type == 5) & (rx_widx == 4),
                         cfg_target.eq(rx.data[0:8]),
                         cfg_op.eq(rx.data[8:16]),
                         cfg_key.eq(rx.data[16:32]),
                     ),
                 ),
-                If(rx.last, in_cfg.eq(0)),
+                If(rx.last, in_pkt.eq(0)),
             ),
-            # SET適用(w3=valueは最終ビートで直接読む)
-            If(cfg_done & (cfg_op == 0),
-                If((cfg_target == 0) & (cfg_key == 1),
-                    audio_mask.eq(rx.data[:3]),
-                ),
-                If(cfg_target == 1,
-                    argus_reg.eq(rx.data),
+            # SUBSCRIBE受理: ANNOUNCE返信先を更新、本購読なら送り先も切替
+            If(sub_hit_any,
+                ann_ip.eq(rx_src_ip),
+                ann_port.eq(rx_src_port),
+            ),
+            If(sub_hit,
+                sub_ip.eq(rx_src_ip),
+                sub_port.eq(rx_src_port),
+                sub_timer.eq(int(sys_clk_freq * sub_timeout) - 1),
+            ).Elif(sub_timer != 0,
+                sub_timer.eq(sub_timer - 1),
+            ),
+            # CONFIG受理: SET適用(w5=valueは最終ビートで直接読む) + 応答先ラッチ
+            If(cfg_done,
+                cfg_ip.eq(rx_src_ip),
+                cfg_port.eq(rx_src_port),
+                If(cfg_op == 0,
+                    If((cfg_target == 0) & (cfg_key == 1),
+                        audio_mask.eq(rx.data[:3]),
+                    ),
+                    If(cfg_target == 1,
+                        argus_reg.eq(rx.data),
+                    ),
                 ),
             ),
         ]
@@ -303,7 +331,7 @@ class RetroCastXStreamer(LiteXModule):
             If(ann_clr, ann_pending.eq(0)),
             If(mode_clr, mode_pending.eq(0)),
             If(line_clr, line_pending.eq(0)),
-            If((ann_cnt == 0) | rx_is_sub, ann_pending.eq(1)),
+            If((ann_cnt == 0) | sub_hit_any, ann_pending.eq(1)),
             If((sub_valid & (mode_cnt == 0)) | sub_hit, mode_pending.eq(1)),
             If(sub_valid & (line_cnt == 0), line_pending.eq(1)),
         ]
@@ -400,8 +428,10 @@ class RetroCastXStreamer(LiteXModule):
             }),
             _T_CFG: Case(word_idx, {
                 0: hdr.eq(0x52 | (5 << 16) | (1 << 24)),           # flags=REPLY
-                2: hdr.eq(Cat(cfg_target, cfg_op, cfg_key)),
-                3: hdr.eq(cfg_reply_val),
+                2: hdr.eq(my_mac_lo),                              # 応答元=自MAC
+                3: hdr.eq(my_mac_hi),
+                4: hdr.eq(Cat(cfg_target, cfg_op, cfg_key)),
+                5: hdr.eq(cfg_reply_val),
             }),
         }
         if n_aud:
@@ -449,8 +479,8 @@ class RetroCastXStreamer(LiteXModule):
             NextValue(ptype, _T_CFG),
             NextValue(dst_ip, cfg_ip),
             NextValue(dst_port, cfg_port),
-            NextValue(length, 16),
-            NextValue(nwords, 4),
+            NextValue(length, 24),
+            NextValue(nwords, 6),
             NextState("SEND"),
         ).Elif(mode_pending & sub_valid,
             mode_clr.eq(1),

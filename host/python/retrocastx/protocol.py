@@ -32,6 +32,10 @@ CFG_FLAG_REPLY = 0x01
 CFG_KEY_AUDIO_ENABLE = 0x0001   # board: bit0=RGB音声, bit1=LINE, bit2=S/PDIF
 CFG_KEY_ARGUSX_INPUT = 0x0001   # ArgusX: 映像入力選択
 
+# アプリ→ボードのパケット(SUBSCRIBE/CONFIG)の宛先MACワイルドカード。
+# 同一LANの全ボードが反応するため、複数ボード環境では実MACを指名すること
+WILDCARD_MAC = b"\xff" * 6
+
 # LINE flags
 FLAG_LAST_FRAGMENT = 0x01
 FLAG_FIELD_ODD = 0x02
@@ -53,14 +57,17 @@ _MODE = struct.Struct("<BBHHHHHIII")      # mode_id, pixfmt, mflags, hactive, ht
                                           # vactive, vtotal, dotclk_hz, hfreq_mhz, vfreq_mhz
 _INFO = struct.Struct("<6s4sHHH16s")      # mac, ip, udp_port, fw_version, caps, name
 _AUDIO = struct.Struct("<BBHII")          # source, format, nsamples, rate_hz, timestamp
-_CONFIG = struct.Struct("<BBHI")          # target, op, key, value
+_SUB = struct.Struct("<6s2x")             # 宛先mac + 予約2B
+_CONFIG = struct.Struct("<6s2xBBHI")      # 宛先mac(応答時=ボード自身), 予約2B,
+                                          # target, op, key, value
 
 COMMON_SIZE = _COMMON.size               # 8
 LINE_HDR_SIZE = _LINE.size               # 12
 MODE_HDR_SIZE = _MODE.size               # 24
 INFO_SIZE = _INFO.size                   # 32
 AUDIO_HDR_SIZE = _AUDIO.size             # 12
-CONFIG_SIZE = _CONFIG.size               # 8
+SUB_SIZE = _SUB.size                     # 8
+CONFIG_SIZE = _CONFIG.size               # 16
 
 
 @dataclass
@@ -141,9 +148,14 @@ class Audio:
 
 @dataclass
 class Config:
-    """設定読み書き(app→board)/応答(board→app、flags bit0=REPLY)。"""
+    """設定読み書き(app→board)/応答(board→app、flags bit0=REPLY)。
+
+    mac: 要求時=宛先ボードMAC(WILDCARD_MACで全ボード)、
+         応答時=ボード自身のMAC(静的IP衝突環境でも応答元を判別できる)。
+    """
     seq: int
     flags: int
+    mac: bytes           # 6 bytes
     target: int          # CFG_TARGET_*
     op: int              # CFG_OP_*
     key: int
@@ -152,6 +164,14 @@ class Config:
     @property
     def is_reply(self) -> bool:
         return bool(self.flags & CFG_FLAG_REPLY)
+
+
+@dataclass
+class Subscribe:
+    """アプリ→ボード(発見/購読)。mac=宛先ボード(WILDCARD_MACで全ボード)。"""
+    seq: int
+    flags: int
+    mac: bytes
 
 
 def pack_audio(frame: int, seq: int, source: int, rate_hz: int,
@@ -168,24 +188,28 @@ def pack_audio(frame: int, seq: int, source: int, rate_hz: int,
 
 
 def pack_config(seq: int, target: int, op: int, key: int, value: int = 0,
-                reply: bool = False) -> bytes:
+                reply: bool = False, mac: bytes = WILDCARD_MAC) -> bytes:
     flags = CFG_FLAG_REPLY if reply else 0
     return (_COMMON.pack(MAGIC, VERSION, TYPE_CONFIG, flags, 0, seq & 0xFFFF)
-            + _CONFIG.pack(target, op, key, value & 0xFFFFFFFF))
+            + _CONFIG.pack(mac, target, op, key, value & 0xFFFFFFFF))
 
 
 # SUBSCRIBE flags
 SUB_FLAG_ANNOUNCE_ONLY = 0x01  # 発見のみ(ストリーム送り先は変更しない)
 
 
-def pack_subscribe(seq: int, announce_only: bool = False) -> bytes:
+def pack_subscribe(seq: int, announce_only: bool = False,
+                   mac: bytes = WILDCARD_MAC) -> bytes:
     """アプリ→ボード。ブロードキャスト可。
 
-    ボードはANNOUNCEを送信元へユニキャストで返す。announce_only=False なら
+    macで宛先ボードを指名する(WILDCARD_MACで全ボード)。一致したボードは
+    ANNOUNCEを送信元へユニキャストで返し、announce_only=False なら
     以後の映像ストリームの送り先もこのパケットの送信元に切り替える。
+    ワイルドカードでの本購読は単一ボードLAN専用(全ボードがストリームを向けてくる)。
     """
     flags = SUB_FLAG_ANNOUNCE_ONLY if announce_only else 0
-    return _COMMON.pack(MAGIC, VERSION, TYPE_SUBSCRIBE, flags, 0, seq & 0xFFFF)
+    return (_COMMON.pack(MAGIC, VERSION, TYPE_SUBSCRIBE, flags, 0, seq & 0xFFFF)
+            + _SUB.pack(mac))
 
 
 def pack_line(frame: int, seq: int, line: int, offset_px: int, pixfmt: int,
@@ -241,10 +265,13 @@ def parse(datagram: bytes) -> Tuple[int, object]:
     if ptype == TYPE_CONFIG:
         if len(body) < CONFIG_SIZE:
             raise ValueError("short CONFIG packet")
-        target, op, key, value = _CONFIG.unpack_from(body, 0)
-        return ptype, Config(seq, flags, target, op, key, value)
+        mac, target, op, key, value = _CONFIG.unpack_from(body, 0)
+        return ptype, Config(seq, flags, mac, target, op, key, value)
     if ptype == TYPE_SUBSCRIBE:
-        return ptype, None
+        if len(body) < SUB_SIZE:
+            raise ValueError("short SUBSCRIBE packet")
+        (mac,) = _SUB.unpack_from(body, 0)
+        return ptype, Subscribe(seq, flags, mac)
     raise ValueError("unknown packet type %d" % ptype)
 
 

@@ -40,7 +40,11 @@ ANN_PERIOD, MODE_PERIOD, SUB_TIMEOUT = 0.004, 0.003, 0.020
 
 PROBER = (convert_ip("192.168.10.2"), 40001)   # discover相当(ANNOUNCE_ONLY)
 SUBSCRIBER = (convert_ip("192.168.10.3"), proto.DEFAULT_PORT)
+STRANGER = (convert_ip("192.168.10.9"), 7000)  # 宛先MAC不一致の購読者(無視される)
 SUBSCRIBE_AT = 600
+
+BOARD_MAC = bytes([0x02, 0x52, 0x43, 0x58, 0x00, 0x01])
+OTHER_MAC = bytes([0x02, 0x52, 0x43, 0x58, 0x00, 0x99])
 
 
 class _FakeUDPPort:
@@ -84,13 +88,23 @@ def _send_datagram(ep, payload: bytes, ip: int, port: int):
 def driver(dut):
     for _ in range(100):
         yield
+    # 発見プローブ(ワイルドカードMAC)
     yield from _send_datagram(dut.port.source,
                               proto.pack_subscribe(0, announce_only=True),
                               *PROBER)
-    for _ in range(SUBSCRIBE_AT - 110):
+    for _ in range(150):
         yield
+    # 別ボード宛の本購読 → このボードは無視するはず
     yield from _send_datagram(dut.port.source,
-                              proto.pack_subscribe(1, announce_only=False),
+                              proto.pack_subscribe(5, announce_only=False,
+                                                   mac=OTHER_MAC),
+                              *STRANGER)
+    for _ in range(SUBSCRIBE_AT - 280):
+        yield
+    # 自ボードMACを指名した本購読
+    yield from _send_datagram(dut.port.source,
+                              proto.pack_subscribe(1, announce_only=False,
+                                                   mac=BOARD_MAC),
                               *SUBSCRIBER)
 
 
@@ -162,6 +176,13 @@ def scenario_a():
     assert first_stream_types and first_stream_types[0] == proto.TYPE_MODE
     m = modes[0]
     assert (m.hactive, m.vactive, m.mflags) == (W, H, 0)
+
+    # MAC不一致のSUBSCRIBEは完全に無視される(応答もストリームも無し)
+    assert not any((ip, port) == STRANGER for _, ip, port, _ in datagrams), \
+        "board responded to a SUBSCRIBE addressed to another MAC"
+    first_line_at = min(start for start, _ in lines)
+    assert first_line_at > SUBSCRIBE_AT, \
+        "stream started before the MAC-matched SUBSCRIBE"
 
     # 断片構造: offset/countの列がhost実装と一致、LAST_FRAGMENTは最終断片のみ
     by_line = {}
@@ -278,12 +299,21 @@ def scenario_c():
     def config_sender(dut):
         for _ in range(MASK_SET_AT):
             yield
+        # 他ボード宛のマスク変更 → 無視される(応答なし・マスク不変)はず
+        yield from _send_datagram(dut.port.source,
+                                  proto.pack_config(9, proto.CFG_TARGET_BOARD,
+                                                    proto.CFG_OP_SET,
+                                                    proto.CFG_KEY_AUDIO_ENABLE,
+                                                    0b000, mac=OTHER_MAC),
+                                  *STRANGER)
+        for _ in range(300):
+            yield
         # src1(bit1)を無効化(src0のみ残す)
         yield from _send_datagram(dut.port.source,
                                   proto.pack_config(10, proto.CFG_TARGET_BOARD,
                                                     proto.CFG_OP_SET,
                                                     proto.CFG_KEY_AUDIO_ENABLE,
-                                                    0b001),
+                                                    0b001, mac=BOARD_MAC),
                                   *CONFIGURER)
         for _ in range(3000):
             yield
@@ -291,14 +321,15 @@ def scenario_c():
                                   proto.pack_config(11, proto.CFG_TARGET_ARGUSX,
                                                     proto.CFG_OP_SET,
                                                     proto.CFG_KEY_ARGUSX_INPUT,
-                                                    0x1234),
+                                                    0x1234, mac=BOARD_MAC),
                                   *CONFIGURER)
         for _ in range(2000):
             yield
         yield from _send_datagram(dut.port.source,
                                   proto.pack_config(12, proto.CFG_TARGET_ARGUSX,
                                                     proto.CFG_OP_GET,
-                                                    proto.CFG_KEY_ARGUSX_INPUT),
+                                                    proto.CFG_KEY_ARGUSX_INPUT,
+                                                    mac=proto.WILDCARD_MAC),
                                   *CONFIGURER)
 
     datagrams = run_dut(fps, 1472, False, n_cycles, n_audio=2,
@@ -344,7 +375,8 @@ def scenario_c():
     assert max(start for start, _ in audio[0]) > MASK_SET_AT + slack, \
         "src0 stopped unexpectedly"
 
-    # CONFIG応答: 値・エコー・REPLYフラグ
+    # CONFIG応答: 値・エコー・REPLYフラグ・応答元MAC。
+    # 他ボード宛(OTHER_MAC)は応答なし=3件のみ。ワイルドカードには応答する
     assert len(replies) == 3, "expected 3 CONFIG replies, got %d" % len(replies)
     vals = [(p.target, p.op, p.key, p.value, p.is_reply) for _, p in replies]
     assert vals[0] == (proto.CFG_TARGET_BOARD, proto.CFG_OP_SET,
@@ -353,6 +385,8 @@ def scenario_c():
                        proto.CFG_KEY_ARGUSX_INPUT, 0x1234, True)
     assert vals[2] == (proto.CFG_TARGET_ARGUSX, proto.CFG_OP_GET,
                        proto.CFG_KEY_ARGUSX_INPUT, 0x1234, True)
+    assert all(p.mac == BOARD_MAC for _, p in replies), \
+        "CONFIG reply must carry the board's own MAC"
 
     assert asm.lost_packets == 0, "phantom loss with audio: %d" % asm.lost_packets
     print("C(audio+config): OK — %d/%d AUDIO pkts (src0/src1), samples "
