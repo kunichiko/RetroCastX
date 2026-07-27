@@ -362,6 +362,24 @@ component Xo12M288:
     signal vcc ~ pin 4
 
 
+component Eeprom24aa025e48:
+    """Microchip 24AA025E48: 2Kbit I2C EEPROM + 工場書込みEUI-48(グローバル一意MAC)。
+
+    I2Cアドレス 0b1010_A2A1A0。MAC領域はハードウェア書込み保護済み、
+    残り領域(~250B)は個体設定(IP・ボード名等)の保存に使える。
+    SOIC-8/TSSOP-8。LCSC: 要選定。
+    注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
+    """
+    signal a0 ~ pin 1
+    signal a1 ~ pin 2
+    signal a2 ~ pin 3
+    signal vss ~ pin 4
+    signal sda ~ pin 5
+    signal scl ~ pin 6
+    signal wp ~ pin 7
+    signal vcc ~ pin 8
+
+
 component HeaderArgus:
     """ArgusX(RGBセレクタ、別プロジェクト)制御用 1×4 ヘッダ(I2Cバス引き出し)。"""
     signal p3v3 ~ pin 1
@@ -1020,6 +1038,35 @@ module App:
     j11_argus.gnd ~ gnd
     j11_argus.sda ~ tvp.sda
     j11_argus.scl ~ tvp.scl
+
+    # --- MACアドレスEEPROM(EUI-48) ×2: ETH0用=0x50, ETH1(将来の2ポート化)用=0x51 ---
+    # グローバル一意MACにより複数台運用・2ポートストライピングで衝突管理が不要になる。
+    # 空き領域は個体設定の保存に使用(SPIフラッシュ設定ページ計画を置き換え)。
+    # I2CはTVP7002(0x5C)と共有。ArgusX側は0x50-0x53を避けること。
+    eeprom_mac0 = new Eeprom24aa025e48
+    eeprom_mac1 = new Eeprom24aa025e48
+    eeprom_mac1.a0 ~ p3v3_io.hv     # 0x51
+    eeprom_mac0.a0 ~ gnd            # 0x50
+    dec_eeprom = new Capacitor[2]
+    for c in dec_eeprom:
+        c.capacitance = 100nF +/- 20%
+        c.package = "0402"
+    eeprom_mac0.vcc ~> dec_eeprom[0] ~> gnd
+    eeprom_mac1.vcc ~> dec_eeprom[1] ~> gnd
+    eeprom_mac0.vcc ~ p3v3_io.hv
+    eeprom_mac1.vcc ~ p3v3_io.hv
+    eeprom_mac0.vss ~ gnd
+    eeprom_mac1.vss ~ gnd
+    eeprom_mac0.a1 ~ gnd
+    eeprom_mac0.a2 ~ gnd
+    eeprom_mac1.a1 ~ gnd
+    eeprom_mac1.a2 ~ gnd
+    eeprom_mac0.wp ~ gnd            # 設定領域への書込みを許可(MAC領域は保護済み)
+    eeprom_mac1.wp ~ gnd
+    eeprom_mac0.sda ~ tvp.sda
+    eeprom_mac0.scl ~ tvp.scl
+    eeprom_mac1.sda ~ tvp.sda
+    eeprom_mac1.scl ~ tvp.scl
 
     # --- GbE出口 (EXT P1 -> J8 -> MagJack) ---
     eth = new EthernetPort
