@@ -128,7 +128,18 @@ impl FrameAssembler {
                 self.px_filled += l.count_px as usize;
                 completed
             }
-            Packet::Other(_) => None,
+            Packet::Other { ptype, flags, seq } => {
+                // AUDIO/CONFIG応答もボードの共通seq空間を消費する。
+                // SUBSCRIBE(アプリ発、自分のブロードキャストが返ってくることがある)
+                // と非応答CONFIGは追跡しない
+                if ptype == proto::TYPE_AUDIO
+                    || (ptype == proto::TYPE_CONFIG
+                        && flags & proto::CFG_FLAG_REPLY != 0)
+                {
+                    self.track_seq(seq);
+                }
+                None
+            }
         }
     }
 

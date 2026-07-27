@@ -25,6 +25,7 @@ import struct
 
 from migen import *
 
+from litex.build.generic_platform import IOStandard, Pins, Subsignal
 from litex.gen import LiteXModule
 from litex.soc.cores.clock import ECP5PLL
 from litex.soc.integration.soc_core import SoCMini
@@ -37,7 +38,7 @@ HOST_IP     = "192.168.10.1"          # SUBSCRIBE到着までのANNOUNCE宛先(�
 UDP_PORT    = 34600
 
 # パケットタイプ(FSM内部コード。プロトコル上のtype値とは別)
-_T_LINE, _T_MODE, _T_ANN = 0, 1, 2
+_T_LINE, _T_MODE, _T_ANN, _T_AUDIO, _T_CFG = 0, 1, 2, 3, 4
 
 
 def convert_ip(ip_str):
@@ -116,7 +117,14 @@ class RetroCastXStreamer(LiteXModule):
     def __init__(self, udp_port, sys_clk_freq, width=512, height=512, fps=30.0,
                  announce_period=1.0, mode_period=1.0, sub_timeout=10.0,
                  announce_ip=HOST_IP, udp_port_nr=UDP_PORT,
-                 mtu_payload=1472, interlace=False):
+                 mtu_payload=1472, interlace=False,
+                 audio_sources=None, audio_nsamples=240):
+        # audio_sources: [(stream.Endpoint(AUDIO_LAYOUT/sysドメイン), rate_hz), ...]
+        #   インデックスがプロトコルのsource値(0=RGB端子音声,1=LINE,2=S/PDIF)。
+        #   rate_hz は int 定数(水晶由来)または Signal(32)(S/PDIF実測)
+        audio_srcs = audio_sources or []
+        n_aud = len(audio_srcs)
+        assert 20 + 4 * audio_nsamples <= mtu_payload or n_aud == 0
         # --- タイミング諸元(host/python の sender_sim.Sender と同一の算出式) ---
         # interlace時: fpsはフィールドレート、height/vactiveはフルフレーム行数。
         # frameカウンタはフィールド毎+1、LINE.lineはフルフレーム行(protocol-v0.md)
@@ -147,7 +155,9 @@ class RetroCastXStreamer(LiteXModule):
         frag_cnt_arr = Array(Constant(n, bits_sign=16) for _, n in frags)
         frag_len_arr = Array(Constant(20 + 2 * n, bits_sign=16) for _, n in frags)
         frag_nwords_arr = Array(Constant(5 + n // 2, bits_sign=16) for _, n in frags)
-        max_nwords = max(10, 8, *(5 + n // 2 for _, n in frags))
+        aud_nwords = 5 + audio_nsamples
+        max_nwords = max(10, 8, aud_nwords if n_aud else 0,
+                         *(5 + n // 2 for _, n in frags))
 
         line_interval = int(sys_clk_freq / (fps * lines_per_unit))
         assert line_interval >= 1
@@ -181,15 +191,13 @@ class RetroCastXStreamer(LiteXModule):
         sub_valid = Signal()
         self.comb += sub_valid.eq(sub_timer != 0)
 
-        # --- RX: SUBSCRIBE(先頭ワードに magic/version/type/flags が揃う) ---
+        # --- RX: SUBSCRIBE / CONFIG(先頭ワードに magic/version/type/flags が揃う) ---
         rx = udp_port.source
         rx_first = Signal(reset=1)
         self.comb += rx.ready.eq(1)
         self.sync += If(rx.valid, rx_first.eq(rx.last))
-        rx_is_sub = (rx.valid & rx_first &
-                     (rx.data[0:8] == 0x52) &    # magic
-                     (rx.data[8:16] == 0x00) &   # version
-                     (rx.data[16:24] == 4))      # TYPE_SUBSCRIBE
+        rx_magic_ok = (rx.data[0:8] == 0x52) & (rx.data[8:16] == 0x00)
+        rx_is_sub = rx.valid & rx_first & rx_magic_ok & (rx.data[16:24] == 4)
         sub_hit = rx_is_sub & ~rx.data[24]       # flags bit0 = ANNOUNCE_ONLY
         self.sync += [
             If(rx_is_sub,
@@ -205,13 +213,72 @@ class RetroCastXStreamer(LiteXModule):
             ),
         ]
 
+        # --- CONFIG受信(16B=4ワード)と設定レジスタ ---
+        audio_mask = Signal(3, reset=0b111)      # key 0x0001: 音声ソース有効マスク
+        argus_reg = Signal(32)                   # target=1(ArgusX)の仮レジスタ
+                                                 # (実機step4でI2C書き込みに置換)
+        rx_is_cfg = rx.valid & rx_first & rx_magic_ok & (rx.data[16:24] == 5)
+        in_cfg = Signal()
+        rx_widx = Signal(2)                      # 先頭以降のワード番号(1..3)
+        cfg_target = Signal(8)
+        cfg_op = Signal(8)
+        cfg_key = Signal(16)
+        cfg_ip = Signal(32)
+        cfg_port = Signal(16)
+        cfg_done = rx.valid & rx.last & in_cfg & (rx_widx == 3)
+        self.sync += [
+            If(rx.valid,
+                If(rx_first,
+                    rx_widx.eq(1),
+                    in_cfg.eq(0),
+                    If(rx_is_cfg,
+                        in_cfg.eq(1),
+                        cfg_ip.eq(rx.ip_address),
+                        cfg_port.eq(rx.src_port),
+                    ),
+                ).Else(
+                    If(rx_widx != 3, rx_widx.eq(rx_widx + 1)),
+                    If(in_cfg & (rx_widx == 2),
+                        cfg_target.eq(rx.data[0:8]),
+                        cfg_op.eq(rx.data[8:16]),
+                        cfg_key.eq(rx.data[16:32]),
+                    ),
+                ),
+                If(rx.last, in_cfg.eq(0)),
+            ),
+            # SET適用(w3=valueは最終ビートで直接読む)
+            If(cfg_done & (cfg_op == 0),
+                If((cfg_target == 0) & (cfg_key == 1),
+                    audio_mask.eq(rx.data[:3]),
+                ),
+                If(cfg_target == 1,
+                    argus_reg.eq(rx.data),
+                ),
+            ),
+        ]
+        # 応答値(SET/GETとも現在値を返す)
+        cfg_reply_val = Signal(32)
+        self.comb += [
+            If(cfg_target == 1,
+                cfg_reply_val.eq(argus_reg),
+            ).Elif(cfg_key == 1,
+                cfg_reply_val.eq(audio_mask),
+            ),
+        ]
+
         # --- 送出要求(sticky; RXセットとFSMクリアの同時発生はセット優先) ---
         ann_pending  = Signal()
         mode_pending = Signal()
         line_pending = Signal()
+        cfg_pending  = Signal()
         ann_clr  = Signal()
         mode_clr = Signal()
         line_clr = Signal()
+        cfg_clr  = Signal()
+        self.sync += [
+            If(cfg_clr, cfg_pending.eq(0)),
+            If(cfg_done, cfg_pending.eq(1)),
+        ]
 
         ann_cnt  = Signal(max=max(int(sys_clk_freq * announce_period), 2))
         mode_cnt = Signal(max=max(int(sys_clk_freq * mode_period), 2))
@@ -250,8 +317,47 @@ class RetroCastXStreamer(LiteXModule):
             pix1.x.eq(x | 1),      pix1.y.eq(row), pix1.frame.eq(frame),
         ]
 
+        # --- 音声バッファ(sysドメイン)。audio_nsamplesサンプル溜まったらパケット化 ---
+        from litex.soc.interconnect import stream as _stream
+        asrc = Signal(max=max(n_aud, 2))
+        aud_pending = Signal(max(n_aud, 1))
+        aud_pop = Signal(max(n_aud, 1))
+        aud_data = Signal(32)
+        aud_rate = Signal(32)
+        aud_fifos = []
+        aud_ts_arr = []
+        for k, (ep, rate) in enumerate(audio_srcs):
+            fifo = _stream.SyncFIFO([("data", 32)], 2 * audio_nsamples)
+            self.submodules += fifo
+            ts_first = Signal(32)
+            self.comb += [
+                # 無効ソースは受けずに捨てる。FIFO満杯時も捨てる(音声は非再送)
+                fifo.sink.valid.eq(ep.valid & audio_mask[k]),
+                fifo.sink.data.eq(ep.data),
+                ep.ready.eq(1),
+                fifo.source.ready.eq(aud_pop[k] | ~audio_mask[k]),
+                aud_pending[k].eq(audio_mask[k] & sub_valid &
+                                  (fifo.level >= audio_nsamples)),
+            ]
+            # パケット先頭サンプルのタイムスタンプ(FIFOが空→非空になる瞬間に
+            # ドットクロックカウンタ相当をラッチする近似。level>0のまま連続
+            # パケット化される場合は最大1パケット分古くなり得る)
+            self.sync += If(fifo.sink.valid & fifo.sink.ready &
+                            (fifo.level == 0),
+                            ts_first.eq(ts_line))
+            aud_fifos.append(fifo)
+            aud_ts_arr.append(ts_first)
+        if n_aud:
+            self.comb += [
+                Case(asrc, {k: aud_data.eq(aud_fifos[k].source.data)
+                            for k in range(n_aud)}),
+                Case(asrc, {k: aud_rate.eq(rate)
+                            for k, (_, rate) in enumerate(audio_srcs)}),
+            ]
+        aud_ts = Array(aud_ts_arr) if n_aud else None
+
         # --- TX FSM ---
-        ptype    = Signal(2)
+        ptype    = Signal(3)
         dst_ip   = Signal(32)
         dst_port = Signal(16)
         length   = Signal(16)
@@ -273,72 +379,113 @@ class RetroCastXStreamer(LiteXModule):
         # LINE flags: bit0=LAST_FRAGMENT(最終断片), bit1=FIELD_ODD
         line_flags = Signal(8)
         ts_frag = Signal(32)               # 断片先頭ピクセル時点のドットクロック
+        cases = {
+            _T_ANN: Case(word_idx, {i: hdr.eq(ann_words[i])
+                                    for i in range(n_ann_words) if i != 1}),
+            _T_MODE: Case(word_idx, {
+                0: hdr.eq(0x52 | (1 << 16)),                       # type=MODE
+                2: hdr.eq(mode_id | (pixfmt << 8) | (mflags << 16)),
+                3: hdr.eq(width | (htotal << 16)),
+                4: hdr.eq(height | (vtotal << 16)),
+                5: hdr.eq(dotclk),
+                6: hdr.eq(hfreq_mhz),
+                7: hdr.eq(vfreq_mhz),
+            }),
+            _T_LINE: Case(word_idx, {
+                0: hdr.eq(Cat(C(0x52, 8), C(0, 8), C(0, 8), line_flags)),
+                2: hdr.eq(Cat(row, C(0, 16 - len(row)), frag_off_arr[frag_idx])),
+                3: hdr.eq(Cat(frag_cnt_arr[frag_idx],
+                              C(pixfmt, 8), C(mode_id, 8))),
+                4: hdr.eq(ts_frag),
+            }),
+            _T_CFG: Case(word_idx, {
+                0: hdr.eq(0x52 | (5 << 16) | (1 << 24)),           # flags=REPLY
+                2: hdr.eq(Cat(cfg_target, cfg_op, cfg_key)),
+                3: hdr.eq(cfg_reply_val),
+            }),
+        }
+        if n_aud:
+            cases[_T_AUDIO] = Case(word_idx, {
+                0: hdr.eq(0x52 | (2 << 16)),                       # type=AUDIO
+                2: hdr.eq(Cat(asrc, C(0, 8 - len(asrc)), C(0, 8),   # source|format
+                              C(audio_nsamples, 16))),
+                3: hdr.eq(aud_rate),
+                4: hdr.eq(aud_ts[asrc]),
+            })
         self.comb += [
             line_flags.eq(Cat(frag_idx == n_frags - 1, field)),
             ts_frag.eq(ts_line + frag_off_arr[frag_idx]),
-            If(ptype == _T_ANN,
-                w1.eq(Cat(C(0, 16), seq)),           # ANNOUNCEはframe=0
+            If((ptype == _T_ANN) | (ptype == _T_CFG),
+                w1.eq(Cat(C(0, 16), seq)),           # frame=0
             ).Else(
                 w1.eq(Cat(frame, seq)),
             ),
-            Case(ptype, {
-                _T_ANN: Case(word_idx, {i: hdr.eq(ann_words[i])
-                                        for i in range(n_ann_words) if i != 1}),
-                _T_MODE: Case(word_idx, {
-                    0: hdr.eq(0x52 | (1 << 16)),                       # type=MODE
-                    2: hdr.eq(mode_id | (pixfmt << 8) | (mflags << 16)),
-                    3: hdr.eq(width | (htotal << 16)),
-                    4: hdr.eq(height | (vtotal << 16)),
-                    5: hdr.eq(dotclk),
-                    6: hdr.eq(hfreq_mhz),
-                    7: hdr.eq(vfreq_mhz),
-                }),
-                _T_LINE: Case(word_idx, {
-                    0: hdr.eq(Cat(C(0x52, 8), C(0, 8), C(0, 8), line_flags)),
-                    2: hdr.eq(Cat(row, C(0, 16 - len(row)), frag_off_arr[frag_idx])),
-                    3: hdr.eq(Cat(frag_cnt_arr[frag_idx],
-                                  C(pixfmt, 8), C(mode_id, 8))),
-                    4: hdr.eq(ts_frag),
-                }),
-            }),
+            Case(ptype, cases),
             If(word_idx == 1, hdr.eq(w1)),
             If((ptype == _T_LINE) & (word_idx >= 5),
                 sink.data.eq(Cat(pix0.pix, pix1.pix)),
+            ).Elif((ptype == _T_AUDIO) & (word_idx >= 5),
+                sink.data.eq(aud_data),
             ).Else(
                 sink.data.eq(hdr),
             ),
         ]
+        # AUDIOペイロード送出時のFIFOポップ(最終ワードも含めword>=5で1ワード=1ポップ)
+        for k in range(n_aud):
+            self.comb += aud_pop[k].eq(
+                (ptype == _T_AUDIO) & (asrc == k) & (word_idx >= 5) &
+                sink.valid & sink.ready)
+
+        idle_if = If(ann_pending,
+            ann_clr.eq(1),
+            NextValue(ptype, _T_ANN),
+            NextValue(dst_ip, ann_ip),
+            NextValue(dst_port, ann_port),
+            NextValue(length, len(ann_payload)),
+            NextValue(nwords, n_ann_words),
+            NextState("SEND"),
+        ).Elif(cfg_pending,
+            cfg_clr.eq(1),
+            NextValue(ptype, _T_CFG),
+            NextValue(dst_ip, cfg_ip),
+            NextValue(dst_port, cfg_port),
+            NextValue(length, 16),
+            NextValue(nwords, 4),
+            NextState("SEND"),
+        ).Elif(mode_pending & sub_valid,
+            mode_clr.eq(1),
+            NextValue(ptype, _T_MODE),
+            NextValue(dst_ip, sub_ip),
+            NextValue(dst_port, sub_port),
+            NextValue(length, 32),
+            NextValue(nwords, 8),
+            NextState("SEND"),
+        ).Elif(line_pending & sub_valid,
+            line_clr.eq(1),
+            NextValue(ptype, _T_LINE),
+            NextValue(dst_ip, sub_ip),
+            NextValue(dst_port, sub_port),
+            NextValue(frag_idx, 0),
+            NextValue(length, frag_len_arr[0]),
+            NextValue(nwords, frag_nwords_arr[0]),
+            NextValue(x, 0),
+            NextState("SEND"),
+        )
+        for k in range(n_aud):
+            idle_if = idle_if.Elif(aud_pending[k],
+                NextValue(ptype, _T_AUDIO),
+                NextValue(asrc, k),
+                NextValue(dst_ip, sub_ip),
+                NextValue(dst_port, sub_port),
+                NextValue(length, 20 + 4 * audio_nsamples),
+                NextValue(nwords, aud_nwords),
+                NextState("SEND"),
+            )
 
         self.fsm = fsm = FSM(reset_state="IDLE")
         fsm.act("IDLE",
             NextValue(word_idx, 0),
-            If(ann_pending,
-                ann_clr.eq(1),
-                NextValue(ptype, _T_ANN),
-                NextValue(dst_ip, ann_ip),
-                NextValue(dst_port, ann_port),
-                NextValue(length, len(ann_payload)),
-                NextValue(nwords, n_ann_words),
-                NextState("SEND"),
-            ).Elif(mode_pending & sub_valid,
-                mode_clr.eq(1),
-                NextValue(ptype, _T_MODE),
-                NextValue(dst_ip, sub_ip),
-                NextValue(dst_port, sub_port),
-                NextValue(length, 32),
-                NextValue(nwords, 8),
-                NextState("SEND"),
-            ).Elif(line_pending & sub_valid,
-                line_clr.eq(1),
-                NextValue(ptype, _T_LINE),
-                NextValue(dst_ip, sub_ip),
-                NextValue(dst_port, sub_port),
-                NextValue(frag_idx, 0),
-                NextValue(length, frag_len_arr[0]),
-                NextValue(nwords, frag_nwords_arr[0]),
-                NextValue(x, 0),
-                NextState("SEND"),
-            ),
+            idle_if,
         )
         fsm.act("SEND",
             sink.valid.eq(1),
@@ -388,8 +535,24 @@ class _CRG(LiteXModule):
         pll.create_clkout(self.cd_sys, sys_clk_freq)
 
 
+# hardware/adc-frontend の J4(EXT P4ミラー)ピン割当(README参照)
+_audio_io = [
+    ("audio", 0,
+        Subsignal("mclk",      Pins("F1")),   # 12.288MHz XO入力(PCLKC6_1)
+        Subsignal("bck",       Pins("G3")),   # → PCM1808×2(64fs)
+        Subsignal("lrck",      Pins("H4")),   # → PCM1808×2(fs)
+        Subsignal("dout_dsub", Pins("F3")),   # ← U11(D-SUB15音声)
+        Subsignal("dout_line", Pins("J4")),   # ← U12(LINE入力)
+        Subsignal("spdif",     Pins("E19")),  # ← TOSLINK受信モジュール
+        IOStandard("LVCMOS33")),
+]
+
+
 class RetroCastXStream(SoCMini):
-    def __init__(self, revision="7.0", sys_clk_freq=int(50e6)):
+    # sys 45MHz: 45M×32bit=180MB/s でGbE線速(125MB/s)に対し十分。
+    # 50MHzは音声パス追加後にタイミングが閉じなくなったため下げた
+    # (S/PDIFのUI分解能も45MHzで7.3サイクル/UI@48kHzと十分)
+    def __init__(self, revision="7.0", sys_clk_freq=int(45e6)):
         from litex_boards.platforms import colorlight_i5
         from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
         from liteeth.core import LiteEthUDPIPCore
@@ -415,8 +578,26 @@ class RetroCastXStream(SoCMini):
             # にする。これ無しだとeth_rxの125MHzタイミングが閉じない: 実測93MHz)
             with_sys_datapath = True)
 
+        # 音声: 12.288MHz XO入力の "aud" ドメインでI2Sキャプチャ、
+        # S/PDIFはsysドメインでオーバーサンプリング復号
+        from migen.genlib.resetsync import AsyncResetSynchronizer
+        from retrocastx_audio import I2sCapture, SpdifDecoder
+        platform.add_extension(_audio_io)
+        audio_pads = platform.request("audio")
+        self.cd_aud = ClockDomain()
+        self.comb += self.cd_aud.clk.eq(audio_pads.mclk)
+        self.specials += AsyncResetSynchronizer(self.cd_aud, ResetSignal("sys"))
+        platform.add_period_constraint(audio_pads.mclk, 1e9 / 12.288e6)
+        self.i2s = I2sCapture(audio_pads.bck, audio_pads.lrck,
+                              [audio_pads.dout_dsub, audio_pads.dout_line])
+        self.spdif = SpdifDecoder(audio_pads.spdif, sys_clk_freq)
+
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
-        self.streamer = RetroCastXStreamer(udp_port, sys_clk_freq)
+        self.streamer = RetroCastXStreamer(
+            udp_port, sys_clk_freq,
+            audio_sources=[(self.i2s.sources[0], 48000),
+                           (self.i2s.sources[1], 48000),
+                           (self.spdif.source, self.spdif.rate_hz)])
 
 
 def main():

@@ -5,8 +5,6 @@ edition = "2024"
 
 [dependencies]
 eframe = "0.35.0"
-socket2 = "0.6.5"
-
-[dev-dependencies]
 pollster = "1.0.1"
+socket2 = "0.6.5"
 winit = "0.30.13"

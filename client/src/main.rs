@@ -13,6 +13,7 @@
 //! (sender_simはSUBSCRIBEを無視して--dest宛に送るため)。
 
 mod assembler;
+mod fullscreen;
 mod protocol;
 mod receiver;
 
@@ -26,6 +27,7 @@ fn main() -> eframe::Result {
     let mut subscribe_to = Some("255.255.255.255".to_string());
     let mut headless_secs: Option<u64> = None;
     let mut no_vsync = false;
+    let mut fullscreen_mode = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -38,6 +40,8 @@ fn main() -> eframe::Result {
             // VRR実験用: presentをvsyncから切り離す(wgpu AutoNoVsync)。
             // VRR対応パネルなら「フレームが来たときに出す」に近づく第一歩
             "--no-vsync" => no_vsync = true,
+            // 低遅延フルスクリーン(専用presentスレッド+Immediate、ソース駆動present)
+            "--fullscreen" => fullscreen_mode = true,
             other => {
                 eprintln!("unknown arg: {other}");
                 std::process::exit(2);
@@ -47,6 +51,9 @@ fn main() -> eframe::Result {
 
     if let Some(secs) = headless_secs {
         return run_headless(port, subscribe_to, secs);
+    }
+    if fullscreen_mode {
+        fullscreen::run(port, subscribe_to); // 戻らない
     }
 
     let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();

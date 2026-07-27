@@ -55,9 +55,14 @@ class FrameAssembler:
         except ValueError:
             return []
         completed = []
-        if ptype == proto.TYPE_INFO:
-            # ANNOUNCEもボードの共通seq空間を消費する: 追跡しないと偽ロスになる
+        # ボード発の全パケット(ANNOUNCE/AUDIO/CONFIG応答)は共通seq空間を消費する:
+        # 追跡しないと偽ロスになる。SUBSCRIBEと非応答CONFIGはアプリ発なので除外
+        if ptype == proto.TYPE_INFO or ptype == proto.TYPE_AUDIO:
             self._track_seq(pkt.seq)
+            return completed
+        if ptype == proto.TYPE_CONFIG:
+            if pkt.is_reply:
+                self._track_seq(pkt.seq)
             return completed
         if ptype not in (proto.TYPE_LINE, proto.TYPE_MODE):
             return completed  # SUBSCRIBE等はフレーム再構成に関与しない

@@ -7,6 +7,7 @@ Mac/Windows/Linux を単一コードベースでカバーする。
 cargo run --release                     # SUBSCRIBEをブロードキャストして実機ボードを受信
 cargo run --release -- --board 192.168.10.50   # ボードIP指定
 cargo run --release -- --no-subscribe   # 受け専用(sender_sim相手はこれ)
+cargo run --release -- --fullscreen     # 低遅延フルスクリーン(下記、ESCで終了)
 cargo run --release -- --headless 5 --no-subscribe  # GUIなしで受信統計のみ(検証用)
 cargo test                              # プロトコル/アセンブラのユニットテスト
 ```
@@ -45,6 +46,13 @@ cargo run --release -- --no-subscribe
 55.46Hz追従の実装形。レトロゲーム全画面用途と合致する。ウィンドウ表示時は
 60Hz vsyncのジャダーを許容(それでも実用上は十分)。
 再現: `cargo run --release --example pace_probe -- 55.46 --latency 3 --fullscreen`
+
+この構成は `--fullscreen` モード(`src/fullscreen.rs`)として本実装済み:
+フレーム到着駆動でpresentし、sender_sim 512×512@55.46Hz RGB555 に対して
+**present間隔 18.03ms σ0.7ms = 55.46Hz追従・ロス0** を実測確認(2026-07-27)。
+プライマリモニタに全画面表示(不可視ディスプレイ対策でモニタ明示)、
+ニアレスト+整数拡大レターボックス、ESC/クローズで終了、統計はstderr。
+タイムスタンプ駆動のジッタ平滑化(到着ゆらぎをドットクロック時刻で吸収)は次段。
 
 残る確認は**パネルが実際に追従するか**で、これはVRR対応表示器が必要
 (ProMotion搭載MacBookの内蔵ディスプレイ、またはAdaptive-Sync対応モニタのDP接続)。

@@ -50,13 +50,17 @@ class _FakeUDPPort:
 
 
 class DUT(Module):
-    def __init__(self, fps, mtu_payload, interlace):
+    def __init__(self, fps, mtu_payload, interlace, n_audio=0, audio_nsamples=16):
         self.port = _FakeUDPPort()
+        self.audio_eps = [stream.Endpoint([("data", 32)]) for _ in range(n_audio)]
+        self.audio_rates = [48000, 44100, 32000][:n_audio]
         self.submodules.streamer = RetroCastXStreamer(
             self.port, SYS, width=W, height=H, fps=fps,
             announce_period=ANN_PERIOD, mode_period=MODE_PERIOD,
             sub_timeout=SUB_TIMEOUT, mtu_payload=mtu_payload,
-            interlace=interlace)
+            interlace=interlace,
+            audio_sources=list(zip(self.audio_eps, self.audio_rates)),
+            audio_nsamples=audio_nsamples)
 
 
 def _send_datagram(ep, payload: bytes, ip: int, port: int):
@@ -113,10 +117,13 @@ def collector(dut, out, n_cycles):
         cycle += 1
 
 
-def run_dut(fps, mtu_payload, interlace, n_cycles):
-    dut = DUT(fps, mtu_payload, interlace)
+def run_dut(fps, mtu_payload, interlace, n_cycles, n_audio=0,
+            audio_nsamples=16, extra_gens=()):
+    dut = DUT(fps, mtu_payload, interlace, n_audio, audio_nsamples)
     datagrams = []
-    run_simulation(dut, [driver(dut), collector(dut, datagrams, n_cycles)])
+    gens = [driver(dut), collector(dut, datagrams, n_cycles)]
+    gens += [g(dut) for g in extra_gens]
+    run_simulation(dut, gens)
     return datagrams
 
 
@@ -242,9 +249,121 @@ def scenario_b():
           "%d LINE pkts" % (checked, len(lines)))
 
 
+CONFIGURER = (convert_ip("192.168.10.4"), 5000)
+NSAMP = 16
+MASK_SET_AT = 8000
+
+
+def scenario_c():
+    """音声2ソース + CONFIG(マスク変更・ArgusXレジスタ・応答)。"""
+    fps, n_cycles = 300.0, 24_000
+
+    def audio_pusher(k, period):
+        def gen(dut):
+            ep = dut.audio_eps[k]
+            for _ in range(700):
+                yield
+            # 注意: 無限ループにするとrun_simulationが終わらない(全ジェネレータ
+            # 終了で完了する仕様)ため、サイクル数に見合う回数で打ち切る
+            for i in range((n_cycles - 700) // period):
+                yield ep.data.eq(((0xF000 | (k << 8) | (i & 0xFF)) << 16)
+                                 | (k << 12) | (i & 0xFFF))
+                yield ep.valid.eq(1)
+                yield
+                yield ep.valid.eq(0)
+                for _ in range(period - 1):
+                    yield
+        return gen
+
+    def config_sender(dut):
+        for _ in range(MASK_SET_AT):
+            yield
+        # src1(bit1)を無効化(src0のみ残す)
+        yield from _send_datagram(dut.port.source,
+                                  proto.pack_config(10, proto.CFG_TARGET_BOARD,
+                                                    proto.CFG_OP_SET,
+                                                    proto.CFG_KEY_AUDIO_ENABLE,
+                                                    0b001),
+                                  *CONFIGURER)
+        for _ in range(3000):
+            yield
+        yield from _send_datagram(dut.port.source,
+                                  proto.pack_config(11, proto.CFG_TARGET_ARGUSX,
+                                                    proto.CFG_OP_SET,
+                                                    proto.CFG_KEY_ARGUSX_INPUT,
+                                                    0x1234),
+                                  *CONFIGURER)
+        for _ in range(2000):
+            yield
+        yield from _send_datagram(dut.port.source,
+                                  proto.pack_config(12, proto.CFG_TARGET_ARGUSX,
+                                                    proto.CFG_OP_GET,
+                                                    proto.CFG_KEY_ARGUSX_INPUT),
+                                  *CONFIGURER)
+
+    datagrams = run_dut(fps, 1472, False, n_cycles, n_audio=2,
+                        audio_nsamples=NSAMP,
+                        extra_gens=(audio_pusher(0, 25), audio_pusher(1, 25),
+                                    config_sender))
+
+    audio = {0: [], 1: []}
+    replies = []
+    asm = FrameAssembler()
+    for start, ip, port, payload in datagrams:
+        ptype, pkt = proto.parse(payload)
+        if ptype == proto.TYPE_AUDIO:
+            assert (ip, port) == SUBSCRIBER, "AUDIO sent to non-subscriber"
+            audio[pkt.source].append((start, pkt))
+        if ptype == proto.TYPE_CONFIG:
+            assert (ip, port) == CONFIGURER, "CONFIG reply to wrong sender"
+            replies.append((start, pkt))
+        asm.feed(payload)
+
+    # AUDIOパケットの構造とペイロード連続性(FIFO経由でサンプル欠落なし)
+    for k in (0, 1):
+        assert audio[k], "no AUDIO packets for source %d" % k
+        first = audio[k][0][1]
+        assert first.nsamples == NSAMP and first.format == proto.AUDIO_FMT_PCM16
+        assert first.rate_hz == (48000, 44100)[k]
+        seqs = []
+        for _, pkt in audio[k]:
+            for i in range(pkt.nsamples):
+                l = int.from_bytes(pkt.samples[4 * i:4 * i + 2], "little")
+                r = int.from_bytes(pkt.samples[4 * i + 2:4 * i + 4], "little")
+                assert (l >> 12) == k and (r >> 8) & 0xF == k, \
+                    "source %d sample tagged wrong: %04x/%04x" % (k, l, r)
+                seqs.append(l & 0xFFF)
+        expect = list(range(seqs[0], seqs[0] + len(seqs)))
+        assert seqs == [s & 0xFFF for s in expect], \
+            "source %d sample continuity broken" % k
+
+    # マスク変更後: src1のAUDIOは止まり、src0は続く
+    slack = 2500  # 変更前に溜まった分+送出中の1パケット
+    last1 = max(start for start, _ in audio[1])
+    assert last1 < MASK_SET_AT + slack, "src1 still streaming after mask change"
+    assert max(start for start, _ in audio[0]) > MASK_SET_AT + slack, \
+        "src0 stopped unexpectedly"
+
+    # CONFIG応答: 値・エコー・REPLYフラグ
+    assert len(replies) == 3, "expected 3 CONFIG replies, got %d" % len(replies)
+    vals = [(p.target, p.op, p.key, p.value, p.is_reply) for _, p in replies]
+    assert vals[0] == (proto.CFG_TARGET_BOARD, proto.CFG_OP_SET,
+                       proto.CFG_KEY_AUDIO_ENABLE, 0b001, True)
+    assert vals[1] == (proto.CFG_TARGET_ARGUSX, proto.CFG_OP_SET,
+                       proto.CFG_KEY_ARGUSX_INPUT, 0x1234, True)
+    assert vals[2] == (proto.CFG_TARGET_ARGUSX, proto.CFG_OP_GET,
+                       proto.CFG_KEY_ARGUSX_INPUT, 0x1234, True)
+
+    assert asm.lost_packets == 0, "phantom loss with audio: %d" % asm.lost_packets
+    print("C(audio+config): OK — %d/%d AUDIO pkts (src0/src1), samples "
+          "contiguous, 3 CONFIG replies verified" % (
+              len(audio[0]), len(audio[1])))
+
+
 def main():
     scenario_a()
     scenario_b()
+    scenario_c()
     print("all scenarios passed")
 
 

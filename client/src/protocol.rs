@@ -11,6 +11,7 @@ pub const TYPE_MODE: u8 = 1;
 pub const TYPE_AUDIO: u8 = 2;
 pub const TYPE_INFO: u8 = 3;
 pub const TYPE_SUBSCRIBE: u8 = 4;
+pub const TYPE_CONFIG: u8 = 5;
 
 pub const PIXFMT_RGB888: u8 = 0;
 pub const PIXFMT_RGB555: u8 = 1;
@@ -70,7 +71,8 @@ pub enum Packet<'a> {
     Line(Line<'a>),
     Mode(Mode),
     Announce(Announce),
-    Other(u8),
+    /// AUDIO/CONFIG等(共通seq空間の追跡に必要な範囲のみ保持)
+    Other { ptype: u8, flags: u8, seq: u16 },
 }
 
 fn u16le(d: &[u8], o: usize) -> u16 {
@@ -150,9 +152,11 @@ pub fn parse(d: &[u8]) -> Result<Packet<'_>, &'static str> {
                 seq,
             }))
         }
-        t => Ok(Packet::Other(t)),
+        t => Ok(Packet::Other { ptype: t, flags, seq }),
     }
 }
+
+pub const CFG_FLAG_REPLY: u8 = 0x01;
 
 pub fn pack_subscribe(seq: u16, announce_only: bool) -> [u8; 8] {
     let mut p = [0u8; 8];

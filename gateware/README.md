@@ -31,10 +31,12 @@ python3 -m retrocastx.discover                        # ANNOUNCEが見えるこ�
 python3 -m retrocastx.receiver --subscribe --dump out # SUBSCRIBE送出+パターン受信
 ```
 
-タイミング収束済み(step2, seed=3): **eth_rx 130.8MHz(制約125)/ sys 52.9MHz(制約50)**。
+タイミング収束済み(step2+音声, seed=3): **eth_rx 135.4MHz(制約125)/
+sys 49.9MHz(制約45)/ aud 182.8MHz(制約12.29)**。
 ポイントは `LiteEthUDPIPCore(..., with_sys_datapath=True)`(CRC等の広幅処理をsysドメインへ
 移し、125MHzのethドメインは8bit幅の軽い経路のみにする)。これ無しではeth_rxが93MHz止まり。
-sysは50MHz×32bit=200MB/sでGbE線速(125MB/s)に対し十分。
+sysは音声パス追加時に50→**45MHz**へ変更(50MHzでは収束せず。45MHz×32bit=180MB/sで
+GbE線速125MB/sに対しなお十分)。
 
 ## 構成
 
@@ -73,11 +75,15 @@ sysは50MHz×32bit=200MB/sでGbE線速(125MB/s)に対し十分。
    規約は protocol-v0.md で確定(line=フルフレーム行・frame=フィールドごと+1、
    受信側は無修正でweave合成になることを検証済み)。ゲートウェアは
    FIDOUTから行番号 2n+field を計算してFIELD_ODDフラグを立てるだけ
-5. **step4(音声+CONFIG)**: I2Sキャプチャ×2(BCK/LRCKはMCLK 12.288MHz
-   =F1/PCLKC6_1 から分周生成、DOUT→F3/J4取り込み)+ S/PDIFデコーダ(E19、
-   sysクロックでオーバーサンプリング)→ AUDIOパケット送出。
-   CONFIGパケット受信 → 音声ソース選択 / I2Cマスター経由でTVP7002・ArgusX設定
-   (プロトコルは docs/protocol-v0.md の AUDIO / CONFIG で定義済み)
+5. **step4(音声+CONFIG)**: **コード実装済み・sim検証済み**(retrocastx_audio.py)。
+   - I2Sキャプチャ×2: MCLK 12.288MHz(F1/PCLKC6_1)="aud"ドメイン、BCK/LRCK分周
+     生成、DOUT(F3/J4)から上位16bit取得、AsyncFIFOでsysへ。PCM1808波形モデルで
+     ビット一致検証(sim_audio.py)
+   - S/PDIFデコーダ(E19): sysクロックでBMC復号(UI長EWMA追従、プリアンブル
+     B/M/W判別、レート実測)。非整数UI(8.14サイクル)の波形でビット一致検証
+   - AUDIOパケット送出(ソース別FIFO、複数同時可)+ CONFIG受信/応答
+     (音声マスク・ArgusX仮レジスタ)を統合sim(sim_stream.py シナリオC)で検証
+   - 実機残タスク: TVP7002のI2C初期化、ArgusX宛CONFIGのI2C中継(仮レジスタを置換)
 
 ## ツールチェーン(macOS)
 
