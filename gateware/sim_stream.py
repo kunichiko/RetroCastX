@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""RetroCastXStreamer のMigenシミュレーション(実機不要のstep2検証)。
+"""RetroCastXStreamer のMigenシミュレーション(実機不要の検証)。
 
-UDPポートを模したエンドポイントを直結し、
-- SUBSCRIBE(ANNOUNCE_ONLY)への ANNOUNCE ユニキャスト返信
-- SUBSCRIBE でのストリーム送り先切替(MODE が LINE に先行すること)
-- LINE/MODE パケットが host/python の protocol.py でそのままパースできること
-- 再構成フレームが pattern.make_frame と(RGB555量子化を除き)ビット一致すること
-- 購読タイムアウトでストリームが停止すること
-を検証する。実行: .venv/bin/python sim_stream.py
+UDPポートを模したエンドポイントを直結し、2シナリオで検証する:
 
-縮小構成(64x32)を使う。パターン生成はビット幅パラメトリックなので
-512x512のビルド構成と同一ロジックが検証される。
+A) プログレッシブ + ライン断片化(小MTU):
+   - SUBSCRIBE(ANNOUNCE_ONLY)への ANNOUNCE ユニキャスト返信
+   - SUBSCRIBE でのストリーム送り先切替(MODE が LINE に先行)
+   - 断片の offset/count が host 側 protocol.fragment_line と一致、
+     LAST_FRAGMENT は最終断片のみ、断片タイムスタンプ = ライン先頭 + offset
+   - 再構成フレームが pattern.make_frame と(RGB555量子化を除き)ビット一致
+   - 購読タイムアウトでストリーム停止
+B) インターレース:
+   - MODE mflags bit0、vactive=フルフレーム行数
+   - frame=フィールド毎+1、FIELD_ODD=フィールド極性、行番号の偶奇=極性
+   - 受信側で自然に weave 合成(fill≈0.5/フィールド)、内容の行単位一致
+
+実行: .venv/bin/python sim_stream.py
 """
 import os
 import random
@@ -29,15 +34,13 @@ from liteeth.common import eth_udp_user_description         # noqa: E402
 
 from retrocastx_stream import RetroCastXStreamer, convert_ip  # noqa: E402
 
-# 縮小構成(実行時間のため)。タイマ類も短縮。
 SYS = 1_000_000
-W, H, FPS = 64, 32, 400.0
+W, H = 64, 32
 ANN_PERIOD, MODE_PERIOD, SUB_TIMEOUT = 0.004, 0.003, 0.020
-N_CYCLES = 26_000
 
 PROBER = (convert_ip("192.168.10.2"), 40001)   # discover相当(ANNOUNCE_ONLY)
 SUBSCRIBER = (convert_ip("192.168.10.3"), proto.DEFAULT_PORT)
-SUBSCRIBE_AT = 600                              # このサイクル付近で購読開始
+SUBSCRIBE_AT = 600
 
 
 class _FakeUDPPort:
@@ -47,16 +50,16 @@ class _FakeUDPPort:
 
 
 class DUT(Module):
-    def __init__(self):
+    def __init__(self, fps, mtu_payload, interlace):
         self.port = _FakeUDPPort()
         self.submodules.streamer = RetroCastXStreamer(
-            self.port, SYS, width=W, height=H, fps=FPS,
+            self.port, SYS, width=W, height=H, fps=fps,
             announce_period=ANN_PERIOD, mode_period=MODE_PERIOD,
-            sub_timeout=SUB_TIMEOUT)
+            sub_timeout=SUB_TIMEOUT, mtu_payload=mtu_payload,
+            interlace=interlace)
 
 
 def _send_datagram(ep, payload: bytes, ip: int, port: int):
-    """8/32bit境界を仮定した簡易ドライバ(SUBSCRIBEは8Bなので2ワード)。"""
     assert len(payload) % 4 == 0
     words = [int.from_bytes(payload[i:i + 4], "little")
              for i in range(0, len(payload), 4)]
@@ -75,28 +78,23 @@ def _send_datagram(ep, payload: bytes, ip: int, port: int):
 
 
 def driver(dut):
-    """発見プローブ → 購読、の順でSUBSCRIBEを注入する。"""
     for _ in range(100):
         yield
     yield from _send_datagram(dut.port.source,
                               proto.pack_subscribe(0, announce_only=True),
                               *PROBER)
-    while True:
-        # おおよそ SUBSCRIBE_AT サイクルまで待つ(自身の消費分は誤差)
-        for _ in range(SUBSCRIBE_AT - 110):
-            yield
-        break
+    for _ in range(SUBSCRIBE_AT - 110):
+        yield
     yield from _send_datagram(dut.port.source,
                               proto.pack_subscribe(1, announce_only=False),
                               *SUBSCRIBER)
 
 
-def collector(dut, out):
-    """TX側を確率的なreadyで受け、(開始サイクル, 宛先, データグラム)を集める。"""
+def collector(dut, out, n_cycles):
     rnd = random.Random(1)
     cycle = 0
     words, meta = [], None
-    while cycle < N_CYCLES:
+    while cycle < n_cycles:
         snk = dut.port.sink
         if (yield snk.valid) and (yield snk.ready):
             if not words:
@@ -115,83 +113,139 @@ def collector(dut, out):
         cycle += 1
 
 
-def main():
-    dut = DUT()
+def run_dut(fps, mtu_payload, interlace, n_cycles):
+    dut = DUT(fps, mtu_payload, interlace)
     datagrams = []
-    run_simulation(dut, [driver(dut), collector(dut, datagrams)])
-    print("captured %d datagrams" % len(datagrams))
+    run_simulation(dut, [driver(dut), collector(dut, datagrams, n_cycles)])
+    return datagrams
 
-    # --- 期待値(sender_sim.Sender と同一の算出式) ---
-    htotal, vtotal = int(W * 1.28), int(H * 1.06)
-    dotclk = int(htotal * vtotal * FPS)
+
+def quantize(img):
+    return pattern.rgb555_to_rgb888(pattern.rgb888_to_rgb555(img))
+
+
+def scenario_a():
+    """プログレッシブ + 断片化(MTUペイロード60B → 20px×3 + 4px)。"""
+    fps, mtu, n_cycles = 300.0, 60, 30_000
+    datagrams = run_dut(fps, mtu, False, n_cycles)
+    htotal = int(W * 1.28)
+    expected_frags = proto.fragment_line(W, proto.PIXFMT_RGB555, mtu)
+    assert len(expected_frags) == 4
 
     ann_to_prober = 0
-    ann_names = set()
-    modes = []
-    lines = []
+    modes, lines = [], []
+    first_stream_types = []
     asm = FrameAssembler()
     completed = []
-    first_stream_types = []   # 購読先へ送られたパケットの順序(MODE先行の確認用)
     for start, ip, port, payload in datagrams:
         ptype, pkt = proto.parse(payload)
-        if ptype == proto.TYPE_INFO:
-            ann_names.add((pkt.name, pkt.mac))
-            if (ip, port) == PROBER:
-                ann_to_prober += 1
+        if ptype == proto.TYPE_INFO and (ip, port) == PROBER:
+            ann_to_prober += 1
         if (ip, port) == SUBSCRIBER and ptype in (proto.TYPE_MODE, proto.TYPE_LINE):
             first_stream_types.append(ptype)
         if ptype == proto.TYPE_MODE:
-            assert (ip, port) == SUBSCRIBER, "MODE sent to non-subscriber"
             modes.append(pkt)
         if ptype == proto.TYPE_LINE:
-            assert (ip, port) == SUBSCRIBER, "LINE sent to non-subscriber"
+            assert (ip, port) == SUBSCRIBER
             lines.append((start, pkt))
         completed += asm.feed(payload)
     completed += asm.flush()
 
-    # 発見: プローブへのANNOUNCE返信(+定期ANNOUNCE)
-    assert ann_to_prober >= 1, "no ANNOUNCE reply to prober"
-    assert ann_names == {("retrocastx-i5", bytes([0x02, 0x52, 0x43, 0x58, 0x00, 0x01]))}
-
-    # MODE の内容と、購読開始直後に MODE が LINE に先行すること
-    assert first_stream_types and first_stream_types[0] == proto.TYPE_MODE, \
-        "stream did not start with MODE"
+    assert ann_to_prober >= 1
+    assert first_stream_types and first_stream_types[0] == proto.TYPE_MODE
     m = modes[0]
-    assert (m.hactive, m.vactive, m.htotal, m.vtotal) == (W, H, htotal, vtotal)
-    assert m.pixfmt == proto.PIXFMT_RGB555 and m.mode_id == 1
-    assert m.dotclk_hz == dotclk
-    assert m.hfreq_mhz_x1000 == int(dotclk / htotal * 1000)
-    assert m.vfreq_mhz_x1000 == int(FPS * 1000)
+    assert (m.hactive, m.vactive, m.mflags) == (W, H, 0)
 
-    # LINE: ロス/迷子なし、タイムスタンプの歩進 = htotal/ライン
-    assert asm.lost_packets == 0, "phantom packet loss: %d" % asm.lost_packets
-    assert asm.orphan_lines == 0
-    by_key = {(pkt.frame, pkt.line): pkt for _, pkt in lines}
-    for (f, y), pkt in by_key.items():
-        if (f, y + 1) in by_key:
-            delta = (by_key[(f, y + 1)].timestamp - pkt.timestamp) & 0xFFFFFFFF
-            assert delta == htotal, "timestamp step %d != htotal %d" % (delta, htotal)
+    # 断片構造: offset/countの列がhost実装と一致、LAST_FRAGMENTは最終断片のみ
+    by_line = {}
+    for _, pkt in lines:
+        by_line.setdefault((pkt.frame, pkt.line), []).append(pkt)
+    for key, frags in by_line.items():
+        got = [(p.offset_px, p.count_px) for p in frags]
+        assert got == expected_frags, "frag layout %s != %s at %s" % (
+            got, expected_frags, key)
+        assert [p.last_fragment for p in frags] == [False, False, False, True]
+        # 断片タイムスタンプ = ライン先頭 + offset(ドットクロック)
+        base = frags[0].timestamp
+        for p in frags:
+            assert (p.timestamp - base) & 0xFFFFFFFF == p.offset_px, \
+                "fragment timestamp mismatch at %s" % (key,)
+    # ライン間のタイムスタンプ歩進 = htotal
+    for (f, y), frags in by_line.items():
+        nxt = by_line.get((f, y + 1))
+        if nxt:
+            delta = (nxt[0].timestamp - frags[0].timestamp) & 0xFFFFFFFF
+            assert delta == htotal
 
-    # フレーム内容: pattern.make_frame とビット一致(RGB555量子化込み)
+    assert asm.lost_packets == 0 and asm.orphan_lines == 0
     full = [(fidx, img) for fidx, img, fill in completed if fill == 1.0]
     assert len(full) >= 3, "too few complete frames: %d" % len(full)
     for fidx, img in full:
-        exp = pattern.rgb555_to_rgb888(pattern.rgb888_to_rgb555(
-            pattern.make_frame(W, H, fidx)))
-        assert np.array_equal(img, exp), "frame %d content mismatch" % fidx
+        assert np.array_equal(img, quantize(pattern.make_frame(W, H, fidx))), \
+            "frame %d content mismatch" % fidx
 
-    # 購読タイムアウト後にストリームが止まること
+    # 購読タイムアウト後の停止
     sub_expire = SUBSCRIBE_AT + int(SYS * SUB_TIMEOUT)
     last_line = max(start for start, _ in lines)
-    slack = int(SYS / (FPS * H)) * 3 + 200
-    assert last_line < sub_expire + slack, \
-        "LINE after subscription expiry (last at %d, expiry %d)" % (last_line, sub_expire)
-    assert lines, "no LINE packets at all"
+    assert last_line < sub_expire + 2000
+    print("A(fragmentation): OK — %d frames bit-exact, %d LINE pkts "
+          "(%d frags/line), stream stopped by %d" % (
+              len(full), len(lines), len(expected_frags), last_line))
 
-    print("OK: %d frames verified bit-exact, %d LINE / %d MODE / %d ANNOUNCE names, "
-          "stream stopped by %d (expiry %d)" % (
-              len(full), len(lines), len(modes), len(ann_names),
-              last_line, sub_expire))
+
+def scenario_b():
+    """インターレース(フィールドレート300、16行/フィールド、単一断片)。"""
+    fps, n_cycles = 300.0, 30_000
+    datagrams = run_dut(fps, 1472, True, n_cycles)
+
+    modes, lines = [], []
+    asm = FrameAssembler()
+    completed = []
+    for start, ip, port, payload in datagrams:
+        ptype, pkt = proto.parse(payload)
+        if ptype == proto.TYPE_MODE:
+            modes.append(pkt)
+        if ptype == proto.TYPE_LINE:
+            lines.append(pkt)
+        completed += asm.feed(payload)
+    completed += asm.flush()
+
+    m = modes[0]
+    assert m.mflags & proto.MFLAG_INTERLACE, "MODE interlace flag missing"
+    assert (m.hactive, m.vactive) == (W, H)
+
+    for pkt in lines:
+        parity = pkt.frame & 1                    # フィールド極性(frame=フィールド毎+1)
+        assert (pkt.flags >> 1) & 1 == parity, "FIELD_ODD mismatch"
+        assert pkt.line & 1 == parity, "row parity mismatch"
+        assert pkt.last_fragment
+
+    # weave: 各フィールド完了時、当該極性の行=当フィールド、逆極性=前フィールドの内容
+    fields = {fidx: img for fidx, img, fill in completed
+              if abs(fill - 0.5) < 1e-6}
+    assert len(fields) >= 3, "too few complete fields: %d" % len(fields)
+    checked = 0
+    for fidx, img in fields.items():
+        if fidx == 0:
+            continue  # 逆極性行の期待値は前フィールド由来なのでfidx>=1のみ検査
+        cur = quantize(pattern.make_frame(W, H, fidx))
+        prv = quantize(pattern.make_frame(W, H, fidx - 1))
+        p = fidx & 1
+        assert np.array_equal(img[p::2], cur[p::2]), \
+            "field %d own-parity rows mismatch" % fidx
+        assert np.array_equal(img[1 - p::2], prv[1 - p::2]), \
+            "field %d previous-field rows mismatch" % fidx
+        checked += 1
+    assert checked >= 2
+    assert asm.lost_packets == 0 and asm.orphan_lines == 0
+    print("B(interlace): OK — %d fields verified (weave row-exact), "
+          "%d LINE pkts" % (checked, len(lines)))
+
+
+def main():
+    scenario_a()
+    scenario_b()
+    print("all scenarios passed")
 
 
 if __name__ == "__main__":

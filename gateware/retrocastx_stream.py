@@ -115,20 +115,41 @@ class RetroCastXStreamer(LiteXModule):
     """
     def __init__(self, udp_port, sys_clk_freq, width=512, height=512, fps=30.0,
                  announce_period=1.0, mode_period=1.0, sub_timeout=10.0,
-                 announce_ip=HOST_IP, udp_port_nr=UDP_PORT):
+                 announce_ip=HOST_IP, udp_port_nr=UDP_PORT,
+                 mtu_payload=1472, interlace=False):
         # --- タイミング諸元(host/python の sender_sim.Sender と同一の算出式) ---
+        # interlace時: fpsはフィールドレート、height/vactiveはフルフレーム行数。
+        # frameカウンタはフィールド毎+1、LINE.lineはフルフレーム行(protocol-v0.md)
         htotal = int(width * 1.28)
         vtotal = int(height * 1.06)
-        dotclk = int(htotal * vtotal * fps)
+        dotclk = int(htotal * vtotal * fps) if not interlace else \
+                 int(htotal * vtotal * fps / 2)
         hfreq_mhz = int(dotclk / htotal * 1000)
         vfreq_mhz = int(fps * 1000)
-        frame_ticks = htotal * vtotal      # フレーム当たりのドットクロック数(ts歩進)
         mode_id, pixfmt = 1, 1             # RGB555 固定
+        mflags = 1 if interlace else 0
 
-        line_bytes = 8 + 12 + 2 * width    # 共通ヘッダ+LINEヘッダ+RGB555ピクセル
-        line_words = line_bytes // 4
-        assert line_bytes % 4 == 0 and line_bytes <= 1472, "no fragmentation in step2"
-        line_interval = int(sys_clk_freq / (fps * height))
+        lines_per_unit = height // 2 if interlace else height  # 伝送単位あたりの行数
+        unit_ticks = htotal * (vtotal // 2 if interlace else vtotal)  # ts歩進/伝送単位
+        assert not interlace or height % 4 == 0
+
+        # --- ライン断片化(host/python の protocol.fragment_line と同一の分割) ---
+        frag_px_max = ((mtu_payload - 20) // 2) & ~1  # RGB555 2B/px、偶数px(ワード整列)
+        assert frag_px_max >= 2, "MTU too small"
+        frags = []
+        off = 0
+        while off < width:
+            n = min(frag_px_max, width - off)
+            frags.append((off, n))
+            off += n
+        n_frags = len(frags)
+        frag_off_arr = Array(Constant(o, bits_sign=16) for o, _ in frags)
+        frag_cnt_arr = Array(Constant(n, bits_sign=16) for _, n in frags)
+        frag_len_arr = Array(Constant(20 + 2 * n, bits_sign=16) for _, n in frags)
+        frag_nwords_arr = Array(Constant(5 + n // 2, bits_sign=16) for _, n in frags)
+        max_nwords = max(10, 8, *(5 + n // 2 for _, n in frags))
+
+        line_interval = int(sys_clk_freq / (fps * lines_per_unit))
         assert line_interval >= 1
 
         ann_payload = make_announce_payload()
@@ -138,10 +159,19 @@ class RetroCastXStreamer(LiteXModule):
 
         # --- 状態レジスタ ---
         seq      = Signal(16)
-        frame    = Signal(16)
-        line     = Signal(max=height)
-        ts_frame = Signal(32)              # 現フレーム先頭のドットクロックカウンタ
+        frame    = Signal(16)              # interlace時はフィールドカウンタ
+        line     = Signal(max=max(lines_per_unit, 2))  # 伝送単位内の行番号
+        field    = Signal()                # インターレースのフィールド極性(0=偶)
+        frag_idx = Signal(max=max(n_frags, 2))
+        ts_frame = Signal(32)              # 現伝送単位先頭のドットクロックカウンタ
         ts_line  = Signal(32)              # 現ライン先頭(= ts_frame + line*htotal)
+
+        # フルフレーム座標の行番号(step3ではTVP7002のFIDOUT由来のfieldを使う)
+        row = Signal(max=height)
+        if interlace:
+            self.comb += row.eq(Cat(field, line))   # row = line*2 + field
+        else:
+            self.comb += row.eq(line)
 
         ann_ip   = Signal(32, reset=convert_ip(announce_ip))
         ann_port = Signal(16, reset=udp_port_nr)
@@ -216,8 +246,8 @@ class RetroCastXStreamer(LiteXModule):
         self.pix0 = pix0 = PatternPixel(width, height)
         self.pix1 = pix1 = PatternPixel(width, height)
         self.comb += [
-            pix0.x.eq(x),          pix0.y.eq(line), pix0.frame.eq(frame),
-            pix1.x.eq(x | 1),      pix1.y.eq(line), pix1.frame.eq(frame),
+            pix0.x.eq(x),          pix0.y.eq(row), pix0.frame.eq(frame),
+            pix1.x.eq(x | 1),      pix1.y.eq(row), pix1.frame.eq(frame),
         ]
 
         # --- TX FSM ---
@@ -225,8 +255,8 @@ class RetroCastXStreamer(LiteXModule):
         dst_ip   = Signal(32)
         dst_port = Signal(16)
         length   = Signal(16)
-        nwords   = Signal(max=line_words + 1)
-        word_idx = Signal(max=line_words)
+        nwords   = Signal(max=max_nwords + 1)
+        word_idx = Signal(max=max_nwords)
 
         sink = udp_port.sink
         self.comb += [
@@ -240,7 +270,12 @@ class RetroCastXStreamer(LiteXModule):
         # ヘッダワードの組み立て(全てリトルエンディアン詰め)
         hdr = Signal(32)
         w1 = Signal(32)                    # 共通ヘッダ後半: frame(u16) | seq(u16)<<16
+        # LINE flags: bit0=LAST_FRAGMENT(最終断片), bit1=FIELD_ODD
+        line_flags = Signal(8)
+        ts_frag = Signal(32)               # 断片先頭ピクセル時点のドットクロック
         self.comb += [
+            line_flags.eq(Cat(frag_idx == n_frags - 1, field)),
+            ts_frag.eq(ts_line + frag_off_arr[frag_idx]),
             If(ptype == _T_ANN,
                 w1.eq(Cat(C(0, 16), seq)),           # ANNOUNCEはframe=0
             ).Else(
@@ -251,7 +286,7 @@ class RetroCastXStreamer(LiteXModule):
                                         for i in range(n_ann_words) if i != 1}),
                 _T_MODE: Case(word_idx, {
                     0: hdr.eq(0x52 | (1 << 16)),                       # type=MODE
-                    2: hdr.eq(mode_id | (pixfmt << 8)),                # mflags=0
+                    2: hdr.eq(mode_id | (pixfmt << 8) | (mflags << 16)),
                     3: hdr.eq(width | (htotal << 16)),
                     4: hdr.eq(height | (vtotal << 16)),
                     5: hdr.eq(dotclk),
@@ -259,10 +294,11 @@ class RetroCastXStreamer(LiteXModule):
                     7: hdr.eq(vfreq_mhz),
                 }),
                 _T_LINE: Case(word_idx, {
-                    0: hdr.eq(0x52 | (0 << 16) | (1 << 24)),           # flags=LAST_FRAGMENT
-                    2: hdr.eq(Cat(line, C(0, 32))[:32]),               # line | offset_px=0
-                    3: hdr.eq(width | (pixfmt << 16) | (mode_id << 24)),
-                    4: hdr.eq(ts_line),
+                    0: hdr.eq(Cat(C(0x52, 8), C(0, 8), C(0, 8), line_flags)),
+                    2: hdr.eq(Cat(row, C(0, 16 - len(row)), frag_off_arr[frag_idx])),
+                    3: hdr.eq(Cat(frag_cnt_arr[frag_idx],
+                                  C(pixfmt, 8), C(mode_id, 8))),
+                    4: hdr.eq(ts_frag),
                 }),
             }),
             If(word_idx == 1, hdr.eq(w1)),
@@ -297,8 +333,9 @@ class RetroCastXStreamer(LiteXModule):
                 NextValue(ptype, _T_LINE),
                 NextValue(dst_ip, sub_ip),
                 NextValue(dst_port, sub_port),
-                NextValue(length, line_bytes),
-                NextValue(nwords, line_words),
+                NextValue(frag_idx, 0),
+                NextValue(length, frag_len_arr[0]),
+                NextValue(nwords, frag_nwords_arr[0]),
                 NextValue(x, 0),
                 NextState("SEND"),
             ),
@@ -309,18 +346,29 @@ class RetroCastXStreamer(LiteXModule):
             If(sink.ready,
                 If(word_idx == nwords - 1,
                     NextValue(seq, seq + 1),
-                    If(ptype == _T_LINE,
-                        If(line == height - 1,
-                            NextValue(line, 0),
-                            NextValue(frame, frame + 1),
-                            NextValue(ts_frame, ts_frame + frame_ticks),
-                            NextValue(ts_line, ts_frame + frame_ticks),
-                        ).Else(
-                            NextValue(line, line + 1),
-                            NextValue(ts_line, ts_line + htotal),
+                    NextValue(word_idx, 0),
+                    If((ptype == _T_LINE) & (frag_idx != n_frags - 1),
+                        # 同一ラインの次断片へ(宛先/種別は不変)。最終ワードも
+                        # ピクセルペアなのでxを進めておく(次断片先頭=offset+count)
+                        NextValue(x, x + 2),
+                        NextValue(frag_idx, frag_idx + 1),
+                        NextValue(length, frag_len_arr[frag_idx + 1]),
+                        NextValue(nwords, frag_nwords_arr[frag_idx + 1]),
+                    ).Else(
+                        If(ptype == _T_LINE,
+                            If(line == lines_per_unit - 1,
+                                NextValue(line, 0),
+                                NextValue(frame, frame + 1),
+                                *([NextValue(field, ~field)] if interlace else []),
+                                NextValue(ts_frame, ts_frame + unit_ticks),
+                                NextValue(ts_line, ts_frame + unit_ticks),
+                            ).Else(
+                                NextValue(line, line + 1),
+                                NextValue(ts_line, ts_line + htotal),
+                            ),
                         ),
+                        NextState("IDLE"),
                     ),
-                    NextState("IDLE"),
                 ).Else(
                     NextValue(word_idx, word_idx + 1),
                     If((ptype == _T_LINE) & (word_idx >= 5),
