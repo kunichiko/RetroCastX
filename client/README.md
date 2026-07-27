@@ -30,9 +30,29 @@ cargo run --release -- --no-subscribe
 - v0.1 は egui 標準のテクスチャAPIで毎フレーム全面アップロード(512×512なら余裕)。
   **パレット吸着・CRTシェーダ・整数拡大以外のフィルタは egui_wgpu の paint callback
   (自前WGSLシェーダ)へ移行して実装する**(次段)
-- **VRR / 非標準リフレッシュ(55.46Hz等)の追従**は eframe のフレームスケジューラの外に
-  出る必要が出た時点で、presentation層のみネイティブAPI(macOS: CAMetalLayer +
-  presentAtTime / Windows: DXGI + tearing flag)に差し替える。受信・再構成・UIは共通のまま
+
+### VRR / 非標準リフレッシュ(55.46Hz等)の追従 — 検証結果(2026-07-27, Mac mini M4 Pro + 60Hz外部モニタ)
+
+`examples/pace_probe.rs`(専用スレッドからwgpuサーフェスへ直接present)による実測:
+
+| 構成 | present間隔 |
+|---|---|
+| eframe(ウィンドウ、vsync/no-vsyncとも) | **60Hzに量子化**(winitの再描画スケジューリングがディスプレイリンク駆動) |
+| 専用スレッド + Immediate、ウィンドウ表示 | **60Hzに量子化**(コンポジタ律速。latency増でも変わらず) |
+| 専用スレッド + Immediate、**フルスクリーン** | **ターゲット追従**: 90Hz指定→11.1ms/89.8Hz、55.46Hz指定→18.03ms/55.4Hz(σ~2.5ms) |
+
+結論: **フルスクリーン(direct-to-display)+専用presentスレッド+Immediate** が
+55.46Hz追従の実装形。レトロゲーム全画面用途と合致する。ウィンドウ表示時は
+60Hz vsyncのジャダーを許容(それでも実用上は十分)。
+再現: `cargo run --release --example pace_probe -- 55.46 --latency 3 --fullscreen`
+
+残る確認は**パネルが実際に追従するか**で、これはVRR対応表示器が必要
+(ProMotion搭載MacBookの内蔵ディスプレイ、またはAdaptive-Sync対応モニタのDP接続)。
+このマシンの60Hz固定モニタではpresentは55.46Hzで打てるが表示は60Hzサンプリングになる。
+Windows側は wgpu Immediate が DXGI allow-tearing にマップされるので FreeSync で同様の構成が取れる見込み。
 - 音声(AUDIO パケット, protocol-v0.md 参照)の再生は未実装。cpal クレートで
   リングバッファ再生を追加予定
 - CONFIG パケット(音声ソース選択・ArgusX入力切替)のUIも未実装(プロトコル定義済み)
+- インターレース: 現状の実装で自然に **weave 合成**になる(プロトコルの規約により
+  LINE.line がフルフレーム行のため。検証済み)。**bob 表示**(フィールド縦2倍・
+  フィールドレート表示、コーミングなし)は将来の表示オプション

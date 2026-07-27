@@ -25,6 +25,7 @@ fn main() -> eframe::Result {
     let mut port = protocol::DEFAULT_PORT;
     let mut subscribe_to = Some("255.255.255.255".to_string());
     let mut headless_secs: Option<u64> = None;
+    let mut no_vsync = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -34,6 +35,9 @@ fn main() -> eframe::Result {
             "--headless" => {
                 headless_secs = Some(args.next().expect("--headless needs seconds").parse().unwrap())
             }
+            // VRR実験用: presentをvsyncから切り離す(wgpu AutoNoVsync)。
+            // VRR対応パネルなら「フレームが来たときに出す」に近づく第一歩
+            "--no-vsync" => no_vsync = true,
             other => {
                 eprintln!("unknown arg: {other}");
                 std::process::exit(2);
@@ -45,16 +49,22 @@ fn main() -> eframe::Result {
         return run_headless(port, subscribe_to, secs);
     }
 
+    let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
+    if no_vsync {
+        wgpu_options.surface.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
+        wgpu_options.surface.desired_maximum_frame_latency = Some(1); // 低遅延優先
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1160.0, 820.0])
             .with_title("RetroCastX Viewer"),
+        wgpu_options,
         ..Default::default()
     };
     eframe::run_native(
         "RetroCastX Viewer",
         options,
-        Box::new(move |cc| Ok(Box::new(ViewerApp::new(cc, port, subscribe_to)))),
+        Box::new(move |cc| Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, no_vsync)))),
     )
 }
 
@@ -89,6 +99,52 @@ fn run_headless(port: u16, subscribe_to: Option<String>, secs: u64) -> eframe::R
     Ok(())
 }
 
+/// 新フレームpaint間隔の計測(vsync量子化の検出用)。
+/// present完了時刻そのものはwgpu経由では取れないため、paint cadenceを代理指標にする
+/// (FIFOではスワップチェーンのバックプレッシャでvsync周期に量子化される)。
+struct PaceMeter {
+    last_paint: Option<std::time::Instant>,
+    intervals_ms: std::collections::VecDeque<f32>,
+    last_log: std::time::Instant,
+    summary: String,
+}
+
+impl PaceMeter {
+    fn new() -> Self {
+        Self {
+            last_paint: None,
+            intervals_ms: std::collections::VecDeque::with_capacity(256),
+            last_log: std::time::Instant::now(),
+            summary: String::new(),
+        }
+    }
+
+    fn on_new_frame(&mut self) {
+        let now = std::time::Instant::now();
+        if let Some(prev) = self.last_paint {
+            let ms = prev.elapsed().as_secs_f32() * 1000.0;
+            if self.intervals_ms.len() >= 256 {
+                self.intervals_ms.pop_front();
+            }
+            self.intervals_ms.push_back(ms);
+        }
+        self.last_paint = Some(now);
+        if self.last_log.elapsed().as_secs_f32() >= 1.0 && !self.intervals_ms.is_empty() {
+            let n = self.intervals_ms.len() as f32;
+            let mean = self.intervals_ms.iter().sum::<f32>() / n;
+            let var = self.intervals_ms.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / n;
+            self.summary = format!(
+                "paint {:.2}ms σ{:.2} → {:.2}Hz",
+                mean,
+                var.sqrt(),
+                1000.0 / mean
+            );
+            eprintln!("pace: {}", self.summary);
+            self.last_log = std::time::Instant::now();
+        }
+    }
+}
+
 struct ViewerApp {
     shared: Arc<receiver::Shared>,
     texture: Option<egui::TextureHandle>,
@@ -96,10 +152,17 @@ struct ViewerApp {
     integer_scale: bool,
     rx_error: Option<String>,
     subscribe_to: Option<String>,
+    no_vsync: bool,
+    pace: PaceMeter,
 }
 
 impl ViewerApp {
-    fn new(cc: &eframe::CreationContext<'_>, port: u16, subscribe_to: Option<String>) -> Self {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        port: u16,
+        subscribe_to: Option<String>,
+        no_vsync: bool,
+    ) -> Self {
         let shared = Arc::new(receiver::Shared::default());
         let ctx = cc.egui_ctx.clone();
         let rx_error = receiver::spawn(
@@ -116,6 +179,8 @@ impl ViewerApp {
             integer_scale: true,
             rx_error,
             subscribe_to,
+            no_vsync,
+            pace: PaceMeter::new(),
         }
     }
 
@@ -125,6 +190,7 @@ impl ViewerApp {
             return;
         }
         self.seen_gen = generation;
+        self.pace.on_new_frame();
         let guard = self.shared.frame.lock().unwrap();
         let Some(frame) = guard.as_ref() else { return };
         let image = egui::ColorImage::from_rgba_unmultiplied(
@@ -169,6 +235,10 @@ impl eframe::App for ViewerApp {
             ui.separator();
 
             ui.strong("Stats");
+            ui.label(if self.no_vsync { "present: no-vsync" } else { "present: vsync (FIFO)" });
+            if !self.pace.summary.is_empty() {
+                ui.monospace(&self.pace.summary);
+            }
             let s = self.shared.stats.lock().unwrap().clone();
             ui.monospace(format!("{:.1} fps  {:.1} Mbps", s.fps, s.mbps));
             ui.monospace(format!("frames {}", s.frames));
