@@ -1,0 +1,19 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component YXC_OT2JI_111_12_288M_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C20617595", date="2026-07-28T14:06:31.563464+00:00", checksum="c9312c4941568e4bcf3dfaffd6c5aaae0a4918170320d82625920918b12b65bc">
+
+    trait is_atomic_part<manufacturer="YXC", partnumber="OT2JI-111-12.288M", footprint="OSC-SMD_4P-L3.2-W2.5-BL.kicad_mod", symbol="OT2JI-111-12.288M.kicad_sym", model="OSC-SMD_4P-L3.2-W2.5-CJ13-320001210A20.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C20617595", manufacturer="YXC", partno="OT2JI-111-12.288M">
+    trait has_designator_prefix<prefix="X">
+
+    # pins
+    signal GND ~ pin 2
+    signal OUT ~ pin 3
+    signal Tri_State ~ pin 1
+    signal VDD ~ pin 4
