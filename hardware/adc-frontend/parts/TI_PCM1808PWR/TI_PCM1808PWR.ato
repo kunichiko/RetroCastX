@@ -1,0 +1,29 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component TI_PCM1808PWR_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C55513", date="2026-07-28T10:14:03.397799+00:00", checksum="50e36c34108455d8ab00a9c80e8a513966e4eeb73eaa92bab9799d390e9b553f">
+
+    trait is_atomic_part<manufacturer="TI", partnumber="PCM1808PWR", footprint="TSSOP-14_L5.0-W4.4-P0.65-LS6.4-BL.kicad_mod", symbol="PCM1808PWR.kicad_sym", model="TSSOP-14_L5.0-W4.4-H1.0-LS6.4-P0.65.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C55513", manufacturer="TI", partno="PCM1808PWR">
+    trait has_designator_prefix<prefix="U">
+
+    # pins
+    signal AGND ~ pin 2
+    signal BCK ~ pin 8
+    signal DGND ~ pin 5
+    signal DOUT ~ pin 9
+    signal FMT ~ pin 12
+    signal LRCK ~ pin 7
+    signal MD0 ~ pin 10
+    signal MD1 ~ pin 11
+    signal SCKI ~ pin 6
+    signal VCC ~ pin 3
+    signal VDD ~ pin 4
+    signal VINL ~ pin 13
+    signal VINR ~ pin 14
+    signal VREF ~ pin 1

@@ -1,0 +1,19 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component UNKNOWN_PJ_327C_4A_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C145813", date="2026-07-28T10:14:07.041009+00:00", checksum="197a90974ea53f9d74e5cc93ead0ffc50af8d8dede107cd5501591b9f22870cc">
+
+    trait is_atomic_part<manufacturer="韩国韩荣", partnumber="PJ-327C-4A", footprint="AUDIO-SMD_PJ-327C-4A.kicad_mod", symbol="PJ-327C-4A.kicad_sym", model="AUDIO-SMD_L11.8-W6.0-H5.0-4P.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C145813", manufacturer="韩国韩荣", partno="PJ-327C-4A">
+    trait has_designator_prefix<prefix="Audio">
+
+    # pins
+    pin 1
+    pin 4
+    pin 3
+    pin 2

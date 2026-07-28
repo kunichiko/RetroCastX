@@ -1,0 +1,17 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component YAGEO_CC1812KKX7RDBB472_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C309511", date="2026-07-28T13:27:07.141209+00:00", checksum="e8e65d2a0a006fb294778adaa8afecac3044c832c2cd90736844bae822f02c85">
+
+    trait is_atomic_part<manufacturer="YAGEO", partnumber="CC1812KKX7RDBB472", footprint="C1812.kicad_mod", symbol="CC1812KKX7RDBB472.kicad_sym", model="C1812_L4.5-W3.2-H2.6.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C309511", manufacturer="YAGEO", partno="CC1812KKX7RDBB472">
+    trait has_designator_prefix<prefix="C">
+
+    # pins
+    pin 1
+    pin 2
