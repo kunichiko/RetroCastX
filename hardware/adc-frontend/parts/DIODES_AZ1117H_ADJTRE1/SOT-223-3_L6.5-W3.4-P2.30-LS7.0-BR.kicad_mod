@@ -1,0 +1,137 @@
+(footprint "DIODES_AZ1117H_ADJTRE1:SOT-223-3_L6.5-W3.4-P2.30-LS7.0-BR"
+	(version 20241229)
+	(generator "faebryk_convert")
+	(generator_version "v5")
+	(layer "F.Cu")
+	(tedit "5DC5F6A4")
+	(uuid "9ffc1bd3-2d5a-4f89-bf71-2a9d8aff4cef")
+	(property "Reference" "REF**"
+		(at 0 -6.3)
+		(layer "F.SilkS")
+		(uuid "24bc6092-0d0a-4b61-b665-913211bc8d55")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "SOT-223-3_L6.5-W3.4-P2.30-LS7.0-BR"
+		(at 0 6.3)
+		(layer "F.Fab")
+		(uuid "6c624726-6b53-458e-87b4-37f5bd9633c8")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_circle
+		(center 3.4 3.25)
+		(end 3.43 3.25)
+		(stroke
+			(width 0.06)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(locked no)
+		(uuid "8fb622ed-20cb-4155-a78d-383da3dcaaeb")
+	)
+	(fp_circle
+		(center 4.55 2.19)
+		(end 4.8 2.19)
+		(stroke
+			(width 0.5)
+			(type solid)
+		)
+		(layer "Cmts.User")
+		(locked no)
+		(uuid "869cfd6a-5def-46c4-a16a-6a1d6adfa596")
+	)
+	(fp_line
+		(start -1.57 3.33)
+		(end -1.57 -3.33)
+		(stroke
+			(width 0.15)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(layers "F.SilkS")
+		(locked no)
+		(uuid "b265338a-f3ea-4f1e-b574-c87d2d13c82f")
+	)
+	(fp_line
+		(start -1.57 -3.33)
+		(end 1.37 -3.33)
+		(stroke
+			(width 0.15)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(layers "F.SilkS")
+		(locked no)
+		(uuid "f200b8ed-ef36-4f62-8df1-81345b11c609")
+	)
+	(fp_line
+		(start 1.37 -3.33)
+		(end 1.37 3.33)
+		(stroke
+			(width 0.15)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(layers "F.SilkS")
+		(locked no)
+		(uuid "113c5806-999a-454d-8131-3fc4810dd9ca")
+	)
+	(fp_line
+		(start 1.37 3.33)
+		(end -1.57 3.33)
+		(stroke
+			(width 0.15)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(layers "F.SilkS")
+		(locked no)
+		(uuid "5c499ff4-9f46-41d2-afdc-ac30565682ba")
+	)
+	(pad "1" smd rect
+		(at 2.97 2.3 0)
+		(size 2.5 1.1)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(uuid "9b584606-7e85-4fb7-be1a-0de9ba77e6ae")
+	)
+	(pad "2" smd rect
+		(at 2.97 0 0)
+		(size 2.5 1.1)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(uuid "19a96721-a597-4771-921d-bdeec23a12f6")
+	)
+	(pad "3" smd rect
+		(at 2.97 -2.3 0)
+		(size 2.5 1.1)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(uuid "b8b976a0-256f-4b01-a57f-8dba26b3319f")
+	)
+	(pad "4" smd rect
+		(at -2.97 0 0)
+		(size 2.34 3.6)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(uuid "23e3c11f-4b5f-447d-8366-5fb9d3ac3788")
+	)
+	(model "${KIPRJMOD}/../../parts/DIODES_AZ1117H_ADJTRE1/SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step"
+		(offset
+			(xyz 0 0 -0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 180)
+		)
+	)
+	(embedded_fonts no)
+)

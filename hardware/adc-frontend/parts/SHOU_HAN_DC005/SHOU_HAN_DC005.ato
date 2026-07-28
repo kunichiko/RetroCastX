@@ -1,0 +1,18 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component SHOU_HAN_DC005_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C431533", date="2026-07-28T05:01:54.712518+00:00", checksum="5ee64f4cf56e4e4302a1e85fb59189d60c5d6ab92484d7b60f3bb0608045bf08">
+
+    trait is_atomic_part<manufacturer="SHOU HAN", partnumber="DC005", footprint="DC-IN-TH_DC005.kicad_mod", symbol="DC005_C431533.kicad_sym", model="DC-IN-TH_DC005.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C431533", manufacturer="SHOU HAN", partno="DC005">
+    trait has_designator_prefix<prefix="DC">
+
+    # pins
+    pin 1
+    pin 2
+    pin 3

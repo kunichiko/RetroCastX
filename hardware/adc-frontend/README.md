@@ -96,10 +96,31 @@ EEPROMの空き領域(~250B)は個体設定(IP・ボード名等)の保存に使
 最終段の部品選定(Picking parts)は atopile の部品API
 (components.atopileapi.com)が必要だが、**2026-07-18頃からDNSレコード消失により
 全世界的に停止中**([atopile#1829](https://github.com/atopile/atopile/issues/1829)、
-0.15.7/main 両方で再現、回避策なし)。復旧後に `ato build` を再実行すれば
-BOM/ネットリストまで生成される。エンドポイントは `ATO_SERVICES_COMPONENTS_URL`
-環境変数または ato.yaml の `services.components.url` で差し替え可能(代替URLが
-案内された場合用)。
+0.15.7/main 両方で再現、2026-07-28時点でも未復旧)。
+
+### オフライン部品取り込みの回避策(2026-07-28確立)
+
+atopileの**検索・パラメトリック選定API**(atopileapi、死亡)とは別に、
+**フットプリント実体はEasyEDA**(easyeda.com、生存)から取得できることを利用する。
+`tools/ingest_parts.py` が、既知のLCSC番号を渡すと `ato create part` 相当を
+オフラインで実行し `parts/<MFR_PN>/{.ato,.kicad_mod,.kicad_sym}` を生成する
+(取得後のメーカー名enrich呼び出し=atopileapiのみスタブ化)。
+
+```sh
+/Users/ohnaka/.local/share/uv/tools/atopile/bin/python tools/ingest_parts.py C10429 C3824085 ...
+```
+
+生成された部品は `has_part_picked` traitを持つため、`ato build` の選定処理で
+**スキップされ、atopileapiを叩かない**。よって**全部品をatomic part化(=各部品に
+LCSC番号を割当てて取り込み)すれば、`ato build` が完全オフラインで通り、
+ネットリスト・PCB・BOM・JLCfabデータまで生成できる**。
+
+取り込み済み(2026-07-28、`parts/`): TVP7002, SN74LVC2G17, AZ1117H-3.3,
+AZ1117H-ADJ, TLV70019, MPZ1608S221A, 27MHz OSC(X322527), VGA-002, DC005,
+TYPE-C-31-M-12, HR911130A の11点。
+未取り込み: PESD5V0U4BW(C5182054はEasyEDAにデータ無し→代替番号要選定)、
+受動部品(各値のLCSC番号割当が必要)、音声系"要選定"部品(PCM1808/XO/TOSLINK/
+3.5mmジャック/24AA025E48)。
 
 ## 残作業(発注前に必須)
 

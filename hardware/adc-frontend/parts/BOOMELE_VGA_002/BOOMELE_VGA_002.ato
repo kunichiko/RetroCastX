@@ -1,0 +1,32 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component BOOMELE_VGA_002_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C138387", date="2026-07-28T05:01:54.114962+00:00", checksum="cb64fee03ae31e30ce515b444749dec894735408f12d3b96374a13d81e7f2726">
+
+    trait is_atomic_part<manufacturer="BOOMELE", partnumber="VGA-002", footprint="D-SUB-TH_VGA-002.kicad_mod", symbol="VGA-002.kicad_sym", model="D-SUB-TH_VGA-002.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C138387", manufacturer="BOOMELE", partno="VGA-002">
+    trait has_designator_prefix<prefix="DSub">
+
+    # pins
+    pin 1
+    pin 2
+    pin 3
+    pin 4
+    pin 5
+    pin 6
+    pin 7
+    pin 8
+    pin 9
+    pin 10
+    pin 11
+    pin 12
+    pin 13
+    pin 14
+    pin 15
+    pin 16
+    pin 17

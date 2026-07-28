@@ -1,0 +1,21 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component TI_SN74LVC2G17DBVR_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C10429", date="2026-07-28T05:01:49.585213+00:00", checksum="75a64d7a50ff789ae690979ac3f3e991a5f88d84a8a1dcfa2e24c9af6b84dae1">
+
+    trait is_atomic_part<manufacturer="TI", partnumber="SN74LVC2G17DBVR", footprint="SOT-23-6_L2.9-W1.6-P0.95-LS2.8-BL.kicad_mod", symbol="SN74LVC2G17DBVR.kicad_sym", model="SOT-23-6_L2.9-W1.6-H1.5-LS2.8-P0.95.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C10429", manufacturer="TI", partno="SN74LVC2G17DBVR">
+    trait has_designator_prefix<prefix="U">
+
+    # pins
+    signal GND ~ pin 2
+    signal P1A ~ pin 1
+    signal P1Y ~ pin 6
+    signal P2A ~ pin 3
+    signal P2Y ~ pin 4
+    signal VCC ~ pin 5

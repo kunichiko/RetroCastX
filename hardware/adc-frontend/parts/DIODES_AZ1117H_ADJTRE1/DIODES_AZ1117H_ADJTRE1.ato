@@ -1,0 +1,19 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component DIODES_AZ1117H_ADJTRE1_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C92103", date="2026-07-28T05:01:50.642432+00:00", checksum="f0170cc1e06d436b19cc8552ddbbab76245831406c2154347a640ad2c96dde8a">
+
+    trait is_atomic_part<manufacturer="DIODES", partnumber="AZ1117H-ADJTRE1", footprint="SOT-223-3_L6.5-W3.4-P2.30-LS7.0-BR.kicad_mod", symbol="AZ1117H-ADJTRE1.kicad_sym", model="SOT-223-4P_L6.5-W3.5-H1.6-LS7.0-P2.30.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C92103", manufacturer="DIODES", partno="AZ1117H-ADJTRE1">
+    trait has_designator_prefix<prefix="U">
+
+    # pins
+    signal ADJ_GND ~ pin 1
+    signal INPUT ~ pin 3
+    signal OUTPUT ~ pin 2
+    signal VOUT ~ pin 4

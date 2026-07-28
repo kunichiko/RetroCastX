@@ -1,0 +1,116 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component TI_TVP7002PZP_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C3824085", date="2026-07-28T05:01:49.275679+00:00", checksum="0532f53a2b8bf2ab310f97d2c770902d9376ffe34b450c9e44f21df47d93e6a0">
+
+    trait is_atomic_part<manufacturer="TI", partnumber="TVP7002PZP", footprint="HTQFP-100_L14.0-W14.0-P0.50-LS16.0-BL-EP6.2.kicad_mod", symbol="TVP7002PZP.kicad_sym", model="HTQFP-100_L14.0-W14.0-H1.20-P0.50-LS16.0-BL-EP6.2.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C3824085", manufacturer="TI", partno="TVP7002PZP">
+    trait has_designator_prefix<prefix="U">
+
+    # pins
+    signal A33GND ~ pin 12
+    A33GND ~ pin 15
+    A33GND ~ pin 92
+    A33GND ~ pin 95
+    signal A33VDD ~ pin 13
+    A33VDD ~ pin 14
+    A33VDD ~ pin 93
+    A33VDD ~ pin 94
+    signal AGND ~ pin 3
+    AGND ~ pin 5
+    AGND ~ pin 8
+    AGND ~ pin 20
+    signal AVDD ~ pin 4
+    AVDD ~ pin 6
+    AVDD ~ pin 7
+    AVDD ~ pin 19
+    signal BIN_1 ~ pin 18
+    signal BIN_2 ~ pin 17
+    signal BIN_3 ~ pin 16
+    signal B_0 ~ pin 38
+    signal B_1 ~ pin 37
+    signal B_2 ~ pin 36
+    signal B_3 ~ pin 35
+    signal B_4 ~ pin 34
+    signal B_5 ~ pin 33
+    signal B_6 ~ pin 32
+    signal B_7 ~ pin 31
+    signal B_8 ~ pin 30
+    signal B_9 ~ pin 29
+    signal CLAMP ~ pin 76
+    signal COAST ~ pin 77
+    signal DATACLK ~ pin 28
+    signal DVDD ~ pin 39
+    DVDD ~ pin 69
+    signal EP ~ pin 101
+    signal EXT_CLK ~ pin 80
+    signal FIDOUT ~ pin 22
+    signal FILT1 ~ pin 87
+    signal FILT2 ~ pin 88
+    signal GIN_1 ~ pin 2
+    signal GIN_2 ~ pin 100
+    signal GIN_3 ~ pin 98
+    signal GIN_4 ~ pin 96
+    signal GND ~ pin 40
+    GND ~ pin 68
+    signal G_0 ~ pin 52
+    signal G_1 ~ pin 51
+    signal G_2 ~ pin 50
+    signal G_3 ~ pin 49
+    signal G_4 ~ pin 48
+    signal G_5 ~ pin 47
+    signal G_6 ~ pin 46
+    signal G_7 ~ pin 45
+    signal G_8 ~ pin 44
+    signal G_9 ~ pin 43
+    signal HSOUT ~ pin 24
+    signal HSYNC_A ~ pin 81
+    signal HSYNC_B ~ pin 82
+    signal I2CA ~ pin 73
+    signal IOGND ~ pin 27
+    IOGND ~ pin 42
+    IOGND ~ pin 54
+    IOGND ~ pin 60
+    IOGND ~ pin 67
+    signal IOVDD ~ pin 26
+    IOVDD ~ pin 41
+    IOVDD ~ pin 53
+    IOVDD ~ pin 66
+    signal NSUB ~ pin 21
+    NSUB ~ pin 91
+    signal PLL_AGND ~ pin 83
+    PLL_AGND ~ pin 86
+    PLL_AGND ~ pin 90
+    signal PLL_AVDD ~ pin 84
+    PLL_AVDD ~ pin 85
+    signal PLL_F ~ pin 89
+    signal PWDN ~ pin 70
+    signal RESETB ~ pin 71
+    signal RIN_1 ~ pin 11
+    signal RIN_2 ~ pin 10
+    signal RIN_3 ~ pin 9
+    signal R_0 ~ pin 65
+    signal R_1 ~ pin 64
+    signal R_2 ~ pin 63
+    signal R_3 ~ pin 62
+    signal R_4 ~ pin 61
+    signal R_5 ~ pin 59
+    signal R_6 ~ pin 58
+    signal R_7 ~ pin 57
+    signal R_8 ~ pin 56
+    signal R_9 ~ pin 55
+    signal SCL ~ pin 74
+    signal SDA ~ pin 75
+    signal SOGIN_1 ~ pin 1
+    signal SOGIN_2 ~ pin 99
+    signal SOGIN_3 ~ pin 97
+    signal SOGOUT ~ pin 25
+    signal TMS ~ pin 72
+    signal VSOUT ~ pin 23
+    signal VSYNC_A ~ pin 78
+    signal VSYNC_B ~ pin 79

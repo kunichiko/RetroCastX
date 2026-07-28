@@ -1,0 +1,31 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component UNKNOWN_TYPE_C_31_M_12_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C165948", date="2026-07-28T05:01:55.613442+00:00", checksum="8f8773a1eaa039c2bf914c8b8a05863db1c194410d7a35d133b7546d374cd629">
+
+    trait is_atomic_part<manufacturer="韩国韩荣", partnumber="TYPE-C-31-M-12", footprint="USB-C_SMD-TYPE-C-31-M-12_1.kicad_mod", symbol="TYPE-C-31-M-12.kicad_sym", model="USB-C_SMD-TYPE-C-31-M-12.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C165948", manufacturer="韩国韩荣", partno="TYPE-C-31-M-12">
+    trait has_designator_prefix<prefix="USBC">
+
+    # pins
+    signal CC1 ~ pin A5
+    signal CC2 ~ pin B5
+    signal DN1 ~ pin A7
+    signal DN2 ~ pin B7
+    signal DP1 ~ pin A6
+    signal DP2 ~ pin B6
+    signal EH ~ pin 4
+    EH ~ pin 3
+    EH ~ pin 2
+    EH ~ pin 1
+    signal GND ~ pin A1B12
+    GND ~ pin B1A12
+    signal SBU1 ~ pin A8
+    signal SBU2 ~ pin B8
+    signal VBUS ~ pin A4B9
+    VBUS ~ pin B4A9
