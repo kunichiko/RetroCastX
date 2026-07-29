@@ -367,18 +367,23 @@ component UsbCPowerReceptacle:
     trait is_atomic_part<manufacturer="韩国韩荣", partnumber="TYPE-C-31-M-12", footprint="parts/UNKNOWN_TYPE_C_31_M_12/USB-C_SMD-TYPE-C-31-M-12_1.kicad_mod", symbol="parts/UNKNOWN_TYPE_C_31_M_12/TYPE-C-31-M-12.kicad_sym">
     trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C165948", manufacturer="韩国韩荣", partno="TYPE-C-31-M-12">
     trait has_designator_prefix<prefix="J">
-    signal gnd ~ pin 1
-    signal vbus ~ pin 2
-    signal cc1 ~ pin 5
-    signal dp ~ pin 6
-    signal dn ~ pin 7
-    signal sbu1 ~ pin 8
-    signal sbu2 ~ pin 9
-    signal cc2 ~ pin 12
-    vbus ~ pin 15
-    gnd ~ pin 16
-    signal shell ~ pin 17
-    shell ~ pin 18
+    # 実フットプリントのパッド名で配線(標準USB-C: A/B列, GND/VBUSは結合パッド)
+    signal gnd ~ pin A1B12
+    gnd ~ pin B1A12
+    signal vbus ~ pin A4B9
+    vbus ~ pin B4A9
+    signal cc1 ~ pin A5
+    signal cc2 ~ pin B5
+    signal dp ~ pin A6
+    dp ~ pin B6
+    signal dn ~ pin A7
+    dn ~ pin B7
+    signal sbu1 ~ pin A8
+    signal sbu2 ~ pin B8
+    signal shell ~ pin 1   # シェル/固定タブ ×4
+    shell ~ pin 2
+    shell ~ pin 3
+    shell ~ pin 4
 
 
 component GbeMagJack:
