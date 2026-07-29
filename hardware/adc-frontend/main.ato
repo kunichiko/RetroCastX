@@ -8,7 +8,7 @@ import is_atomic_part
 import has_part_picked
 import has_designator_prefix
 import has_part_removed
-from "parts/_mech/mech.ato" import HeaderExtP2, HeaderExtP4, HeaderP1, HeaderArgus, SolderJumper, SpdifRxModule
+from "parts/_mech/mech.ato" import HeaderExtP2, HeaderExtP4, HeaderP1, HeaderArgus, SolderJumper, SpdifRxModule, BoxHeader2x8Argus
 from "passives.ato" import R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805
 
 # =============================================================================
@@ -696,6 +696,20 @@ module App:
     vga.g_gnd ~ gnd
     vga.b_gnd ~ gnd
     vga.shield ~ gnd
+
+    # --- ArgusX接続用 2x8ボックスヘッダ(代替映像入力) ---
+    # ArgusX(アナログRGBマトリクスセレクタ)の2x8出力ポートからリボンで受ける。
+    # D-SUB15と同じ前段ノードへ並列接続(R/G/B・音声・同期)。使用は排他(片方のみ接続)。
+    # 電源(pin13/15)は両基板とも自己給電のため未接続。
+    argus = new BoxHeader2x8Argus
+    argus.gnd ~ gnd
+    argus.r ~ vga.r         # 前段(ESD+75Ω終端+ACカップリング)を共有
+    argus.g ~ vga.g
+    argus.b ~ vga.b
+    argus.audio_l ~ vga.audio_l
+    argus.audio_r ~ vga.audio_r
+    argus.hsync ~ vga.hsync
+    argus.vsync ~ vga.vsync
 
     # --- TTL同期入力 (HS/VS or csync-on-HSYNC) ---
     esd_sync = new EsdArray4

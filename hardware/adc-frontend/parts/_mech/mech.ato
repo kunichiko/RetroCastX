@@ -158,3 +158,33 @@ component SpdifRxModule:
     signal out ~ pin 1     # S/PDIFビットストリーム(TTL)
     signal gnd ~ pin 2
     signal vcc ~ pin 3
+
+component BoxHeader2x8Argus:
+    """ArgusX(アナログRGBマトリクスセレクタ)の2x8汎用映像端子と嵌合する
+    ボックスヘッダ(2.54mm, IDCリボン)。手実装/DNP。
+
+    ピン割当(ArgusX docs/design.md 3.1 と一致):
+      1=R      2=GND(R)    3=G      4=GND(G)   5=B      6=GND(B)
+      7=音声L  8=音声R     9=GND(音声) 10=H(TTL/CSYNC) 11=V(TTL) 12=GND
+      13=+5V   14=GND      15=VBUS  16=GND
+    RetroCastXは自己給電のため 13(+5V)/15(VBUS) は未接続(NC)。GNDは全接続。
+    D-SUB15入力と並列に前段へ入る代替入力(使用は排他=同時に片方のみ接続)。
+    """
+    trait is_atomic_part<manufacturer="", partnumber="BoxHeader_2x8_2.54", footprint="BoxHeader_2x8_P2.54mm.kicad_mod", symbol="BoxHeader_2x8.kicad_sym">
+    trait has_designator_prefix<prefix="J">
+    trait has_part_removed  # 手実装/DNP
+    signal r ~ pin 1
+    signal g ~ pin 3
+    signal b ~ pin 5
+    signal audio_l ~ pin 7
+    signal audio_r ~ pin 8
+    signal hsync ~ pin 10
+    signal vsync ~ pin 11
+    signal gnd ~ pin 2
+    gnd ~ pin 4
+    gnd ~ pin 6
+    gnd ~ pin 9
+    gnd ~ pin 12
+    gnd ~ pin 14
+    gnd ~ pin 16
+    # pin 13(+5V), 15(VBUS) = NC(RetroCastXは自己給電)
