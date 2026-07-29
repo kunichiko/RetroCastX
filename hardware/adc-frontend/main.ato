@@ -4,6 +4,11 @@
 import ElectricPower
 import Resistor
 import Capacitor
+import is_atomic_part
+import has_part_picked
+import has_designator_prefix
+import has_part_removed
+from "passives.ato" import R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805
 
 # =============================================================================
 # RetroCastX ADC front-end: TVP7002 breakout for Colorlight i5 EXT board
@@ -24,6 +29,9 @@ component Tvp7002:
 
     HTQFP-100 (PZP). LCSC: C3824085 / DigiKey: TVP7002PZPR
     """
+    trait is_atomic_part<manufacturer="TI", partnumber="TVP7002PZP", footprint="parts/TI_TVP7002PZP/HTQFP-100_L14.0-W14.0-P0.50-LS16.0-BL-EP6.2.kicad_mod", symbol="parts/TI_TVP7002PZP/TVP7002PZP.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C3824085", manufacturer="TI", partno="TVP7002PZP">
+    trait has_designator_prefix<prefix="U">
 
     # Analog inputs
     signal sogin_1 ~ pin 1
@@ -155,6 +163,9 @@ component Lvc2g17:
 
     SOT-23-6. LCSC: C10429
     """
+    trait is_atomic_part<manufacturer="TI", partnumber="SN74LVC2G17DBVR", footprint="parts/TI_SN74LVC2G17DBVR/SOT-23-6_L2.9-W1.6-P0.95-LS2.8-BL.kicad_mod", symbol="parts/TI_SN74LVC2G17DBVR/SN74LVC2G17DBVR.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C10429", manufacturer="TI", partno="SN74LVC2G17DBVR">
+    trait has_designator_prefix<prefix="U">
     signal in_a ~ pin 1
     signal gnd ~ pin 2
     signal in_b ~ pin 3
@@ -165,6 +176,9 @@ component Lvc2g17:
 
 component Az1117Fixed33:
     """Diodes AZ1117H-3.3 LDO 800mA, SOT-223. LCSC: C92517"""
+    trait is_atomic_part<manufacturer="DIODES", partnumber="AZ1117H-3.3TRE1", footprint="parts/DIODES_AZ1117H_3_3TRE1/SOT-223-3_L6.5-W3.4-P2.30-LS7.0-BR.kicad_mod", symbol="parts/DIODES_AZ1117H_3_3TRE1/AZ1117H-3.3TRE1.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C92517", manufacturer="DIODES", partno="AZ1117H-3.3TRE1">
+    trait has_designator_prefix<prefix="U">
     signal gnd ~ pin 1
     signal out ~ pin 2
     signal vin ~ pin 3
@@ -173,6 +187,9 @@ component Az1117Fixed33:
 
 component Az1117Adj:
     """Diodes AZ1117H-ADJ LDO 800mA (Vref=1.25V), SOT-223. LCSC: C92103"""
+    trait is_atomic_part<manufacturer="DIODES", partnumber="AZ1117H-ADJTRE1", footprint="parts/DIODES_AZ1117H_ADJTRE1/SOT-223-3_L6.5-W3.4-P2.30-LS7.0-BR.kicad_mod", symbol="parts/DIODES_AZ1117H_ADJTRE1/AZ1117H-ADJTRE1.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C92103", manufacturer="DIODES", partno="AZ1117H-ADJTRE1">
+    trait has_designator_prefix<prefix="U">
     signal adj ~ pin 1
     signal out ~ pin 2
     signal vin ~ pin 3
@@ -181,6 +198,9 @@ component Az1117Adj:
 
 component Tlv70019:
     """TI TLV70019 1.9V 200mA LDO, SOT-23-5. LCSC: C2862411"""
+    trait is_atomic_part<manufacturer="TI", partnumber="TLV70019DDCR", footprint="parts/TI_TLV70019DDCR/SOT-23-5_L2.9-W1.6-P0.95-LS2.8-BR.kicad_mod", symbol="parts/TI_TLV70019DDCR/TLV70019DDCR.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C2862411", manufacturer="TI", partno="TLV70019DDCR">
+    trait has_designator_prefix<prefix="U">
     signal vin ~ pin 1
     signal gnd ~ pin 2
     signal en ~ pin 3
@@ -189,6 +209,9 @@ component Tlv70019:
 
 component FerriteBead:
     """TDK MPZ1608S221A 220ohm@100MHz, 0603. LCSC: C76815"""
+    trait is_atomic_part<manufacturer="TDK", partnumber="MPZ1608S221ATA00", footprint="parts/TDK_MPZ1608S221ATA00/L0603.kicad_mod", symbol="parts/TDK_MPZ1608S221ATA00/MPZ1608S221ATA00.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C76815", manufacturer="TDK", partno="MPZ1608S221ATA00">
+    trait has_designator_prefix<prefix="FB">
     signal p1 ~ pin 1
     signal p2 ~ pin 2
 
@@ -207,6 +230,9 @@ component EsdArray4:
 
 component Osc27M:
     """YXC 27MHz 3.3V CMOS oscillator, SMD3225-4P. LCSC: C9008"""
+    trait is_atomic_part<manufacturer="YXC", partnumber="X322527MSB4SI", footprint="parts/YXC_X322527MSB4SI/CRYSTAL-SMD_4P-L3.2-W2.5-BL-1.kicad_mod", symbol="parts/YXC_X322527MSB4SI/X322527MSB4SI.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C9008", manufacturer="YXC", partno="X322527MSB4SI">
+    trait has_designator_prefix<prefix="X">
     signal en ~ pin 1
     signal gnd ~ pin 2
     signal out ~ pin 3
@@ -215,6 +241,9 @@ component Osc27M:
 
 component VgaConnector:
     """HD-15 (3-row D-sub 15) female VGA connector. LCSC: C138387"""
+    trait is_atomic_part<manufacturer="BOOMELE", partnumber="VGA-002", footprint="parts/BOOMELE_VGA_002/D-SUB-TH_VGA-002.kicad_mod", symbol="parts/BOOMELE_VGA_002/VGA-002.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C138387", manufacturer="BOOMELE", partno="VGA-002">
+    trait has_designator_prefix<prefix="J">
     signal red ~ pin 1
     signal green ~ pin 2
     signal blue ~ pin 3
@@ -315,6 +344,9 @@ component Pcm1808:
     LCSC: 要選定(PCM1808PWR)。
     注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシート(SLES177)と必ず照合。
     """
+    trait is_atomic_part<manufacturer="TI", partnumber="PCM1808PWR", footprint="parts/TI_PCM1808PWR/TSSOP-14_L5.0-W4.4-P0.65-LS6.4-BL.kicad_mod", symbol="parts/TI_PCM1808PWR/PCM1808PWR.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C55513", manufacturer="TI", partno="PCM1808PWR">
+    trait has_designator_prefix<prefix="U">
     signal scki ~ pin 1    # システムクロック(256/384/512fs, スレーブ時自動判別)
     signal bck ~ pin 2     # ビットクロック(64fs)
     signal lrc ~ pin 3     # LRクロック(fs)
@@ -347,6 +379,9 @@ component AudioJack35:
 
     注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
     """
+    trait is_atomic_part<manufacturer="", partnumber="PJ-327C-4A", footprint="parts/UNKNOWN_PJ_327C_4A/AUDIO-SMD_PJ-327C-4A.kicad_mod", symbol="parts/UNKNOWN_PJ_327C_4A/PJ-327C-4A.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C145813", manufacturer="", partno="PJ-327C-4A">
+    trait has_designator_prefix<prefix="J">
     signal tip ~ pin 1     # L
     signal ring ~ pin 2    # R
     signal sleeve ~ pin 3  # GND
@@ -356,6 +391,9 @@ component AudioJack35:
 
 component Xo12M288:
     """12.288MHz 3.3V CMOS オシレータ(=256fs @48kHz)、SMD3225-4P。LCSC: 要選定。"""
+    trait is_atomic_part<manufacturer="YXC", partnumber="OT2JI-111-12.288M", footprint="parts/YXC_OT2JI_111_12_288M/OSC-SMD_4P-L3.2-W2.5-BL.kicad_mod", symbol="parts/YXC_OT2JI_111_12_288M/OT2JI-111-12.288M.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C20617595", manufacturer="YXC", partno="OT2JI-111-12.288M">
+    trait has_designator_prefix<prefix="X">
     signal en ~ pin 1
     signal gnd ~ pin 2
     signal out ~ pin 3
@@ -370,6 +408,9 @@ component Eeprom24aa025e48:
     SOIC-8/TSSOP-8。LCSC: 要選定。
     注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
     """
+    trait is_atomic_part<manufacturer="MICROCHIP", partnumber="24AA025E48-I/SN", footprint="parts/MICROCHIP_24AA025E48_I_SN/SOIC-8_L4.9-W3.9-P1.27-LS6.0-BL.kicad_mod", symbol="parts/MICROCHIP_24AA025E48_I_SN/24AA025E48-I_SN.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C46840", manufacturer="MICROCHIP", partno="24AA025E48-I/SN">
+    trait has_designator_prefix<prefix="U">
     signal a0 ~ pin 1
     signal a1 ~ pin 2
     signal a2 ~ pin 3
@@ -390,6 +431,9 @@ component HeaderArgus:
 
 component DcJack:
     """DC005 barrel jack (5V in)。EXT給電運用時は未実装可。LCSC: C431533"""
+    trait is_atomic_part<manufacturer="SHOU-HAN", partnumber="DC005", footprint="parts/SHOU_HAN_DC005/DC-IN-TH_DC005.kicad_mod", symbol="parts/SHOU_HAN_DC005/DC005_C431533.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C431533", manufacturer="SHOU-HAN", partno="DC005">
+    trait has_designator_prefix<prefix="J">
     signal center ~ pin 1
     signal sleeve ~ pin 2
     signal switch ~ pin 3
@@ -406,6 +450,9 @@ component UsbCPowerReceptacle:
 
     注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
     """
+    trait is_atomic_part<manufacturer="", partnumber="TYPE-C-31-M-12", footprint="parts/UNKNOWN_TYPE_C_31_M_12/USB-C_SMD-TYPE-C-31-M-12_1.kicad_mod", symbol="parts/UNKNOWN_TYPE_C_31_M_12/TYPE-C-31-M-12.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C165948", manufacturer="", partno="TYPE-C-31-M-12">
+    trait has_designator_prefix<prefix="J">
     signal gnd ~ pin 1
     signal vbus ~ pin 2
     signal cc1 ~ pin 5
@@ -426,6 +473,9 @@ component GbeMagJack:
     HanRun HR911130A 想定。LCSC: C54408
     注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
     """
+    trait is_atomic_part<manufacturer="HANRUN", partnumber="HR911130A", footprint="parts/HANRUN_HR911130A/RJ45-TH_HR911130A.kicad_mod", symbol="parts/HANRUN_HR911130A/HR911130A.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C54408", manufacturer="HANRUN", partno="HR911130A">
+    trait has_designator_prefix<prefix="J">
     signal mdi0_p ~ pin 1
     signal mdi0_ct ~ pin 2
     signal mdi0_n ~ pin 3
@@ -492,14 +542,10 @@ module VideoInputChannel:
     signal output
     power = new ElectricPower  # 終端のグラウンド基準
 
-    r_term = new Resistor
-    r_term.resistance = 75ohm +/- 1%
-    r_term.package = "0402"
+    r_term = new R75_0402
     input ~> r_term ~> power.lv
 
-    c_ac = new Capacitor
-    c_ac.capacitance = 100nF +/- 10%
-    c_ac.package = "0402"
+    c_ac = new C100nF_0402
     input ~> c_ac ~> output
 
 
@@ -524,28 +570,17 @@ module AudioAdc:
     adc.md0 ~ gnd
 
     # 入力ACカップリング(PCM1808は内部バイアス、データシート標準回路は直列1µF)
-    c_in_l = new Capacitor
-    c_in_l.capacitance = 1uF +/- 20%
-    c_in_l.package = "0603"
-    c_in_r = new Capacitor
-    c_in_r.capacitance = 1uF +/- 20%
-    c_in_r.package = "0603"
+    c_in_l = new C1uF_0603
+    c_in_r = new C1uF_0603
     in_l ~> c_in_l ~> adc.vinl
     in_r ~> c_in_r ~> adc.vinr
 
     # VREF・電源デカップリング
-    c_vref_a = new Capacitor
-    c_vref_a.capacitance = 10uF +/- 20%
-    c_vref_a.package = "0805"
-    c_vref_b = new Capacitor
-    c_vref_b.capacitance = 100nF +/- 20%
-    c_vref_b.package = "0402"
+    c_vref_a = new C10uF_0805
+    c_vref_b = new C100nF_0402
     adc.vref ~> c_vref_a ~> gnd
     adc.vref ~> c_vref_b ~> gnd
-    dec = new Capacitor[2]
-    for c in dec:
-        c.capacitance = 100nF +/- 20%
-        c.package = "0402"
+    dec = new C100nF_0402[2]
     adc.vcc ~> dec[0] ~> gnd
     adc.vdd ~> dec[1] ~> gnd
 
@@ -589,20 +624,13 @@ module PowerTree:
     ldo_d19.out ~ p1v9_d.hv
 
     # AZ1117-ADJ 分圧: Vout = 1.25 * (1 + R2/R1) = 1.25 * (1 + 62/120) ≈ 1.896V
-    r_fb_top = new Resistor  # OUT -> ADJ
-    r_fb_top.resistance = 120ohm +/- 1%
-    r_fb_top.package = "0402"
-    r_fb_bot = new Resistor  # ADJ -> GND
-    r_fb_bot.resistance = 62ohm +/- 1%
-    r_fb_bot.package = "0402"
+    r_fb_top = new R120_0402  # OUT -> ADJ
+    r_fb_bot = new R62_0402   # ADJ -> GND
     ldo_a19.out ~> r_fb_top ~> ldo_a19.adj
     ldo_a19.adj ~> r_fb_bot ~> gnd
 
     # 入出力バルクコンデンサ(AZ1117は出力に≥10µFのESR安定性要求あり)
-    bulk_caps = new Capacitor[5]
-    for c in bulk_caps:
-        c.capacitance = 10uF +/- 20%
-        c.package = "0805"
+    bulk_caps = new C10uF_0805[5]
     power_5v.hv ~> bulk_caps[0] ~> gnd
     p3v3_io.hv ~> bulk_caps[1] ~> gnd
     p3v3_a.hv ~> bulk_caps[2] ~> gnd
@@ -642,21 +670,14 @@ module EthernetPort:
     j8.eth2_4p ~ jack.mdi3_p
     j8.eth2_4n ~ jack.mdi3_n
 
-    ct_caps = new Capacitor[4]
-    for c in ct_caps:
-        c.capacitance = 100nF +/- 20%
-        c.package = "0402"
+    ct_caps = new C100nF_0402[4]
     jack.mdi0_ct ~> ct_caps[0] ~> gnd
     jack.mdi1_ct ~> ct_caps[1] ~> gnd
     jack.mdi2_ct ~> ct_caps[2] ~> gnd
     jack.mdi3_ct ~> ct_caps[3] ~> gnd
 
     jack.shield ~ chassis
-    bridge_caps = new Capacitor[2]
-    for c in bridge_caps:
-        c.capacitance = 4.7nF +/- 20%
-        c.package = "1812"
-        c.max_voltage = 2000V to 4000V
+    bridge_caps = new C4nF7_1812_2kV[2]
     chassis ~> bridge_caps[0] ~> gnd
     chassis ~> bridge_caps[1] ~> gnd
 
@@ -696,12 +717,8 @@ module App:
     usbc.vbus ~ power_5v.hv
     usbc.gnd ~ gnd
     usbc.shell ~ gnd
-    r_cc1 = new Resistor
-    r_cc1.resistance = 5.1kohm +/- 1%
-    r_cc1.package = "0402"
-    r_cc2 = new Resistor
-    r_cc2.resistance = 5.1kohm +/- 1%
-    r_cc2.package = "0402"
+    r_cc1 = new R5K1_0402
+    r_cc2 = new R5K1_0402
     usbc.cc1 ~> r_cc1 ~> gnd
     usbc.cc2 ~> r_cc2 ~> gnd
 
@@ -739,10 +756,7 @@ module App:
     tvp.nsub ~ gnd
 
     # デカップリング(各電源ピン群に100nF)
-    dec_caps = new Capacitor[14]
-    for c in dec_caps:
-        c.capacitance = 100nF +/- 20%
-        c.package = "0402"
+    dec_caps = new C100nF_0402[14]
     tvp.a33vdd ~> dec_caps[0] ~> gnd
     tvp.a33vdd ~> dec_caps[1] ~> gnd
     tvp.avdd ~> dec_caps[2] ~> gnd
@@ -780,9 +794,7 @@ module App:
     ch_b.output ~ tvp.bin_3
 
     # VGA green -> SOGIN_3 (Sync-on-Green / アナログcsync対応): 1nF結合
-    c_sog3 = new Capacitor
-    c_sog3.capacitance = 1nF +/- 10%
-    c_sog3.package = "0402"
+    c_sog3 = new C1nF_0402
     vga.green ~> c_sog3 ~> tvp.sogin_3
 
     # VGAのGND (リターン・シールド)
@@ -801,21 +813,15 @@ module App:
 
     # VSYNCはRC遅延(220Ω+1nF)を通す: VSYNC立ち上がりがHSYNCと完全一致すると
     # 内部同期処理が誤動作するため(datasheet推奨)
-    r_vs = new Resistor
-    r_vs.resistance = 220ohm +/- 5%
-    r_vs.package = "0402"
-    c_vs = new Capacitor
-    c_vs.capacitance = 1nF +/- 10%
-    c_vs.package = "0402"
+    r_vs = new R220_0402
+    c_vs = new C1nF_0402
     signal vs_delayed
     vga.vsync ~> r_vs ~> vs_delayed
     vs_delayed ~> c_vs ~> gnd
 
     buf_sync.vcc ~ p3v3_io.hv
     buf_sync.gnd ~ gnd
-    c_buf = new Capacitor
-    c_buf.capacitance = 100nF +/- 20%
-    c_buf.package = "0402"
+    c_buf = new C100nF_0402
     buf_sync.vcc ~> c_buf ~> gnd
     vga.hsync ~ buf_sync.in_a
     vs_delayed ~ buf_sync.in_b
@@ -827,15 +833,9 @@ module App:
     tvp.vsync_b ~ gnd
 
     # --- H-PLL ループフィルタ (FILT1 -> 1.5kΩ + 100nF -> PLL_F, FILT2 -> 4.7nF -> PLL_F) ---
-    r_filt = new Resistor
-    r_filt.resistance = 1.5kohm +/- 1%
-    r_filt.package = "0402"
-    c_filt1 = new Capacitor
-    c_filt1.capacitance = 100nF +/- 10%
-    c_filt1.package = "0402"
-    c_filt2 = new Capacitor
-    c_filt2.capacitance = 4.7nF +/- 10%
-    c_filt2.package = "0402"
+    r_filt = new R1K5_0402
+    c_filt1 = new C100nF_0402
+    c_filt2 = new C4nF7_0402
     signal filt_mid
     tvp.filt1 ~> r_filt ~> filt_mid
     filt_mid ~> c_filt1 ~> tvp.pll_f
@@ -846,16 +846,11 @@ module App:
     osc.en ~ p3v3_io.hv
     osc.gnd ~ gnd
     osc.out ~ tvp.ext_clk
-    c_osc = new Capacitor
-    c_osc.capacitance = 100nF +/- 20%
-    c_osc.package = "0402"
+    c_osc = new C100nF_0402
     osc.vcc ~> c_osc ~> gnd
 
     # --- 未使用アナログ入力の処理(datasheet: video系10nF, SOG系1nFをGNDへ) ---
-    nc_caps = new Capacitor[7]
-    for c in nc_caps:
-        c.capacitance = 10nF +/- 20%
-        c.package = "0402"
+    nc_caps = new C10nF_0402[7]
     tvp.rin_1 ~> nc_caps[0] ~> gnd
     tvp.rin_2 ~> nc_caps[1] ~> gnd
     tvp.bin_1 ~> nc_caps[2] ~> gnd
@@ -864,10 +859,7 @@ module App:
     tvp.gin_2 ~> nc_caps[5] ~> gnd
     tvp.gin_4 ~> nc_caps[6] ~> gnd
 
-    nc_sog_caps = new Capacitor[2]
-    for c in nc_sog_caps:
-        c.capacitance = 1nF +/- 10%
-        c.package = "0402"
+    nc_sog_caps = new C1nF_0402[2]
     tvp.sogin_1 ~> nc_sog_caps[0] ~> gnd
     tvp.sogin_2 ~> nc_sog_caps[1] ~> gnd
 
@@ -878,25 +870,17 @@ module App:
     tvp.coast ~ gnd
 
     # I2CA -> GND: I2Cアドレス 0xB8 (7bit: 0x5C)
-    r_i2ca = new Resistor
-    r_i2ca.resistance = 2.2kohm +/- 5%
-    r_i2ca.package = "0402"
+    r_i2ca = new R2K2_0402
     tvp.i2ca ~> r_i2ca ~> gnd
 
     # I2C プルアップ
-    r_sda = new Resistor
-    r_sda.resistance = 2.2kohm +/- 5%
-    r_sda.package = "0402"
-    r_scl = new Resistor
-    r_scl.resistance = 2.2kohm +/- 5%
-    r_scl.package = "0402"
+    r_sda = new R2K2_0402
+    r_scl = new R2K2_0402
     tvp.sda ~> r_sda ~> p3v3_io.hv
     tvp.scl ~> r_scl ~> p3v3_io.hv
 
     # RESETB: プルダウン(FPGAがHighに駆動して解除)
-    r_rst = new Resistor
-    r_rst.resistance = 2.2kohm +/- 5%
-    r_rst.package = "0402"
+    r_rst = new R2K2_0402
     tvp.resetb ~> r_rst ~> gnd
 
     # --- FPGA接続 (EXT P2/P4 を1対1ミラーする 2×15 ×2) ---
@@ -960,9 +944,7 @@ module App:
     xo_audio.en ~ p3v3_io.hv
     xo_audio.gnd ~ gnd
     xo_audio.out ~ audio_mclk
-    c_xo_audio = new Capacitor
-    c_xo_audio.capacitance = 100nF +/- 20%
-    c_xo_audio.package = "0402"
+    c_xo_audio = new C100nF_0402
     xo_audio.vcc ~> c_xo_audio ~> gnd
 
     # オーディオアナログ5V(ビーズでデジタル5Vから分離)
@@ -971,9 +953,7 @@ module App:
     fb_audio = new FerriteBead
     power_5v.hv ~ fb_audio.p1
     fb_audio.p2 ~ p5v_audio.hv
-    c_5va = new Capacitor
-    c_5va.capacitance = 10uF +/- 20%
-    c_5va.package = "0805"
+    c_5va = new C10uF_0805
     p5v_audio.hv ~> c_5va ~> gnd
 
     # ADC A: D-SUB15の音声(ピン4=L, ピン11=R と仮定)。SJ2/SJ3で切り離し可能
@@ -1019,9 +999,7 @@ module App:
     spdif = new SpdifRxModule
     spdif.vcc ~ p3v3_io.hv
     spdif.gnd ~ gnd
-    c_spdif = new Capacitor
-    c_spdif.capacitance = 100nF +/- 20%
-    c_spdif.package = "0402"
+    c_spdif = new C100nF_0402
     spdif.vcc ~> c_spdif ~> gnd
 
     # J4 空きピンへの割当(音声で6本使い切り)
@@ -1047,10 +1025,7 @@ module App:
     eeprom_mac1 = new Eeprom24aa025e48
     eeprom_mac1.a0 ~ p3v3_io.hv     # 0x51
     eeprom_mac0.a0 ~ gnd            # 0x50
-    dec_eeprom = new Capacitor[2]
-    for c in dec_eeprom:
-        c.capacitance = 100nF +/- 20%
-        c.package = "0402"
+    dec_eeprom = new C100nF_0402[2]
     eeprom_mac0.vcc ~> dec_eeprom[0] ~> gnd
     eeprom_mac1.vcc ~> dec_eeprom[1] ~> gnd
     eeprom_mac0.vcc ~ p3v3_io.hv

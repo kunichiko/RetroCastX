@@ -1,0 +1,80 @@
+import Resistor
+import Capacitor
+import is_atomic_part
+import has_part_picked
+import has_designator_prefix
+
+component R75_0402 from Resistor:
+    trait is_atomic_part<manufacturer="UNI-ROYAL", partnumber="0402WGF750JTCE", footprint="parts/UNI_ROYAL_0402WGF750JTCE/R0402.kicad_mod", symbol="parts/UNI_ROYAL_0402WGF750JTCE/0402WGF750JTCE.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C25133", manufacturer="UNI-ROYAL", partno="0402WGF750JTCE">
+    trait has_designator_prefix<prefix="R">
+
+component R62_0402 from Resistor:
+    trait is_atomic_part<manufacturer="FOJAN", partnumber="FRC0402F62R0TS", footprint="parts/FOJAN_FRC0402F62R0TS/R0402.kicad_mod", symbol="parts/FOJAN_FRC0402F62R0TS/FRC0402F62R0TS.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C2909376", manufacturer="FOJAN", partno="FRC0402F62R0TS">
+    trait has_designator_prefix<prefix="R">
+
+component R120_0402 from Resistor:
+    trait is_atomic_part<manufacturer="UNI-ROYAL", partnumber="0402WGF1200TCE", footprint="parts/UNI_ROYAL_0402WGF1200TCE/R0402.kicad_mod", symbol="parts/UNI_ROYAL_0402WGF1200TCE/0402WGF1200TCE.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C25079", manufacturer="UNI-ROYAL", partno="0402WGF1200TCE">
+    trait has_designator_prefix<prefix="R">
+
+component R220_0402 from Resistor:
+    trait is_atomic_part<manufacturer="UNI-ROYAL", partnumber="0402WGF2200TCE", footprint="parts/UNI_ROYAL_0402WGF2200TCE/R0402.kicad_mod", symbol="parts/UNI_ROYAL_0402WGF2200TCE/0402WGF2200TCE.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C25091", manufacturer="UNI-ROYAL", partno="0402WGF2200TCE">
+    trait has_designator_prefix<prefix="R">
+
+component R1K5_0402 from Resistor:
+    trait is_atomic_part<manufacturer="UNI-ROYAL", partnumber="0402WGF1501TCE", footprint="parts/UNI_ROYAL_0402WGF1501TCE/R0402.kicad_mod", symbol="parts/UNI_ROYAL_0402WGF1501TCE/0402WGF1501TCE.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C25867", manufacturer="UNI-ROYAL", partno="0402WGF1501TCE">
+    trait has_designator_prefix<prefix="R">
+
+component R2K2_0402 from Resistor:
+    trait is_atomic_part<manufacturer="UNI-ROYAL", partnumber="0402WGF2201TCE", footprint="parts/UNI_ROYAL_0402WGF2201TCE/R0402.kicad_mod", symbol="parts/UNI_ROYAL_0402WGF2201TCE/0402WGF2201TCE.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C25879", manufacturer="UNI-ROYAL", partno="0402WGF2201TCE">
+    trait has_designator_prefix<prefix="R">
+
+component R5K1_0402 from Resistor:
+    trait is_atomic_part<manufacturer="UNI-ROYAL", partnumber="0402WGF5101TCE", footprint="parts/UNI_ROYAL_0402WGF5101TCE/R0402.kicad_mod", symbol="parts/UNI_ROYAL_0402WGF5101TCE/0402WGF5101TCE.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C25905", manufacturer="UNI-ROYAL", partno="0402WGF5101TCE">
+    trait has_designator_prefix<prefix="R">
+
+component C100nF_0402 from Capacitor:
+    trait is_atomic_part<manufacturer="SAMSUNG", partnumber="CL05B104KO5NNNC", footprint="parts/SAMSUNG_CL05B104KO5NNNC/C0402.kicad_mod", symbol="parts/SAMSUNG_CL05B104KO5NNNC/CL05B104KO5NNNC.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C1525", manufacturer="SAMSUNG", partno="CL05B104KO5NNNC">
+    trait has_designator_prefix<prefix="C">
+
+component C100nF_0805 from Capacitor:
+    trait is_atomic_part<manufacturer="YAGEO", partnumber="CC0805KRX7R9BB104", footprint="parts/YAGEO_CC0805KRX7R9BB104/C0805.kicad_mod", symbol="parts/YAGEO_CC0805KRX7R9BB104/CC0805KRX7R9BB104.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C49678", manufacturer="YAGEO", partno="CC0805KRX7R9BB104">
+    trait has_designator_prefix<prefix="C">
+
+component C1nF_0402 from Capacitor:
+    trait is_atomic_part<manufacturer="FH", partnumber="0402B102K500NT", footprint="parts/FH_0402B102K500NT/C0402.kicad_mod", symbol="parts/FH_0402B102K500NT/0402B102K500NT.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C1523", manufacturer="FH", partno="0402B102K500NT">
+    trait has_designator_prefix<prefix="C">
+
+component C10nF_0402 from Capacitor:
+    trait is_atomic_part<manufacturer="SAMSUNG", partnumber="CL05B103KB5NNNC", footprint="parts/SAMSUNG_CL05B103KB5NNNC/C0402.kicad_mod", symbol="parts/SAMSUNG_CL05B103KB5NNNC/CL05B103KB5NNNC.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C15195", manufacturer="SAMSUNG", partno="CL05B103KB5NNNC">
+    trait has_designator_prefix<prefix="C">
+
+component C4nF7_0402 from Capacitor:
+    trait is_atomic_part<manufacturer="FH", partnumber="0402B472K500NT", footprint="parts/FH_0402B472K500NT/C0402.kicad_mod", symbol="parts/FH_0402B472K500NT/0402B472K500NT.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C1538", manufacturer="FH", partno="0402B472K500NT">
+    trait has_designator_prefix<prefix="C">
+
+component C4nF7_1812_2kV from Capacitor:
+    trait is_atomic_part<manufacturer="YAGEO", partnumber="CC1812KKX7RDBB472", footprint="parts/YAGEO_CC1812KKX7RDBB472/C1812.kicad_mod", symbol="parts/YAGEO_CC1812KKX7RDBB472/CC1812KKX7RDBB472.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C309511", manufacturer="YAGEO", partno="CC1812KKX7RDBB472">
+    trait has_designator_prefix<prefix="C">
+
+component C1uF_0603 from Capacitor:
+    trait is_atomic_part<manufacturer="SAMSUNG", partnumber="CL10A105KB8NNNC", footprint="parts/SAMSUNG_CL10A105KB8NNNC/C0603.kicad_mod", symbol="parts/SAMSUNG_CL10A105KB8NNNC/CL10A105KB8NNNC.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C15849", manufacturer="SAMSUNG", partno="CL10A105KB8NNNC">
+    trait has_designator_prefix<prefix="C">
+
+component C10uF_0805 from Capacitor:
+    trait is_atomic_part<manufacturer="SAMSUNG", partnumber="CL21A106KAYNNNE", footprint="parts/SAMSUNG_CL21A106KAYNNNE/C0805.kicad_mod", symbol="parts/SAMSUNG_CL21A106KAYNNNE/CL21A106KAYNNNE.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C15850", manufacturer="SAMSUNG", partno="CL21A106KAYNNNE">
+    trait has_designator_prefix<prefix="C">
