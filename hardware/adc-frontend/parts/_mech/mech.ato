@@ -1,0 +1,160 @@
+import is_atomic_part
+import has_designator_prefix
+import has_part_removed
+
+component HeaderExtP2:
+    """EXTボード P2 を1対1ミラーする 2×15 ヘッダ(GPIO 20本)。
+
+    信号名はECP5(BG381)のボール名。ピン番号は wuxx pinout 図の並び
+    (左→右、奇数=外側列)を仮定 — レイアウト時に実基板と要照合。
+    """
+    trait is_atomic_part<manufacturer="", partnumber="PinHeader_2x15_2.54", footprint="Header_2x15_P2.54mm.kicad_mod", symbol="Header_2x15.kicad_sym">
+    trait has_designator_prefix<prefix="J">
+    trait has_part_removed  # 手実装/DNP: 基板にFPは載せるがJLC発注しない
+    # 手実装(JLC発注除外)。has_part_picked無し
+    signal io_j20 ~ pin 1
+    signal io_g20 ~ pin 2
+    signal io_l18 ~ pin 3
+    signal io_k20 ~ pin 4
+    signal io_m18 ~ pin 5
+    signal io_l20 ~ pin 6
+    signal io_n17 ~ pin 7
+    signal io_n18 ~ pin 8
+    signal gnd ~ pin 9
+    gnd ~ pin 10
+    signal p3v3_ext ~ pin 11
+    p3v3_ext ~ pin 12
+    signal io_u17 ~ pin 13
+    signal io_p18 ~ pin 14
+    signal p5v_ext ~ pin 15
+    gnd ~ pin 16
+    signal io_t17 ~ pin 17
+    signal io_u18 ~ pin 18
+    signal io_p17 ~ pin 19
+    signal io_m17 ~ pin 20
+    signal io_r18 ~ pin 21
+    signal io_r17 ~ pin 22
+    signal io_c18 ~ pin 23
+    signal io_t18 ~ pin 24
+    signal io_u16 ~ pin 25
+    signal io_k18 ~ pin 26
+    gnd ~ pin 27
+    gnd ~ pin 28
+    p3v3_ext ~ pin 29
+    p3v3_ext ~ pin 30
+
+component HeaderExtP4:
+    """EXTボード P4 を1対1ミラーする 2×15 ヘッダ(GPIO 18本)。
+
+    PCLK対応ボール: F2(PCLKT7_0), F1(PCLKC6_1), F3(PCLKC7_1),
+    G3(PCLKT7_1), H4(GR_PCLK7_1) — DATACLKはF2へ。
+    """
+    trait is_atomic_part<manufacturer="", partnumber="PinHeader_2x15_2.54", footprint="Header_2x15_P2.54mm.kicad_mod", symbol="Header_2x15.kicad_sym">
+    trait has_designator_prefix<prefix="J">
+    trait has_part_removed  # 手実装/DNP: 基板にFPは載せるがJLC発注しない
+    # 手実装(JLC発注除外)。has_part_picked無し
+    signal p3v3_ext ~ pin 1
+    p3v3_ext ~ pin 2
+    signal gnd ~ pin 3
+    gnd ~ pin 4
+    signal io_e1 ~ pin 5
+    signal io_f2 ~ pin 6
+    signal io_e4 ~ pin 7
+    signal io_f1 ~ pin 8
+    signal io_f3 ~ pin 9
+    signal io_g3 ~ pin 10
+    signal io_h3 ~ pin 11
+    signal io_h4 ~ pin 12
+    signal io_h5 ~ pin 13
+    signal io_j4 ~ pin 14
+    gnd ~ pin 15
+    signal p5v_ext ~ pin 16
+    signal io_j5 ~ pin 17
+    signal io_k3 ~ pin 18
+    p3v3_ext ~ pin 19
+    p3v3_ext ~ pin 20
+    gnd ~ pin 21
+    gnd ~ pin 22
+    signal io_a2 ~ pin 23
+    signal io_k5 ~ pin 24
+    signal io_k4 ~ pin 25
+    signal io_b3 ~ pin 26
+    signal io_b2 ~ pin 27
+    signal io_e19 ~ pin 28
+    signal nc29 ~ pin 29
+    signal nc30 ~ pin 30
+
+component HeaderP1:
+    """EXTボード P1 と1対1対応の 2×15 ヘッダ(GbE差動ペア受け)。
+
+    汎用2.54mmピンヘッダ 2×15(2×40の切断可)。ピン配置は
+    kazkojima i5ether / wuxx pinout 図で確定した EXT P1 実配置に一致。
+    """
+    trait is_atomic_part<manufacturer="", partnumber="PinHeader_2x15_2.54", footprint="Header_2x15_P2.54mm.kicad_mod", symbol="Header_2x15.kicad_sym">
+    trait has_designator_prefix<prefix="J">
+    trait has_part_removed  # 手実装/DNP: 基板にFPは載せるがJLC発注しない
+    # 手実装(JLC発注除外)。has_part_picked無し
+    signal p3v3 ~ pin 1
+    p3v3 ~ pin 2
+    signal gnd ~ pin 3
+    gnd ~ pin 4
+    signal eth2_2p ~ pin 5
+    signal eth2_4p ~ pin 6
+    signal eth2_2n ~ pin 7
+    signal eth2_4n ~ pin 8
+    signal eth2_1n ~ pin 9
+    signal eth2_3n ~ pin 10
+    signal eth2_1p ~ pin 11
+    signal eth2_3p ~ pin 12
+    signal nc13 ~ pin 13
+    signal nc14 ~ pin 14
+    signal p5v ~ pin 15
+    gnd ~ pin 16
+    signal nc17 ~ pin 17
+    signal nc18 ~ pin 18
+    p3v3 ~ pin 19
+    p3v3 ~ pin 20
+    gnd ~ pin 21
+    gnd ~ pin 22
+    signal eth1_1p ~ pin 23
+    signal eth1_3p ~ pin 24
+    signal eth1_1n ~ pin 25
+    signal eth1_3n ~ pin 26
+    signal eth1_2n ~ pin 27
+    signal eth1_4n ~ pin 28
+    signal eth1_2p ~ pin 29
+    signal eth1_4p ~ pin 30
+
+component HeaderArgus:
+    """ArgusX(RGBセレクタ、別プロジェクト)制御用 1×4 ヘッダ(I2Cバス引き出し)。"""
+    trait is_atomic_part<manufacturer="", partnumber="PinHeader_1x4_2.54", footprint="Header_1x4_P2.54mm.kicad_mod", symbol="Header_1x4.kicad_sym">
+    trait has_designator_prefix<prefix="J">
+    trait has_part_removed  # 手実装/DNP: 基板にFPは載せるがJLC発注しない
+    # 手実装(JLC発注除外)。has_part_picked無し
+    signal p3v3 ~ pin 1
+    signal sda ~ pin 2
+    signal scl ~ pin 3
+    signal gnd ~ pin 4
+
+component SolderJumper:
+    """はんだジャンパ(2パッド)。フットプリントはKiCad標準 SolderJumper-2 を想定。"""
+    trait is_atomic_part<manufacturer="", partnumber="SolderJumper_2", footprint="SolderJumper_2.kicad_mod", symbol="SolderJumper_2.kicad_sym">
+    trait has_designator_prefix<prefix="JP">
+    trait has_part_removed  # 手実装/DNP: 基板にFPは載せるがJLC発注しない
+    # 手実装(JLC発注除外)。has_part_picked無し
+    signal a ~ pin 1
+    signal b ~ pin 2
+
+component SpdifRxModule:
+    """光デジタル(TOSLINK)受信モジュール、3.3V動作。
+
+    候補: Everlight PLR135/T8 / CLIFF FC684205R。LCSC: 要選定。
+    注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
+    """
+    trait is_atomic_part<manufacturer="EVERLIGHT", partnumber="PLR135/T10", footprint="PLR135_T10.kicad_mod", symbol="PLR135_T10.kicad_sym">
+    trait has_designator_prefix<prefix="J">
+    trait has_part_removed  # 手実装/DNP: 基板にFPは載せるがJLC発注しない
+    # 手実装(JLC発注除外)。has_part_picked無し
+    signal out ~ pin 1     # S/PDIFビットストリーム(TTL)
+    signal gnd ~ pin 2
+    signal vcc ~ pin 3

@@ -1,4 +1,4 @@
-(footprint "PLR135_T10"
+(footprint "_mech:PLR135_T10"
 	(version 20240108)
 	(generator "manual")
 	(layer "F.Cu")

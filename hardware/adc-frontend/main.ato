@@ -8,6 +8,7 @@ import is_atomic_part
 import has_part_picked
 import has_designator_prefix
 import has_part_removed
+from "parts/_mech/mech.ato" import HeaderExtP2, HeaderExtP4, HeaderP1, HeaderArgus, SolderJumper, SpdifRxModule
 from "passives.ato" import R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805
 
 # =============================================================================
@@ -217,15 +218,22 @@ component FerriteBead:
 
 
 component EsdArray4:
-    """Nexperia PESD5V0U4BW-compatible quad ESD array (low-cap, for video).
+    """ROHM EMZT6.8ET2R A-Common Quad ESD array. EMT6 (SOT-563 6-pin). LCSC: C510333
 
-    SOT-553. LCSC: C5182054
+    4ラインESD保護(4 I/O + 共通ノード)。映像/同期/音声入力の保護に使用。
+    ピンアウトは6ピン共通ノードアレイの標準配置(下段1-2-3/上段6-5-4、
+    四隅1/3/4/6=I/O、中央2/5=共通)を採用。4chとも等価なのでI/O割当順は任意。
+    ★発注前にROHM EMZT6.8ET2Rデータシートで共通ノード位置(pin2/5)を要確認。
     """
+    trait is_atomic_part<manufacturer="ROHM", partnumber="EMZT6.8ET2R", footprint="parts/ROHM_EMZT6_8ET2R/EMT6_L1.6-W1.2-P0.50-LS1.6-BL.kicad_mod", symbol="parts/ROHM_EMZT6_8ET2R/EMZT6.8ET2R.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C510333", manufacturer="ROHM", partno="EMZT6.8ET2R">
+    trait has_designator_prefix<prefix="D">
     signal io1 ~ pin 1
-    signal io2 ~ pin 2
-    signal gnd ~ pin 3
+    signal io2 ~ pin 3
     signal io3 ~ pin 4
-    signal io4 ~ pin 5
+    signal io4 ~ pin 6
+    signal gnd ~ pin 2
+    gnd ~ pin 5
 
 
 component Osc27M:
@@ -262,82 +270,6 @@ component VgaConnector:
     signal shield ~ pin 16
 
 
-component HeaderExtP2:
-    """EXTボード P2 を1対1ミラーする 2×15 ヘッダ(GPIO 20本)。
-
-    信号名はECP5(BG381)のボール名。ピン番号は wuxx pinout 図の並び
-    (左→右、奇数=外側列)を仮定 — レイアウト時に実基板と要照合。
-    """
-    signal io_j20 ~ pin 1
-    signal io_g20 ~ pin 2
-    signal io_l18 ~ pin 3
-    signal io_k20 ~ pin 4
-    signal io_m18 ~ pin 5
-    signal io_l20 ~ pin 6
-    signal io_n17 ~ pin 7
-    signal io_n18 ~ pin 8
-    signal gnd ~ pin 9
-    gnd ~ pin 10
-    signal p3v3_ext ~ pin 11
-    p3v3_ext ~ pin 12
-    signal io_u17 ~ pin 13
-    signal io_p18 ~ pin 14
-    signal p5v_ext ~ pin 15
-    gnd ~ pin 16
-    signal io_t17 ~ pin 17
-    signal io_u18 ~ pin 18
-    signal io_p17 ~ pin 19
-    signal io_m17 ~ pin 20
-    signal io_r18 ~ pin 21
-    signal io_r17 ~ pin 22
-    signal io_c18 ~ pin 23
-    signal io_t18 ~ pin 24
-    signal io_u16 ~ pin 25
-    signal io_k18 ~ pin 26
-    gnd ~ pin 27
-    gnd ~ pin 28
-    p3v3_ext ~ pin 29
-    p3v3_ext ~ pin 30
-
-
-component HeaderExtP4:
-    """EXTボード P4 を1対1ミラーする 2×15 ヘッダ(GPIO 18本)。
-
-    PCLK対応ボール: F2(PCLKT7_0), F1(PCLKC6_1), F3(PCLKC7_1),
-    G3(PCLKT7_1), H4(GR_PCLK7_1) — DATACLKはF2へ。
-    """
-    signal p3v3_ext ~ pin 1
-    p3v3_ext ~ pin 2
-    signal gnd ~ pin 3
-    gnd ~ pin 4
-    signal io_e1 ~ pin 5
-    signal io_f2 ~ pin 6
-    signal io_e4 ~ pin 7
-    signal io_f1 ~ pin 8
-    signal io_f3 ~ pin 9
-    signal io_g3 ~ pin 10
-    signal io_h3 ~ pin 11
-    signal io_h4 ~ pin 12
-    signal io_h5 ~ pin 13
-    signal io_j4 ~ pin 14
-    gnd ~ pin 15
-    signal p5v_ext ~ pin 16
-    signal io_j5 ~ pin 17
-    signal io_k3 ~ pin 18
-    p3v3_ext ~ pin 19
-    p3v3_ext ~ pin 20
-    gnd ~ pin 21
-    gnd ~ pin 22
-    signal io_a2 ~ pin 23
-    signal io_k5 ~ pin 24
-    signal io_k4 ~ pin 25
-    signal io_b3 ~ pin 26
-    signal io_b2 ~ pin 27
-    signal io_e19 ~ pin 28
-    signal nc29 ~ pin 29
-    signal nc30 ~ pin 30
-
-
 component Pcm1808:
     """TI PCM1808 stereo audio ADC (24bit ΔΣ, I2S/スレーブ動作), TSSOP-14。
 
@@ -363,24 +295,13 @@ component Pcm1808:
     signal vinl ~ pin 14
 
 
-component SpdifRxModule:
-    """光デジタル(TOSLINK)受信モジュール、3.3V動作。
-
-    候補: Everlight PLR135/T8 / CLIFF FC684205R。LCSC: 要選定。
-    注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
-    """
-    signal out ~ pin 1     # S/PDIFビットストリーム(TTL)
-    signal gnd ~ pin 2
-    signal vcc ~ pin 3
-
-
 component AudioJack35:
     """3.5mm ステレオTRSジャック(LINE入力用)。候補: PJ-320A系。LCSC: 要選定。
 
     注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
     """
-    trait is_atomic_part<manufacturer="", partnumber="PJ-327C-4A", footprint="parts/UNKNOWN_PJ_327C_4A/AUDIO-SMD_PJ-327C-4A.kicad_mod", symbol="parts/UNKNOWN_PJ_327C_4A/PJ-327C-4A.kicad_sym">
-    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C145813", manufacturer="", partno="PJ-327C-4A">
+    trait is_atomic_part<manufacturer="韩国韩荣", partnumber="PJ-327C-4A", footprint="parts/UNKNOWN_PJ_327C_4A/AUDIO-SMD_PJ-327C-4A.kicad_mod", symbol="parts/UNKNOWN_PJ_327C_4A/PJ-327C-4A.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C145813", manufacturer="韩国韩荣", partno="PJ-327C-4A">
     trait has_designator_prefix<prefix="J">
     signal tip ~ pin 1     # L
     signal ring ~ pin 2    # R
@@ -421,14 +342,6 @@ component Eeprom24aa025e48:
     signal vcc ~ pin 8
 
 
-component HeaderArgus:
-    """ArgusX(RGBセレクタ、別プロジェクト)制御用 1×4 ヘッダ(I2Cバス引き出し)。"""
-    signal p3v3 ~ pin 1
-    signal sda ~ pin 2
-    signal scl ~ pin 3
-    signal gnd ~ pin 4
-
-
 component DcJack:
     """DC005 barrel jack (5V in)。EXT給電運用時は未実装可。LCSC: C431533"""
     trait is_atomic_part<manufacturer="SHOU-HAN", partnumber="DC005", footprint="parts/SHOU_HAN_DC005/DC-IN-TH_DC005.kicad_mod", symbol="parts/SHOU_HAN_DC005/DC005_C431533.kicad_sym">
@@ -439,19 +352,13 @@ component DcJack:
     signal switch ~ pin 3
 
 
-component SolderJumper:
-    """はんだジャンパ(2パッド)。フットプリントはKiCad標準 SolderJumper-2 を想定。"""
-    signal a ~ pin 1
-    signal b ~ pin 2
-
-
 component UsbCPowerReceptacle:
     """USB-C レセプタクル(USB2.0 16pin級)、電源入力用。TYPE-C-31-M-12 想定。LCSC: C165948
 
     注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
     """
-    trait is_atomic_part<manufacturer="", partnumber="TYPE-C-31-M-12", footprint="parts/UNKNOWN_TYPE_C_31_M_12/USB-C_SMD-TYPE-C-31-M-12_1.kicad_mod", symbol="parts/UNKNOWN_TYPE_C_31_M_12/TYPE-C-31-M-12.kicad_sym">
-    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C165948", manufacturer="", partno="TYPE-C-31-M-12">
+    trait is_atomic_part<manufacturer="韩国韩荣", partnumber="TYPE-C-31-M-12", footprint="parts/UNKNOWN_TYPE_C_31_M_12/USB-C_SMD-TYPE-C-31-M-12_1.kicad_mod", symbol="parts/UNKNOWN_TYPE_C_31_M_12/TYPE-C-31-M-12.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C165948", manufacturer="韩国韩荣", partno="TYPE-C-31-M-12">
     trait has_designator_prefix<prefix="J">
     signal gnd ~ pin 1
     signal vbus ~ pin 2
@@ -495,46 +402,6 @@ component GbeMagJack:
     signal shield ~ pin 17
     shield ~ pin 18
 
-
-component HeaderP1:
-    """EXTボード P1 と1対1対応の 2×15 ヘッダ(GbE差動ペア受け)。
-
-    汎用2.54mmピンヘッダ 2×15(2×40の切断可)。ピン配置は
-    kazkojima i5ether / wuxx pinout 図で確定した EXT P1 実配置に一致。
-    """
-    signal p3v3 ~ pin 1
-    p3v3 ~ pin 2
-    signal gnd ~ pin 3
-    gnd ~ pin 4
-    signal eth2_2p ~ pin 5
-    signal eth2_4p ~ pin 6
-    signal eth2_2n ~ pin 7
-    signal eth2_4n ~ pin 8
-    signal eth2_1n ~ pin 9
-    signal eth2_3n ~ pin 10
-    signal eth2_1p ~ pin 11
-    signal eth2_3p ~ pin 12
-    signal nc13 ~ pin 13
-    signal nc14 ~ pin 14
-    signal p5v ~ pin 15
-    gnd ~ pin 16
-    signal nc17 ~ pin 17
-    signal nc18 ~ pin 18
-    p3v3 ~ pin 19
-    p3v3 ~ pin 20
-    gnd ~ pin 21
-    gnd ~ pin 22
-    signal eth1_1p ~ pin 23
-    signal eth1_3p ~ pin 24
-    signal eth1_1n ~ pin 25
-    signal eth1_3n ~ pin 26
-    signal eth1_2n ~ pin 27
-    signal eth1_4n ~ pin 28
-    signal eth1_2p ~ pin 29
-    signal eth1_4p ~ pin 30
-
-
-# --- Sub-circuits ------------------------------------------------------------
 
 module VideoInputChannel:
     """1ch分のアナログ入力段: 75Ω終端 -> 100nF ACカップリング -> TVP入力。"""
