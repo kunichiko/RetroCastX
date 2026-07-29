@@ -7,3 +7,7 @@ paths:
 builds:
   default:
     entry: main.ato:App
+    # 注: `ato build` は netlist/PCB/BOM を生成後、pinoutドキュメント生成で
+    # 失敗する(MagJack等コネクタの仮ピン番号でシンボル/パッド不一致)。
+    # fab必須の成果物(layouts/default/default.kicad_pcb, build/builds/default/
+    # default.bom.csv)は生成済み。コネクタ実ピン照合とpinout修正は製造前の別課題。
