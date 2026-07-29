@@ -1,0 +1,30 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component CONNFLY_DS1037_15FNAKT76_0CC_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C77836", date="2026-07-29T05:06:30.828358+00:00", checksum="576caf3bf6e66e924e8b74e349ab550bd47e22ae83084ecfba17f136a6c74978">
+
+    trait is_atomic_part<manufacturer="CONNFLY", partnumber="DS1037-15FNAKT76-0CC", footprint="DSUB-TH_DS1037-15FNAKT74-0CC.kicad_mod", symbol="DS1037-15FNAKT76-0CC.kicad_sym", model="DSUB-TH_DMR-15P-F-WI.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C77836", manufacturer="CONNFLY", partno="DS1037-15FNAKT76-0CC">
+    trait has_designator_prefix<prefix="DSub">
+
+    # pins
+    pin 1
+    pin 2
+    pin 3
+    pin 4
+    pin 5
+    pin 6
+    pin 7
+    pin 8
+    pin 9
+    pin 10
+    pin 11
+    pin 12
+    pin 13
+    pin 14
+    pin 15

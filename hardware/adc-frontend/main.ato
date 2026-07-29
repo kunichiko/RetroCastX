@@ -247,27 +247,34 @@ component Osc27M:
     signal vcc ~ pin 4
 
 
-component VgaConnector:
-    """HD-15 (3-row D-sub 15) female VGA connector. LCSC: C138387"""
-    trait is_atomic_part<manufacturer="BOOMELE", partnumber="VGA-002", footprint="parts/BOOMELE_VGA_002/D-SUB-TH_VGA-002.kicad_mod", symbol="parts/BOOMELE_VGA_002/VGA-002.kicad_sym">
-    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C138387", manufacturer="BOOMELE", partno="VGA-002">
+component Dsub15X68k:
+    """X68000等 日本式アナログRGB 15ピン(2列 DA-15)メス。音声L/R含む。
+    CONNFLY DS1037-15FNAKT76-0CC (右アングルPCBマウント)。LCSC: C77836
+
+    ピン配置(ohnaka提供・X68000):
+    1=R-OUT 2=R-GND 3=G-OUT 4=G-GND 5=B-OUT 6=B-GND 7=YS(データ有無status)
+    8=GND 9=N.C 10=AUDIO-L 11=AUDIO-R 12=GND 13=N.C 14=H-SYNC 15=V-SYNC
+    RGBと各GNDが交互配置。旧VGA(3列HD-15/DDC)とは全くの別物。
+    """
+    trait is_atomic_part<manufacturer="CONNFLY", partnumber="DS1037-15FNAKT76-0CC", footprint="parts/CONNFLY_DS1037_15FNAKT76_0CC/DSUB-TH_DS1037-15FNAKT74-0CC.kicad_mod", symbol="parts/CONNFLY_DS1037_15FNAKT76_0CC/DS1037-15FNAKT76-0CC.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C77836", manufacturer="CONNFLY", partno="DS1037-15FNAKT76-0CC">
     trait has_designator_prefix<prefix="J">
-    signal red ~ pin 1
-    signal green ~ pin 2
-    signal blue ~ pin 3
-    signal id2 ~ pin 4
-    signal gnd ~ pin 5
-    signal red_rtn ~ pin 6
-    signal green_rtn ~ pin 7
-    signal blue_rtn ~ pin 8
-    signal key ~ pin 9
-    signal sync_gnd ~ pin 10
-    signal id0 ~ pin 11
-    signal sda ~ pin 12
-    signal hsync ~ pin 13
-    signal vsync ~ pin 14
-    signal scl ~ pin 15
-    signal shield ~ pin 16
+    signal r ~ pin 1
+    signal r_gnd ~ pin 2
+    signal g ~ pin 3
+    signal g_gnd ~ pin 4
+    signal b ~ pin 5
+    signal b_gnd ~ pin 6
+    signal ys ~ pin 7        # データ有無status(X68000)。今回は未使用
+    signal gnd ~ pin 8
+    gnd ~ pin 12
+    signal audio_l ~ pin 10
+    signal audio_r ~ pin 11
+    signal hsync ~ pin 14
+    signal vsync ~ pin 15
+    signal shield ~ pin 16   # シェル/固定
+    shield ~ pin 17
+    # pin 9, 13 = N.C(未接続)
 
 
 component Pcm1808:
@@ -572,7 +579,7 @@ module EthernetPort:
 
 module App:
     tvp = new Tvp7002
-    vga = new VgaConnector
+    vga = new Dsub15X68k
     buf_sync = new Lvc2g17
     osc = new Osc27M
     jack = new DcJack
@@ -658,7 +665,7 @@ module App:
     tvp.iovdd ~> dec_caps[12] ~> gnd
     tvp.iovdd ~> dec_caps[13] ~> gnd
 
-    # --- アナログRGB入力(VGA -> RIN_3/GIN_3/BIN_3) ---
+    # --- アナログRGB入力(D-SUB15 -> RIN_3/GIN_3/BIN_3) ---
     ch_r = new VideoInputChannel
     ch_g = new VideoInputChannel
     ch_b = new VideoInputChannel
@@ -668,27 +675,26 @@ module App:
 
     esd_rgb = new EsdArray4
     esd_rgb.gnd ~ gnd
-    vga.red ~ esd_rgb.io1
-    vga.green ~ esd_rgb.io2
-    vga.blue ~ esd_rgb.io3
+    vga.r ~ esd_rgb.io1
+    vga.g ~ esd_rgb.io2
+    vga.b ~ esd_rgb.io3
 
-    vga.red ~ ch_r.input
-    vga.green ~ ch_g.input
-    vga.blue ~ ch_b.input
+    vga.r ~ ch_r.input
+    vga.g ~ ch_g.input
+    vga.b ~ ch_b.input
     ch_r.output ~ tvp.rin_3
     ch_g.output ~ tvp.gin_3
     ch_b.output ~ tvp.bin_3
 
-    # VGA green -> SOGIN_3 (Sync-on-Green / アナログcsync対応): 1nF結合
+    # green -> SOGIN_3 (Sync-on-Green / アナログcsync対応): 1nF結合
     c_sog3 = new C1nF_0402
-    vga.green ~> c_sog3 ~> tvp.sogin_3
+    vga.g ~> c_sog3 ~> tvp.sogin_3
 
-    # VGAのGND (リターン・シールド)
+    # D-SUB15のGND(RGB各GND・共通GND・シェル)
     vga.gnd ~ gnd
-    vga.red_rtn ~ gnd
-    vga.green_rtn ~ gnd
-    vga.blue_rtn ~ gnd
-    vga.sync_gnd ~ gnd
+    vga.r_gnd ~ gnd
+    vga.g_gnd ~ gnd
+    vga.b_gnd ~ gnd
     vga.shield ~ gnd
 
     # --- TTL同期入力 (HS/VS or csync-on-HSYNC) ---
@@ -848,11 +854,12 @@ module App:
     adc_dsub.gnd ~ gnd
     adc_dsub.power_5va ~ p5v_audio
     adc_dsub.power_3v3 ~ p3v3_io
+    # X68000のD-SUB15はpin10=AUDIO-L, pin11=AUDIO-R。SJで切離し可(LINE入力優先時等)
     sj_aud_l = new SolderJumper
     sj_aud_r = new SolderJumper
-    vga.id2 ~ sj_aud_l.a      # DSUB15 pin4
+    vga.audio_l ~ sj_aud_l.a   # DSUB15 pin10
     sj_aud_l.b ~ adc_dsub.in_l
-    vga.id0 ~ sj_aud_r.a      # DSUB15 pin11
+    vga.audio_r ~ sj_aud_r.a   # DSUB15 pin11
     sj_aud_r.b ~ adc_dsub.in_r
 
     # ADC B: 基板上の3.5mmステレオLINE入力

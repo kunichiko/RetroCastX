@@ -224,4 +224,11 @@
 		(options "")
 		(descr "atopile: part lib: _mech")
 	)
+	(lib
+		(name "CONNFLY_DS1037_15FNAKT76_0CC")
+		(type "KiCad")
+		(uri "${KIPRJMOD}/../../parts/CONNFLY_DS1037_15FNAKT76_0CC")
+		(options "")
+		(descr "atopile: part lib: CONNFLY_DS1037_15FNAKT76_0CC")
+	)
 )
