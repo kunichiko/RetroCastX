@@ -8,7 +8,7 @@ import is_atomic_part
 import has_part_picked
 import has_designator_prefix
 import has_part_removed
-from "parts/_mech/mech.ato" import HeaderExtP2, HeaderExtP4, HeaderP1, HeaderArgus, SolderJumper, SpdifRxModule, BoxHeader2x8Argus
+from "parts/_mech/mech.ato" import HeaderExtP2, HeaderExtP4, HeaderP1, HeaderArgus, SolderJumper, SpdifRxModule, BoxHeader2x8Argus, Tp1Pad
 from "passives.ato" import R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805
 
 # =============================================================================
@@ -710,6 +710,11 @@ module App:
     argus.audio_r ~ vga.audio_r
     argus.hsync ~ vga.hsync
     argus.vsync ~ vga.vsync
+
+    # YS(D-SUB15 pin7): X68000のスーパーインポーズ/イメージユニット関連status。
+    # capture用途では未使用だが、将来取り込む場合に備えテストパッドへ引き出す
+    tp_ys = new Tp1Pad
+    vga.ys ~ tp_ys.pad
 
     # --- TTL同期入力 (HS/VS or csync-on-HSYNC) ---
     esd_sync = new EsdArray4

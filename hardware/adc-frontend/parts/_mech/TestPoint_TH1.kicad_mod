@@ -1,0 +1,8 @@
+(footprint "_mech:TestPoint_TH1"
+  (version 20240108) (generator "manual") (layer "F.Cu")
+  (descr "Single through-hole test point (probe/wire). Hand-use.")
+  (attr through_hole exclude_from_pos_files)
+  (fp_text reference "REF**" (at 0 -1.8) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))
+  (fp_text value "TP" (at 0 1.8) (layer "F.Fab") (effects (font (size 1 1) (thickness 0.15))))
+  (pad "1" thru_hole circle (at 0 0) (size 1.6 1.6) (drill 0.8) (layers "*.Cu" "*.Mask"))
+)

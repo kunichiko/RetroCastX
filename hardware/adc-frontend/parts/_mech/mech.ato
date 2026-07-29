@@ -188,3 +188,10 @@ component BoxHeader2x8Argus:
     gnd ~ pin 14
     gnd ~ pin 16
     # pin 13(+5V), 15(VBUS) = NC(RetroCastXは自己給電)
+
+component Tp1Pad:
+    """1穴THテストポイント(プローブ/ワイヤ用)。手実装/DNP。"""
+    trait is_atomic_part<manufacturer="", partnumber="TestPoint_TH1", footprint="TestPoint_TH1.kicad_mod", symbol="TestPoint.kicad_sym">
+    trait has_designator_prefix<prefix="TP">
+    trait has_part_removed
+    signal pad ~ pin 1
