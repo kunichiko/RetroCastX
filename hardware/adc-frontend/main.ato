@@ -508,14 +508,14 @@ module PowerTree:
 
 
 module EthernetPort:
-    """GbE出口: EXT P1 の ETH2 側ペア(LiteXデフォルト phy0)を MagJack へ。
+    """GbE出口: EXT P1 の ETH2/ETH1 両ペアを 2つの MagJack へ(デュアルポート)。
 
     回路は kazkojima 氏 i5ether(1000BASE-T netboot/nfsroot 実績あり)に準拠:
     - MDIペアは PHY から DC結合のまま(直列部品なし)
     - PHY側センタータップ: 各0.1µF→GND のみ(B50612D は内部バイアスで無給電可)
     - Bob-Smith終端(75Ω+1nF)は HR911130A 内蔵
-    - 論理GND-シャーシ間: 4.7nF/2kV ×2(1812)
-    - ETH1 側ペアは J8 に来ているが未使用(将来の2ポート化用)
+    - 論理GND-シャーシ間: 各ポート 4.7nF/2kV ×2(1812)
+    - **ETH2=jack(LiteXデフォルト phy0)、ETH1=jack2(将来のデュアルリンク/2.5G化用)**
     - LED: PHYのLED信号はP1に出ていないため未接続
     """
     signal gnd
@@ -523,11 +523,13 @@ module EthernetPort:
     signal p5v_from_ext  # EXT P1-15の5V。給電に使う場合のみAppで接続(通常は未使用)
 
     j8 = new HeaderP1
-    jack = new GbeMagJack
+    jack = new GbeMagJack    # ETH2 = phy0(既定の映像ストリーム)
+    jack2 = new GbeMagJack   # ETH1 = phy1(デュアルリンクテスト用)
 
     j8.gnd ~ gnd
     j8.p5v ~ p5v_from_ext
 
+    # ETH2 → jack
     j8.eth2_1p ~ jack.mdi0_p
     j8.eth2_1n ~ jack.mdi0_n
     j8.eth2_2p ~ jack.mdi1_p
@@ -537,16 +539,33 @@ module EthernetPort:
     j8.eth2_4p ~ jack.mdi3_p
     j8.eth2_4n ~ jack.mdi3_n
 
-    ct_caps = new C100nF_0402[4]
+    # ETH1 → jack2
+    j8.eth1_1p ~ jack2.mdi0_p
+    j8.eth1_1n ~ jack2.mdi0_n
+    j8.eth1_2p ~ jack2.mdi1_p
+    j8.eth1_2n ~ jack2.mdi1_n
+    j8.eth1_3p ~ jack2.mdi2_p
+    j8.eth1_3n ~ jack2.mdi2_n
+    j8.eth1_4p ~ jack2.mdi3_p
+    j8.eth1_4n ~ jack2.mdi3_n
+
+    ct_caps = new C100nF_0402[8]
     jack.mdi0_ct ~> ct_caps[0] ~> gnd
     jack.mdi1_ct ~> ct_caps[1] ~> gnd
     jack.mdi2_ct ~> ct_caps[2] ~> gnd
     jack.mdi3_ct ~> ct_caps[3] ~> gnd
+    jack2.mdi0_ct ~> ct_caps[4] ~> gnd
+    jack2.mdi1_ct ~> ct_caps[5] ~> gnd
+    jack2.mdi2_ct ~> ct_caps[6] ~> gnd
+    jack2.mdi3_ct ~> ct_caps[7] ~> gnd
 
     jack.shield ~ chassis
-    bridge_caps = new C4nF7_1812_2kV[2]
+    jack2.shield ~ chassis
+    bridge_caps = new C4nF7_1812_2kV[4]
     chassis ~> bridge_caps[0] ~> gnd
     chassis ~> bridge_caps[1] ~> gnd
+    chassis ~> bridge_caps[2] ~> gnd
+    chassis ~> bridge_caps[3] ~> gnd
 
 
 # --- Top level ----------------------------------------------------------------
