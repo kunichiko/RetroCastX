@@ -305,16 +305,16 @@ component Pcm1808:
 component AudioJack35:
     """3.5mm ステレオTRSジャック(LINE入力用)。PJ-327C-4A(実4ピン)。LCSC: C145813
 
-    ★tip(L)/ring(R)/sleeve(GND)/switch とパッド1-4の対応はPJ-327C-4Aデータシートで
-    要確認(現状は仮割り当て)。実部品は4パッド。
+    ピン配置はデータシート(datasheets/PJ-327C-4A_HOOYA_3.5mmJack.pdf)回路図・部品表どおり:
+      1=CASE=Sleeve(GND)、2=Tip(L)、3=検出スイッチ(未使用)、4=Ring(R)
     """
     trait is_atomic_part<manufacturer="韩国韩荣", partnumber="PJ-327C-4A", footprint="parts/UNKNOWN_PJ_327C_4A/AUDIO-SMD_PJ-327C-4A.kicad_mod", symbol="parts/UNKNOWN_PJ_327C_4A/PJ-327C-4A.kicad_sym">
     trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C145813", manufacturer="韩国韩荣", partno="PJ-327C-4A">
     trait has_designator_prefix<prefix="J">
-    signal tip ~ pin 1     # L(仮)
-    signal ring ~ pin 2    # R(仮)
-    signal sleeve ~ pin 3  # GND(仮)
-    signal switch ~ pin 4  # 検出スイッチ/NC(仮)
+    signal sleeve ~ pin 1  # GND(シェル/CASE)
+    signal tip ~ pin 2     # L
+    signal switch ~ pin 3  # 検出スイッチ(NC)
+    signal ring ~ pin 4    # R
 
 
 component Xo12M288:

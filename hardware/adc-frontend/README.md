@@ -134,10 +134,10 @@ atopile取り込み部品のフットプリント実パッドと、main.atoの(�
 | PCM1808 / EEPROM / TVP等IC | 数値=データシート順 | ✓ 整合 |
 | **USB-C (TYPE-C-31-M-12)** | A1B12/B1A12=GND, A4B9/B4A9=VBUS, A5=CC1, B5=CC2, A6/A7/B6/B7=D±, A8/B8=SBU, 1-4=シェル | ✓ **修正済**(標準USB-C配置で実パッド名へ再マッピング) |
 | **MagJack (HR911130A)** | P1-P10(磁気部), 11-14(LED), SHIELD0/1 | ✓ **修正済**。公式データシート(`datasheets/HR911130A_HanRun_MagJack.pdf`)回路図どおり: P2/P3=MDI0±, P4/P7=MDI1±, P5/P6=MDI2±, P8/P9=MDI3±, P1=CT共通(0.1µF→GND), P10=Bob-Smith/シャーシ基準, 11-14=LED, SHIELD0/1=シェル。内蔵Bob-Smith前提でCTは1共通 |
-| **3.5mmジャック (PJ-327C-4A)** | 1-4 (実4ピン) | △ 4ピンへ修正済(ビルド通過)。**tip(L)/ring(R)/sleeve(GND)/switchとパッド1-4の対応はPJ-327C-4Aデータシートで要確認**(現状仮割り当て) |
+| **3.5mmジャック (PJ-327C-4A)** | 1-4 (実4ピン) | ✓ **修正済**。データシート(`datasheets/PJ-327C-4A_HOOYA_3.5mmJack.pdf`)回路図どおり: 1=Sleeve(GND), 2=Tip(L), 3=検出スイッチ(未使用), 4=Ring(R) |
 
 → **`ato build` は全ターゲット成功**(netlist/PCB/BOM/pinout/power-tree/stackup)。
-残るコネクタ確認は3.5mmジャックのtip/ring/sleeve割当のみ(データシート要)。他は整合確認済み。
+**全コネクタのピン配置を実データシートで確定済み**(発注前コネクタQA完了)。
 
 ## 残作業(発注前に必須)
 
