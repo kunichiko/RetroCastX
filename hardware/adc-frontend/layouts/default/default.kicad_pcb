@@ -5353,7 +5353,7 @@
 		)
 		(property "Value" ""
 			(at 0 0 0)
-			(layer "User.9")
+			(layer "F.Fab")
 			(hide yes)
 			(uuid "4a7ca49e-908d-467b-af2a-0b574642524b")
 		)
@@ -5363,27 +5363,31 @@
 			(hide yes)
 			(uuid "3742a247-481e-4bee-8cc6-307d4642524b")
 		)
-		(attr smd exclude_from_pos_files)
-		(fp_text reference "REF**"
-			(at 0 -1.5)
-			(layer "F.SilkS")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
-		(fp_text value "SolderJumper_2"
-			(at 0 1.5)
+		(property "Datasheet" ""
+			(at 0 0 0)
 			(layer "F.Fab")
+			(hide yes)
+			(uuid "1c6eda73-4265-4453-842c-69d45f822aed")
 			(effects
 				(font
-					(size 1 1)
+					(size 1.27 1.27)
 					(thickness 0.15)
 				)
 			)
 		)
+		(property "Description" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "8ad39615-791f-4f29-a980-38c4fa892aa1")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(attr smd exclude_from_pos_files)
 		(pad "1" smd rect
 			(at -0.6 0)
 			(size 0.9 1.2)
@@ -5396,6 +5400,7 @@
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net 50 "power_5v-hv")
 		)
+		(embedded_fonts no)
 	)
 	(footprint "TDK_MPZ1608S221ATA00:L0603"
 		(layer "F.Cu")
@@ -15248,7 +15253,7 @@
 		)
 		(property "Value" ""
 			(at 0 0 0)
-			(layer "User.9")
+			(layer "F.Fab")
 			(hide yes)
 			(uuid "3a4a657b-be29-49db-8b9e-69294642524b")
 		)
@@ -15257,6 +15262,30 @@
 			(layer "User.9")
 			(hide yes)
 			(uuid "e8cb09c6-c80e-424f-952a-e2474642524b")
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "cbded60c-cf8d-46d7-b4c3-d9398e93e89a")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Description" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "076d94a7-89ba-4fe1-a15b-e7a78f293b2b")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
 		)
 		(attr through_hole exclude_from_pos_files)
 		(fp_line
@@ -15295,31 +15324,12 @@
 			)
 			(layer "F.SilkS")
 		)
-		(fp_text reference "REF**"
-			(at 0 -3)
-			(layer "F.SilkS")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
-		(fp_text value "Header_2x15_P2.54mm"
-			(at 0 5.54)
-			(layer "F.Fab")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
 		(pad "1" thru_hole rect
 			(at 0 0)
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 63 "1-1")
 		)
 		(pad "2" thru_hole oval
@@ -15327,6 +15337,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 68 "2")
 		)
 		(pad "3" thru_hole oval
@@ -15334,6 +15345,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 71 "3")
 		)
 		(pad "4" thru_hole oval
@@ -15341,6 +15353,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 72 "4-1")
 		)
 		(pad "5" thru_hole oval
@@ -15348,6 +15361,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 128 "5")
 		)
 		(pad "6" thru_hole oval
@@ -15355,6 +15369,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 127 "59")
 		)
 		(pad "7" thru_hole oval
@@ -15362,6 +15377,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 126 "58")
 		)
 		(pad "8" thru_hole oval
@@ -15369,6 +15385,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 125 "57")
 		)
 		(pad "9" thru_hole oval
@@ -15376,6 +15393,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "10" thru_hole oval
@@ -15383,6 +15401,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "11" thru_hole oval
@@ -15390,6 +15409,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 70 "p3v3_ext")
 		)
 		(pad "12" thru_hole oval
@@ -15397,6 +15417,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 70 "p3v3_ext")
 		)
 		(pad "13" thru_hole oval
@@ -15404,6 +15425,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 122 "13-1")
 		)
 		(pad "14" thru_hole oval
@@ -15411,6 +15433,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 64 "14-1")
 		)
 		(pad "15" thru_hole oval
@@ -15418,6 +15441,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 41 "p5v_ext")
 		)
 		(pad "16" thru_hole oval
@@ -15425,6 +15449,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "17" thru_hole oval
@@ -15432,6 +15457,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 65 "17-1")
 		)
 		(pad "18" thru_hole oval
@@ -15439,6 +15465,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 66 "18-1")
 		)
 		(pad "19" thru_hole oval
@@ -15446,6 +15473,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 67 "19")
 		)
 		(pad "20" thru_hole oval
@@ -15453,6 +15481,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 121 "20")
 		)
 		(pad "21" thru_hole oval
@@ -15460,6 +15489,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 120 "21")
 		)
 		(pad "22" thru_hole oval
@@ -15467,6 +15497,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 119 "22")
 		)
 		(pad "23" thru_hole oval
@@ -15474,6 +15505,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 115 "23")
 		)
 		(pad "24" thru_hole oval
@@ -15481,6 +15513,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 69 "24")
 		)
 		(pad "25" thru_hole oval
@@ -15488,6 +15521,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 114 "25")
 		)
 		(pad "26" thru_hole oval
@@ -15495,6 +15529,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 113 "26")
 		)
 		(pad "27" thru_hole oval
@@ -15502,6 +15537,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "28" thru_hole oval
@@ -15509,6 +15545,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "29" thru_hole oval
@@ -15516,6 +15553,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 70 "p3v3_ext")
 		)
 		(pad "30" thru_hole oval
@@ -15523,8 +15561,10 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 70 "p3v3_ext")
 		)
+		(embedded_fonts no)
 	)
 	(footprint "_mech:Header_2x15_P2.54mm"
 		(layer "F.Cu")
@@ -15539,7 +15579,7 @@
 		)
 		(property "Value" ""
 			(at 0 0 0)
-			(layer "User.9")
+			(layer "F.Fab")
 			(hide yes)
 			(uuid "88e9f821-4ddd-48fb-8be1-1c924642524b")
 		)
@@ -15548,6 +15588,30 @@
 			(layer "User.9")
 			(hide yes)
 			(uuid "6385de08-fb53-4ddf-92ce-f3204642524b")
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "abd2be80-75fe-45d2-8988-5fe82e6c047a")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Description" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "4741a6b4-e612-4c5d-8144-3a4fede5e513")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
 		)
 		(attr through_hole exclude_from_pos_files)
 		(fp_line
@@ -15586,31 +15650,12 @@
 			)
 			(layer "F.SilkS")
 		)
-		(fp_text reference "REF**"
-			(at 0 -3)
-			(layer "F.SilkS")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
-		(fp_text value "Header_2x15_P2.54mm"
-			(at 0 5.54)
-			(layer "F.Fab")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
 		(pad "1" thru_hole rect
 			(at 0 0)
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 73 "hdr_p4-p3v3_ext")
 		)
 		(pad "2" thru_hole oval
@@ -15618,6 +15663,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 73 "hdr_p4-p3v3_ext")
 		)
 		(pad "3" thru_hole oval
@@ -15625,6 +15671,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "4" thru_hole oval
@@ -15632,6 +15679,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "5" thru_hole oval
@@ -15639,6 +15687,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 112 "34")
 		)
 		(pad "6" thru_hole oval
@@ -15646,6 +15695,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 86 "dataclk")
 		)
 		(pad "7" thru_hole oval
@@ -15653,6 +15703,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 111 "33")
 		)
 		(pad "8" thru_hole oval
@@ -15660,6 +15711,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 87 "audio_mclk")
 		)
 		(pad "9" thru_hole oval
@@ -15667,6 +15719,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 88 "dout")
 		)
 		(pad "10" thru_hole oval
@@ -15674,6 +15727,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 7 "audio_bck")
 		)
 		(pad "11" thru_hole oval
@@ -15681,6 +15735,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 74 "11")
 		)
 		(pad "12" thru_hole oval
@@ -15688,6 +15743,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 75 "audio_lrck")
 		)
 		(pad "13" thru_hole oval
@@ -15695,6 +15751,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 76 "13-2")
 		)
 		(pad "14" thru_hole oval
@@ -15702,6 +15759,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 77 "dout-1")
 		)
 		(pad "15" thru_hole oval
@@ -15709,6 +15767,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "16" thru_hole oval
@@ -15716,6 +15775,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 41 "p5v_ext")
 		)
 		(pad "17" thru_hole oval
@@ -15723,6 +15783,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 78 "hsout")
 		)
 		(pad "18" thru_hole oval
@@ -15730,6 +15791,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 27 "sda")
 		)
 		(pad "19" thru_hole oval
@@ -15737,6 +15799,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 73 "hdr_p4-p3v3_ext")
 		)
 		(pad "20" thru_hole oval
@@ -15744,6 +15807,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 73 "hdr_p4-p3v3_ext")
 		)
 		(pad "21" thru_hole oval
@@ -15751,6 +15815,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "22" thru_hole oval
@@ -15758,6 +15823,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "23" thru_hole oval
@@ -15765,6 +15831,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 79 "23-1")
 		)
 		(pad "24" thru_hole oval
@@ -15772,6 +15839,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 80 "scl")
 		)
 		(pad "25" thru_hole oval
@@ -15779,6 +15847,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 81 "25-1")
 		)
 		(pad "26" thru_hole oval
@@ -15786,6 +15855,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 129 "resetb")
 		)
 		(pad "27" thru_hole oval
@@ -15793,6 +15863,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 82 "fidout")
 		)
 		(pad "28" thru_hole oval
@@ -15800,6 +15871,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 83 "out")
 		)
 		(pad "29" thru_hole oval
@@ -15807,6 +15879,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 84 "29")
 		)
 		(pad "30" thru_hole oval
@@ -15814,8 +15887,10 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 85 "30")
 		)
+		(embedded_fonts no)
 	)
 	(footprint "YXC_OT2JI_111_12_288M:OSC-SMD_4P-L3.2-W2.5-BL"
 		(layer "F.Cu")
@@ -18337,7 +18412,7 @@
 		)
 		(property "Value" ""
 			(at 0 0 0)
-			(layer "User.9")
+			(layer "F.Fab")
 			(hide yes)
 			(uuid "61fb2a31-e750-44d0-a39c-f64a4642524b")
 		)
@@ -18347,27 +18422,31 @@
 			(hide yes)
 			(uuid "aa5e261e-d327-4e50-84f7-bb3c4642524b")
 		)
-		(attr smd exclude_from_pos_files)
-		(fp_text reference "REF**"
-			(at 0 -1.5)
-			(layer "F.SilkS")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
-		(fp_text value "SolderJumper_2"
-			(at 0 1.5)
+		(property "Datasheet" ""
+			(at 0 0 0)
 			(layer "F.Fab")
+			(hide yes)
+			(uuid "93785bb8-3b27-4b4e-af32-63db18a92b46")
 			(effects
 				(font
-					(size 1 1)
+					(size 1.27 1.27)
 					(thickness 0.15)
 				)
 			)
 		)
+		(property "Description" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "069bafa7-1ae8-43a6-b344-a465d05e54e3")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(attr smd exclude_from_pos_files)
 		(pad "1" smd rect
 			(at -0.6 0)
 			(size 0.9 1.2)
@@ -18380,6 +18459,7 @@
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net 28 "c_in_l-power-hv")
 		)
+		(embedded_fonts no)
 	)
 	(footprint "_mech:SolderJumper_2"
 		(layer "F.Cu")
@@ -18394,7 +18474,7 @@
 		)
 		(property "Value" ""
 			(at 0 0 0)
-			(layer "User.9")
+			(layer "F.Fab")
 			(hide yes)
 			(uuid "bfdcb967-f082-47bc-abbf-bdf44642524b")
 		)
@@ -18404,27 +18484,31 @@
 			(hide yes)
 			(uuid "40548235-6d31-49be-856b-d8324642524b")
 		)
-		(attr smd exclude_from_pos_files)
-		(fp_text reference "REF**"
-			(at 0 -1.5)
-			(layer "F.SilkS")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
-		(fp_text value "SolderJumper_2"
-			(at 0 1.5)
+		(property "Datasheet" ""
+			(at 0 0 0)
 			(layer "F.Fab")
+			(hide yes)
+			(uuid "4c64e041-c580-49f4-a3a0-94a8fbefdffd")
 			(effects
 				(font
-					(size 1 1)
+					(size 1.27 1.27)
 					(thickness 0.15)
 				)
 			)
 		)
+		(property "Description" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "c463da3c-4865-46c0-a561-48b690e73497")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(attr smd exclude_from_pos_files)
 		(pad "1" smd rect
 			(at -0.6 0)
 			(size 0.9 1.2)
@@ -18437,6 +18521,7 @@
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net 99 "c_in_r-power-hv")
 		)
+		(embedded_fonts no)
 	)
 	(footprint "TI_PCM1808PWR:TSSOP-14_L5.0-W4.4-P0.65-LS6.4-BL"
 		(layer "F.Cu")
@@ -20636,7 +20721,7 @@
 		)
 		(property "Value" ""
 			(at 0 0 0)
-			(layer "User.9")
+			(layer "F.Fab")
 			(hide yes)
 			(uuid "12290f5d-abe7-44be-b6cc-b69f4642524b")
 		)
@@ -20645,6 +20730,30 @@
 			(layer "User.9")
 			(hide yes)
 			(uuid "bd6284cc-3835-4436-9683-62844642524b")
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "6990e35a-5682-407c-afe9-59849369f9d3")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Description" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "cfce7428-e474-46b6-8c85-32b8144bf143")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
 		)
 		(attr through_hole exclude_from_pos_files)
 		(fp_line
@@ -20719,28 +20828,8 @@
 			)
 			(layer "F.CrtYd")
 		)
-		(fp_text reference "REF**"
-			(at 2.54 -5)
-			(layer "F.SilkS")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
-		(fp_text value "PLR135_T10"
-			(at 2.54 12)
-			(layer "F.Fab")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
 		(fp_text user "hand-solder"
-			(at 2.54 6.5)
+			(at 2.54 6.5 0)
 			(layer "F.SilkS")
 			(effects
 				(font
@@ -20754,6 +20843,7 @@
 			(size 1.5 1.5)
 			(drill 0.9)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 83 "out")
 		)
 		(pad "2" thru_hole circle
@@ -20761,6 +20851,7 @@
 			(size 1.5 1.5)
 			(drill 0.9)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "3" thru_hole circle
@@ -20768,6 +20859,7 @@
 			(size 1.5 1.5)
 			(drill 0.9)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 25 "p3v3_io-hv")
 		)
 		(pad "4" thru_hole circle
@@ -20775,13 +20867,16 @@
 			(size 1.7 1.7)
 			(drill 1.15)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 		)
 		(pad "5" thru_hole circle
 			(at 5.08 -2.63)
 			(size 1.7 1.7)
 			(drill 1.15)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 		)
+		(embedded_fonts no)
 	)
 	(footprint "SAMSUNG_CL05B104KO5NNNC:C0402"
 		(layer "F.Cu")
@@ -21024,7 +21119,7 @@
 		)
 		(property "Value" ""
 			(at 0 0 0)
-			(layer "User.9")
+			(layer "F.Fab")
 			(hide yes)
 			(uuid "324f328e-3420-4e25-8a28-1b434642524b")
 		)
@@ -21033,6 +21128,30 @@
 			(layer "User.9")
 			(hide yes)
 			(uuid "762bce3a-e975-409e-a7da-774e4642524b")
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "5d32b918-dcf8-4970-9853-55c8105f73aa")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Description" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "e32c7a73-4d63-4da0-8e32-7eae8f85fb3b")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
 		)
 		(attr through_hole exclude_from_pos_files)
 		(fp_line
@@ -21071,31 +21190,12 @@
 			)
 			(layer "F.SilkS")
 		)
-		(fp_text reference "REF**"
-			(at 0 -3)
-			(layer "F.SilkS")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
-		(fp_text value "Header_1x4_P2.54mm"
-			(at 0 3)
-			(layer "F.Fab")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
 		(pad "1" thru_hole rect
 			(at 0 0)
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 25 "p3v3_io-hv")
 		)
 		(pad "2" thru_hole oval
@@ -21103,6 +21203,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 27 "sda")
 		)
 		(pad "3" thru_hole oval
@@ -21110,6 +21211,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 80 "scl")
 		)
 		(pad "4" thru_hole oval
@@ -21117,8 +21219,10 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
+		(embedded_fonts no)
 	)
 	(footprint "MICROCHIP_24AA025E48_I_SN:SOIC-8_L4.9-W3.9-P1.27-LS6.0-BL"
 		(layer "F.Cu")
@@ -22293,7 +22397,7 @@
 		)
 		(property "Value" ""
 			(at 0 0 0)
-			(layer "User.9")
+			(layer "F.Fab")
 			(hide yes)
 			(uuid "fe235a69-4032-46ec-83d0-fa294642524b")
 		)
@@ -22302,6 +22406,30 @@
 			(layer "User.9")
 			(hide yes)
 			(uuid "1a9e9e21-76fc-4676-a616-92c04642524b")
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "0c6cb5c0-d55c-4780-b89c-1876e682a8aa")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Description" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "adfde964-729c-49aa-96e6-d6ca203f37d7")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
 		)
 		(attr through_hole exclude_from_pos_files)
 		(fp_line
@@ -22340,31 +22468,12 @@
 			)
 			(layer "F.SilkS")
 		)
-		(fp_text reference "REF**"
-			(at 0 -3)
-			(layer "F.SilkS")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
-		(fp_text value "Header_2x15_P2.54mm"
-			(at 0 5.54)
-			(layer "F.Fab")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
 		(pad "1" thru_hole rect
 			(at 0 0)
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 44 "1")
 		)
 		(pad "2" thru_hole oval
@@ -22372,6 +22481,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 44 "1")
 		)
 		(pad "3" thru_hole oval
@@ -22379,6 +22489,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "4" thru_hole oval
@@ -22386,6 +22497,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "5" thru_hole oval
@@ -22393,6 +22505,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 151 "eth2_2p")
 		)
 		(pad "6" thru_hole oval
@@ -22400,6 +22513,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 152 "eth2_4p")
 		)
 		(pad "7" thru_hole oval
@@ -22407,6 +22521,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 153 "eth2_2n")
 		)
 		(pad "8" thru_hole oval
@@ -22414,6 +22529,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 154 "eth2_4n")
 		)
 		(pad "9" thru_hole oval
@@ -22421,6 +22537,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 155 "eth2_1n")
 		)
 		(pad "10" thru_hole oval
@@ -22428,6 +22545,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 95 "eth2_3n")
 		)
 		(pad "11" thru_hole oval
@@ -22435,6 +22553,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 157 "eth2_1p")
 		)
 		(pad "12" thru_hole oval
@@ -22442,6 +22561,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 100 "eth2_3p")
 		)
 		(pad "13" thru_hole oval
@@ -22449,6 +22569,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 39 "13")
 		)
 		(pad "14" thru_hole oval
@@ -22456,6 +22577,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 40 "14")
 		)
 		(pad "15" thru_hole oval
@@ -22463,6 +22585,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 41 "p5v_ext")
 		)
 		(pad "16" thru_hole oval
@@ -22470,6 +22593,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "17" thru_hole oval
@@ -22477,6 +22601,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 42 "17")
 		)
 		(pad "18" thru_hole oval
@@ -22484,6 +22609,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 43 "18")
 		)
 		(pad "19" thru_hole oval
@@ -22491,6 +22617,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 44 "1")
 		)
 		(pad "20" thru_hole oval
@@ -22498,6 +22625,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 44 "1")
 		)
 		(pad "21" thru_hole oval
@@ -22505,6 +22633,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "22" thru_hole oval
@@ -22512,6 +22641,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "23" thru_hole oval
@@ -22519,6 +22649,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 159 "eth1_1p")
 		)
 		(pad "24" thru_hole oval
@@ -22526,6 +22657,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 161 "eth1_3p")
 		)
 		(pad "25" thru_hole oval
@@ -22533,6 +22665,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 160 "eth1_1n")
 		)
 		(pad "26" thru_hole oval
@@ -22540,6 +22673,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 162 "eth1_3n")
 		)
 		(pad "27" thru_hole oval
@@ -22547,6 +22681,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 163 "eth1_2n")
 		)
 		(pad "28" thru_hole oval
@@ -22554,6 +22689,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 148 "eth1_4n")
 		)
 		(pad "29" thru_hole oval
@@ -22561,6 +22697,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 149 "eth1_2p")
 		)
 		(pad "30" thru_hole oval
@@ -22568,8 +22705,10 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 150 "eth1_4p")
 		)
+		(embedded_fonts no)
 	)
 	(footprint "HANRUN_HR911130A:RJ45-TH_HR911130A"
 		(layer "F.Cu")
@@ -24780,7 +24919,7 @@
 		)
 		(property "Value" ""
 			(at 0 0 0)
-			(layer "User.9")
+			(layer "F.Fab")
 			(hide yes)
 			(uuid "4d27ba72-052f-458d-9881-2e484642524b")
 		)
@@ -24789,6 +24928,30 @@
 			(layer "User.9")
 			(hide yes)
 			(uuid "ed1d7f4f-67c3-4d1b-b364-f46b4642524b")
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "e231b670-7c12-4078-99e5-e9a6188fcf3b")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Description" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "e306aa1a-82e3-4e3e-85fc-e52028e594cf")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
 		)
 		(attr through_hole exclude_from_pos_files)
 		(fp_line
@@ -24844,34 +25007,15 @@
 				(width 0.1)
 				(type solid)
 			)
-			(fill solid)
+			(fill yes)
 			(layer "F.SilkS")
-		)
-		(fp_text reference "REF**"
-			(at 8.89 -4.6)
-			(layer "F.SilkS")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
-		(fp_text value "BoxHeader_2x8"
-			(at 8.89 7.14)
-			(layer "F.Fab")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
 		)
 		(pad "1" thru_hole rect
 			(at 0 0)
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 97 "c_ac-power-hv")
 		)
 		(pad "2" thru_hole oval
@@ -24879,6 +25023,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "3" thru_hole oval
@@ -24886,6 +25031,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 20 "c_sog3-power-hv")
 		)
 		(pad "4" thru_hole oval
@@ -24893,6 +25039,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "5" thru_hole oval
@@ -24900,6 +25047,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 12 "c_ac-power-hv-1")
 		)
 		(pad "6" thru_hole oval
@@ -24907,6 +25055,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "7" thru_hole oval
@@ -24914,6 +25063,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 137 "audio_l")
 		)
 		(pad "8" thru_hole oval
@@ -24921,6 +25071,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 136 "audio_r")
 		)
 		(pad "9" thru_hole oval
@@ -24928,6 +25079,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "10" thru_hole oval
@@ -24935,6 +25087,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 17 "hsync")
 		)
 		(pad "11" thru_hole oval
@@ -24942,6 +25095,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 98 "vsync")
 		)
 		(pad "12" thru_hole oval
@@ -24949,6 +25103,7 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "13" thru_hole oval
@@ -24956,12 +25111,14 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 		)
 		(pad "14" thru_hole oval
 			(at 15.24 2.54)
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
 		(pad "15" thru_hole oval
@@ -24969,14 +25126,17 @@
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 		)
 		(pad "16" thru_hole oval
 			(at 17.78 2.54)
 			(size 1.7 1.7)
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 33 "gnd")
 		)
+		(embedded_fonts no)
 	)
 	(footprint "_mech:TestPoint_TH1"
 		(layer "F.Cu")
@@ -24991,7 +25151,7 @@
 		)
 		(property "Value" ""
 			(at 0 0 0)
-			(layer "User.9")
+			(layer "F.Fab")
 			(hide yes)
 			(uuid "a9754c3f-e2a0-443e-8bf4-3f0f4642524b")
 		)
@@ -25001,34 +25161,40 @@
 			(hide yes)
 			(uuid "cfc5491a-27fe-46a2-b7b3-81e74642524b")
 		)
-		(attr through_hole exclude_from_pos_files)
-		(fp_text reference "REF**"
-			(at 0 -1.8)
-			(layer "F.SilkS")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
-		(fp_text value "TP"
-			(at 0 1.8)
+		(property "Datasheet" ""
+			(at 0 0 0)
 			(layer "F.Fab")
+			(hide yes)
+			(uuid "9ac81faf-fb80-468a-834b-86d104251705")
 			(effects
 				(font
-					(size 1 1)
+					(size 1.27 1.27)
 					(thickness 0.15)
 				)
 			)
 		)
+		(property "Description" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "4a681b33-f888-45ec-ac19-f2f3a1fc9a8f")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(attr through_hole exclude_from_pos_files)
 		(pad "1" thru_hole circle
 			(at 0 0)
 			(size 1.6 1.6)
 			(drill 0.8)
 			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
 			(net 22 "pad")
 		)
+		(embedded_fonts no)
 	)
 	(gr_rect
 		(start 0 0)

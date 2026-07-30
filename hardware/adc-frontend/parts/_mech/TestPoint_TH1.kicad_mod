@@ -1,8 +1,63 @@
-(footprint "_mech:TestPoint_TH1"
-  (version 20240108) (generator "manual") (layer "F.Cu")
-  (descr "Single through-hole test point (probe/wire). Hand-use.")
-  (attr through_hole exclude_from_pos_files)
-  (fp_text reference "REF**" (at 0 -1.8) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))
-  (fp_text value "TP" (at 0 1.8) (layer "F.Fab") (effects (font (size 1 1) (thickness 0.15))))
-  (pad "1" thru_hole circle (at 0 0) (size 1.6 1.6) (drill 0.8) (layers "*.Cu" "*.Mask"))
+(footprint "TestPoint_TH1"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Single through-hole test point (probe/wire). Hand-use.")
+	(property "Reference" "REF**"
+		(at 0 -1.8 0)
+		(layer "F.SilkS")
+		(uuid "cdfcfa9e-b337-490f-b83b-8924f413b1a2")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "TP"
+		(at 0 1.8 0)
+		(layer "F.Fab")
+		(uuid "a41861b3-5277-4c12-9bb0-d0dcc3edb757")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "ea0a269c-ed09-4b47-bbb0-d62df8673762")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "d181508e-4637-499e-a6ba-9ca695367dbb")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr through_hole exclude_from_pos_files)
+	(pad "1" thru_hole circle
+		(at 0 0)
+		(size 1.6 1.6)
+		(drill 0.8)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "72cd1cf6-4c67-4d3e-b7d4-25e24727ef2b")
+	)
+	(embedded_fonts no)
 )

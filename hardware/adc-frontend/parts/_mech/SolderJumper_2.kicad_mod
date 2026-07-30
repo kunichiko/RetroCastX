@@ -1,9 +1,67 @@
-(footprint "_mech:SolderJumper_2"
-  (version 20240108) (generator "manual") (layer "F.Cu")
-  (descr "2-pad solder jumper, hand-configured.")
-  (attr smd exclude_from_pos_files)
-  (fp_text reference "REF**" (at 0 -1.5) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))
-  (fp_text value "SolderJumper_2" (at 0 1.5) (layer "F.Fab") (effects (font (size 1 1) (thickness 0.15))))
-  (pad "1" smd rect (at -0.6 0) (size 0.9 1.2) (layers "F.Cu" "F.Mask" "F.Paste"))
-  (pad "2" smd rect (at 0.6 0) (size 0.9 1.2) (layers "F.Cu" "F.Mask" "F.Paste"))
+(footprint "SolderJumper_2"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "2-pad solder jumper, hand-configured.")
+	(property "Reference" "REF**"
+		(at 0 -1.5 0)
+		(layer "F.SilkS")
+		(uuid "95a7d7e6-d2e8-43a1-9fa6-0b842b4594be")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "SolderJumper_2"
+		(at 0 1.5 0)
+		(layer "F.Fab")
+		(uuid "f932097f-38b5-473d-b541-629f9872f33c")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "45b11fa2-534e-435a-b1dd-5aad9afdbed6")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "659cdd6c-0c26-4ad1-bb51-ffac76c98b03")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd exclude_from_pos_files)
+	(pad "1" smd rect
+		(at -0.6 0)
+		(size 0.9 1.2)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "502d8c80-fc62-420a-a7b9-8b240f3dbe8b")
+	)
+	(pad "2" smd rect
+		(at 0.6 0)
+		(size 0.9 1.2)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "7a6969a3-5ac2-459a-a345-1914578f1295")
+	)
+	(embedded_fonts no)
 )
