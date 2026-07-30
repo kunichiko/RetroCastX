@@ -1,0 +1,19 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component YXC_OT322527MJBA4SL_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C725995", date="2026-07-30T14:18:59.268301+00:00", checksum="1dd1450bd2a0e23956bb27c097e99da1a51fabb18a7da3c420b3469a00eea180">
+
+    trait is_atomic_part<manufacturer="YXC", partnumber="OT322527MJBA4SL", footprint="OSC-SMD_4P-L3.2-W2.5-BL.kicad_mod", symbol="OT322527MJBA4SL.kicad_sym", model="OSC-SMD_4P-L3.2-W2.5-CJ13-320001210A20.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C725995", manufacturer="YXC", partno="OT322527MJBA4SL">
+    trait has_designator_prefix<prefix="X">
+
+    # pins
+    signal GND ~ pin 2
+    signal OUT ~ pin 3
+    signal Tri_state ~ pin 1
+    signal VDD ~ pin 4

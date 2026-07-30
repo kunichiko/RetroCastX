@@ -237,11 +237,15 @@ component EsdArray4:
 
 
 component Osc27M:
-    """YXC 27MHz 3.3V CMOS oscillator, SMD3225-4P. LCSC: C9008"""
-    trait is_atomic_part<manufacturer="YXC", partnumber="X322527MSB4SI", footprint="parts/YXC_X322527MSB4SI/CRYSTAL-SMD_4P-L3.2-W2.5-BL-1.kicad_mod", symbol="parts/YXC_X322527MSB4SI/X322527MSB4SI.kicad_sym">
-    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C9008", manufacturer="YXC", partno="X322527MSB4SI">
+    """YXC 27MHz 3.3V CMOS アクティブ発振器, SMD3225-4P。LCSC: C725995
+
+    EXT_CLKは単線クロック入力なのでアクティブ発振器で駆動する(旧: 誤って水晶C9008を
+    選定していたのを修正)。ピン: 1=Tri-state(EN, VDDへ) 2=GND 3=OUT 4=VDD。
+    """
+    trait is_atomic_part<manufacturer="YXC", partnumber="OT322527MJBA4SL", footprint="parts/YXC_OT322527MJBA4SL/OSC-SMD_4P-L3.2-W2.5-BL.kicad_mod", symbol="parts/YXC_OT322527MJBA4SL/OT322527MJBA4SL.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C725995", manufacturer="YXC", partno="OT322527MJBA4SL">
     trait has_designator_prefix<prefix="X">
-    signal en ~ pin 1
+    signal en ~ pin 1     # Tri-state(出力イネーブル): VDDでイネーブル
     signal gnd ~ pin 2
     signal out ~ pin 3
     signal vcc ~ pin 4

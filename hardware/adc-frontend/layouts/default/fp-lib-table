@@ -231,4 +231,11 @@
 		(options "")
 		(descr "atopile: part lib: CONNFLY_DS1037_15FNAKT76_0CC")
 	)
+	(lib
+		(name "YXC_OT322527MJBA4SL")
+		(type "KiCad")
+		(uri "${KIPRJMOD}/../../parts/YXC_OT322527MJBA4SL")
+		(options "")
+		(descr "atopile: part lib: YXC_OT322527MJBA4SL")
+	)
 )
