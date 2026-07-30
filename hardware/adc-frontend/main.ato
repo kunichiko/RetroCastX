@@ -387,32 +387,32 @@ component UsbCPowerReceptacle:
 
 
 component GbeMagJack:
-    """1000BASE-T MagJack(トランス・チョーク・Bob-Smith内蔵RJ45)。
+    """1000BASE-T MagJack(トランス・チョーク・Bob-Smith内蔵RJ45)。HanRun HR911130A。LCSC: C54408
 
-    HanRun HR911130A 想定。LCSC: C54408
-    注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
+    ピン配置はデータシート(datasheets/HR911130A_HanRun_MagJack.pdf)回路図どおり:
+      チップ側MDI: P2=MDI0+ P3=MDI0- P4=MDI1+ P7=MDI1- P5=MDI2+ P6=MDI2- P8=MDI3+ P9=MDI3-
+      P1=チップ側センタータップ共通、P10=Bob-Smith/シャーシ基準(1000pF2kV・4x75Ωは内蔵)
+      11/12=緑LED(A/K)、14/13=黄LED(A/K)、SHIELD0/1=金属シェル
     """
     trait is_atomic_part<manufacturer="HANRUN", partnumber="HR911130A", footprint="parts/HANRUN_HR911130A/RJ45-TH_HR911130A.kicad_mod", symbol="parts/HANRUN_HR911130A/HR911130A.kicad_sym">
     trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C54408", manufacturer="HANRUN", partno="HR911130A">
     trait has_designator_prefix<prefix="J">
-    signal mdi0_p ~ pin 1
-    signal mdi0_ct ~ pin 2
-    signal mdi0_n ~ pin 3
-    signal mdi1_p ~ pin 4
-    signal mdi1_ct ~ pin 5
-    signal mdi1_n ~ pin 6
-    signal mdi2_p ~ pin 7
-    signal mdi2_ct ~ pin 8
-    signal mdi2_n ~ pin 9
-    signal mdi3_p ~ pin 10
-    signal mdi3_ct ~ pin 11
-    signal mdi3_n ~ pin 12
-    signal led_g_a ~ pin 13
-    signal led_g_k ~ pin 14
-    signal led_y_a ~ pin 15
-    signal led_y_k ~ pin 16
-    signal shield ~ pin 17
-    shield ~ pin 18
+    signal mdi0_p ~ pin P2
+    signal mdi0_n ~ pin P3
+    signal mdi1_p ~ pin P4
+    signal mdi1_n ~ pin P7
+    signal mdi2_p ~ pin P5
+    signal mdi2_n ~ pin P6
+    signal mdi3_p ~ pin P8
+    signal mdi3_n ~ pin P9
+    signal ct ~ pin P1          # チップ側センタータップ共通
+    signal bobsmith ~ pin P10   # Bob-Smith/シャーシ基準
+    signal led_g_a ~ pin 11
+    signal led_g_k ~ pin 12
+    signal led_y_a ~ pin 14
+    signal led_y_k ~ pin 13
+    signal shield ~ pin SHIELD0
+    shield ~ pin SHIELD1
 
 
 module VideoInputChannel:
@@ -561,17 +561,15 @@ module EthernetPort:
     j8.eth1_4p ~ jack2.mdi3_p
     j8.eth1_4n ~ jack2.mdi3_n
 
-    ct_caps = new C100nF_0402[8]
-    jack.mdi0_ct ~> ct_caps[0] ~> gnd
-    jack.mdi1_ct ~> ct_caps[1] ~> gnd
-    jack.mdi2_ct ~> ct_caps[2] ~> gnd
-    jack.mdi3_ct ~> ct_caps[3] ~> gnd
-    jack2.mdi0_ct ~> ct_caps[4] ~> gnd
-    jack2.mdi1_ct ~> ct_caps[5] ~> gnd
-    jack2.mdi2_ct ~> ct_caps[6] ~> gnd
-    jack2.mdi3_ct ~> ct_caps[7] ~> gnd
+    # チップ側センタータップ共通(P1)を各0.1µF→GNDでデカップリング(B50612Dは無給電可)
+    ct_caps = new C100nF_0402[2]
+    jack.ct ~> ct_caps[0] ~> gnd
+    jack2.ct ~> ct_caps[1] ~> gnd
 
+    # Bob-Smith基準(P10)とシェルはシャーシへ。シャーシ-GND間は4.7nF/2kV(各ポート2)
+    jack.bobsmith ~ chassis
     jack.shield ~ chassis
+    jack2.bobsmith ~ chassis
     jack2.shield ~ chassis
     bridge_caps = new C4nF7_1812_2kV[4]
     chassis ~> bridge_caps[0] ~> gnd
