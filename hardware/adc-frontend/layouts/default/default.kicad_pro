@@ -252,6 +252,78 @@
         "via_diameter": 0.6,
         "via_drill": 0.3,
         "wire_width": 6
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.4,
+        "diff_pair_gap": 0.2,
+        "diff_pair_via_gap": 0.2,
+        "diff_pair_width": 0.2,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "name": "GbE_diff",
+        "pcb_color": "rgba(60, 200, 120, 0.500)",
+        "priority": 0,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.2,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "wire_width": 6
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.2,
+        "diff_pair_gap": 0.25,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "name": "Power",
+        "pcb_color": "rgba(220, 60, 60, 0.500)",
+        "priority": 1,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.4,
+        "via_diameter": 0.8,
+        "via_drill": 0.4,
+        "wire_width": 6
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.3,
+        "diff_pair_gap": 0.25,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "name": "Analog_RGB",
+        "pcb_color": "rgba(230, 140, 40, 0.500)",
+        "priority": 2,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.25,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "wire_width": 6
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.25,
+        "diff_pair_gap": 0.25,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "name": "Clock",
+        "pcb_color": "rgba(80, 140, 230, 0.500)",
+        "priority": 3,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.25,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "wire_width": 6
       }
     ],
     "meta": {
@@ -259,7 +331,76 @@
     },
     "net_colors": null,
     "netclass_assignments": null,
-    "netclass_patterns": []
+    "netclass_patterns": [
+      {
+        "netclass": "GbE_diff",
+        "pattern": "eth1_*"
+      },
+      {
+        "netclass": "GbE_diff",
+        "pattern": "eth2_*"
+      },
+      {
+        "netclass": "Clock",
+        "pattern": "dataclk"
+      },
+      {
+        "netclass": "Clock",
+        "pattern": "ext_clk"
+      },
+      {
+        "netclass": "Clock",
+        "pattern": "audio_mclk"
+      },
+      {
+        "netclass": "Clock",
+        "pattern": "audio_bck"
+      },
+      {
+        "netclass": "Clock",
+        "pattern": "audio_lrck"
+      },
+      {
+        "netclass": "Analog_RGB",
+        "pattern": "c_ac-power-*"
+      },
+      {
+        "netclass": "Analog_RGB",
+        "pattern": "c_sog3-power-*"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "power_5v*"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "p5v_ext"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "p3v3_io*"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "p3v3_a*"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "p3v3_ext"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "p1v9_a*"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "p1v9_d*"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "hdr_p4-p3v3_ext"
+      }
+    ]
   },
   "pcbnew": {
     "last_paths": {

@@ -98,14 +98,14 @@ component HeaderP1:
     p3v3 ~ pin 2
     signal gnd ~ pin 3
     gnd ~ pin 4
-    signal eth2_2p ~ pin 5
-    signal eth2_4p ~ pin 6
-    signal eth2_2n ~ pin 7
-    signal eth2_4n ~ pin 8
-    signal eth2_1n ~ pin 9
-    signal eth2_3n ~ pin 10
-    signal eth2_1p ~ pin 11
-    signal eth2_3p ~ pin 12
+    signal eth2_2_P ~ pin 5
+    signal eth2_4_P ~ pin 6
+    signal eth2_2_N ~ pin 7
+    signal eth2_4_N ~ pin 8
+    signal eth2_1_N ~ pin 9
+    signal eth2_3_N ~ pin 10
+    signal eth2_1_P ~ pin 11
+    signal eth2_3_P ~ pin 12
     signal nc13 ~ pin 13
     signal nc14 ~ pin 14
     signal p5v ~ pin 15
@@ -116,14 +116,14 @@ component HeaderP1:
     p3v3 ~ pin 20
     gnd ~ pin 21
     gnd ~ pin 22
-    signal eth1_1p ~ pin 23
-    signal eth1_3p ~ pin 24
-    signal eth1_1n ~ pin 25
-    signal eth1_3n ~ pin 26
-    signal eth1_2n ~ pin 27
-    signal eth1_4n ~ pin 28
-    signal eth1_2p ~ pin 29
-    signal eth1_4p ~ pin 30
+    signal eth1_1_P ~ pin 23
+    signal eth1_3_P ~ pin 24
+    signal eth1_1_N ~ pin 25
+    signal eth1_3_N ~ pin 26
+    signal eth1_2_N ~ pin 27
+    signal eth1_4_N ~ pin 28
+    signal eth1_2_P ~ pin 29
+    signal eth1_4_P ~ pin 30
 
 component HeaderArgus:
     """ArgusX(RGBセレクタ、別プロジェクト)制御用 1×4 ヘッダ(I2Cバス引き出し)。"""

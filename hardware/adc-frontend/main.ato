@@ -546,24 +546,24 @@ module EthernetPort:
     j8.p5v ~ p5v_from_ext
 
     # ETH2 → jack
-    j8.eth2_1p ~ jack.mdi0_p
-    j8.eth2_1n ~ jack.mdi0_n
-    j8.eth2_2p ~ jack.mdi1_p
-    j8.eth2_2n ~ jack.mdi1_n
-    j8.eth2_3p ~ jack.mdi2_p
-    j8.eth2_3n ~ jack.mdi2_n
-    j8.eth2_4p ~ jack.mdi3_p
-    j8.eth2_4n ~ jack.mdi3_n
+    j8.eth2_1_P ~ jack.mdi0_p
+    j8.eth2_1_N ~ jack.mdi0_n
+    j8.eth2_2_P ~ jack.mdi1_p
+    j8.eth2_2_N ~ jack.mdi1_n
+    j8.eth2_3_P ~ jack.mdi2_p
+    j8.eth2_3_N ~ jack.mdi2_n
+    j8.eth2_4_P ~ jack.mdi3_p
+    j8.eth2_4_N ~ jack.mdi3_n
 
     # ETH1 → jack2
-    j8.eth1_1p ~ jack2.mdi0_p
-    j8.eth1_1n ~ jack2.mdi0_n
-    j8.eth1_2p ~ jack2.mdi1_p
-    j8.eth1_2n ~ jack2.mdi1_n
-    j8.eth1_3p ~ jack2.mdi2_p
-    j8.eth1_3n ~ jack2.mdi2_n
-    j8.eth1_4p ~ jack2.mdi3_p
-    j8.eth1_4n ~ jack2.mdi3_n
+    j8.eth1_1_P ~ jack2.mdi0_p
+    j8.eth1_1_N ~ jack2.mdi0_n
+    j8.eth1_2_P ~ jack2.mdi1_p
+    j8.eth1_2_N ~ jack2.mdi1_n
+    j8.eth1_3_P ~ jack2.mdi2_p
+    j8.eth1_3_N ~ jack2.mdi2_n
+    j8.eth1_4_P ~ jack2.mdi3_p
+    j8.eth1_4_N ~ jack2.mdi3_n
 
     # チップ側センタータップ共通(P1)を各0.1µF→GNDでデカップリング(B50612Dは無給電可)
     ct_caps = new C100nF_0402[2]
@@ -680,6 +680,10 @@ module App:
     ch_g.power ~ p3v3_a
     ch_b.power ~ p3v3_a
 
+    # アナログRGB経路のネット名(atopileはパッシブのpowerインターフェース名で命名):
+    #   R入力=c_ac-power-hv / B入力=c_ac-power-hv-1 / G入力=c_sog3-power-hv
+    #   R/G/B出力(TVP側)=c_ac-power-lv{,-1,-2} / SOG=c_sog3-power-lv
+    # → KiCadネットクラス Analog_RGB を c_ac-power-* / c_sog3-power-* で割当(.kicad_pro)。
     esd_rgb = new EsdArray4
     esd_rgb.gnd ~ gnd
     vga.r ~ esd_rgb.io1
