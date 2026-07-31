@@ -36,16 +36,29 @@ kazkojima i5ether。回路は `main.ato`、ネットリスト/PCBは `ato build`
 - **クリティカルネット優先度: ① GbE MDIペア ② TVP DATACLK(ドットクロック~80MHz)
   ③ アナログRGB入力 ④ 音声MCLK(12.288MHz)**。この順で最短・最良の経路を確保。
 
-## 2. ネットクラス / 線幅 / クリアランス(KiCadで設定)
+## 2. ネットクラス / 線幅 / クリアランス
 
-| ネットクラス | 対象 | 線幅 | クリアランス | 備考 |
+**設定済み**(`layouts/default/default.kicad_pro`、`net_settings.classes` + `netclass_patterns`)。
+`ato build` はこの `.kicad_pro` を上書きしないので設定は保持される。
+
+| ネットクラス | 線幅 | クリアランス | 差動幅/ギャップ | 割当パターン(実ネット名) |
 |---|---|---|---|---|
-| Default | 一般信号 | 0.20mm | 0.20mm | |
-| Power | 5V/3V3/1V9 各レール | 0.40mm(1.9Vコアは0.5mm) | 0.20mm | ビア複数・ベタ供給 |
-| GbE_diff | MDI0-3 ±(×2ポート) | スタックアップで100Ω差動に調整(L1でgap≈トレース幅) | ≥ 2×線幅 | ペア内長合わせ ±0.2mm、ペア間はゆるく |
-| Analog_RGB | R/G/B, SOGIN | 0.25mm | 0.30mm(周囲GNDガード) | 短く・終端をコネクタ直近 |
-| Clock | DATACLK, 音声MCLK/BCK/LRCK | 0.25mm | 0.25mm | 短く・直下GND連続 |
+| Default | 0.20mm | 0.20mm | — | 上記以外すべて |
+| Power | 0.40mm(via 0.8) | 0.20mm | — | `power_5v*` `p5v_ext` `p3v3_io*` `p3v3_a*` `p3v3_ext` `p1v9_a*` `p1v9_d*` `hdr_p4-p3v3_ext` |
+| GbE_diff | 0.20mm | 0.40mm | 0.20/0.20mm | `eth1_*` `eth2_*` (8ペア) |
+| Analog_RGB | 0.25mm | 0.30mm | — | `c_ac-power-*` `c_sog3-power-*` |
+| Clock | 0.25mm | 0.25mm | — | `dataclk` `ext_clk` `audio_mclk` `audio_bck` `audio_lrck` |
 
+- **差動ペア認識**: GbEネットは `+/-` でなく大文字 `_P`/`_N` 接尾辞(例 `eth1_1_P`/`eth1_1_N`)。
+  KiCadの差動ペアルータ(ホットキー`6`)/DRC結合チェックは `+/-` か大文字 `P/N` のみ認識するため、
+  main.ato/mech.ato側で小文字→大文字化済み。8ペア(eth1_1〜eth1_4=ポート1, eth2_1〜eth2_4=ポート2)。
+- ★**GbE_diff の差動幅/ギャップ 0.20/0.20mm は暫定値**。実際のJLCPCB 4層スタックアップ
+  (L1-L2プリプレグ厚)でJLCの[インピーダンス計算](https://jlcpcb.com/impedance)を回し、
+  100Ω差動になる W/S に必ず調整すること。配線前の必須作業。
+- **Analog_RGBネット名の対応**(atopileがパッシブのpowerインターフェース名で命名):
+  R入力=`c_ac-power-hv`, B入力=`c_ac-power-hv-1`, G入力=`c_sog3-power-hv`,
+  R/G/B出力(TVP側)=`c_ac-power-lv{,-1,-2}`, SOG=`c_sog3-power-lv`。
+- SYNC(`hsync`/`vsync`/`hsync_a`/`hsout`/`vsout`/`fidout`)はDefault。長くなければ問題ない。
 - 電源はできるだけ**L3プレーンのゾーン**で供給し、トレースは引き出しのみ。
 - 高速信号(GbE/DATACLK)は**層をまたがない**(またぐ場合は隣接にGNDリターンビア)。
 
