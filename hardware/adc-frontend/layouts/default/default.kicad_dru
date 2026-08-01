@@ -1,0 +1,35 @@
+# RetroCastX ADCフロントエンド カスタムDRCルール
+# KiCad 9 Board Setup > Custom Rules が読む。ato build はこのファイルを上書きしない。
+# 対象: GbE 1000BASE-T MDIペア(GbE_diff)の高速品質と、クロックのビア数管理。
+# 根拠: layout-guidelines.md §2/§6。差動幅/ギャップ(100Ω)はネットクラス側(.kicad_pro)で管理。
+
+(version 1)
+
+# --- GbE MDIペア: ペア内スキュー(P/N長さ差)を厳しく管理 ---
+# 1000BASE-Tは4ペア独立(自動MDI/長さ整合はペア内が本質)。ペア内±0.15mmに抑える。
+(rule "GbE_diff intra-pair skew"
+	(constraint skew (max 0.15mm))
+	(condition "A.NetClass == 'GbE_diff'"))
+
+# --- GbE MDIペア: 非結合(uncoupled)区間の上限 ---
+# コネクタ/パッド出入りでペアが離れる区間を最小化(結合を保つ)。
+(rule "GbE_diff max uncoupled length"
+	(constraint diff_pair_uncoupled (max 5mm))
+	(condition "A.NetClass == 'GbE_diff'"))
+
+# --- GbE MDIペア: ビア数を抑制(層跨ぎでリターン不連続=反射源) ---
+# MagJackまで極力L1のみで引く。やむを得ずでも1本あたり2ビアまで。
+(rule "GbE_diff limit vias"
+	(constraint via_count (max 2))
+	(condition "A.NetClass == 'GbE_diff'"))
+
+# --- クロック(DATACLK等): ビア数抑制(直下GND連続のため層跨ぎ最小) ---
+(rule "Clock limit vias"
+	(constraint via_count (max 3))
+	(condition "A.NetClass == 'Clock'"))
+
+# --- GbE MDIペア: 隣接他ネットとのクリアランス強化(クロストーク対策) ---
+# ネットクラス既定(0.4mm)に加え、非GbEネットが近づく場合は3×線幅=0.6mm確保。
+(rule "GbE_diff to other-net clearance"
+	(constraint clearance (min 0.6mm))
+	(condition "A.NetClass == 'GbE_diff' && B.NetClass != 'GbE_diff'"))

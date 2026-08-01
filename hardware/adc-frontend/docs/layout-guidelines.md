@@ -8,7 +8,13 @@ kazkojima i5ether。回路は `main.ato`、ネットリスト/PCBは `ato build`
 
 ## 0. 基板全体・スタックアップ・グラウンド
 
-- **層構成: 4層 1.6mm を推奨**(JLCPCB `JLC041612_3313`: L1信号/L2 GND/L3 電源/L4信号)。
+- **層構成: 4層 1.6mm を設定済み**(`default.kicad_pcb` の physical stackup)。
+  L1=F.Cu(信号) / **L2=In1.Cu(GNDプレーン)** / **L3=In2.Cu(PWRプレーン)** / L4=B.Cu(信号)。
+  スタックアップは **JLCPCB JLC04161H-7628 相当**: L1-L2間プリプレグ=7628 **0.2104mm**(εr 4.6)、
+  コア 1.065mm、内層銅 0.5oz(0.0152mm)、外層銅 1oz(0.035mm)、ENIG。上部プリプレグを厚い7628に
+  したのは、GbE 100Ω差動をL1で実用的なトレース幅(≈0.2mm)で引けるようにするため(3313の0.1mmだと
+  0.09mm級の細線が必要で歩留まり悪化)。★JLC発注時にこのスタックアップを明示指定すること。
+  **`ato build` はこのスタックアップ設定を保持する**(検証済み)。
   GbE差動ペアとDATACLK(~80MHz)の特性インピーダンス制御と、L2ベタGNDによる
   リターン経路確保のため。2層では高速系の品質確保が困難。
 - **グラウンド: L2 を極力ベタの単一GNDプレーンにする**(分割しない)。混載基板は
@@ -45,16 +51,19 @@ kazkojima i5ether。回路は `main.ato`、ネットリスト/PCBは `ato build`
 |---|---|---|---|---|
 | Default | 0.20mm | 0.20mm | — | 上記以外すべて |
 | Power | 0.40mm(via 0.8) | 0.20mm | — | `power_5v*` `p5v_ext` `p3v3_io*` `p3v3_a*` `p3v3_ext` `p1v9_a*` `p1v9_d*` `hdr_p4-p3v3_ext` |
-| GbE_diff | 0.20mm | 0.40mm | 0.20/0.20mm | `eth1_*` `eth2_*` (8ペア) |
+| GbE_diff | 0.20mm | 0.40mm | **0.20/0.13mm** | `eth1_*` `eth2_*` (8ペア) |
 | Analog_RGB | 0.25mm | 0.30mm | — | `c_ac-power-*` `c_sog3-power-*` |
 | Clock | 0.25mm | 0.25mm | — | `dataclk` `ext_clk` `audio_mclk` `audio_bck` `audio_lrck` |
 
 - **差動ペア認識**: GbEネットは `+/-` でなく大文字 `_P`/`_N` 接尾辞(例 `eth1_1_P`/`eth1_1_N`)。
   KiCadの差動ペアルータ(ホットキー`6`)/DRC結合チェックは `+/-` か大文字 `P/N` のみ認識するため、
   main.ato/mech.ato側で小文字→大文字化済み。8ペア(eth1_1〜eth1_4=ポート1, eth2_1〜eth2_4=ポート2)。
-- ★**GbE_diff の差動幅/ギャップ 0.20/0.20mm は暫定値**。実際のJLCPCB 4層スタックアップ
-  (L1-L2プリプレグ厚)でJLCの[インピーダンス計算](https://jlcpcb.com/impedance)を回し、
-  100Ω差動になる W/S に必ず調整すること。配線前の必須作業。
+- **GbE_diff 差動幅/ギャップ 0.20/0.13mm** = 設定済みスタックアップ(H=0.2104mm/εr4.6)での
+  エッジ結合マイクロストリップ解析値 ≈100Ω(W0.2/S0.13→99Ω, W0.2/S0.15→102Ω)。
+  ★解析値なので**配線前にJLCの[インピーダンス計算](https://jlcpcb.com/impedance)またはKiCad内蔵の
+  インピーダンス計算(Board Setup>Physical Stackup、スタックアップ設定済みなので即使える)で最終確認**すること。
+- **カスタムDRC設定済み**(`default.kicad_dru`): GbEペア内スキュー≤0.15mm、非結合区間≤5mm、
+  ビア数≤2/本、対他ネットクリアランス≥0.6mm、クロックのビア数≤3。配線するとこれらが自動チェックされる。
 - **Analog_RGBネット名の対応**(atopileがパッシブのpowerインターフェース名で命名):
   R入力=`c_ac-power-hv`, B入力=`c_ac-power-hv-1`, G入力=`c_sog3-power-hv`,
   R/G/B出力(TVP側)=`c_ac-power-lv{,-1,-2}`, SOG=`c_sog3-power-lv`。
