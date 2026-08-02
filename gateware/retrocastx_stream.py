@@ -36,6 +36,7 @@ MAC_ADDRESS = 0x025243580001          # ローカル管理アドレス "RCX"
 FPGA_IP     = "192.168.10.50"
 HOST_IP     = "192.168.10.1"          # SUBSCRIBE到着までのANNOUNCE宛先(初期値)
 UDP_PORT    = 34600
+SCROLL_PX   = 4               # テストパターンのカラーバー横スクロール量[px/frame](host pattern.pyと一致必須)
 
 # パケットタイプ(FSM内部コード。プロトコル上のtype値とは別)
 _T_LINE, _T_MODE, _T_ANN, _T_AUDIO, _T_CFG = 0, 1, 2, 3, 4
@@ -97,13 +98,17 @@ class PatternPixel(LiteXModule):
         border = ((self.x == 0) | (self.x == width - 1) |
                   (self.y == 0) | (self.y == height - 1))
         sweep = self.y == self.frame[:log2_int(height)]
+        # カラーバーをフレーム毎に横スクロール(SCROLL_PX/frame)。x に frame*SCROLL_PX を
+        # 加算し width幅で自動ラップ。host pattern.make_frame と同一(検証一致を維持)。
+        scroll_x = Signal(max=width)
+        self.comb += scroll_x.eq(self.x + self.frame * SCROLL_PX)
         self.comb += [
             If(border,
                 self.pix.eq(0x7FFF),
             ).Elif(sweep,
                 self.pix.eq(Cat(b8[3:], g8[3:], r8[3:])),
             ).Else(
-                self.pix.eq(bars[self.x[bar_shift:]]),
+                self.pix.eq(bars[scroll_x[bar_shift:]]),
             ),
         ]
 
@@ -181,6 +186,15 @@ class RetroCastXStreamer(LiteXModule):
         frag_idx = Signal(max=max(n_frags, 2))
         ts_frame = Signal(32)              # 現伝送単位先頭のドットクロックカウンタ
         ts_line  = Signal(32)              # 現ライン先頭(= ts_frame + line*htotal)
+
+        # 実アナログキャプチャ模擬: 源はGbEの状態に無関係に一定間隔で走り続ける。
+        # cap_* が「今キャプチャ中」の位置(自走)。line/frame/ts_* は送信開始時に
+        # cap_* からスナップショットする(送信中は固定)。送信FSMがビジーで間に合わ
+        # なかったラインは送られない=ライン単位でドロップ(バックプレッシャしない)。
+        cap_line     = Signal(max=max(lines_per_unit, 2))
+        cap_frame    = Signal(16)
+        cap_ts_frame = Signal(32)
+        cap_ts_line  = Signal(32)
 
         # フルフレーム座標の行番号(step3ではTVP7002のFIDOUT由来のfieldを使う)
         row = Signal(max=height)
@@ -319,12 +333,24 @@ class RetroCastXStreamer(LiteXModule):
             If(~sub_valid,
                 mode_cnt.eq(int(sys_clk_freq * mode_period) - 1),
                 line_cnt.eq(line_interval - 1),
+                cap_line.eq(0),
             ).Else(
                 If(mode_cnt == 0,
                     mode_cnt.eq(int(sys_clk_freq * mode_period) - 1),
                 ).Else(mode_cnt.eq(mode_cnt - 1)),
                 If(line_cnt == 0,
                     line_cnt.eq(line_interval - 1),
+                    # 源の自走(GbEの状態に無関係にライン/フレームを一定間隔で進める)
+                    If(cap_line == lines_per_unit - 1,
+                        cap_line.eq(0),
+                        cap_frame.eq(cap_frame + 1),
+                        cap_ts_frame.eq(cap_ts_frame + unit_ticks),
+                        cap_ts_line.eq(cap_ts_frame + unit_ticks),
+                        *([field.eq(~field)] if interlace else []),
+                    ).Else(
+                        cap_line.eq(cap_line + 1),
+                        cap_ts_line.eq(cap_ts_line + htotal),
+                    ),
                 ).Else(line_cnt.eq(line_cnt - 1)),
             ),
             # クリアより後に書く=セット優先
@@ -499,6 +525,12 @@ class RetroCastXStreamer(LiteXModule):
             NextValue(length, frag_len_arr[0]),
             NextValue(nwords, frag_nwords_arr[0]),
             NextValue(x, 0),
+            # 送信するラインを源からスナップショット(送信中は固定)。ビジー中に源が
+            # 先へ進んでいれば、その間のラインは送られず=ドロップされている。
+            NextValue(line, cap_line),
+            NextValue(frame, cap_frame),
+            NextValue(ts_frame, cap_ts_frame),
+            NextValue(ts_line, cap_ts_line),
             NextState("SEND"),
         )
         for k in range(n_aud):
@@ -532,18 +564,8 @@ class RetroCastXStreamer(LiteXModule):
                         NextValue(length, frag_len_arr[frag_idx + 1]),
                         NextValue(nwords, frag_nwords_arr[frag_idx + 1]),
                     ).Else(
-                        If(ptype == _T_LINE,
-                            If(line == lines_per_unit - 1,
-                                NextValue(line, 0),
-                                NextValue(frame, frame + 1),
-                                *([NextValue(field, ~field)] if interlace else []),
-                                NextValue(ts_frame, ts_frame + unit_ticks),
-                                NextValue(ts_line, ts_frame + unit_ticks),
-                            ).Else(
-                                NextValue(line, line + 1),
-                                NextValue(ts_line, ts_line + htotal),
-                            ),
-                        ),
+                        # 実キャプチャ模擬: line/frame/tsの進行は源(cap_*)で自走する。
+                        # 送信完了時は次パケットのためIDLEへ戻るだけ(ここでは進めない)。
                         NextState("IDLE"),
                     ),
                 ).Else(
@@ -626,7 +648,7 @@ class RetroCastXStream(SoCMini):
 
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
         self.streamer = RetroCastXStreamer(
-            udp_port, sys_clk_freq,
+            udp_port, sys_clk_freq, width=1024, height=512, fps=60.0,
             audio_sources=[(self.i2s.sources[0], 48000),
                            (self.i2s.sources[1], 48000),
                            (self.spdif.source, self.spdif.rate_hz)])

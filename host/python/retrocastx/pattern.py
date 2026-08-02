@@ -1,15 +1,20 @@
 """Deterministic test pattern generator (shared by sender simulator and tests)."""
 import numpy as np
 
+# カラーバー横スクロール量[px/frame]。gateware retrocastx_stream.py の SCROLL_PX と一致必須。
+# 幅が2のべき乗のとき gateware のビットスライスと同一結果になる。
+SCROLL_PX = 4
+
 
 def make_frame(width: int, height: int, frame_idx: int) -> np.ndarray:
-    """RGB888 frame (height, width, 3) uint8: color bars + moving sweep line + border."""
+    """RGB888 frame (height, width, 3) uint8: scrolling color bars + moving sweep line + border."""
     img = np.zeros((height, width, 3), dtype=np.uint8)
     bars = np.array([
         [255, 255, 255], [255, 255, 0], [0, 255, 255], [0, 255, 0],
         [255, 0, 255], [255, 0, 0], [0, 0, 255], [32, 32, 32],
     ], dtype=np.uint8)
-    xs = (np.arange(width) * len(bars)) // width
+    # 毎フレーム SCROLL_PX ずつ横スクロール(width幅でラップ)
+    xs = (((np.arange(width) + frame_idx * SCROLL_PX) % width) * len(bars)) // width
     img[:, :, :] = bars[xs]
     # moving horizontal sweep line (1 px per frame, wraps)
     y = frame_idx % height
