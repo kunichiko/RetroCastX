@@ -594,9 +594,11 @@ class RetroCastXStream(SoCMini):
         self.crg = _CRG(platform, sys_clk_freq)
 
         # Ethernet PHY (RGMII) + hardware UDP/IP core
+        # eth 1 = U19/U20ボール = U28 = ETH2側PHY(SO-DIMM ETH2_*配線に対応)。
+        # eth 0(G1/G2=U29)はETH1側。試作ではMagJackをETH2へ配線したのでindex=1。
         self.ethphy = LiteEthPHYRGMII(
-            clock_pads = platform.request("eth_clocks", 0),
-            pads       = platform.request("eth", 0),
+            clock_pads = platform.request("eth_clocks", 1),
+            pads       = platform.request("eth", 1),
             tx_delay   = 0e-9)
         self.ethcore = LiteEthUDPIPCore(
             phy         = self.ethphy,
