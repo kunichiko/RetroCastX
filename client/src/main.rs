@@ -32,6 +32,7 @@ fn main() -> eframe::Result {
     let mut no_vsync = false;
     let mut fullscreen_mode = false;
     let mut target_mac: Option<[u8; 6]> = None;
+    let mut decay = 0.8f32;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -47,6 +48,10 @@ fn main() -> eframe::Result {
             "--no-vsync" => no_vsync = true,
             // 低遅延フルスクリーン(専用presentスレッド+Immediate、ソース駆動present)
             "--fullscreen" => fullscreen_mode = true,
+            // 欠損ライン減衰率(1.0=前フレーム保持のまま, 0.8=毎フレーム80%へ暗転して消える)
+            "--decay" => {
+                decay = args.next().expect("--decay needs a value (e.g. 0.8)").parse().unwrap()
+            }
             other => {
                 eprintln!("unknown arg: {other}");
                 std::process::exit(2);
@@ -55,10 +60,10 @@ fn main() -> eframe::Result {
     }
 
     if let Some(secs) = headless_secs {
-        return run_headless(port, subscribe_to, target_mac, secs);
+        return run_headless(port, subscribe_to, target_mac, secs, decay);
     }
     if fullscreen_mode {
-        fullscreen::run(port, subscribe_to, target_mac); // 戻らない
+        fullscreen::run(port, subscribe_to, target_mac, decay); // 戻らない
     }
 
     let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
@@ -77,7 +82,7 @@ fn main() -> eframe::Result {
         "RetroCastX Viewer",
         options,
         Box::new(move |cc| {
-            Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, no_vsync)))
+            Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, no_vsync, decay)))
         }),
     )
 }
@@ -99,10 +104,11 @@ fn run_headless(
     subscribe_to: Option<String>,
     target_mac: Option<[u8; 6]>,
     secs: u64,
+    decay: f32,
 ) -> eframe::Result {
     let shared = Arc::new(receiver::Shared::default());
     receiver::spawn(
-        receiver::Config { port, subscribe_to, target_mac },
+        receiver::Config { port, subscribe_to, target_mac, decay },
         shared.clone(),
         || {},
     )
@@ -193,11 +199,12 @@ impl ViewerApp {
         subscribe_to: Option<String>,
         target_mac: Option<[u8; 6]>,
         no_vsync: bool,
+        decay: f32,
     ) -> Self {
         let shared = Arc::new(receiver::Shared::default());
         let ctx = cc.egui_ctx.clone();
         let rx_error = receiver::spawn(
-            receiver::Config { port, subscribe_to: subscribe_to.clone(), target_mac },
+            receiver::Config { port, subscribe_to: subscribe_to.clone(), target_mac, decay },
             shared.clone(),
             move || ctx.request_repaint(),
         )

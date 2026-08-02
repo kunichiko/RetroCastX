@@ -18,6 +18,8 @@ pub struct Config {
     /// 購読対象ボードのMAC。None ならワイルドカード(単一ボードLAN専用)。
     /// 複数ボード環境では discover で得たMACを指名する。
     pub target_mac: Option<[u8; 6]>,
+    /// 欠損ライン減衰率(1.0=前フレーム保持, 0.8=毎フレーム80%へ暗転)。
+    pub decay: f32,
 }
 
 #[derive(Default, Clone)]
@@ -74,6 +76,7 @@ pub fn spawn(
 
 fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut asm = FrameAssembler::new();
+    asm.set_decay(cfg.decay);
     let mut buf = vec![0u8; 65536];
     let mut sub_seq: u16 = 0;
     let mut last_subscribe: Option<Instant> = None;

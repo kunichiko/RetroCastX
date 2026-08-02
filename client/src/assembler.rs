@@ -29,6 +29,8 @@ pub struct FrameAssembler {
     cur_frame: Option<u16>,
     px_filled: usize,
     last_seq: Option<u16>,
+    line_seen: Vec<bool>, // このフレームで各lineを受信したか
+    decay: f32,           // 欠損ラインの減衰率(1.0=前フレーム保持のまま, 0.8=毎フレーム80%へ暗転)
 }
 
 impl FrameAssembler {
@@ -42,7 +44,14 @@ impl FrameAssembler {
             cur_frame: None,
             px_filled: 0,
             last_seq: None,
+            line_seen: Vec::new(),
+            decay: 0.8,
         }
+    }
+
+    /// 欠損ライン減衰率を設定(1.0で従来の前フレーム保持)。
+    pub fn set_decay(&mut self, d: f32) {
+        self.decay = d;
     }
 
     fn track_seq(&mut self, seq: u16) {
@@ -76,6 +85,7 @@ impl FrameAssembler {
                     for px in self.fb.chunks_exact_mut(4) {
                         px[3] = 255;
                     }
+                    self.line_seen = vec![false; self.height];
                     self.cur_frame = None;
                     self.px_filled = 0;
                     self.mode = Some(m);
@@ -126,6 +136,9 @@ impl FrameAssembler {
                     _ => return completed,
                 }
                 self.px_filled += l.count_px as usize;
+                if (l.line as usize) < self.line_seen.len() {
+                    self.line_seen[l.line as usize] = true;
+                }
                 completed
             }
             Packet::Other { ptype, flags, seq } => {
@@ -144,6 +157,26 @@ impl FrameAssembler {
     }
 
     fn emit(&mut self) -> CompletedFrame {
+        // このフレームで受信できなかったライン(=送信側でドロップ)を前値×decayで減衰。
+        // 継続的に欠損するラインは 0.8^n で徐々に暗転し「しばらくすると消える」。
+        // 1回だけの欠損は80%でほぼ気づかず、次に受信すれば満輝度へ復帰。
+        let (w, h, d) = (self.width, self.height, self.decay);
+        if d < 1.0 {
+            for line in 0..h {
+                if !self.line_seen.get(line).copied().unwrap_or(true) {
+                    let row = &mut self.fb[line * w * 4..(line + 1) * w * 4];
+                    for px in row.chunks_exact_mut(4) {
+                        px[0] = (px[0] as f32 * d) as u8;
+                        px[1] = (px[1] as f32 * d) as u8;
+                        px[2] = (px[2] as f32 * d) as u8;
+                        // alpha(px[3])は不変
+                    }
+                }
+            }
+        }
+        for s in self.line_seen.iter_mut() {
+            *s = false;
+        }
         let total = (self.width * self.height).max(1);
         let f = CompletedFrame {
             frame_idx: self.cur_frame.unwrap_or(0),

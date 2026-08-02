@@ -22,11 +22,11 @@ use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::receiver;
 
-pub fn run(port: u16, subscribe_to: Option<String>, target_mac: Option<[u8; 6]>) -> ! {
+pub fn run(port: u16, subscribe_to: Option<String>, target_mac: Option<[u8; 6]>, decay: f32) -> ! {
     let shared = Arc::new(receiver::Shared::default());
     let (tx, rx): (Sender<()>, Receiver<()>) = std::sync::mpsc::channel();
     receiver::spawn(
-        receiver::Config { port, subscribe_to, target_mac },
+        receiver::Config { port, subscribe_to, target_mac, decay },
         shared.clone(),
         move || {
             let _ = tx.send(());
