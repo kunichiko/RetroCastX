@@ -195,3 +195,30 @@ component Tp1Pad:
     trait has_designator_prefix<prefix="TP">
     trait has_part_removed
     signal pad ~ pin 1
+
+component HeaderJtag:
+    """JTAGデバッグ端子(1×6, 2.54mm)。念のための予備。コネクタ未実装(DNP)。
+    ポゴピン(FT2232H ch.A)と並列に同じJTAG信号へ接続。外部JTAG器での書換え/
+    バウンダリスキャン用。ピン: 1=TCK 2=TMS 3=TDI 4=TDO 5=GND 6=3V3(VREF)。
+    手実装/DNP(JLC発注除外)。"""
+    trait is_atomic_part<manufacturer="", partnumber="PinHeader_1x6_2.54", footprint="Header_1x6_P2.54mm.kicad_mod", symbol="Header_1x6.kicad_sym">
+    trait has_designator_prefix<prefix="J">
+    trait has_part_removed
+    signal tck ~ pin 1
+    signal tms ~ pin 2
+    signal tdi ~ pin 3
+    signal tdo ~ pin 4
+    signal gnd ~ pin 5
+    signal vref ~ pin 6
+
+component PogoPin:
+    """スプリング/ポゴピン(圧入TH)。Colorlight i5 モジュール底面のJTAGテストパッド
+    (TCK/TMS/TDI/TDO)へバネ接触する。ドリル1.0mm=ピン胴径(現物に合わせ調整)。
+    配置(KiCadレイアウトで実測値により指定): SO-DIMMソケット中心から縦33mm、
+    TDO中心はソケット右シルク線から横12mm、2.54mmピッチで右→左に TDO/TDI/TMS/TCK。
+    無挿入時バネ高3mm・モジュール裏〜ext基板間隙2.6mm→約0.4mm圧縮(ソケット種で変動)。
+    手実装/DNP(JLC発注除外)。"""
+    trait is_atomic_part<manufacturer="", partnumber="PogoPin_D1.0mm", footprint="PogoPin_D1.0mm.kicad_mod", symbol="TestPoint.kicad_sym">
+    trait has_designator_prefix<prefix="PG">
+    trait has_part_removed
+    signal pad ~ pin 1

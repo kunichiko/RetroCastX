@@ -39,6 +39,17 @@ component R5K1_0402 from Resistor:
     trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C25905", manufacturer="UNI-ROYAL", partno="0402WGF5101TCE">
     trait has_designator_prefix<prefix="R">
 
+component R10K_0402 from Resistor:
+    trait is_atomic_part<manufacturer="UNI-ROYAL", partnumber="0402WGF1002TCE", footprint="parts/UNI_ROYAL_0402WGF1002TCE/R0402.kicad_mod", symbol="parts/UNI_ROYAL_0402WGF1002TCE/0402WGF1002TCE.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C25744", manufacturer="UNI-ROYAL", partno="0402WGF1002TCE">
+    trait has_designator_prefix<prefix="R">
+
+component R12K_0402 from Resistor:
+    # FT2232H REF基準抵抗(12kΩ 1%): USB PLL基準電流を設定。値は厳守。
+    trait is_atomic_part<manufacturer="UNI-ROYAL", partnumber="0402WGF1202TCE", footprint="parts/UNI_ROYAL_0402WGF1202TCE/R0402.kicad_mod", symbol="parts/UNI_ROYAL_0402WGF1202TCE/0402WGF1202TCE.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C25752", manufacturer="UNI-ROYAL", partno="0402WGF1202TCE">
+    trait has_designator_prefix<prefix="R">
+
 component C100nF_0402 from Capacitor:
     trait is_atomic_part<manufacturer="SAMSUNG", partnumber="CL05B104KO5NNNC", footprint="parts/SAMSUNG_CL05B104KO5NNNC/C0402.kicad_mod", symbol="parts/SAMSUNG_CL05B104KO5NNNC/CL05B104KO5NNNC.kicad_sym">
     trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C1525", manufacturer="SAMSUNG", partno="CL05B104KO5NNNC">
@@ -77,4 +88,10 @@ component C1uF_0603 from Capacitor:
 component C10uF_0805 from Capacitor:
     trait is_atomic_part<manufacturer="SAMSUNG", partnumber="CL21A106KAYNNNE", footprint="parts/SAMSUNG_CL21A106KAYNNNE/C0805.kicad_mod", symbol="parts/SAMSUNG_CL21A106KAYNNNE/CL21A106KAYNNNE.kicad_sym">
     trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C15850", manufacturer="SAMSUNG", partno="CL21A106KAYNNNE">
+    trait has_designator_prefix<prefix="C">
+
+component C33pF_0603 from Capacitor:
+    # 12MHz水晶(CL=20pF)の負荷容量。Cx≈2*(CL-Cstray)≈33pF(C0G/NP0)。0603。
+    trait is_atomic_part<manufacturer="SAMSUNG", partnumber="CL10C330JB8NNNC", footprint="parts/SAMSUNG_CL10C330JB8NNNC/C0603.kicad_mod", symbol="parts/SAMSUNG_CL10C330JB8NNNC/CL10C330JB8NNNC.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C1663", manufacturer="SAMSUNG", partno="CL10C330JB8NNNC">
     trait has_designator_prefix<prefix="C">

@@ -1,0 +1,24 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component MICROCHIP_93LC56BT_I_SN_package:
+    """EEPROM"""
+
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C6164", date="2026-08-02T14:27:12.722948+00:00", checksum="a47afe01fc4c3b8b99cd920b57b8b516177f1d2730d8edc3d9a27615a7899be1">
+
+    trait is_atomic_part<manufacturer="MICROCHIP", partnumber="93LC56BT-I/SN", footprint="SOIC-8_L4.9-W3.9-P1.27-LS6.0-BL.kicad_mod", symbol="93LC56BT-I_SN.kicad_sym", model="SOIC-8_L4.9-W3.9-H1.7-LS6.0-P1.27.STEP">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C6164", manufacturer="MICROCHIP", partno="93LC56BT-I/SN">
+    trait has_designator_prefix<prefix="U">
+
+    # pins
+    signal CLK ~ pin 2
+    signal CS ~ pin 1
+    signal DI ~ pin 3
+    signal DO ~ pin 4
+    signal NC_2 ~ pin 6
+    signal VCC ~ pin 8
+    signal VSS ~ pin 5

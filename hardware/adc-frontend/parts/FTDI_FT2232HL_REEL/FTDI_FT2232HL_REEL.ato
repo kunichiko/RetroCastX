@@ -1,0 +1,81 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component FTDI_FT2232HL_REEL_package:
+    """Dual High Speed USB To Multipurpose UARTFIFO IC, 64-pin LQFP, Tape and Reel"""
+
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C27882", date="2026-08-02T14:27:12.172981+00:00", checksum="98aa109092e3762a6a3cbd4ff54802ff00d550275cb36183073fc7e4a9e3f514">
+
+    trait is_atomic_part<manufacturer="FTDI", partnumber="FT2232HL-REEL", footprint="LQFP-64_L10.0-W10.0-P0.50-LS12.0-TL.kicad_mod", symbol="FT2232HL.kicad_sym", model="LQFP-64_L10.0-W10.0-H1.4-LS12.0-P0.50.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C27882", manufacturer="FTDI", partno="FT2232HL-REEL">
+    trait has_designator_prefix<prefix="U">
+
+    # pins
+    signal ACBUS0 ~ pin 26
+    signal ACBUS1 ~ pin 27
+    signal ACBUS2 ~ pin 28
+    signal ACBUS3 ~ pin 29
+    signal ACBUS4 ~ pin 30
+    signal ACBUS5 ~ pin 32
+    signal ACBUS6 ~ pin 33
+    signal ACBUS7 ~ pin 34
+    signal ADBUS0 ~ pin 16
+    signal ADBUS1 ~ pin 17
+    signal ADBUS2 ~ pin 18
+    signal ADBUS3 ~ pin 19
+    signal ADBUS4 ~ pin 21
+    signal ADBUS5 ~ pin 22
+    signal ADBUS6 ~ pin 23
+    signal ADBUS7 ~ pin 24
+    signal AGND ~ pin 10
+    signal BCBUS0 ~ pin 48
+    signal BCBUS1 ~ pin 52
+    signal BCBUS2 ~ pin 53
+    signal BCBUS3 ~ pin 54
+    signal BCBUS4 ~ pin 55
+    signal BCBUS5 ~ pin 57
+    signal BCBUS6 ~ pin 58
+    signal BCBUS7 ~ pin 59
+    signal BDBUS0 ~ pin 38
+    signal BDBUS1 ~ pin 39
+    signal BDBUS2 ~ pin 40
+    signal BDBUS3 ~ pin 41
+    signal BDBUS4 ~ pin 43
+    signal BDBUS5 ~ pin 44
+    signal BDBUS6 ~ pin 45
+    signal BDBUS7 ~ pin 46
+    signal DM ~ pin 7
+    signal DP ~ pin 8
+    signal EECLK ~ pin 62
+    signal EECS ~ pin 63
+    signal EEDATA ~ pin 61
+    signal GND ~ pin 1
+    GND ~ pin 5
+    GND ~ pin 11
+    GND ~ pin 15
+    GND ~ pin 25
+    GND ~ pin 35
+    GND ~ pin 47
+    GND ~ pin 51
+    signal OSCI ~ pin 2
+    signal OSCO ~ pin 3
+    signal REF ~ pin 6
+    signal TEST ~ pin 13
+    signal VCCIO ~ pin 20
+    VCCIO ~ pin 31
+    VCCIO ~ pin 42
+    VCCIO ~ pin 56
+    signal VCORE ~ pin 12
+    VCORE ~ pin 37
+    VCORE ~ pin 64
+    signal VPHY ~ pin 4
+    signal VPLL ~ pin 9
+    signal VREGIN ~ pin 50
+    signal VREGOUT ~ pin 49
+    signal nPWREN ~ pin 60
+    signal nRESET ~ pin 14
+    signal nSUSPEND ~ pin 36

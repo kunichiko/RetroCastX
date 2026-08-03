@@ -8,8 +8,12 @@ import is_atomic_part
 import has_part_picked
 import has_designator_prefix
 import has_part_removed
-from "parts/_mech/mech.ato" import HeaderExtP2, HeaderExtP4, HeaderP1, HeaderArgus, SolderJumper, SpdifRxModule, BoxHeader2x8Argus, Tp1Pad
-from "passives.ato" import R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805
+from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeader2x8Argus, Tp1Pad, PogoPin, HeaderJtag
+from "parts/JST_DM_7D4_H2500_M/sodimm_i5.ato" import SoDimmI5
+from "parts/FTDI_FT2232HL_REEL/FTDI_FT2232HL_REEL.ato" import FTDI_FT2232HL_REEL_package
+from "parts/MICROCHIP_93LC56BT_I_SN/MICROCHIP_93LC56BT_I_SN.ato" import MICROCHIP_93LC56BT_I_SN_package
+from "parts/YXC_X322512MSB4SI/YXC_X322512MSB4SI.ato" import YXC_X322512MSB4SI_package
+from "passives.ato" import R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, R10K_0402, R12K_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805, C33pF_0603
 
 # =============================================================================
 # RetroCastX ADC front-end: TVP7002 breakout for Colorlight i5 EXT board
@@ -531,39 +535,40 @@ module EthernetPort:
     - PHY側センタータップ: 各0.1µF→GND のみ(B50612D は内部バイアスで無給電可)
     - Bob-Smith終端(75Ω+1nF)は HR911130A 内蔵
     - 論理GND-シャーシ間: 各ポート 4.7nF/2kV ×2(1812)
-    - **ETH2=jack(LiteXデフォルト phy0)、ETH1=jack2(将来のデュアルリンク/2.5G化用)**
-    - LED: PHYのLED信号はP1に出ていないため未接続
+    - **ETH2=jack=PHY0=litex eth1(映像ストリーム既定)、ETH1=jack2=PHY1=litex eth0(将来のデュアルリンク/2.5G化用)**
+      ※litexのデフォルトindexは0=ETH1だが、gatewareはeth1(=ETH2)を要求して映像を出す。
+    - LED: MagJackの緑/黄LEDは主ポート(jack)のみFPGA GPIO(io_r1/io_t1)経由で駆動
     """
     signal gnd
     signal chassis
-    signal p5v_from_ext  # EXT P1-15の5V。給電に使う場合のみAppで接続(通常は未使用)
+    # SO-DIMMから受けるMDIペア(モジュールI/O)。AppでSoDimmI5のeth*へ接続する。
+    signal eth2_1_P; signal eth2_1_N; signal eth2_2_P; signal eth2_2_N
+    signal eth2_3_P; signal eth2_3_N; signal eth2_4_P; signal eth2_4_N
+    signal eth1_1_P; signal eth1_1_N; signal eth1_2_P; signal eth1_2_N
+    signal eth1_3_P; signal eth1_3_N; signal eth1_4_P; signal eth1_4_N
 
-    j8 = new HeaderP1
     jack = new GbeMagJack    # ETH2 = phy0(既定の映像ストリーム)
     jack2 = new GbeMagJack   # ETH1 = phy1(デュアルリンクテスト用)
 
-    j8.gnd ~ gnd
-    j8.p5v ~ p5v_from_ext
-
     # ETH2 → jack
-    j8.eth2_1_P ~ jack.mdi0_p
-    j8.eth2_1_N ~ jack.mdi0_n
-    j8.eth2_2_P ~ jack.mdi1_p
-    j8.eth2_2_N ~ jack.mdi1_n
-    j8.eth2_3_P ~ jack.mdi2_p
-    j8.eth2_3_N ~ jack.mdi2_n
-    j8.eth2_4_P ~ jack.mdi3_p
-    j8.eth2_4_N ~ jack.mdi3_n
+    eth2_1_P ~ jack.mdi0_p
+    eth2_1_N ~ jack.mdi0_n
+    eth2_2_P ~ jack.mdi1_p
+    eth2_2_N ~ jack.mdi1_n
+    eth2_3_P ~ jack.mdi2_p
+    eth2_3_N ~ jack.mdi2_n
+    eth2_4_P ~ jack.mdi3_p
+    eth2_4_N ~ jack.mdi3_n
 
     # ETH1 → jack2
-    j8.eth1_1_P ~ jack2.mdi0_p
-    j8.eth1_1_N ~ jack2.mdi0_n
-    j8.eth1_2_P ~ jack2.mdi1_p
-    j8.eth1_2_N ~ jack2.mdi1_n
-    j8.eth1_3_P ~ jack2.mdi2_p
-    j8.eth1_3_N ~ jack2.mdi2_n
-    j8.eth1_4_P ~ jack2.mdi3_p
-    j8.eth1_4_N ~ jack2.mdi3_n
+    eth1_1_P ~ jack2.mdi0_p
+    eth1_1_N ~ jack2.mdi0_n
+    eth1_2_P ~ jack2.mdi1_p
+    eth1_2_N ~ jack2.mdi1_n
+    eth1_3_P ~ jack2.mdi2_p
+    eth1_3_N ~ jack2.mdi2_n
+    eth1_4_P ~ jack2.mdi3_p
+    eth1_4_N ~ jack2.mdi3_n
 
     # チップ側センタータップ共通(P1)を各0.1µF→GNDでデカップリング(B50612Dは無給電可)
     ct_caps = new C100nF_0402[2]
@@ -575,11 +580,125 @@ module EthernetPort:
     jack.shield ~ chassis
     jack2.bobsmith ~ chassis
     jack2.shield ~ chassis
+
+    # --- リンクLED: 主ポート(jack=ETH2)の緑/黄をFPGA GPIOで駆動 ---
+    # GPIO(3.3V) → R220 → アノード, カソード→GND(GPIO High=点灯, ~6mA)。
+    # LED点灯パターン(リンク/アクティビティ)はゲートウェアで生成。
+    signal led_g_drive   # 緑LED制御入力(App: sodimm.io_r1)
+    signal led_y_drive   # 黄LED制御入力(App: sodimm.io_t1)
+    r_led_g = new R220_0402
+    r_led_y = new R220_0402
+    led_g_drive ~> r_led_g ~> jack.led_g_a
+    jack.led_g_k ~ gnd
+    led_y_drive ~> r_led_y ~> jack.led_y_a
+    jack.led_y_k ~ gnd
+    # jack2(ETH1, デュアルリンクテスト用)のLEDは空きGPIO不足のため未接続(NC)。
     bridge_caps = new C4nF7_1812_2kV[4]
     chassis ~> bridge_caps[0] ~> gnd
     chassis ~> bridge_caps[1] ~> gnd
     chassis ~> bridge_caps[2] ~> gnd
     chassis ~> bridge_caps[3] ~> gnd
+
+
+# --- FT2232H: USB書換え(JTAG)+ UART の主経路 -----------------------------------
+module Ft2232hProgrammer:
+    """FT2232H (C27882): USB Hi-Speed → ch.A MPSSE=JTAG / ch.B=UART。
+    i5をUSB経由で書換える主経路(openFPGALoader -c ft2232)。JTAGはポゴピン経由で
+    i5底面のTCK/TMS/TDI/TDOパッドへ。EEPROM(93LC56)でVID/PID/シリアルを固定。
+    電源は基板3.3V(USB接続時のみ立つ=バスパワー等価)。内部1.8V LDOでコア給電。"""
+    signal gnd
+    signal p3v3        # VCCIO / VREGIN = 3.3V
+    signal usb_dp
+    signal usb_dm
+    # ch.A MPSSE → JTAG(ポゴピンへ)
+    signal jtag_tck
+    signal jtag_tdi
+    signal jtag_tdo
+    signal jtag_tms
+    # ch.B → UART(i5と接続)
+    signal uart_txd    # FT TXD → i5 RX
+    signal uart_rxd    # FT RXD ← i5 TX
+
+    ft = new FTDI_FT2232HL_REEL_package
+
+    # --- 電源/GND ---
+    ft.VCCIO ~ p3v3
+    ft.VREGIN ~ p3v3
+    ft.GND ~ gnd
+    ft.AGND ~ gnd
+    ft.TEST ~ gnd            # テストモード無効(GND固定)
+    # 内部1.8V LDO: VREGOUT → VCORE。VPHY/VPLLはフェライトで分離給電。
+    ft.VREGOUT ~ ft.VCORE
+    fb_phy = new FerriteBead
+    fb_pll = new FerriteBead
+    ft.VREGOUT ~ fb_phy.p1
+    fb_phy.p2 ~ ft.VPHY
+    ft.VREGOUT ~ fb_pll.p1
+    fb_pll.p2 ~ ft.VPLL
+
+    # デカップリング(VCCIO×4 + 各電源)
+    c_vccio = new C100nF_0402[4]
+    ft.VCCIO ~> c_vccio[0] ~> gnd
+    ft.VCCIO ~> c_vccio[1] ~> gnd
+    ft.VCCIO ~> c_vccio[2] ~> gnd
+    ft.VCCIO ~> c_vccio[3] ~> gnd
+    c_vregin = new C100nF_0402
+    ft.VREGIN ~> c_vregin ~> gnd
+    c_vregin_bulk = new C10uF_0805
+    ft.VREGIN ~> c_vregin_bulk ~> gnd
+    c_vregout = new C100nF_0402
+    ft.VREGOUT ~> c_vregout ~> gnd
+    c_vregout_bulk = new C1uF_0603
+    ft.VREGOUT ~> c_vregout_bulk ~> gnd
+    c_vcore = new C100nF_0402
+    ft.VCORE ~> c_vcore ~> gnd
+    c_vphy = new C100nF_0402
+    ft.VPHY ~> c_vphy ~> gnd
+    c_vpll = new C100nF_0402
+    ft.VPLL ~> c_vpll ~> gnd
+
+    # REF: 12kΩ→GND(USB PLL基準電流)
+    r_ref = new R12K_0402
+    ft.REF ~> r_ref ~> gnd
+
+    # nRESET: 10kΩプルアップ(内部PU有だが確実化)
+    r_reset = new R10K_0402
+    ft.nRESET ~> r_reset ~> p3v3
+
+    # --- 12MHz水晶 + 負荷容量(CL=20pF品 → 33pF×2)---
+    xtal = new YXC_X322512MSB4SI_package
+    ft.OSCI ~ xtal.OSC1
+    ft.OSCO ~ xtal.OSC2
+    xtal.GND ~ gnd
+    c_osci = new C33pF_0603
+    ft.OSCI ~> c_osci ~> gnd
+    c_osco = new C33pF_0603
+    ft.OSCO ~> c_osco ~> gnd
+
+    # --- 構成EEPROM 93LC56(x16固定, 'B')---
+    ee = new MICROCHIP_93LC56BT_I_SN_package
+    ee.CS ~ ft.EECS
+    ee.CLK ~ ft.EECLK
+    ee.DI ~ ft.EEDATA
+    ee.DO ~ ft.EEDATA       # DI/DOはEEDATAで共通(FTDI標準)
+    ee.VCC ~ p3v3
+    ee.VSS ~ gnd
+    c_ee = new C100nF_0402
+    ee.VCC ~> c_ee ~> gnd
+
+    # --- USB D+/D-(FT2232Hは直列抵抗内蔵→外付け27Ω不要)---
+    ft.DP ~ usb_dp
+    ft.DM ~ usb_dm
+
+    # --- ch.A MPSSE = JTAG(openFPGALoader ft2232標準割当)---
+    ft.ADBUS0 ~ jtag_tck    # TCK
+    ft.ADBUS1 ~ jtag_tdi    # TDI (FT→DUT)
+    ft.ADBUS2 ~ jtag_tdo    # TDO (DUT→FT, 入力)
+    ft.ADBUS3 ~ jtag_tms    # TMS
+
+    # --- ch.B = UART ---
+    ft.BDBUS0 ~ uart_txd    # TXD (FT→i5 RX)
+    ft.BDBUS1 ~ uart_rxd    # RXD (i5 TX→FT)
 
 
 # --- Top level ----------------------------------------------------------------
@@ -607,11 +726,11 @@ module App:
     signal gnd
     gnd ~ power_5v.lv
 
-    # 5V給電: 本基板が電源マスター(既定)。
-    #   J10 USB-C(CCにRd 5.1kΩ実装済み → PD充電器+C-Cケーブルで5V/3A可)から給電し、
-    #   SJ1(閉=既定)でヘッダ5Vピン経由でEXTボードへ「逆給電」する。
-    #   この運用ではEXTボードのスライドスイッチS1をOFFにし、EXTのUSB-CはJTAG/UARTデータ専用とする
-    #   (EXT側USB-CはCC未接続のためC-Cケーブルでは受電できない、という実測済みの制約への対策)。
+    # 5V給電 + USBデータ: J10 USB-C 1本で電源とFT2232H(書換え/UART)を兼ねる。
+    #   CCにRd 5.1kΩ実装 → PD充電器+C-Cケーブルで5V/3A受電。同時にD+/D-を
+    #   オンボードFT2232Hへ配線し、USB経由でi5をJTAG書換え + ch.B UART。
+    #   FT2232Hは基板3.3V(USB VBUS→LDO由来)で動作=バスパワー等価(USB接続時のみ通電)。
+    #   SJ1(閉=既定)でSO-DIMMの5Vピン経由でi5モジュールへ給電。
     #   代替入力: J7 DCジャック。J10とJ7は同時使用不可。
     usbc = new UsbCPowerReceptacle
     usbc.vbus ~ power_5v.hv
@@ -621,6 +740,38 @@ module App:
     r_cc2 = new R5K1_0402
     usbc.cc1 ~> r_cc1 ~> gnd
     usbc.cc2 ~> r_cc2 ~> gnd
+
+    # --- オンボードFT2232H: USB書換え(JTAG)+ UART の主経路 ---
+    ft2232 = new Ft2232hProgrammer
+    ft2232.gnd ~ gnd
+    ft2232.p3v3 ~ p3v3_io.hv
+    ft2232.usb_dp ~ usbc.dp
+    ft2232.usb_dm ~ usbc.dn
+    # ch.B UART → SO-DIMM空きGPIO(i5側UART)
+    ft2232.uart_txd ~ sodimm.io_u1   # FT TXD → i5 RX
+    ft2232.uart_rxd ~ sodimm.io_y2   # i5 TX  → FT RXD
+
+    # --- JTAG: ポゴピン4本でi5底面テストパッドへバネ接触 ---
+    # 配置(KiCad実測): ソケット中心から縦33mm, TDO中心=右シルク線から横12mm,
+    #   2.54mmピッチで右→左に TDO/TDI/TMS/TCK。
+    pogo_tck = new PogoPin
+    pogo_tms = new PogoPin
+    pogo_tdi = new PogoPin
+    pogo_tdo = new PogoPin
+    pogo_tck.pad ~ ft2232.jtag_tck
+    pogo_tms.pad ~ ft2232.jtag_tms
+    pogo_tdi.pad ~ ft2232.jtag_tdi
+    pogo_tdo.pad ~ ft2232.jtag_tdo
+    ft2232.jtag_tck.override_net_name = "jtag_tck"  # 自動名が数値になるのを回避
+
+    # JTAGデバッグ端子(念のための予備, コネクタ未実装/DNP): 同JTAG信号へ並列引き出し
+    jtag_hdr = new HeaderJtag
+    jtag_hdr.tck ~ ft2232.jtag_tck
+    jtag_hdr.tms ~ ft2232.jtag_tms
+    jtag_hdr.tdi ~ ft2232.jtag_tdi
+    jtag_hdr.tdo ~ ft2232.jtag_tdo
+    jtag_hdr.gnd ~ gnd
+    jtag_hdr.vref ~ p3v3_io.hv
 
     signal p5v_ext
     sj_ext5v = new SolderJumper
@@ -805,53 +956,48 @@ module App:
     r_rst = new R2K2_0402
     tvp.resetb ~> r_rst ~> gnd
 
-    # --- FPGA接続 (EXT P2/P4 を1対1ミラーする 2×15 ×2) ---
-    # EXT側1ヘッダのGPIOは18-20本のため、RGB24bit+制御は P2+P4 の2本に集約。
-    # 直挿し(ハット)でもリボンケーブルでも同じネットで成立する。
-    # 3V3/5Vピンは意図的に未接続(EXT側電源と本基板LDOを衝突させない)。GNDは共通化。
-    hdr_p2 = new HeaderExtP2
-    hdr_p4 = new HeaderExtP4
-    hdr_p2.gnd ~ gnd
-    hdr_p4.gnd ~ gnd
-    # EXTの5Vピン(3ヘッダ分を束ねて電流を分散)→ SJ1 → 5Vレール
-    hdr_p2.p5v_ext ~ p5v_ext
-    hdr_p4.p5v_ext ~ p5v_ext
+    # --- FPGA接続 (Colorlight i5 を DDR2 SO-DIMM 200P ソケットへ直挿し) ---
+    # 旧 EXT P2/P4 ヘッダの全GPIOを SO-DIMM ピンへ移設(信号名 io_<ball> は不変)。
+    # i5モジュールへは本ソケットの5V/GNDピン経由で給電する(EXTヘッダ廃止)。
+    sodimm = new SoDimmI5
+    sodimm.gnd ~ gnd
+    sodimm.p5v ~ p5v_ext
 
     # J2 (P2ミラー): R/G 全8bit + B上位4bit = 20 GPIO
-    hdr_p2.io_j20 ~ tvp.r9
-    hdr_p2.io_g20 ~ tvp.r8
-    hdr_p2.io_l18 ~ tvp.r7
-    hdr_p2.io_k20 ~ tvp.r6
-    hdr_p2.io_m18 ~ tvp.r5
-    hdr_p2.io_l20 ~ tvp.r4
-    hdr_p2.io_n17 ~ tvp.r3
-    hdr_p2.io_n18 ~ tvp.r2
-    hdr_p2.io_u17 ~ tvp.g9
-    hdr_p2.io_p18 ~ tvp.g8
-    hdr_p2.io_t17 ~ tvp.g7
-    hdr_p2.io_u18 ~ tvp.g6
-    hdr_p2.io_p17 ~ tvp.g5
-    hdr_p2.io_m17 ~ tvp.g4
-    hdr_p2.io_r18 ~ tvp.g3
-    hdr_p2.io_r17 ~ tvp.g2
-    hdr_p2.io_c18 ~ tvp.b9
-    hdr_p2.io_t18 ~ tvp.b8
-    hdr_p2.io_u16 ~ tvp.b7
-    hdr_p2.io_k18 ~ tvp.b6
+    sodimm.io_j20 ~ tvp.r9
+    sodimm.io_g20 ~ tvp.r8
+    sodimm.io_l18 ~ tvp.r7
+    sodimm.io_k20 ~ tvp.r6
+    sodimm.io_m18 ~ tvp.r5
+    sodimm.io_l20 ~ tvp.r4
+    sodimm.io_n17 ~ tvp.r3
+    sodimm.io_n18 ~ tvp.r2
+    sodimm.io_u17 ~ tvp.g9
+    sodimm.io_p18 ~ tvp.g8
+    sodimm.io_t17 ~ tvp.g7
+    sodimm.io_u18 ~ tvp.g6
+    sodimm.io_p17 ~ tvp.g5
+    sodimm.io_m17 ~ tvp.g4
+    sodimm.io_r18 ~ tvp.g3
+    sodimm.io_r17 ~ tvp.g2
+    sodimm.io_c18 ~ tvp.b9
+    sodimm.io_t18 ~ tvp.b8
+    sodimm.io_u16 ~ tvp.b7
+    sodimm.io_k18 ~ tvp.b6
 
     # J4 (P4ミラー): B下位4bit + タイミング + I2C/リセット = 12/18 GPIO
-    hdr_p4.io_f2 ~ tvp.dataclk   # F2 = PCLKT7_0(クロック専用入力ボール)
-    hdr_p4.io_e1 ~ tvp.b5
-    hdr_p4.io_e4 ~ tvp.b4
-    hdr_p4.io_h3 ~ tvp.b3
-    hdr_p4.io_h5 ~ tvp.b2
-    hdr_p4.io_j5 ~ tvp.hsout
-    hdr_p4.io_a2 ~ tvp.vsout
-    hdr_p4.io_k4 ~ tvp.sogout
-    hdr_p4.io_b2 ~ tvp.fidout
-    hdr_p4.io_k3 ~ tvp.sda
-    hdr_p4.io_k5 ~ tvp.scl
-    hdr_p4.io_b3 ~ tvp.resetb
+    sodimm.io_f2 ~ tvp.dataclk   # F2 = PCLKT7_0(クロック専用入力ボール)
+    sodimm.io_e1 ~ tvp.b5
+    sodimm.io_e4 ~ tvp.b4
+    sodimm.io_h3 ~ tvp.b3
+    sodimm.io_h5 ~ tvp.b2
+    sodimm.io_j5 ~ tvp.hsout
+    sodimm.io_a2 ~ tvp.vsout
+    sodimm.io_k4 ~ tvp.sogout
+    sodimm.io_b2 ~ tvp.fidout
+    sodimm.io_k3 ~ tvp.sda
+    sodimm.io_k5 ~ tvp.scl
+    sodimm.io_b3 ~ tvp.resetb
     # 残り6ピンは音声系で使用(下記)。10bit化にはP6ミラーヘッダの追加が必要になった。
 
     # --- 音声入力(3系統: DSUB15音声 / LINE入力 / S/PDIF光) ---
@@ -926,12 +1072,12 @@ module App:
     spdif.vcc ~> c_spdif ~> gnd
 
     # J4 空きピンへの割当(音声で6本使い切り)
-    hdr_p4.io_f1 ~ audio_mclk           # F1 = PCLKC6_1(クロック対応ボール)
-    hdr_p4.io_g3 ~ audio_bck            # FPGA出力
-    hdr_p4.io_h4 ~ audio_lrck           # FPGA出力
-    hdr_p4.io_f3 ~ adc_dsub.adc.dout    # I2Sデータ(DSUB音声)
-    hdr_p4.io_j4 ~ adc_line.adc.dout    # I2Sデータ(LINE入力)
-    hdr_p4.io_e19 ~ spdif.out           # S/PDIFビットストリーム
+    sodimm.io_f1 ~ audio_mclk           # F1 = PCLKC6_1(クロック対応ボール)
+    sodimm.io_g3 ~ audio_bck            # FPGA出力
+    sodimm.io_h4 ~ audio_lrck           # FPGA出力
+    sodimm.io_f3 ~ adc_dsub.adc.dout    # I2Sデータ(DSUB音声)
+    sodimm.io_j4 ~ adc_line.adc.dout    # I2Sデータ(LINE入力)
+    sodimm.io_e19 ~ spdif.out           # S/PDIFビットストリーム
 
     # --- ArgusX(RGBセレクタ)制御コネクタ: I2CバスをTVP7002と共有 ---
     j11_argus = new HeaderArgus
@@ -966,10 +1112,30 @@ module App:
     eeprom_mac1.sda ~ tvp.sda
     eeprom_mac1.scl ~ tvp.scl
 
-    # --- GbE出口 (EXT P1 -> J8 -> MagJack) ---
+    # --- GbE出口 (SO-DIMM -> MagJack ×2) ---
     eth = new EthernetPort
     eth.gnd ~ gnd
-    eth.p5v_from_ext ~ p5v_ext  # P1の5Vピンも束ねる
     eth.chassis.override_net_name = "chassis"
+    # ETH2 = PHY0 = litex eth1(映像ストリーム既定, gatewareはeth1を要求)→ jack
+    eth.eth2_1_P ~ sodimm.eth2_1_P
+    eth.eth2_1_N ~ sodimm.eth2_1_N
+    eth.eth2_2_P ~ sodimm.eth2_2_P
+    eth.eth2_2_N ~ sodimm.eth2_2_N
+    eth.eth2_3_P ~ sodimm.eth2_3_P
+    eth.eth2_3_N ~ sodimm.eth2_3_N
+    eth.eth2_4_P ~ sodimm.eth2_4_P
+    eth.eth2_4_N ~ sodimm.eth2_4_N
+    # ETH1 = PHY1 = litex eth0(デュアルリンク/将来用)→ jack2
+    eth.eth1_1_P ~ sodimm.eth1_1_P
+    eth.eth1_1_N ~ sodimm.eth1_1_N
+    eth.eth1_2_P ~ sodimm.eth1_2_P
+    eth.eth1_2_N ~ sodimm.eth1_2_N
+    eth.eth1_3_P ~ sodimm.eth1_3_P
+    eth.eth1_3_N ~ sodimm.eth1_3_N
+    eth.eth1_4_P ~ sodimm.eth1_4_P
+    eth.eth1_4_N ~ sodimm.eth1_4_N
+    # リンクLED制御(FPGA GPIO → MagJack緑/黄)
+    eth.led_g_drive ~ sodimm.io_r1   # 緑LED
+    eth.led_y_drive ~ sodimm.io_t1   # 黄LED
 
     gnd.override_net_name = "gnd"

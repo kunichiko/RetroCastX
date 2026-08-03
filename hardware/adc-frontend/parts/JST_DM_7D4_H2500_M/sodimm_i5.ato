@@ -1,0 +1,108 @@
+import has_designator_prefix
+import has_part_removed
+import is_atomic_part
+
+# Colorlight i5 (ECP5 LFE5U-25) を載せる DDR2 SO-DIMM 200P ソケット。
+# 実物は汎用の水平(lay-down)タイプ(AliExpress等, JEDEC MO-224)を手実装する。
+# フットプリントは JST DM-7D4-H2500(M)(C483268, 200パッド)を流用(垂直版だが
+# パッド配置=MO-224は共通)。※水平ソケットの外形/ラッチはレイアウト前に現物照合。
+# ピン番号は wuxx Colorlight-FPGA-Projects の DDR2-SODIMM-200P 表に一致。
+# 信号名 io_<ball> は ECP5 のボール名(現行 HeaderExtP2/P4 と同一)。
+component SoDimmI5:
+    trait is_atomic_part<manufacturer="Generic", partnumber="DDR2-SODIMM-200P-Horizontal", footprint="DIMM-SMD_DM-7D4-H2500-M.kicad_mod", symbol="DM-7D4-H2500(M).kicad_sym">
+    trait has_designator_prefix<prefix="U">
+    trait has_part_removed  # 手実装(汎用水平ソケット, JLC発注除外)
+
+    # --- 電源/GND ---
+    signal p5v
+    p5v ~ pin 2
+    p5v ~ pin 4
+    p5v ~ pin 6
+    p5v ~ pin 8
+    p5v ~ pin 10
+    p5v ~ pin 12
+    signal gnd
+    gnd ~ pin 1
+    gnd ~ pin 3
+    gnd ~ pin 5
+    gnd ~ pin 7
+    gnd ~ pin 9
+    gnd ~ pin 11
+    gnd ~ pin 39
+    gnd ~ pin 40
+    gnd ~ pin 55
+    gnd ~ pin 56
+    gnd ~ pin 105
+    gnd ~ pin 106
+    gnd ~ pin 107
+    gnd ~ pin 108
+    gnd ~ pin 157
+    gnd ~ pin 158
+    gnd ~ pin 199
+    gnd ~ pin 200
+
+    # --- Ethernet MDI (ETH2=phy0既定, ETH1=phy1) ---
+    signal eth2_1_P ~ pin 16
+    signal eth2_1_N ~ pin 18
+    signal eth2_2_P ~ pin 24
+    signal eth2_2_N ~ pin 22
+    signal eth2_3_P ~ pin 28
+    signal eth2_3_N ~ pin 30
+    signal eth2_4_P ~ pin 36
+    signal eth2_4_N ~ pin 34
+    signal eth1_1_P ~ pin 15
+    signal eth1_1_N ~ pin 17
+    signal eth1_2_P ~ pin 23
+    signal eth1_2_N ~ pin 21
+    signal eth1_3_P ~ pin 27
+    signal eth1_3_N ~ pin 29
+    signal eth1_4_P ~ pin 35
+    signal eth1_4_N ~ pin 33
+
+    # --- FPGA GPIO (io_<ball>): 現行 HeaderExtP2 の RGB 20本 ---
+    signal io_j20 ~ pin 89
+    signal io_g20 ~ pin 95
+    signal io_l18 ~ pin 83
+    signal io_k20 ~ pin 85
+    signal io_m18 ~ pin 79
+    signal io_l20 ~ pin 81
+    signal io_n17 ~ pin 75
+    signal io_n18 ~ pin 77
+    signal io_u17 ~ pin 71
+    signal io_p18 ~ pin 73
+    signal io_t17 ~ pin 67
+    signal io_u18 ~ pin 69
+    signal io_p17 ~ pin 63
+    signal io_m17 ~ pin 65
+    signal io_r18 ~ pin 59
+    signal io_r17 ~ pin 61
+    signal io_c18 ~ pin 51
+    signal io_t18 ~ pin 57
+    signal io_u16 ~ pin 41
+    signal io_k18 ~ pin 49
+
+    # --- FPGA GPIO: 現行 HeaderExtP4 のタイミング/I2C/音声 ---
+    signal io_f2 ~ pin 155   # DATACLK (クロック対応ボール)
+    signal io_e1 ~ pin 153
+    signal io_e4 ~ pin 128
+    signal io_h3 ~ pin 136
+    signal io_h5 ~ pin 140
+    signal io_j5 ~ pin 144
+    signal io_a2 ~ pin 154
+    signal io_k4 ~ pin 148
+    signal io_b2 ~ pin 156
+    signal io_k3 ~ pin 146
+    signal io_k5 ~ pin 150
+    signal io_b3 ~ pin 152
+    signal io_f1 ~ pin 130   # 音声MCLK (クロック対応ボール)
+    signal io_g3 ~ pin 134
+    signal io_h4 ~ pin 138
+    signal io_f3 ~ pin 132
+    signal io_j4 ~ pin 142
+    signal io_e19 ~ pin 109
+
+    # --- 空きGPIO (MagJack LED 2本 + i5 UART 2本) ---
+    signal io_r1 ~ pin 42   # LED緑
+    signal io_t1 ~ pin 44   # LED黄
+    signal io_u1 ~ pin 46   # UART: i5 RX (FT2232H TXD)
+    signal io_y2 ~ pin 48   # UART: i5 TX (FT2232H RXD)

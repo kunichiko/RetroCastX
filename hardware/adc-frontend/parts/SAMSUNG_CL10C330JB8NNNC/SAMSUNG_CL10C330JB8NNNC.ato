@@ -1,0 +1,19 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component SAMSUNG_CL10C330JB8NNNC_package:
+    """33pF (330) ±5% 50V"""
+
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C1663", date="2026-08-02T15:05:45.950945+00:00", checksum="0beff82fa12982aa810ad7fe9b4ca309a13423b5e8398e3e92e88cdb397e19c8">
+
+    trait is_atomic_part<manufacturer="SAMSUNG", partnumber="CL10C330JB8NNNC", footprint="C0603.kicad_mod", symbol="CL10C330JB8NNNC.kicad_sym", model="C0603_L1.6-W0.8-H0.8.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C1663", manufacturer="SAMSUNG", partno="CL10C330JB8NNNC">
+    trait has_designator_prefix<prefix="C">
+
+    # pins
+    pin 1
+    pin 2

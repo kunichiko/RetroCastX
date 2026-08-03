@@ -1,0 +1,21 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component YXC_X322512MSB4SI_package:
+    """YSX321SL 12MHZ 20PF 10PPM -40~+85℃"""
+
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C9002", date="2026-08-02T14:27:13.135279+00:00", checksum="1bad8534bcb2fcecb8e075b2d12653292ccd34b741e7e42a0943e54a66c309fb">
+
+    trait is_atomic_part<manufacturer="YXC", partnumber="X322512MSB4SI", footprint="CRYSTAL-SMD_4P-L3.2-W2.5-BL.kicad_mod", symbol="X322512MSB4SI.kicad_sym", model="OSC-SMD_L3.2-W1.5-H0.8.STEP">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C9002", manufacturer="YXC", partno="X322512MSB4SI">
+    trait has_designator_prefix<prefix="X">
+
+    # pins
+    signal GND ~ pin 2
+    GND ~ pin 4
+    signal OSC1 ~ pin 1
+    signal OSC2 ~ pin 3
