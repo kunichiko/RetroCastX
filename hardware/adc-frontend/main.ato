@@ -831,10 +831,9 @@ module App:
     ch_g.power ~ p3v3_a
     ch_b.power ~ p3v3_a
 
-    # アナログRGB経路のネット名(atopileはパッシブのpowerインターフェース名で命名):
-    #   R入力=c_ac-power-hv / B入力=c_ac-power-hv-1 / G入力=c_sog3-power-hv
-    #   R/G/B出力(TVP側)=c_ac-power-lv{,-1,-2} / SOG=c_sog3-power-lv
-    # → KiCadネットクラス Analog_RGB を c_ac-power-* / c_sog3-power-* で割当(.kicad_pro)。
+    # アナログRGB経路のネット名は末尾のoverride_net_name一括ブロックで固定:
+    #   入力=vin_r/vin_g/vin_b, TVP側出力=rin3/gin3/bin3, SOG=sogin3
+    # → KiCadネットクラス Analog_RGB をこれらの名前で割当(.kicad_pro)。
     esd_rgb = new EsdArray4
     esd_rgb.gnd ~ gnd
     vga.r ~ esd_rgb.io1
@@ -1137,5 +1136,90 @@ module App:
     # リンクLED制御(FPGA GPIO → MagJack緑/黄)
     eth.led_g_drive ~ sodimm.io_r1   # 緑LED
     eth.led_y_drive ~ sodimm.io_t1   # 黄LED
+
+    # =========================================================================
+    # ネット名の明示化(PCBレイアウトでの判別性向上)
+    # -------------------------------------------------------------------------
+    # atopileは名前付きtop-level signalが無いネットを、繋がるパッシブの
+    # power(hv/lv)疑似IFやピン番号から自動命名する(例: c_ac-power-hv, "45")。
+    # 機能上重要なネットはoverride_net_nameで固定名を与え、レイアウト時に
+    # 追跡できるようにする(gnd/jtag_tck/chassisと同じ流儀)。
+    # =========================================================================
+
+    # --- アナログRGB: 入力(コネクタ側)/ 出力(TVP AC結合後)/ SOG ---
+    ch_r.input.override_net_name = "vin_r"
+    ch_g.input.override_net_name = "vin_g"
+    ch_b.input.override_net_name = "vin_b"
+    ch_r.output.override_net_name = "rin3"
+    ch_g.output.override_net_name = "gin3"
+    ch_b.output.override_net_name = "bin3"
+    tvp.sogin_3.override_net_name = "sogin3"
+
+    # --- TVP アナログ電源(フェライトビーズ後段: star接続の起点) ---
+    tvp.avdd.override_net_name = "avdd"
+    tvp.pll_avdd.override_net_name = "pll_avdd"
+
+    # --- H-PLL ループフィルタ ---
+    tvp.filt1.override_net_name = "pll_filt1"
+    tvp.filt2.override_net_name = "pll_filt2"
+    tvp.pll_f.override_net_name = "pll_f"
+    filt_mid.override_net_name = "pll_filt_mid"
+
+    # --- 同期系(自動名がcap名/pin名に化けるネット) ---
+    vs_delayed.override_net_name = "vsync_delayed"
+    tvp.vsync_a.override_net_name = "vsync_a"
+
+    # --- デジタル映像バス TVP出力 → SO-DIMM(自動名が数値になるのを回避) ---
+    # 実装は [9:2] の8bit/色(b0/b1/r0/r1/g0/g1は未結線)。vd_ プレフィクスで
+    # 並列バスとして一括grep/長さ整合しやすくする。
+    tvp.r9.override_net_name = "vd_r9"
+    tvp.r8.override_net_name = "vd_r8"
+    tvp.r7.override_net_name = "vd_r7"
+    tvp.r6.override_net_name = "vd_r6"
+    tvp.r5.override_net_name = "vd_r5"
+    tvp.r4.override_net_name = "vd_r4"
+    tvp.r3.override_net_name = "vd_r3"
+    tvp.r2.override_net_name = "vd_r2"
+    tvp.g9.override_net_name = "vd_g9"
+    tvp.g8.override_net_name = "vd_g8"
+    tvp.g7.override_net_name = "vd_g7"
+    tvp.g6.override_net_name = "vd_g6"
+    tvp.g5.override_net_name = "vd_g5"
+    tvp.g4.override_net_name = "vd_g4"
+    tvp.g3.override_net_name = "vd_g3"
+    tvp.g2.override_net_name = "vd_g2"
+    tvp.b9.override_net_name = "vd_b9"
+    tvp.b8.override_net_name = "vd_b8"
+    tvp.b7.override_net_name = "vd_b7"
+    tvp.b6.override_net_name = "vd_b6"
+    tvp.b5.override_net_name = "vd_b5"
+    tvp.b4.override_net_name = "vd_b4"
+    tvp.b3.override_net_name = "vd_b3"
+    tvp.b2.override_net_name = "vd_b2"
+
+    # --- 音声: アナログ入力 / I2S DOUT ---
+    adc_dsub.in_l.override_net_name = "aud_dsub_l"
+    adc_dsub.in_r.override_net_name = "aud_dsub_r"
+    adc_line.in_l.override_net_name = "aud_line_l"
+    adc_line.in_r.override_net_name = "aud_line_r"
+    adc_dsub.adc.vinl.override_net_name = "aud_dsub_l_ac"
+    adc_dsub.adc.vinr.override_net_name = "aud_dsub_r_ac"
+    adc_line.adc.vinl.override_net_name = "aud_line_l_ac"
+    adc_line.adc.vinr.override_net_name = "aud_line_r_ac"
+    adc_dsub.adc.dout.override_net_name = "i2s_dout_dsub"
+    adc_line.adc.dout.override_net_name = "i2s_dout_line"
+    adc_dsub.adc.vref.override_net_name = "aud_vref_dsub"
+    adc_line.adc.vref.override_net_name = "aud_vref_line"
+
+    # --- 未使用アナログ入力の終端(どのピンの終端かを判別可能に) ---
+    tvp.rin_1.override_net_name = "rin1_nc"
+    tvp.rin_2.override_net_name = "rin2_nc"
+    tvp.bin_1.override_net_name = "bin1_nc"
+    tvp.bin_2.override_net_name = "bin2_nc"
+    tvp.gin_1.override_net_name = "gin1_nc"
+    tvp.gin_2.override_net_name = "gin2_nc"
+    tvp.gin_4.override_net_name = "gin4_nc"
+    tvp.sogin_1.override_net_name = "sogin1_nc"
+    tvp.sogin_2.override_net_name = "sogin2_nc"
 
     gnd.override_net_name = "gnd"
