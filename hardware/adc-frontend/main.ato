@@ -102,36 +102,37 @@ component Tvp7002:
     nsub ~ pin 91
 
     # Digital video outputs (B/G/R 10bit each, MSB=_9)
-    signal b0 ~ pin 29
-    signal b1 ~ pin 30
-    signal b2 ~ pin 31
-    signal b3 ~ pin 32
-    signal b4 ~ pin 33
-    signal b5 ~ pin 34
-    signal b6 ~ pin 35
-    signal b7 ~ pin 36
-    signal b8 ~ pin 37
-    signal b9 ~ pin 38
-    signal g0 ~ pin 43
-    signal g1 ~ pin 44
-    signal g2 ~ pin 45
-    signal g3 ~ pin 46
-    signal g4 ~ pin 47
-    signal g5 ~ pin 48
-    signal g6 ~ pin 49
-    signal g7 ~ pin 50
-    signal g8 ~ pin 51
-    signal g9 ~ pin 52
-    signal r0 ~ pin 55
-    signal r1 ~ pin 56
-    signal r2 ~ pin 57
-    signal r3 ~ pin 58
-    signal r4 ~ pin 59
-    signal r5 ~ pin 61
-    signal r6 ~ pin 62
-    signal r7 ~ pin 63
-    signal r8 ~ pin 64
-    signal r9 ~ pin 65
+    # データシート/シンボル準拠: 若番ピン=MSB(例 pin29=B_9 ... pin38=B_0)。
+    signal b9 ~ pin 29
+    signal b8 ~ pin 30
+    signal b7 ~ pin 31
+    signal b6 ~ pin 32
+    signal b5 ~ pin 33
+    signal b4 ~ pin 34
+    signal b3 ~ pin 35
+    signal b2 ~ pin 36
+    signal b1 ~ pin 37
+    signal b0 ~ pin 38
+    signal g9 ~ pin 43
+    signal g8 ~ pin 44
+    signal g7 ~ pin 45
+    signal g6 ~ pin 46
+    signal g5 ~ pin 47
+    signal g4 ~ pin 48
+    signal g3 ~ pin 49
+    signal g2 ~ pin 50
+    signal g1 ~ pin 51
+    signal g0 ~ pin 52
+    signal r9 ~ pin 55
+    signal r8 ~ pin 56
+    signal r7 ~ pin 57
+    signal r6 ~ pin 58
+    signal r5 ~ pin 59
+    signal r4 ~ pin 61
+    signal r3 ~ pin 62
+    signal r2 ~ pin 63
+    signal r1 ~ pin 64
+    signal r0 ~ pin 65
 
     # Timing / status outputs
     signal fidout ~ pin 22
@@ -962,34 +963,41 @@ module App:
     sodimm.gnd ~ gnd
     sodimm.p5v ~ p5v_ext
 
-    # J2 (P2ミラー): R/G 全8bit + B上位4bit = 20 GPIO
-    sodimm.io_j20 ~ tvp.r9
-    sodimm.io_g20 ~ tvp.r8
-    sodimm.io_l18 ~ tvp.r7
-    sodimm.io_k20 ~ tvp.r6
-    sodimm.io_m18 ~ tvp.r5
-    sodimm.io_l20 ~ tvp.r4
-    sodimm.io_n17 ~ tvp.r3
-    sodimm.io_n18 ~ tvp.r2
-    sodimm.io_u17 ~ tvp.g9
-    sodimm.io_p18 ~ tvp.g8
-    sodimm.io_t17 ~ tvp.g7
-    sodimm.io_u18 ~ tvp.g6
-    sodimm.io_p17 ~ tvp.g5
-    sodimm.io_m17 ~ tvp.g4
-    sodimm.io_r18 ~ tvp.g3
-    sodimm.io_r17 ~ tvp.g2
-    sodimm.io_c18 ~ tvp.b9
-    sodimm.io_t18 ~ tvp.b8
-    sodimm.io_u16 ~ tvp.b7
-    sodimm.io_k18 ~ tvp.b6
-
-    # J4 (P4ミラー): B下位4bit + タイミング + I2C/リセット = 12/18 GPIO
+    # 映像データバス(RGB888 = 各色上位8bit [9:2]): SO-DIMMのGPIOピンを
+    # 昇順に、TVP出力を R2→R9, G2→G9, B2→B9 の昇順で割り当てる。これにより
+    # ピン番号順=ビット順となり、TVP↔SO-DIMM間の配線がクロスせず(余計なビア無しで)
+    # 平行に引ける。TVP側もR/G/Bが各々連番ピン(R=55-65,G=43-52,B=29-38)なので
+    # 昇順対応で素直にファンアウトできる。※各色の最下位2bit(r0/r1等)は非キャプチャ。
+    # 割当は「SO-DIMMピン番号(ボール) → ビット」:
+    # J2側(20本):
+    sodimm.io_u16 ~ tvp.r2   # pin41
+    sodimm.io_k18 ~ tvp.r3   # pin49
+    sodimm.io_c18 ~ tvp.r4   # pin51
+    sodimm.io_t18 ~ tvp.r5   # pin57
+    sodimm.io_r18 ~ tvp.r6   # pin59
+    sodimm.io_r17 ~ tvp.r7   # pin61
+    sodimm.io_p17 ~ tvp.r8   # pin63
+    sodimm.io_m17 ~ tvp.r9   # pin65
+    sodimm.io_t17 ~ tvp.g2   # pin67
+    sodimm.io_u18 ~ tvp.g3   # pin69
+    sodimm.io_u17 ~ tvp.g4   # pin71
+    sodimm.io_p18 ~ tvp.g5   # pin73
+    sodimm.io_n17 ~ tvp.g6   # pin75
+    sodimm.io_n18 ~ tvp.g7   # pin77
+    sodimm.io_m18 ~ tvp.g8   # pin79
+    sodimm.io_l20 ~ tvp.g9   # pin81
+    sodimm.io_l18 ~ tvp.b2   # pin83
+    sodimm.io_k20 ~ tvp.b3   # pin85
+    sodimm.io_j20 ~ tvp.b4   # pin89
+    sodimm.io_g20 ~ tvp.b5   # pin95
+    # B上位4bit(B6-B9): P3の連続run(pin117-123)へ。P2の20本に続けて昇順を維持し、
+    # ext基板でもP2+P3だけで映像24bitが完結する(pin87-115のHDMI域は飛ばす)。
+    sodimm.io_b20 ~ tvp.b6   # pin117 (B20)
+    sodimm.io_b19 ~ tvp.b7   # pin119 (B19)
+    sodimm.io_b18 ~ tvp.b8   # pin121 (B18)
+    sodimm.io_a19 ~ tvp.b9   # pin123 (A19)
+    # DATACLK/タイミング/I2C/リセット(P4側):
     sodimm.io_f2 ~ tvp.dataclk   # F2 = PCLKT7_0(クロック専用入力ボール)
-    sodimm.io_e1 ~ tvp.b5
-    sodimm.io_e4 ~ tvp.b4
-    sodimm.io_h3 ~ tvp.b3
-    sodimm.io_h5 ~ tvp.b2
     sodimm.io_j5 ~ tvp.hsout
     sodimm.io_a2 ~ tvp.vsout
     sodimm.io_k4 ~ tvp.sogout
@@ -1076,7 +1084,7 @@ module App:
     sodimm.io_h4 ~ audio_lrck           # FPGA出力
     sodimm.io_f3 ~ adc_dsub.adc.dout    # I2Sデータ(DSUB音声)
     sodimm.io_j4 ~ adc_line.adc.dout    # I2Sデータ(LINE入力)
-    sodimm.io_e19 ~ spdif.out           # S/PDIFビットストリーム
+    sodimm.io_c17 ~ spdif.out           # S/PDIFビットストリーム(P3後半 pin125=C17)
 
     # --- ArgusX(RGBセレクタ)制御コネクタ: I2CバスをTVP7002と共有 ---
     j11_argus = new HeaderArgus
@@ -1208,6 +1216,7 @@ module App:
     adc_line.adc.vinr.override_net_name = "aud_line_r_ac"
     adc_dsub.adc.dout.override_net_name = "i2s_dout_dsub"
     adc_line.adc.dout.override_net_name = "i2s_dout_line"
+    spdif.out.override_net_name = "spdif"
     adc_dsub.adc.vref.override_net_name = "aud_vref_dsub"
     adc_line.adc.vref.override_net_name = "aud_vref_line"
 

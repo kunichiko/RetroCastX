@@ -595,7 +595,7 @@ _audio_io = [
         Subsignal("lrck",      Pins("H4")),   # → PCM1808×2(fs)
         Subsignal("dout_dsub", Pins("F3")),   # ← U11(D-SUB15音声)
         Subsignal("dout_line", Pins("J4")),   # ← U12(LINE入力)
-        Subsignal("spdif",     Pins("E19")),  # ← TOSLINK受信モジュール
+        Subsignal("spdif",     Pins("C17")),  # ← TOSLINK受信モジュール(P3 pin125)
         IOStandard("LVCMOS33")),
 ]
 

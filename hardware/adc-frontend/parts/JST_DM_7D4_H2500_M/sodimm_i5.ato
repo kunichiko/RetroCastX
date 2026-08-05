@@ -81,6 +81,14 @@ component SoDimmI5:
     signal io_u16 ~ pin 41
     signal io_k18 ~ pin 49
 
+    # --- FPGA GPIO: HeaderExtP3(映像 B6-B9 の連続run) ---
+    # ext基板でP3に出ている連続GPIO。pin87-115はHDMI占有のため飛ばし117から。
+    signal io_b20 ~ pin 117
+    signal io_b19 ~ pin 119
+    signal io_b18 ~ pin 121
+    signal io_a19 ~ pin 123
+    signal io_c17 ~ pin 125   # 映像バス直後のP3空きGPIO(S/PDIF移設先)
+
     # --- FPGA GPIO: 現行 HeaderExtP4 のタイミング/I2C/音声 ---
     signal io_f2 ~ pin 155   # DATACLK (クロック対応ボール)
     signal io_e1 ~ pin 153
