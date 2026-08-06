@@ -31,8 +31,10 @@ button.theme:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
 thead th{position:sticky;top:0;background:var(--surface2);color:var(--muted);text-align:left;font-weight:600;font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;padding:9px 8px;border-bottom:1px solid var(--line);white-space:nowrap;z-index:1}
-tbody td{padding:5px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+tbody td{padding:0 8px;height:28px;vertical-align:middle;border-bottom:1px solid var(--line);white-space:nowrap;line-height:1.3}
+tbody tr{height:28px}
 tbody tr:last-child td{border-bottom:none}
+.tag{vertical-align:middle}
 .pin{font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums;color:var(--muted);text-align:right;width:32px}
 .ball{font-family:ui-monospace,Menlo,monospace;font-weight:600}
 .hp{font-family:ui-monospace,Menlo,monospace;color:var(--accent-ink)}
