@@ -2,11 +2,28 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="refresh" content="0; url=./sodimm-pinmap.html">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RetroCastX docs</title>
+<style>
+:root{--bg:#eef2f1;--surface:#fff;--ink:#132220;--muted:#5c6f6c;--line:#d3dedb;--accent:#0e8fa3;--accent-ink:#065c6a}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1413;--surface:#131e1c;--ink:#e5efec;--muted:#8da09c;--line:#243330;--accent:#37c2d6;--accent-ink:#8fe3ef}}
+*{box-sizing:border-box}html{color-scheme:light dark}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:40px 20px}
+.wrap{max-width:640px;margin:0 auto}
+.eyebrow{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent-ink);font-weight:600;margin:0 0 4px}
+h1{font-size:24px;margin:0 0 20px;border-bottom:2px solid var(--accent);padding-bottom:12px}
+a.card{display:block;text-decoration:none;color:inherit;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:12px 0}
+a.card:hover{border-color:var(--accent)}
+a.card b{font-size:16px}
+a.card span{display:block;color:var(--muted);font-size:13px;margin-top:4px}
+</style>
 </head>
 <body>
-<p>RetroCastX ドキュメント。自動転送されない場合は
-<a href="./sodimm-pinmap.html">SO-DIMM 200P ピン対応表</a> を開いてください。</p>
+<div class="wrap">
+<p class="eyebrow">RetroCastX · Colorlight i5 + TVP7002</p>
+<h1>ハードウェア ドキュメント</h1>
+<a class="card" href="./sodimm-pinmap.html"><b>SO-DIMM 200P ピン対応表</b><span>SO-DIMMピン ↔ FPGAボール ↔ ext基板ヘッダ ↔ 当基板割当。左=奇数/右=偶数。</span></a>
+<a class="card" href="./tvp7002-bringup.html"><b>TVP7002 最小動作確認チェックリスト</b><span>手配線での bring-up 手順(電源+リセット+I2C → 映像取り込み)。印刷可。</span></a>
+</div>
 </body>
 </html>
