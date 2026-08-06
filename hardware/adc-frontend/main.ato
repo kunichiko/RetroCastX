@@ -971,49 +971,52 @@ module App:
     sodimm.gnd ~ gnd
     sodimm.p5v ~ p5v_ext
 
-    # 映像データバス(RGB888 = 各色上位8bit [9:2]): SO-DIMMのGPIOピンを
-    # 昇順に、TVP出力を R2→R9, G2→G9, B2→B9 の昇順で割り当てる。これにより
-    # ピン番号順=ビット順となり、TVP↔SO-DIMM間の配線がクロスせず(余計なビア無しで)
-    # 平行に引ける。TVP側もR/G/Bが各々連番ピン(R=55-65,G=43-52,B=29-38)なので
-    # 昇順対応で素直にファンアウトできる。※各色の最下位2bit(r0/r1等)は非キャプチャ。
-    # 割当は「SO-DIMMピン番号(ボール) → ビット」:
-    # J2側(20本):
-    sodimm.io_u16 ~ tvp.r2   # pin41
-    sodimm.io_k18 ~ tvp.r3   # pin49
-    sodimm.io_c18 ~ tvp.r4   # pin51
-    sodimm.io_t18 ~ tvp.r5   # pin57
-    sodimm.io_r18 ~ tvp.r6   # pin59
-    sodimm.io_r17 ~ tvp.r7   # pin61
-    sodimm.io_p17 ~ tvp.r8   # pin63
-    sodimm.io_m17 ~ tvp.r9   # pin65
-    sodimm.io_t17 ~ tvp.g2   # pin67
-    sodimm.io_u18 ~ tvp.g3   # pin69
-    sodimm.io_u17 ~ tvp.g4   # pin71
-    sodimm.io_p18 ~ tvp.g5   # pin73
-    sodimm.io_n17 ~ tvp.g6   # pin75
-    sodimm.io_n18 ~ tvp.g7   # pin77
-    sodimm.io_m18 ~ tvp.g8   # pin79
-    sodimm.io_l20 ~ tvp.g9   # pin81
-    sodimm.io_l18 ~ tvp.b2   # pin83
-    sodimm.io_k20 ~ tvp.b3   # pin85
-    sodimm.io_j20 ~ tvp.b4   # pin89
-    sodimm.io_g20 ~ tvp.b5   # pin95
-    # B上位4bit(B6-B9): P3の連続run(pin117-123)へ。P2の20本に続けて昇順を維持し、
-    # ext基板でもP2+P3だけで映像24bitが完結する(pin87-115のHDMI域は飛ばす)。
-    sodimm.io_b20 ~ tvp.b6   # pin117 (B20)
-    sodimm.io_b19 ~ tvp.b7   # pin119 (B19)
-    sodimm.io_b18 ~ tvp.b8   # pin121 (B18)
-    sodimm.io_a19 ~ tvp.b9   # pin123 (A19)
-    # DATACLK/タイミング/I2C/リセット(P4側):
-    sodimm.io_f2 ~ tvp.dataclk   # F2 = PCLKT7_0(クロック専用入力ボール)
-    sodimm.io_j5 ~ tvp.hsout
-    sodimm.io_a2 ~ tvp.vsout
-    sodimm.io_k4 ~ tvp.sogout
-    sodimm.io_b2 ~ tvp.fidout
-    sodimm.io_k3 ~ tvp.sda
-    sodimm.io_k5 ~ tvp.scl
-    sodimm.io_b3 ~ tvp.resetb
-    # 残り6ピンは音声系で使用(下記)。10bit化にはP6ミラーヘッダの追加が必要になった。
+    # === 映像・制御・タイミングのSO-DIMM割当(2026-08 再配置) ===
+    # 映像 RGB888(各色上位8bit [9:2])。SO-DIMM昇順 ↔ TVP物理降順で単調=交差無し配線。
+    #   P2(pin41-95): I2C/RESET(先頭3) + R2-R9 + G2-G9
+    #   P3(pin99-137): B2-B9 を集中 + TVPタイミング(DATACLK/SOG/HS/VS/FID)
+    # --- P2: I2C + リセット ---
+    sodimm.io_u16 ~ tvp.sda      # pin41
+    sodimm.io_k18 ~ tvp.scl      # pin49
+    sodimm.io_c18 ~ tvp.resetb   # pin51
+    # --- P2: R2-R9 ---
+    sodimm.io_t18 ~ tvp.r2   # pin57
+    sodimm.io_r18 ~ tvp.r3   # pin59
+    sodimm.io_r17 ~ tvp.r4   # pin61
+    sodimm.io_p17 ~ tvp.r5   # pin63
+    sodimm.io_m17 ~ tvp.r6   # pin65
+    sodimm.io_t17 ~ tvp.r7   # pin67
+    sodimm.io_u18 ~ tvp.r8   # pin69
+    sodimm.io_u17 ~ tvp.r9   # pin71
+    # --- P2: G2-G9 ---
+    sodimm.io_p18 ~ tvp.g2   # pin73
+    sodimm.io_n17 ~ tvp.g3   # pin75
+    sodimm.io_n18 ~ tvp.g4   # pin77
+    sodimm.io_m18 ~ tvp.g5   # pin79
+    sodimm.io_l20 ~ tvp.g6   # pin81
+    sodimm.io_l18 ~ tvp.g7   # pin83
+    sodimm.io_k20 ~ tvp.g8   # pin85
+    sodimm.io_j20 ~ tvp.g9   # pin89
+    # pin95(io_g20)は予備
+    # --- P3: B2-B9(青を集中) ---
+    sodimm.io_f20 ~ tvp.b2   # pin99
+    sodimm.io_d20 ~ tvp.b3   # pin111
+    sodimm.io_b20 ~ tvp.b4   # pin117
+    sodimm.io_b19 ~ tvp.b5   # pin119
+    sodimm.io_b18 ~ tvp.b6   # pin121
+    sodimm.io_a19 ~ tvp.b7   # pin123
+    sodimm.io_c17 ~ tvp.b8   # pin125
+    sodimm.io_a18 ~ tvp.b9   # pin127
+    # --- P3: TVPタイミング ---
+    # DATACLK(ピクセルクロック)はFPGAのクロック網/PLLに入る必要があるため、
+    # クロック対応ボールに置く。D3はPCLK非対応(prjtrellis iodb確認済み)なので、
+    # P3唯一のクロック対応ピン E2=PCLKC7_0(pin151)へ割当。SOG/HS/VS/FIDは通常信号。
+    sodimm.io_e2 ~ tvp.dataclk   # pin151 (E2=PCLKC7_0)
+    sodimm.io_c4 ~ tvp.sogout    # pin131 (C4)
+    sodimm.io_b4 ~ tvp.hsout     # pin133 (B4)
+    sodimm.io_c3 ~ tvp.vsout     # pin135 (C3)
+    sodimm.io_e3 ~ tvp.fidout    # pin137 (E3)
+    # pin129(D3)は予備(クロック非対応のためDATACLKには不適)
 
     # --- 音声入力(3系統: DSUB15音声 / LINE入力 / S/PDIF光) ---
     # クロック系: 12.288MHz XO(=256fs@48kHz)を両ADCのSCKIとFPGA(F1=PCLKC6_1)へ。
@@ -1086,13 +1089,13 @@ module App:
     c_spdif = new C100nF_0402
     spdif.vcc ~> c_spdif ~> gnd
 
-    # J4 空きピンへの割当(音声で6本使い切り)
-    sodimm.io_f1 ~ audio_mclk           # F1 = PCLKC6_1(クロック対応ボール)
-    sodimm.io_g3 ~ audio_bck            # FPGA出力
-    sodimm.io_h4 ~ audio_lrck           # FPGA出力
-    sodimm.io_f3 ~ adc_dsub.adc.dout    # I2Sデータ(DSUB音声)
-    sodimm.io_j4 ~ adc_line.adc.dout    # I2Sデータ(LINE入力)
-    sodimm.io_c17 ~ spdif.out           # S/PDIFビットストリーム(P3後半 pin125=C17)
+    # --- 音声系をP4に集約(pin128-138, 順序整理) ---
+    sodimm.io_e4 ~ spdif.out            # pin128 (E4) S/PDIFビットストリーム
+    sodimm.io_f1 ~ audio_mclk           # pin130 (F1=PCLKC6_1, クロック対応)
+    sodimm.io_f3 ~ audio_bck            # pin132 (F3) FPGA出力
+    sodimm.io_g3 ~ audio_lrck           # pin134 (G3) FPGA出力
+    sodimm.io_h3 ~ adc_dsub.adc.dout    # pin136 (H3) I2S DOUT(DSUB音声)
+    sodimm.io_h4 ~ adc_line.adc.dout    # pin138 (H4) I2S DOUT(LINE入力)
 
     # --- ArgusX(RGBセレクタ)制御コネクタ: I2CバスをTVP7002と共有 ---
     j11_argus = new HeaderArgus

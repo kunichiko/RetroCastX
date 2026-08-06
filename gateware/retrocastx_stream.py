@@ -590,12 +590,12 @@ class _CRG(LiteXModule):
 # hardware/adc-frontend の J4(EXT P4ミラー)ピン割当(README参照)
 _audio_io = [
     ("audio", 0,
-        Subsignal("mclk",      Pins("F1")),   # 12.288MHz XO入力(PCLKC6_1)
-        Subsignal("bck",       Pins("G3")),   # → PCM1808×2(64fs)
-        Subsignal("lrck",      Pins("H4")),   # → PCM1808×2(fs)
-        Subsignal("dout_dsub", Pins("F3")),   # ← U11(D-SUB15音声)
-        Subsignal("dout_line", Pins("J4")),   # ← U12(LINE入力)
-        Subsignal("spdif",     Pins("C17")),  # ← TOSLINK受信モジュール(P3 pin125)
+        Subsignal("mclk",      Pins("F1")),   # 12.288MHz XO入力(PCLKC6_1, P4 pin130)
+        Subsignal("bck",       Pins("F3")),   # → PCM1808×2(64fs, P4 pin132)
+        Subsignal("lrck",      Pins("G3")),   # → PCM1808×2(fs, P4 pin134)
+        Subsignal("dout_dsub", Pins("H3")),   # ← U11(D-SUB15音声, P4 pin136)
+        Subsignal("dout_line", Pins("H4")),   # ← U12(LINE入力, P4 pin138)
+        Subsignal("spdif",     Pins("E4")),   # ← TOSLINK受信モジュール(P4 pin128)
         IOStandard("LVCMOS33")),
 ]
 
