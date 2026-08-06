@@ -25,7 +25,7 @@ import struct
 
 from migen import *
 
-from litex.build.generic_platform import IOStandard, Pins, Subsignal
+from litex.build.generic_platform import IOStandard, Pins, Subsignal, Misc
 from litex.gen import LiteXModule
 from litex.soc.cores.clock import ECP5PLL
 from litex.soc.integration.soc_core import SoCMini
@@ -645,6 +645,17 @@ class RetroCastXStream(SoCMini):
         self.i2s = I2sCapture(audio_pads.bck, audio_pads.lrck,
                               [audio_pads.dout_dsub, audio_pads.dout_line])
         self.spdif = SpdifDecoder(audio_pads.spdif, sys_clk_freq)
+
+        # --- ステータス表示 OLED (SSD1306 128x64, I2C) ---
+        # TVP7002と共有I2Cバス(SDA=U16, SCL=K18)にFPGAがマスタ接続し常時描画。
+        # (TVP設定I2Cは将来同バスへ相乗り。現状はOLED描画のみ)
+        from retrocastx_oled import Ssd1306Display
+        _oled_io = [("oled_i2c", 0,
+                     Subsignal("scl", Pins("K18")),
+                     Subsignal("sda", Pins("U16")),
+                     IOStandard("LVCMOS33"), Misc("PULLMODE=UP"))]
+        platform.add_extension(_oled_io)
+        self.oled = Ssd1306Display(platform.request("oled_i2c"), sys_clk_freq)
 
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
         self.streamer = RetroCastXStreamer(
