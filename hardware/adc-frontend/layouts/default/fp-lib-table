@@ -301,4 +301,11 @@
 		(options "")
 		(descr "atopile: part lib: SAMSUNG_CL05C100JB5NNNC")
 	)
+	(lib
+		(name "RICHTEK_RT9013_18GB")
+		(type "KiCad")
+		(uri "${KIPRJMOD}/../../parts/RICHTEK_RT9013_18GB")
+		(options "")
+		(descr "atopile: part lib: RICHTEK_RT9013_18GB")
+	)
 )

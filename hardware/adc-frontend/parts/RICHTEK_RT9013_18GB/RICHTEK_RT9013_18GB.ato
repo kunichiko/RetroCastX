@@ -1,0 +1,19 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component RICHTEK_RT9013_18GB_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C59969", date="2026-08-06T04:00:52.297976+00:00", checksum="1be73f1870e6cf25c1ec3cccadc80aaf56143f01098acf47bdd88dc3f971b3e3">
+
+    trait is_atomic_part<manufacturer="RICHTEK", partnumber="RT9013-18GB", footprint="SOT-23-5_L3.0-W1.7-P0.95-LS2.8-BR.kicad_mod", symbol="RT9013-18GB.kicad_sym", model="SOT-23-5_L2.9-W1.6-H1.1-LS2.8-P0.95.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C59969", manufacturer="RICHTEK", partno="RT9013-18GB">
+    trait has_designator_prefix<prefix="U">
+
+    # pins
+    signal EN ~ pin 3
+    signal GND ~ pin 2
+    signal VIN ~ pin 1
+    signal VOUT ~ pin 5

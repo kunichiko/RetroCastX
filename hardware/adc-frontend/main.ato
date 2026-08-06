@@ -10,6 +10,7 @@ import has_designator_prefix
 import has_part_removed
 from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeader2x8Argus, Tp1Pad, PogoPin, HeaderJtag
 from "parts/JST_DM_7D4_H2500_M/sodimm_i5.ato" import SoDimmI5
+from "parts/RICHTEK_RT9013_18GB/RICHTEK_RT9013_18GB.ato" import RICHTEK_RT9013_18GB_package
 from "parts/FTDI_FT2232HL_REEL/FTDI_FT2232HL_REEL.ato" import FTDI_FT2232HL_REEL_package
 from "parts/MICROCHIP_93LC56BT_I_SN/MICROCHIP_93LC56BT_I_SN.ato" import MICROCHIP_93LC56BT_I_SN_package
 from "parts/YXC_X322512MSB4SI/YXC_X322512MSB4SI.ato" import YXC_X322512MSB4SI_package
@@ -474,10 +475,13 @@ module AudioAdc:
 
 
 module PowerTree:
-    """5V入力 -> 3.3V(IO/デジタル) + 3.3V(アナログ) + 1.9V(AVDD/PLL) + 1.9V(DVDD)。
+    """5V入力 -> 3.3V(IO/デジタル) + 3.3V(アナログ) + 1.85V(AVDD/PLL) + 1.9V(DVDD)。
 
-    OSSCの電源系を簡略化した構成。AVDD系はAZ1117H-ADJ(分圧で1.9V)を5Vから
-    直接落とす(損失~0.9W: SOT-223 + 銅箔ベタで放熱すること)。
+    AVDD/PLL_AVDD系は RT9013-18(固定1.85V, 500mA, SOT-23-5)を「3.3Vアナログ
+    レール(p3v3_a)から」降圧。1.85VはTVP7002推奨範囲(1.8〜2.0V)内。5V直接降圧
+    (旧AZ1117H-ADJ, SOT-223, ~0.9W)を廃し、ドロップを1.45Vに下げ損失~0.35Wに削減
+    →小型SOT-23-5化。その分p3v3_aのLDO(ldo_a33)が+~0.3A負担(SOT-223で余裕)。
+    DVDDも同様にTLV70019(1.9V)を3.3Vから。
     """
     power_5v = new ElectricPower
     p3v3_io = new ElectricPower
@@ -487,7 +491,7 @@ module PowerTree:
 
     ldo_io = new Az1117Fixed33
     ldo_a33 = new Az1117Fixed33
-    ldo_a19 = new Az1117Adj
+    ldo_a19 = new RICHTEK_RT9013_18GB_package   # AVDD/PLL 1.85V(3.3Vから)
     ldo_d19 = new Tlv70019
 
     # 共通GND
@@ -499,23 +503,20 @@ module PowerTree:
     gnd ~ p1v9_d.lv
     gnd ~ ldo_io.gnd
     gnd ~ ldo_a33.gnd
+    gnd ~ ldo_a19.GND
     gnd ~ ldo_d19.gnd
 
     ldo_io.vin ~ power_5v.hv
     ldo_io.out ~ p3v3_io.hv
     ldo_a33.vin ~ power_5v.hv
     ldo_a33.out ~ p3v3_a.hv
-    ldo_a19.vin ~ power_5v.hv
-    ldo_a19.out ~ p1v9_a.hv
+    # AVDD/PLL 1.85V: RT9013-18を3.3Vアナログレールから(固定出力=分圧不要)
+    ldo_a19.VIN ~ p3v3_a.hv
+    ldo_a19.EN ~ p3v3_a.hv       # 常時イネーブル
+    ldo_a19.VOUT ~ p1v9_a.hv
     ldo_d19.vin ~ p3v3_io.hv
     ldo_d19.en ~ p3v3_io.hv
     ldo_d19.out ~ p1v9_d.hv
-
-    # AZ1117-ADJ 分圧: Vout = 1.25 * (1 + R2/R1) = 1.25 * (1 + 62/120) ≈ 1.896V
-    r_fb_top = new R120_0402  # OUT -> ADJ
-    r_fb_bot = new R62_0402   # ADJ -> GND
-    ldo_a19.out ~> r_fb_top ~> ldo_a19.adj
-    ldo_a19.adj ~> r_fb_bot ~> gnd
 
     # 入出力バルクコンデンサ(AZ1117は出力に≥10µFのESR安定性要求あり)
     bulk_caps = new C10uF_0805[5]
@@ -792,7 +793,7 @@ module App:
     power_5v.voltage = 5V +/- 5%
     p3v3_io.voltage = 3.3V +/- 3%
     p3v3_a.voltage = 3.3V +/- 3%
-    p1v9_a.voltage = 1.9V +/- 5%
+    p1v9_a.voltage = 1.85V +/- 2%   # RT9013-18 固定1.85V(±2%), TVP推奨1.8〜2.0V内
     p1v9_d.voltage = 1.9V +/- 3%
     assert p1v9_a.voltage within 1.8V to 2.0V
     assert p1v9_d.voltage within 1.8V to 2.0V
