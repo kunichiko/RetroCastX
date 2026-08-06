@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TVP7002 最小動作確認チェックリスト — RetroCastX</title>
+<style>
+:root{--bg:#eef2f1;--surface:#fff;--surface2:#f6f9f8;--ink:#132220;--muted:#5c6f6c;--line:#d3dedb;
+--accent:#0e8fa3;--accent-ink:#065c6a;--pwr-bg:#fbf0d9;--pwr-ink:#8a5a04;--gnd-bg:#e9edec;--gnd-ink:#66756f;
+--ana-bg:#fce4e2;--ana-ink:#b23a34;--clk-bg:#d9f2f6;--clk-ink:#0b7b8c;--warn-bg:#fde9d6;--warn-ink:#9a5a12;
+--ok-bg:#e2f3e7;--ok-ink:#1f7a45;--done:#9aa8a5;}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1413;--surface:#131e1c;--surface2:#0f1817;--ink:#e5efec;--muted:#8da09c;--line:#243330;
+--accent:#37c2d6;--accent-ink:#8fe3ef;--pwr-bg:#332608;--pwr-ink:#e0b45a;--gnd-bg:#1a2523;--gnd-ink:#93a49f;
+--ana-bg:#3a1c1a;--ana-ink:#f0928c;--clk-bg:#0e2f36;--clk-ink:#5fd6e6;--warn-bg:#33240f;--warn-ink:#e6b45f;
+--ok-bg:#12301f;--ok-ink:#63c98a;--done:#5c6a67;}}
+:root[data-theme="light"]{--bg:#eef2f1;--surface:#fff;--surface2:#f6f9f8;--ink:#132220;--muted:#5c6f6c;--line:#d3dedb;--accent:#0e8fa3;--accent-ink:#065c6a;--pwr-bg:#fbf0d9;--pwr-ink:#8a5a04;--gnd-bg:#e9edec;--gnd-ink:#66756f;--ana-bg:#fce4e2;--ana-ink:#b23a34;--clk-bg:#d9f2f6;--clk-ink:#0b7b8c;--warn-bg:#fde9d6;--warn-ink:#9a5a12;--ok-bg:#e2f3e7;--ok-ink:#1f7a45;--done:#9aa8a5;}
+:root[data-theme="dark"]{--bg:#0d1413;--surface:#131e1c;--surface2:#0f1817;--ink:#e5efec;--muted:#8da09c;--line:#243330;--accent:#37c2d6;--accent-ink:#8fe3ef;--pwr-bg:#332608;--pwr-ink:#e0b45a;--gnd-bg:#1a2523;--gnd-ink:#93a49f;--ana-bg:#3a1c1a;--ana-ink:#f0928c;--clk-bg:#0e2f36;--clk-ink:#5fd6e6;--warn-bg:#33240f;--warn-ink:#e6b45f;--ok-bg:#12301f;--ok-ink:#63c98a;--done:#5c6a67;}
+*{box-sizing:border-box}html{color-scheme:light dark}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:14.5px;line-height:1.55;padding:28px 20px 64px}
+.wrap{max-width:900px;margin:0 auto}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px;border-bottom:2px solid var(--accent);padding-bottom:12px}
+.eyebrow{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent-ink);font-weight:600;margin:0 0 4px}
+h1{font-size:23px;margin:0;letter-spacing:-.01em}
+.sub{color:var(--muted);margin:6px 0 0;max-width:66ch;font-size:13px}
+button.theme{font:inherit;font-size:12px;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer}
+button.theme:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+h2{font-size:15px;margin:30px 0 4px;display:flex;align-items:center;gap:9px}
+h2 .n{font-family:ui-monospace,monospace;font-size:12px;background:var(--accent);color:#fff;border-radius:6px;padding:2px 9px;font-weight:700}
+:root[data-theme="dark"] h2 .n,@media (prefers-color-scheme:dark){h2 .n{color:#03211f}}
+.lead{color:var(--muted);font-size:13px;margin:2px 0 12px}
+.callout{background:var(--warn-bg);color:var(--warn-ink);border:1px solid var(--line);border-left:4px solid var(--warn-ink);border-radius:8px;padding:10px 14px;font-size:13px;margin:14px 0}
+.callout.ok{background:var(--ok-bg);color:var(--ok-ink);border-left-color:var(--ok-ink)}
+table{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+th{background:var(--surface2);color:var(--muted);text-align:left;font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;font-weight:600;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:6px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:none}
+td.pins{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tag{display:inline-block;padding:1px 8px;border-radius:6px;font-size:11.5px;font-weight:700;font-family:ui-monospace,monospace}
+.t-pwr{background:var(--pwr-bg);color:var(--pwr-ink)}.t-gnd{background:var(--gnd-bg);color:var(--gnd-ink)}
+.t-ana{background:var(--ana-bg);color:var(--ana-ink)}.t-clk{background:var(--clk-bg);color:var(--clk-ink)}
+ul.check{list-style:none;padding:0;margin:10px 0}
+ul.check li{border:1px solid var(--line);border-radius:9px;background:var(--surface);margin:7px 0;padding:0}
+ul.check label{display:flex;gap:11px;align-items:flex-start;padding:10px 13px;cursor:pointer}
+ul.check input{margin:2px 0 0;width:17px;height:17px;accent-color:var(--accent);flex:none}
+ul.check .txt{font-size:13.5px}
+ul.check .txt code{font-family:ui-monospace,monospace;background:var(--surface2);padding:1px 5px;border-radius:5px;font-size:12.5px}
+ul.check input:checked ~ .txt{color:var(--done);text-decoration:line-through;text-decoration-color:var(--done)}
+ul.check input:checked ~ .txt code{opacity:.55}
+.pinbadge{font-family:ui-monospace,monospace;font-weight:700;color:var(--accent-ink)}
+footer{margin-top:34px;border-top:1px solid var(--line);padding-top:14px;color:var(--muted);font-size:12px;line-height:1.7}
+footer code{font-family:ui-monospace,monospace;background:var(--surface2);padding:1px 5px;border-radius:5px}
+@media print{
+ body{background:#fff;color:#000;padding:0;font-size:11pt}
+ button.theme{display:none}.callout,ul.check li,.scroll{break-inside:avoid}
+ h2{break-after:avoid}a{color:#000;text-decoration:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+  <div>
+    <p class="eyebrow">RetroCastX · TVP7002 hand-wire bring-up</p>
+    <h1>TVP7002 最小動作確認チェックリスト</h1>
+    <p class="sub">手配線で TVP7002(100-TQFP)を最低限動かす手順。Stage A=電源+リセット+I2Cで「生存確認」、Stage B=実映像を取り込む。ピン番号はデータシート(SLES206C)準拠。</p>
+  </div>
+  <button class="theme" id="tt" type="button">◐ テーマ切替</button>
+</header>
+
+<div class="callout">
+  <b>前提</b>: 100-TQFP(0.5mmピッチ)+裏面PowerPAD。生チップは <b>QFP100→変換基板</b>にハンダ付けしてから配線。<b>PowerPAD(裏面)はGNDに落とす</b>。電源は実質 <b>3.3V と 1.8〜1.9V の2系統</b>でよい(低圧レールは全て推奨1.8〜2.0V)。シーケンス不要(全レール500ms以内に安定)。
+</div>
+
+<h2><span class="n">電源</span> 電源・GND(全ピン給電)</h2>
+<p class="lead">各電源ピン群に <code>0.1µF</code> を至近配置 + 各レールに <code>10µF</code> バルク。AVDD/PLLはフェライトビーズ経由が理想(ベンチは直結でも可)。</p>
+<div class="scroll"><table>
+<thead><tr><th>レール</th><th>ピン</th><th>接続先</th></tr></thead>
+<tbody>
+<tr><td><span class="tag t-pwr">A33VDD</span></td><td class="pins">13, 14, 93, 94</td><td>3.3V</td></tr>
+<tr><td><span class="tag t-pwr">IOVDD</span></td><td class="pins">26, 41, 53, 66</td><td>3.3V</td></tr>
+<tr><td><span class="tag t-pwr">AVDD</span></td><td class="pins">4, 6, 7, 19</td><td>1.8〜1.9V</td></tr>
+<tr><td><span class="tag t-pwr">PLL_AVDD</span></td><td class="pins">84, 85</td><td>1.8〜1.9V</td></tr>
+<tr><td><span class="tag t-pwr">DVDD</span></td><td class="pins">39, 69</td><td>1.8〜1.9V</td></tr>
+<tr><td><span class="tag t-gnd">A33GND</span></td><td class="pins">12, 15, 92, 95</td><td>GND</td></tr>
+<tr><td><span class="tag t-gnd">AGND</span></td><td class="pins">3, 5, 8, 20</td><td>GND</td></tr>
+<tr><td><span class="tag t-gnd">PLL_AGND</span></td><td class="pins">83, 86, 90</td><td>GND</td></tr>
+<tr><td><span class="tag t-gnd">DGND</span></td><td class="pins">40, 68</td><td>GND</td></tr>
+<tr><td><span class="tag t-gnd">IOGND</span></td><td class="pins">27, 42, 54, 60 …</td><td>GND</td></tr>
+<tr><td><span class="tag t-gnd">NSUB</span></td><td class="pins">21, 91 + 裏PAD</td><td>GND</td></tr>
+</tbody></table></div>
+
+<h2><span class="n">Stage A</span> 電源+リセット+I2C(生存確認)</h2>
+<p class="lead">これが真の最小構成。ストラップを配線し、I2Cで応答すればチップは生きている。</p>
+<ul class="check">
+<li><label><input type="checkbox"><span class="txt"><span class="pinbadge">70</span> <b>PWDN → GND</b>(Highでパワーダウン=Lowで通常動作)</span></label></li>
+<li><label><input type="checkbox"><span class="txt"><span class="pinbadge">71</span> <b>RESETB → 10kΩで3.3Vプルアップ</b>(任意でGNDへ押しボタン)。電源安定後1µs以上Low→Highで解除</span></label></li>
+<li><label><input type="checkbox"><span class="txt"><span class="pinbadge">73</span> <b>I2CA → GND</b>(2.2〜10k)。アドレス <code>0x5C</code>(7bit)/ 0xB8書 0xB9読</span></label></li>
+<li><label><input type="checkbox"><span class="txt"><span class="pinbadge">72</span> <b>TMS → GND</b>(スキャンテスト無効)</span></label></li>
+<li><label><input type="checkbox"><span class="txt"><span class="pinbadge">76</span> <b>CLAMP → GND</b> ・ <span class="pinbadge">77</span> <b>COAST → GND</b>(未使用入力)</span></label></li>
+<li><label><input type="checkbox"><span class="txt"><span class="pinbadge">80</span> <b>EXT_CLK → GND</b>(外部クロック不使用=内部リファレンスで動作)</span></label></li>
+<li><label><input type="checkbox"><span class="txt"><span class="pinbadge">74/75</span> <b>SCL/SDA → 2.2kΩで3.3Vプルアップ</b> → I2Cマスタ(Arduino / RPi / Bus Pirate 等)</span></label></li>
+<li><label><input type="checkbox"><span class="txt"><span class="pinbadge">79/82</span> <b>VSYNC_B / HSYNC_B → GND</b>(未使用同期入力)</span></label></li>
+</ul>
+<div class="callout ok">
+  <b>✔ 生存確認</b>: I2Cスキャンで <b><code>0x5C</code> がACK</b> すれば電源+チップOK。さらに R/W レジスタ(例 <code>0x01</code>)に書いて読み戻し一致で疎通確定。<b>ここまでで「動いている」ことが確認できる。</b>
+</div>
+
+<h2><span class="n">Stage B</span> 実映像の取り込み(アナログ+同期+PLL+観測)</h2>
+<p class="lead">Stage A に以下を追加。1chでもDATACLKの確認は可能(RGBを見るなら3ch)。</p>
+<ul class="check">
+<li><label><input type="checkbox"><span class="txt"><span class="tag t-ana">アナログ入力</span> 映像源 →(75Ω終端→GND)→(直列<code>0.1µF</code>でAC結合)→ <span class="pinbadge">RIN_3=9</span> / <span class="pinbadge">GIN_3=98</span> / <span class="pinbadge">BIN_3=16</span>(SOG使用時 <span class="pinbadge">SOGIN_3=97</span>)</span></label></li>
+<li><label><input type="checkbox"><span class="txt"><span class="tag t-clk">同期</span> 3.3V TTL: HSYNC → <span class="pinbadge">HSYNC_A=81</span> ・ VSYNC → <span class="pinbadge">VSYNC_A=78</span></span></label></li>
+<li><label><input type="checkbox"><span class="txt"><span class="tag t-clk">H-PLLループフィルタ(映像クロック生成に必須)</span><br>
+ FILT1<span class="pinbadge">(87)</span> —[<code>1.5kΩ</code>]— 節点 —[<code>0.1µF</code>]— PLL_F<span class="pinbadge">(89)</span><br>
+ FILT2<span class="pinbadge">(88)</span> —[<code>4.7nF</code>]— PLL_F<span class="pinbadge">(89)</span></span></label></li>
+<li><label><input type="checkbox"><span class="txt"><span class="tag t-clk">観測</span> ロジアナ/オシロで DATACLK<span class="pinbadge">(28)</span>, HSOUT<span class="pinbadge">(24)</span>, VSOUT<span class="pinbadge">(23)</span>, データ R/G/B[9:0]</span></label></li>
+<li><label><input type="checkbox"><span class="txt"><b>I2Cレジスタ初期化(必須)</b>: 入力選択 <code>19h/1Ah</code>、ライン数 <code>01h/02h</code> を入力モードに設定。無設定では出力は無意味。→ DATACLKが回り始める</span></label></li>
+</ul>
+<div class="callout">
+  <b>初期化列の参考</b>: <b>OSSC(marqs85/ossc)のTVP7002初期化コード</b>がそのまま使える(本プロジェクトの流用元)。完全な回路は当リポジトリ <code>main.ato</code>(module <code>App</code> / <code>VideoInputChannel</code>)が実装済み。
+</div>
+
+<footer>
+<div><b>典拠</b>: TI TVP7002 データシート <code>SLES206C</code>(ピン機能・推奨動作条件・PLLフィルタ値・電源電流)。回路実装 = 当リポジトリ <code>hardware/adc-frontend/main.ato</code>。</div>
+<div><b>電源メモ</b>: AVDD/PLL_AVDD/DVDD 推奨 1.8〜1.9〜2.0V(本基板は AVDD/PLL=1.85V, DVDD=1.9V)。A33VDD/IOVDD=3.3V。全電源ピンは基板側でも全数結線済みを確認済み。</div>
+</footer>
+</div>
+<script>
+(function(){var b=document.getElementById('tt');b.addEventListener('click',function(){
+var r=document.documentElement,c=r.getAttribute('data-theme');
+if(!c)c=matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';
+r.setAttribute('data-theme',c==='dark'?'light':'dark');});})();
+</script>
+</body>
+</html>
