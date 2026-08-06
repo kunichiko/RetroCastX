@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>RetroCastX — SO-DIMM 200P ピン対応表</title><style>:root{--bg:#eef2f1;--surface:#fff;--surface2:#f6f9f8;--ink:#132220;--muted:#5c6f6c;
+--line:#d3dedb;--accent:#0e8fa3;--accent-ink:#065c6a;--gnd:#e6ecea;--gnd-ink:#6a7a77;
+--pwr-bg:#fbf0d9;--pwr-ink:#8a5a04;--eth-bg:#e2f3e7;--eth-ink:#1f7a45;--hdmi-bg:#efe9ff;--hdmi-ink:#5b3fd0;--nc-ink:#a9b6b3;
+--vr-bg:#fce4e2;--vr-ink:#b23a34;--vg-bg:#e2f2e0;--vg-ink:#2f7d34;--vb-bg:#e2ebfb;--vb-ink:#2b5bb5;
+--clk-bg:#d9f2f6;--clk-ink:#0b7b8c;--sync-bg:#dcf0ee;--sync-ink:#127c74;--ctrl-bg:#e6e6fb;--ctrl-ink:#4b45c4;
+--aud-bg:#fbe4f4;--aud-ink:#a83a8f;--led-bg:#eef4d6;--led-ink:#6b7d16;--uart-bg:#fde7d4;--uart-ink:#b5651a;--spare-ink:#8a9a97;--notch:#c98a12;}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1413;--surface:#131e1c;--surface2:#0f1817;--ink:#e5efec;--muted:#8da09c;
+--line:#243330;--accent:#37c2d6;--accent-ink:#8fe3ef;--gnd:#1a2523;--gnd-ink:#8a9c98;--pwr-bg:#332608;--pwr-ink:#e0b45a;
+--eth-bg:#12301f;--eth-ink:#63c98a;--hdmi-bg:#221a3f;--hdmi-ink:#b6a2ff;--nc-ink:#4f5f5c;
+--vr-bg:#3a1c1a;--vr-ink:#f0928c;--vg-bg:#183518;--vg-ink:#8ad48c;--vb-bg:#16233f;--vb-ink:#8fb2f2;
+--clk-bg:#0e2f36;--clk-ink:#5fd6e6;--sync-bg:#0f302c;--sync-ink:#5fd0c4;--ctrl-bg:#20204a;--ctrl-ink:#9a95f0;
+--aud-bg:#351430;--aud-ink:#ef92d6;--led-bg:#2b3110;--led-ink:#c3d65a;--uart-bg:#361f0d;--uart-ink:#f0a860;--spare-ink:#6f807c;--notch:#e0b45a;}}
+:root[data-theme="light"]{--bg:#eef2f1;--surface:#fff;--surface2:#f6f9f8;--ink:#132220;--muted:#5c6f6c;--line:#d3dedb;--accent:#0e8fa3;--accent-ink:#065c6a;--gnd:#e6ecea;--gnd-ink:#6a7a77;--pwr-bg:#fbf0d9;--pwr-ink:#8a5a04;--eth-bg:#e2f3e7;--eth-ink:#1f7a45;--hdmi-bg:#efe9ff;--hdmi-ink:#5b3fd0;--nc-ink:#a9b6b3;--vr-bg:#fce4e2;--vr-ink:#b23a34;--vg-bg:#e2f2e0;--vg-ink:#2f7d34;--vb-bg:#e2ebfb;--vb-ink:#2b5bb5;--clk-bg:#d9f2f6;--clk-ink:#0b7b8c;--sync-bg:#dcf0ee;--sync-ink:#127c74;--ctrl-bg:#e6e6fb;--ctrl-ink:#4b45c4;--aud-bg:#fbe4f4;--aud-ink:#a83a8f;--led-bg:#eef4d6;--led-ink:#6b7d16;--uart-bg:#fde7d4;--uart-ink:#b5651a;--spare-ink:#8a9a97;--notch:#c98a12;}
+:root[data-theme="dark"]{--bg:#0d1413;--surface:#131e1c;--surface2:#0f1817;--ink:#e5efec;--muted:#8da09c;--line:#243330;--accent:#37c2d6;--accent-ink:#8fe3ef;--gnd:#1a2523;--gnd-ink:#8a9c98;--pwr-bg:#332608;--pwr-ink:#e0b45a;--eth-bg:#12301f;--eth-ink:#63c98a;--hdmi-bg:#221a3f;--hdmi-ink:#b6a2ff;--nc-ink:#4f5f5c;--vr-bg:#3a1c1a;--vr-ink:#f0928c;--vg-bg:#183518;--vg-ink:#8ad48c;--vb-bg:#16233f;--vb-ink:#8fb2f2;--clk-bg:#0e2f36;--clk-ink:#5fd6e6;--sync-bg:#0f302c;--sync-ink:#5fd0c4;--ctrl-bg:#20204a;--ctrl-ink:#9a95f0;--aud-bg:#351430;--aud-ink:#ef92d6;--led-bg:#2b3110;--led-ink:#c3d65a;--uart-bg:#361f0d;--uart-ink:#f0a860;--spare-ink:#6f807c;--notch:#e0b45a;}
+*{box-sizing:border-box}html{color-scheme:light dark}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:14px;line-height:1.5;padding:28px 20px 60px}
+.wrap{max-width:1220px;margin:0 auto}
+header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:14px}
+.eyebrow{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent-ink);font-weight:600;margin:0 0 4px}
+h1{font-size:23px;margin:0;letter-spacing:-.01em}
+.sub{color:var(--muted);margin:6px 0 0;max-width:74ch}
+button.theme{font:inherit;font-size:12px;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer}
+button.theme:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.legend{display:flex;flex-wrap:wrap;gap:6px 8px;margin:18px 0 20px}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);white-space:nowrap}
+.chip .sw{width:10px;height:10px;border-radius:3px;flex:none}
+.tables{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap}
+.col{flex:1 1 470px;min-width:0}
+.col h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0 0 8px;font-weight:600}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+thead th{position:sticky;top:0;background:var(--surface2);color:var(--muted);text-align:left;font-weight:600;font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;padding:9px 8px;border-bottom:1px solid var(--line);white-space:nowrap;z-index:1}
+tbody td{padding:5px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+.pin{font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums;color:var(--muted);text-align:right;width:32px}
+.ball{font-family:ui-monospace,Menlo,monospace;font-weight:600}
+.hp{font-family:ui-monospace,Menlo,monospace;color:var(--accent-ink)}
+.extf{color:var(--muted);font-size:11.5px}
+td.assign{font-family:ui-monospace,Menlo,monospace;font-weight:600}
+.tag{display:inline-block;padding:1px 7px;border-radius:6px;font-size:11px;font-weight:600}
+tr.gnd td{background:var(--gnd);color:var(--gnd-ink)}
+tr.pwr td{background:var(--pwr-bg);color:var(--pwr-ink)}
+tr.nc td{color:var(--nc-ink)} tr.nc .ball,tr.nc .pin{color:var(--nc-ink)}
+tr.eth td{background:var(--eth-bg)} tr.eth .extf{color:var(--eth-ink)}
+tr.hdmi-row td{background:var(--hdmi-bg)} tr.hdmi-row .extf{color:var(--hdmi-ink);font-weight:600}
+.spare{color:var(--spare-ink);font-style:italic;font-size:11px}
+.t-vr{background:var(--vr-bg);color:var(--vr-ink)}.t-vg{background:var(--vg-bg);color:var(--vg-ink)}
+.t-vb{background:var(--vb-bg);color:var(--vb-ink)}.t-clk{background:var(--clk-bg);color:var(--clk-ink)}
+.t-sync{background:var(--sync-bg);color:var(--sync-ink)}.t-ctrl{background:var(--ctrl-bg);color:var(--ctrl-ink)}
+.t-aud{background:var(--aud-bg);color:var(--aud-ink)}.t-led{background:var(--led-bg);color:var(--led-ink)}
+.t-uart{background:var(--uart-bg);color:var(--uart-ink)}
+tr.notch td{padding:0;border:none}
+.notchbar{display:flex;align-items:center;justify-content:center;padding:6px 8px;background:repeating-linear-gradient(90deg,var(--notch) 0 9px,transparent 9px 18px)}
+.notchbar span{background:var(--surface);color:var(--notch);font-size:10.5px;font-weight:700;letter-spacing:.08em;padding:2px 10px;border-radius:5px;border:1px solid var(--notch)}
+footer{margin-top:26px;color:var(--muted);font-size:11.5px;line-height:1.7}
+footer code{font-family:ui-monospace,monospace;background:var(--surface2);padding:1px 5px;border-radius:5px}
+@media (max-width:780px){.tables{flex-direction:column}}
+</style></head><body><div class="wrap"><header class="top"><div><p class="eyebrow">RetroCastX · Colorlight i5 (ECP5 LFE5U-25)</p><h1>SO-DIMM 200P ピン対応表</h1><p class="sub">SO-DIMMピン番号を主キーに、FPGAボール・ext基板ヘッダ/機能・当基板割当を対照。左＝奇数(Top列)・右＝偶数(Bot列)、同じ行が物理ピンペア。pin39/41(と 40/42)間はSO-DIMMのキー切り欠き。</p></div><button class="theme" id="tt" type="button">◐ テーマ切替</button></header><div class="legend"><span class="chip"><span class="sw" style="background:var(--gnd)"></span>GND</span>
+<span class="chip"><span class="sw" style="background:var(--pwr-bg)"></span>+5V</span>
+<span class="chip"><span class="sw" style="background:var(--eth-bg)"></span>Ethernet</span>
+<span class="chip"><span class="sw" style="background:var(--hdmi-bg)"></span>HDMI/GPDI</span>
+<span class="chip"><span class="sw" style="background:var(--vr-bg)"></span>映像R</span>
+<span class="chip"><span class="sw" style="background:var(--vg-bg)"></span>映像G</span>
+<span class="chip"><span class="sw" style="background:var(--vb-bg)"></span>映像B</span>
+<span class="chip"><span class="sw" style="background:var(--clk-bg)"></span>PCLK</span>
+<span class="chip"><span class="sw" style="background:var(--sync-bg)"></span>同期</span>
+<span class="chip"><span class="sw" style="background:var(--ctrl-bg)"></span>I2C/制御</span>
+<span class="chip"><span class="sw" style="background:var(--aud-bg)"></span>音声</span>
+<span class="chip"><span class="sw" style="background:var(--led-bg)"></span>ETH LED</span>
+<span class="chip"><span class="sw" style="background:var(--uart-bg)"></span>UART</span></div><div class="tables"><div class="col"><h2>奇数ピン (Top列)</h2><div class="scroll"><table><thead><tr><th>SO&#8209;DIMM</th><th>FPGA ball</th><th>ext&nbsp;hdr&#183;pin</th><th>ext function</th><th>RetroCastX 割当</th></tr></thead><tbody><tr class="gnd"><td class="pin">1</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class="gnd"><td class="pin">3</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class="gnd"><td class="pin">5</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class="gnd"><td class="pin">7</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class="gnd"><td class="pin">9</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class="gnd"><td class="pin">11</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">13</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">15</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·7</td><td class="extf">Eth1·MDI1P</td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">17</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·5</td><td class="extf">Eth1·MDI1N</td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">19</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">21</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·3</td><td class="extf">Eth1·MDI2N</td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">23</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·1</td><td class="extf">Eth1·MDI2P</td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">25</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">27</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·8</td><td class="extf">Eth1·MDI3P</td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">29</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·6</td><td class="extf">Eth1·MDI3N</td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">31</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">33</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·4</td><td class="extf">Eth1·MDI4N</td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">35</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·2</td><td class="extf">Eth1·MDI4P</td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">37</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="gnd"><td class="pin">39</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class="notch"><td colspan="5"><div class="notchbar"><span>▼ KEY NOTCH · pin 39/41 間 ▼</span></div></td></tr>
+<tr class=""><td class="pin">41</td><td><span class="ball">U16</span></td><td class="hp">P2·6</td><td class="extf"></td><td class="assign"><span class="tag t-vr">R2</span></td></tr>
+<tr class="nc"><td class="pin">43</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">45</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">47</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class=""><td class="pin">49</td><td><span class="ball">K18</span></td><td class="hp">P2·5</td><td class="extf"></td><td class="assign"><span class="tag t-vr">R3</span></td></tr>
+<tr class=""><td class="pin">51</td><td><span class="ball">C18</span></td><td class="hp">P2·8</td><td class="extf"></td><td class="assign"><span class="tag t-vr">R4</span></td></tr>
+<tr class="nc"><td class="pin">53</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="gnd"><td class="pin">55</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class=""><td class="pin">57</td><td><span class="ball">T18</span></td><td class="hp">P2·7</td><td class="extf"></td><td class="assign"><span class="tag t-vr">R5</span></td></tr>
+<tr class=""><td class="pin">59</td><td><span class="ball">R18</span></td><td class="hp">P2·10</td><td class="extf"></td><td class="assign"><span class="tag t-vr">R6</span></td></tr>
+<tr class=""><td class="pin">61</td><td><span class="ball">R17</span></td><td class="hp">P2·9</td><td class="extf"></td><td class="assign"><span class="tag t-vr">R7</span></td></tr>
+<tr class=""><td class="pin">63</td><td><span class="ball">P17</span></td><td class="hp">P2·12</td><td class="extf"></td><td class="assign"><span class="tag t-vr">R8</span></td></tr>
+<tr class=""><td class="pin">65</td><td><span class="ball">M17</span></td><td class="hp">P2·11</td><td class="extf"></td><td class="assign"><span class="tag t-vr">R9</span></td></tr>
+<tr class=""><td class="pin">67</td><td><span class="ball">T17</span></td><td class="hp">P2·14</td><td class="extf"></td><td class="assign"><span class="tag t-vg">G2</span></td></tr>
+<tr class=""><td class="pin">69</td><td><span class="ball">U18</span></td><td class="hp">P2·13</td><td class="extf"></td><td class="assign"><span class="tag t-vg">G3</span></td></tr>
+<tr class=""><td class="pin">71</td><td><span class="ball">U17</span></td><td class="hp">P2·18</td><td class="extf"></td><td class="assign"><span class="tag t-vg">G4</span></td></tr>
+<tr class=""><td class="pin">73</td><td><span class="ball">P18</span></td><td class="hp">P2·17</td><td class="extf"></td><td class="assign"><span class="tag t-vg">G5</span></td></tr>
+<tr class=""><td class="pin">75</td><td><span class="ball">N17</span></td><td class="hp">P2·24</td><td class="extf"></td><td class="assign"><span class="tag t-vg">G6</span></td></tr>
+<tr class=""><td class="pin">77</td><td><span class="ball">N18</span></td><td class="hp">P2·23</td><td class="extf"></td><td class="assign"><span class="tag t-vg">G7</span></td></tr>
+<tr class=""><td class="pin">79</td><td><span class="ball">M18</span></td><td class="hp">P2·26</td><td class="extf"></td><td class="assign"><span class="tag t-vg">G8</span></td></tr>
+<tr class=""><td class="pin">81</td><td><span class="ball">L20</span></td><td class="hp">P2·25</td><td class="extf"></td><td class="assign"><span class="tag t-vg">G9</span></td></tr>
+<tr class=""><td class="pin">83</td><td><span class="ball">L18</span></td><td class="hp">P2·28</td><td class="extf"></td><td class="assign"><span class="tag t-vb">B2</span></td></tr>
+<tr class=""><td class="pin">85</td><td><span class="ball">K20</span></td><td class="hp">P2·27</td><td class="extf"></td><td class="assign"><span class="tag t-vb">B3</span></td></tr>
+<tr class="hdmi-row"><td class="pin">87</td><td><span class="ball">K19</span></td><td class="hp">HDMI1</td><td class="extf">GPDI_CLK_N</td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">89</td><td><span class="ball">J20</span></td><td class="hp">P2·30</td><td class="extf"></td><td class="assign"><span class="tag t-vb">B4</span></td></tr>
+<tr class="hdmi-row"><td class="pin">91</td><td><span class="ball">J19</span></td><td class="hp">HDMI1</td><td class="extf">GPDI_CLK_P</td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class="hdmi-row"><td class="pin">93</td><td><span class="ball">H20</span></td><td class="hp">HDMI1</td><td class="extf">GPDI_D0_N</td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">95</td><td><span class="ball">G20</span></td><td class="hp">P2·29</td><td class="extf"></td><td class="assign"><span class="tag t-vb">B5</span></td></tr>
+<tr class="hdmi-row"><td class="pin">97</td><td><span class="ball">G19</span></td><td class="hp">HDMI1</td><td class="extf">GPDI_D0_P</td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">99</td><td><span class="ball">F20</span></td><td class="hp">P3·6</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class="hdmi-row"><td class="pin">101</td><td><span class="ball">F19</span></td><td class="hp">HDMI1</td><td class="extf">GPDI_D1_N</td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class="hdmi-row"><td class="pin">103</td><td><span class="ball">E20</span></td><td class="hp">HDMI1</td><td class="extf">GPDI_D1_P</td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class="gnd"><td class="pin">105</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class="gnd"><td class="pin">107</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class=""><td class="pin">109</td><td><span class="ball">E19</span></td><td class="hp">P4·28</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">111</td><td><span class="ball">D20</span></td><td class="hp">P3·5</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class="hdmi-row"><td class="pin">113</td><td><span class="ball">D19</span></td><td class="hp">HDMI1</td><td class="extf">GPDI_D2_N</td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class="hdmi-row"><td class="pin">115</td><td><span class="ball">C20</span></td><td class="hp">HDMI1</td><td class="extf">GPDI_D2_P</td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">117</td><td><span class="ball">B20</span></td><td class="hp">P3·8</td><td class="extf"></td><td class="assign"><span class="tag t-vb">B6</span></td></tr>
+<tr class=""><td class="pin">119</td><td><span class="ball">B19</span></td><td class="hp">P3·7</td><td class="extf"></td><td class="assign"><span class="tag t-vb">B7</span></td></tr>
+<tr class=""><td class="pin">121</td><td><span class="ball">B18</span></td><td class="hp">P3·10</td><td class="extf"></td><td class="assign"><span class="tag t-vb">B8</span></td></tr>
+<tr class=""><td class="pin">123</td><td><span class="ball">A19</span></td><td class="hp">P3·9</td><td class="extf"></td><td class="assign"><span class="tag t-vb">B9</span></td></tr>
+<tr class=""><td class="pin">125</td><td><span class="ball">C17</span></td><td class="hp">P3·12</td><td class="extf"></td><td class="assign"><span class="tag t-aud">SPDIF</span></td></tr>
+<tr class=""><td class="pin">127</td><td><span class="ball">A18</span></td><td class="hp">P3·11</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">129</td><td><span class="ball">D3</span></td><td class="hp">P3·14</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">131</td><td><span class="ball">C4</span></td><td class="hp">P3·13</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">133</td><td><span class="ball">B4</span></td><td class="hp">P3·18</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">135</td><td><span class="ball">C3</span></td><td class="hp">P3·17</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">137</td><td><span class="ball">E3</span></td><td class="hp">P3·24</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">139</td><td><span class="ball">A3</span></td><td class="hp">P3·23</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">141</td><td><span class="ball">C2</span></td><td class="hp">P3·26</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">143</td><td><span class="ball">B1</span></td><td class="hp">P3·25</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">145</td><td><span class="ball">C1</span></td><td class="hp">P3·28</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">147</td><td><span class="ball">D2</span></td><td class="hp">P3·27</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">149</td><td><span class="ball">D1</span></td><td class="hp">P3·30</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">151</td><td><span class="ball">E2</span></td><td class="hp">P3·29</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">153</td><td><span class="ball">E1</span></td><td class="hp">P4·5</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">155</td><td><span class="ball">F2</span></td><td class="hp">P4·6</td><td class="extf"></td><td class="assign"><span class="tag t-clk">DATACLK</span></td></tr>
+<tr class="gnd"><td class="pin">157</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">159</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">161</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">163</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">165</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">167</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">169</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">171</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">173</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">175</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">177</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">179</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">181</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">183</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">185</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">187</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">189</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">191</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">193</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">195</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">197</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="gnd"><td class="pin">199</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr></tbody></table></div></div><div class="col"><h2>偶数ピン (Bot列)</h2><div class="scroll"><table><thead><tr><th>SO&#8209;DIMM</th><th>FPGA ball</th><th>ext&nbsp;hdr&#183;pin</th><th>ext function</th><th>RetroCastX 割当</th></tr></thead><tbody><tr class="pwr"><td class="pin">2</td><td><span class="pin" style="width:auto">5V</span></td><td class="hp"></td><td class="extf">+5V</td><td class="assign"></td></tr>
+<tr class="pwr"><td class="pin">4</td><td><span class="pin" style="width:auto">5V</span></td><td class="hp"></td><td class="extf">+5V</td><td class="assign"></td></tr>
+<tr class="pwr"><td class="pin">6</td><td><span class="pin" style="width:auto">5V</span></td><td class="hp"></td><td class="extf">+5V</td><td class="assign"></td></tr>
+<tr class="pwr"><td class="pin">8</td><td><span class="pin" style="width:auto">5V</span></td><td class="hp"></td><td class="extf">+5V</td><td class="assign"></td></tr>
+<tr class="pwr"><td class="pin">10</td><td><span class="pin" style="width:auto">5V</span></td><td class="hp"></td><td class="extf">+5V</td><td class="assign"></td></tr>
+<tr class="pwr"><td class="pin">12</td><td><span class="pin" style="width:auto">5V</span></td><td class="hp"></td><td class="extf">+5V</td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">14</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">16</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·19</td><td class="extf">Eth2·MDI1P</td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">18</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·21</td><td class="extf">Eth2·MDI1N</td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">20</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">22</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·23</td><td class="extf">Eth2·MDI2N</td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">24</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·25</td><td class="extf">Eth2·MDI2P</td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">26</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">28</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·20</td><td class="extf">Eth2·MDI3P</td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">30</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·22</td><td class="extf">Eth2·MDI3N</td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">32</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">34</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·24</td><td class="extf">Eth2·MDI4N</td><td class="assign"></td></tr>
+<tr class="eth"><td class="pin">36</td><td><span class="ball" style="color:var(--eth-ink)">PHY</span></td><td class="hp">P1·26</td><td class="extf">Eth2·MDI4P</td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">38</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="gnd"><td class="pin">40</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class="notch"><td colspan="5"><div class="notchbar"><span>▼ KEY NOTCH · pin 40/42 間 ▼</span></div></td></tr>
+<tr class=""><td class="pin">42</td><td><span class="ball">R1</span></td><td class="hp">P6·30</td><td class="extf"></td><td class="assign"><span class="tag t-led">ETH2_LED_G</span></td></tr>
+<tr class=""><td class="pin">44</td><td><span class="ball">T1</span></td><td class="hp">P6·29</td><td class="extf"></td><td class="assign"><span class="tag t-led">ETH2_LED_Y</span></td></tr>
+<tr class=""><td class="pin">46</td><td><span class="ball">U1</span></td><td class="hp">P6·28</td><td class="extf"></td><td class="assign"><span class="tag t-led">ETH1_LED_G</span></td></tr>
+<tr class=""><td class="pin">48</td><td><span class="ball">Y2</span></td><td class="hp">P6·27</td><td class="extf"></td><td class="assign"><span class="tag t-led">ETH1_LED_Y</span></td></tr>
+<tr class=""><td class="pin">50</td><td><span class="ball">W1</span></td><td class="hp">P6·26</td><td class="extf"></td><td class="assign"><span class="tag t-uart">UART_RX</span></td></tr>
+<tr class=""><td class="pin">52</td><td><span class="ball">V1</span></td><td class="hp">P6·25</td><td class="extf"></td><td class="assign"><span class="tag t-uart">UART_TX</span></td></tr>
+<tr class=""><td class="pin">54</td><td><span class="ball">M1</span></td><td class="hp">P6·24</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class="gnd"><td class="pin">56</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class=""><td class="pin">58</td><td><span class="ball">N2</span></td><td class="hp">P6·23</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">60</td><td><span class="ball">N3</span></td><td class="hp">P6·18</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">62</td><td><span class="ball">T2</span></td><td class="hp">P6·17</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">64</td><td><span class="ball">M3</span></td><td class="hp">P6·14</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">66</td><td><span class="ball">T3</span></td><td class="hp">P6·13</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">68</td><td><span class="ball">R3</span></td><td class="hp">P6·12</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">70</td><td><span class="ball">N4</span></td><td class="hp">P6·11</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">72</td><td><span class="ball">M4</span></td><td class="hp">P6·10</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">74</td><td><span class="ball">L4</span></td><td class="hp">P6·9</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">76</td><td><span class="ball">L5</span></td><td class="hp">P6·8</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">78</td><td><span class="ball">P16</span></td><td class="hp">P6·7</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">80</td><td><span class="ball">J16</span></td><td class="hp">P6·6</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">82</td><td><span class="ball">J18</span></td><td class="hp">P6·5</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">84</td><td><span class="ball">J17</span></td><td class="hp">P5·30</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">86</td><td><span class="ball">H18</span></td><td class="hp">P5·29</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">88</td><td><span class="ball">H17</span></td><td class="hp">P5·28</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">90</td><td><span class="ball">G18</span></td><td class="hp">P5·27</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">92</td><td><span class="ball">H16</span></td><td class="hp">P5·26</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">94</td><td><span class="ball">F18</span></td><td class="hp">P5·25</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">96</td><td><span class="ball">G16</span></td><td class="hp">P5·24</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">98</td><td><span class="ball">E18</span></td><td class="hp">P5·23</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">100</td><td><span class="ball">F17</span></td><td class="hp">P5·18</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">102</td><td><span class="ball">F16</span></td><td class="hp">P5·17</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">104</td><td><span class="ball">E16</span></td><td class="hp">P5·14</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class="gnd"><td class="pin">106</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class="gnd"><td class="pin">108</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class=""><td class="pin">110</td><td><span class="ball">E17</span></td><td class="hp">P5·13</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">112</td><td><span class="ball">D18</span></td><td class="hp">P5·12</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">114</td><td><span class="ball">D17</span></td><td class="hp">P5·11</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">116</td><td><span class="ball">G5</span></td><td class="hp">P5·10</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">118</td><td><span class="ball">D16</span></td><td class="hp">P5·9</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">120</td><td><span class="ball">F5</span></td><td class="hp">P5·8</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">122</td><td><span class="ball">E6</span></td><td class="hp">P5·7</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">124</td><td><span class="ball">E5</span></td><td class="hp">P5·6</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">126</td><td><span class="ball">F4</span></td><td class="hp">P5·5</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">128</td><td><span class="ball">E4</span></td><td class="hp">P4·7</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">130</td><td><span class="ball">F1</span></td><td class="hp">P4·8</td><td class="extf"></td><td class="assign"><span class="tag t-aud">AUD_MCLK</span></td></tr>
+<tr class=""><td class="pin">132</td><td><span class="ball">F3</span></td><td class="hp">P4·9</td><td class="extf"></td><td class="assign"><span class="tag t-aud">I2S_DOUT_DSUB</span></td></tr>
+<tr class=""><td class="pin">134</td><td><span class="ball">G3</span></td><td class="hp">P4·10</td><td class="extf"></td><td class="assign"><span class="tag t-aud">AUD_BCK</span></td></tr>
+<tr class=""><td class="pin">136</td><td><span class="ball">H3</span></td><td class="hp">P4·11</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">138</td><td><span class="ball">H4</span></td><td class="hp">P4·12</td><td class="extf"></td><td class="assign"><span class="tag t-aud">AUD_LRCK</span></td></tr>
+<tr class=""><td class="pin">140</td><td><span class="ball">H5</span></td><td class="hp">P4·13</td><td class="extf"></td><td class="assign"><span class="spare">spare</span></td></tr>
+<tr class=""><td class="pin">142</td><td><span class="ball">J4</span></td><td class="hp">P4·14</td><td class="extf"></td><td class="assign"><span class="tag t-aud">I2S_DOUT_LINE</span></td></tr>
+<tr class=""><td class="pin">144</td><td><span class="ball">J5</span></td><td class="hp">P4·17</td><td class="extf"></td><td class="assign"><span class="tag t-sync">HSOUT</span></td></tr>
+<tr class=""><td class="pin">146</td><td><span class="ball">K3</span></td><td class="hp">P4·18</td><td class="extf"></td><td class="assign"><span class="tag t-ctrl">SDA</span></td></tr>
+<tr class=""><td class="pin">148</td><td><span class="ball">K4</span></td><td class="hp">P4·25</td><td class="extf"></td><td class="assign"><span class="tag t-sync">SOGOUT</span></td></tr>
+<tr class=""><td class="pin">150</td><td><span class="ball">K5</span></td><td class="hp">P4·24</td><td class="extf"></td><td class="assign"><span class="tag t-ctrl">SCL</span></td></tr>
+<tr class=""><td class="pin">152</td><td><span class="ball">B3</span></td><td class="hp">P4·26</td><td class="extf"></td><td class="assign"><span class="tag t-ctrl">RESETB</span></td></tr>
+<tr class=""><td class="pin">154</td><td><span class="ball">A2</span></td><td class="hp">P4·23</td><td class="extf"></td><td class="assign"><span class="tag t-sync">VSOUT</span></td></tr>
+<tr class=""><td class="pin">156</td><td><span class="ball">B2</span></td><td class="hp">P4·27</td><td class="extf"></td><td class="assign"><span class="tag t-sync">FIDOUT</span></td></tr>
+<tr class="gnd"><td class="pin">158</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">160</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">162</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">164</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">166</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">168</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">170</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">172</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">174</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">176</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">178</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">180</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">182</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">184</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">186</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">188</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">190</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">192</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">194</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">196</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="nc"><td class="pin">198</td><td><span class="pin" style="width:auto">NC</span></td><td class="hp"></td><td class="extf"></td><td class="assign"></td></tr>
+<tr class="gnd"><td class="pin">200</td><td><span class="pin" style="width:auto">GND</span></td><td class="hp"></td><td class="extf">GND</td><td class="assign"></td></tr></tbody></table></div></div></div><footer><div><b>典拠</b>: FPGAボール・機能 = wuxx <code>Colorlight-FPGA-Projects</code> README。extヘッダP1–P6/HDMI・pin1角 = wuxx ext-board pinout図。HDMI(GPDI) = litex <code>colorlight_i5.py</code>。割当 = 当リポジトリ <code>main.ato</code>/<code>sodimm_i5.ato</code>。</div><div><b>ext hdr·pin</b>: ヘッダ名とヘッダ内ピン番号。各ヘッダの <b>pin1=□(角)パッド</b>を起点に標準2列ジグザグ採番。pin1角: P1/P4=左上, P2/P3=右上, P5/P6=左下。P1=Ethernet, P2=映像R/G+B[5:2], P3=映像B[9:6]+SPDIF, P4=音声/タイミング/I2C, P6=LED/UART, P5=予備。</div><div><b>映像バス</b>: RGB888(各色上位8bit[9:2])、SO-DIMM昇順↔TVP物理降順の単調配置。<span class="spare">spare</span>=ヘッダに出ているが未割当のGPIO。</div></footer></div><script>(function(){var b=document.getElementById("tt");b.addEventListener("click",function(){var r=document.documentElement,c=r.getAttribute("data-theme");if(!c)c=matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light";r.setAttribute("data-theme",c==="dark"?"light":"dark");});})();</script></body></html>

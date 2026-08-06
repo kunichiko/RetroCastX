@@ -538,7 +538,7 @@ module EthernetPort:
     - 論理GND-シャーシ間: 各ポート 4.7nF/2kV ×2(1812)
     - **ETH2=jack=PHY0=litex eth1(映像ストリーム既定)、ETH1=jack2=PHY1=litex eth0(将来のデュアルリンク/2.5G化用)**
       ※litexのデフォルトindexは0=ETH1だが、gatewareはeth1(=ETH2)を要求して映像を出す。
-    - LED: MagJackの緑/黄LEDは主ポート(jack)のみFPGA GPIO(io_r1/io_t1)経由で駆動
+    - LED: 両ポートのMagJack緑/黄LEDをFPGA GPIOで駆動(ETH2=io_r1/io_t1, ETH1=io_w1/io_v1)
     """
     signal gnd
     signal chassis
@@ -582,18 +582,26 @@ module EthernetPort:
     jack2.bobsmith ~ chassis
     jack2.shield ~ chassis
 
-    # --- リンクLED: 主ポート(jack=ETH2)の緑/黄をFPGA GPIOで駆動 ---
+    # --- リンク/アクティビティLED: 両ポートの緑/黄をFPGA GPIOで駆動 ---
     # GPIO(3.3V) → R220 → アノード, カソード→GND(GPIO High=点灯, ~6mA)。
-    # LED点灯パターン(リンク/アクティビティ)はゲートウェアで生成。
-    signal led_g_drive   # 緑LED制御入力(App: sodimm.io_r1)
-    signal led_y_drive   # 黄LED制御入力(App: sodimm.io_t1)
+    # 点灯パターン(リンク/アクティビティ)はゲートウェアで生成。
+    # ETH2=jack(io_r1/io_t1), ETH1=jack2(io_w1/io_v1)。GPIOはP6の同一クラスタでセット。
+    signal led_g_drive    # ETH2 緑LED (App: sodimm.io_r1)
+    signal led_y_drive    # ETH2 黄LED (App: sodimm.io_t1)
+    signal led_g_drive2   # ETH1 緑LED (App: sodimm.io_w1)
+    signal led_y_drive2   # ETH1 黄LED (App: sodimm.io_v1)
     r_led_g = new R220_0402
     r_led_y = new R220_0402
+    r_led_g2 = new R220_0402
+    r_led_y2 = new R220_0402
     led_g_drive ~> r_led_g ~> jack.led_g_a
     jack.led_g_k ~ gnd
     led_y_drive ~> r_led_y ~> jack.led_y_a
     jack.led_y_k ~ gnd
-    # jack2(ETH1, デュアルリンクテスト用)のLEDは空きGPIO不足のため未接続(NC)。
+    led_g_drive2 ~> r_led_g2 ~> jack2.led_g_a
+    jack2.led_g_k ~ gnd
+    led_y_drive2 ~> r_led_y2 ~> jack2.led_y_a
+    jack2.led_y_k ~ gnd
     bridge_caps = new C4nF7_1812_2kV[4]
     chassis ~> bridge_caps[0] ~> gnd
     chassis ~> bridge_caps[1] ~> gnd
@@ -749,8 +757,8 @@ module App:
     ft2232.usb_dp ~ usbc.dp
     ft2232.usb_dm ~ usbc.dn
     # ch.B UART → SO-DIMM空きGPIO(i5側UART)
-    ft2232.uart_txd ~ sodimm.io_u1   # FT TXD → i5 RX
-    ft2232.uart_rxd ~ sodimm.io_y2   # i5 TX  → FT RXD
+    ft2232.uart_txd ~ sodimm.io_w1   # FT TXD → i5 RX (P6 pin50)
+    ft2232.uart_rxd ~ sodimm.io_v1   # i5 TX  → FT RXD (P6 pin52)
 
     # --- JTAG: ポゴピン4本でi5底面テストパッドへバネ接触 ---
     # 配置(KiCad実測): ソケット中心から縦33mm, TDO中心=右シルク線から横12mm,
@@ -1142,8 +1150,15 @@ module App:
     eth.eth1_4_P ~ sodimm.eth1_4_P
     eth.eth1_4_N ~ sodimm.eth1_4_N
     # リンクLED制御(FPGA GPIO → MagJack緑/黄)
-    eth.led_g_drive ~ sodimm.io_r1   # 緑LED
-    eth.led_y_drive ~ sodimm.io_t1   # 黄LED
+    eth.led_g_drive ~ sodimm.io_r1    # ETH2 緑LED (P6 pin42)
+    eth.led_y_drive ~ sodimm.io_t1    # ETH2 黄LED (P6 pin44)
+    eth.led_g_drive2 ~ sodimm.io_u1   # ETH1 緑LED (P6 pin46)
+    eth.led_y_drive2 ~ sodimm.io_y2   # ETH1 黄LED (P6 pin48)
+    # LED駆動ネットに読める名前を付与(自動名が pin番号 50/52 等になるのを回避)
+    eth.led_g_drive.override_net_name = "eth2_led_g"
+    eth.led_y_drive.override_net_name = "eth2_led_y"
+    eth.led_g_drive2.override_net_name = "eth1_led_g"
+    eth.led_y_drive2.override_net_name = "eth1_led_y"
 
     # =========================================================================
     # ネット名の明示化(PCBレイアウトでの判別性向上)

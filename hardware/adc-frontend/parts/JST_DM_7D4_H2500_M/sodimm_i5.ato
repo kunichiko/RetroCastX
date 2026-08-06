@@ -109,8 +109,10 @@ component SoDimmI5:
     signal io_j4 ~ pin 142
     signal io_e19 ~ pin 109
 
-    # --- 空きGPIO (MagJack LED 2本 + i5 UART 2本) ---
-    signal io_r1 ~ pin 42   # LED緑
-    signal io_t1 ~ pin 44   # LED黄
-    signal io_u1 ~ pin 46   # UART: i5 RX (FT2232H TXD)
-    signal io_y2 ~ pin 48   # UART: i5 TX (FT2232H RXD)
+    # --- P6クラスタ GPIO: MagJack LED ×4(連続) + i5 UART ×2 ---
+    signal io_r1 ~ pin 42   # ETH2 LED緑
+    signal io_t1 ~ pin 44   # ETH2 LED黄
+    signal io_u1 ~ pin 46   # ETH1 LED緑
+    signal io_y2 ~ pin 48   # ETH1 LED黄
+    signal io_w1 ~ pin 50   # UART: i5 RX (FT2232H TXD)
+    signal io_v1 ~ pin 52   # UART: i5 TX (FT2232H RXD)
