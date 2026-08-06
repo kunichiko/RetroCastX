@@ -54,10 +54,36 @@ cargo run --release -- --no-subscribe
 ニアレスト+整数拡大レターボックス、ESC/クローズで終了、統計はstderr。
 タイムスタンプ駆動のジッタ平滑化(到着ゆらぎをドットクロック時刻で吸収)は次段。
 
-残る確認は**パネルが実際に追従するか**で、これはVRR対応表示器が必要
-(ProMotion搭載MacBookの内蔵ディスプレイ、またはAdaptive-Sync対応モニタのDP接続)。
-このマシンの60Hz固定モニタではpresentは55.46Hzで打てるが表示は60Hzサンプリングになる。
 Windows側は wgpu Immediate が DXGI allow-tearing にマップされるので FreeSync で同様の構成が取れる見込み。
+
+#### ProMotionパネルでの追従確認(2026-08-06, MacBook Pro M5 Pro + 内蔵XDR 120Hz, macOS 26.4)
+
+上記で残っていた「**パネルが実際に追従するか**」をProMotion実機で確認した。
+
+app側(`--fullscreen`, 3024×1898全画面, sender_sim 512×512@55.46Hz RGB555):
+**present間隔 18.03ms σ0.7ms = 55.46Hz・ロス0・237Mbps** — 別マシン(M4 Pro)の結果を再現。
+
+パネル側は `MTLDrawable.presentedTime`(実際に画面へ出た時刻)で計測した。
+**CADisplayLink と `CGDisplayModeGetRefreshRate` は使えない** — presentedTimeが明らかに
+120Hz格子から外れている最中も両者は8.33ms/120Hzを報告し続ける(交差検証済み)。
+
+| 構成 | presentedTime間隔 | 格子 |
+|---|---|---|
+| vsync + 全力present(基準) | 8.335ms σ1.6 | **8.333ms格子に残差0.000ms** → 素の状態は120Hz(計測器の妥当性確認) |
+| vsync + 55.46Hz | 平均18.02ms **σ5.3** | 12.5 / 16.7 / 20.8 / 25.0ms に分散。**4.165ms(240Hz)格子に残差0.007ms** |
+| Immediate + 55.46Hz(本実装の経路) | 平均18.00ms σ2.8 | どの格子にも乗らない(8.333ms格子の残差1.74ms ≒ ランダム相当)。投入時刻をそのままトレース |
+
+読み取れること:
+
+- パネルは**固定120Hzではなく可変している**(vsync時の間隔が240Hz刻みの離散値を取る)。
+  ただし55.46Hzに**ロックはしない** — 240/N Hz の離散ステップを混ぜて平均をソースレートに
+  合わせる挙動で、瞬間間隔は σ5.3ms 揺れる。ProMotionは任意レート同期ではない。
+- Immediate(= `displaySyncEnabled=false`, 本実装が使う経路)では present が
+  **120Hzにゲートされない**。フレームはソースタイミングのまま出る。
+  この経路でパネルが走査タイミングまで打ち直しているかは presentedTime からは分離できない
+  (どちらの場合も投入時刻に一致する)。最終判断は目視 or ハイスピードカメラ。
+
+再現手順とプローブ(Swift/Metal)は `tools/present_probe.swift` を参照。
 - 音声(AUDIO パケット, protocol-v0.md 参照)の再生は未実装。cpal クレートで
   リングバッファ再生を追加予定
 - CONFIG パケット(音声ソース選択・ArgusX入力切替)のUIも未実装(プロトコル定義済み)
