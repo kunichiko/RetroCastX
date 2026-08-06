@@ -136,6 +136,17 @@ component HeaderArgus:
     signal scl ~ pin 3
     signal gnd ~ pin 4
 
+component HeaderOled:
+    """SSD1306 I2C OLED(128x64)接続用 1×4 ヘッダ。ピン順 GND/VDD/SCK/SDA。
+    I2CバスはTVP7002と共有(OLED既定アドレス0x3C, 他と非衝突)。手実装/DNP。"""
+    trait is_atomic_part<manufacturer="", partnumber="PinHeader_1x4_2.54", footprint="Header_1x4_P2.54mm.kicad_mod", symbol="Header_1x4.kicad_sym">
+    trait has_designator_prefix<prefix="J">
+    trait has_part_removed  # 手実装/DNP: 基板にFPは載せるがJLC発注しない
+    signal gnd ~ pin 1
+    signal vdd ~ pin 2
+    signal scl ~ pin 3   # SCK
+    signal sda ~ pin 4
+
 component SolderJumper:
     """はんだジャンパ(2パッド)。フットプリントはKiCad標準 SolderJumper-2 を想定。"""
     trait is_atomic_part<manufacturer="", partnumber="SolderJumper_2", footprint="SolderJumper_2.kicad_mod", symbol="SolderJumper_2.kicad_sym">

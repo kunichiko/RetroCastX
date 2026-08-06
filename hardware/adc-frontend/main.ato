@@ -8,7 +8,7 @@ import is_atomic_part
 import has_part_picked
 import has_designator_prefix
 import has_part_removed
-from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeader2x8Argus, Tp1Pad, PogoPin, HeaderJtag
+from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeader2x8Argus, Tp1Pad, PogoPin, HeaderJtag, HeaderOled
 from "parts/JST_DM_7D4_H2500_M/sodimm_i5.ato" import SoDimmI5
 from "parts/RICHTEK_RT9013_18GB/RICHTEK_RT9013_18GB.ato" import RICHTEK_RT9013_18GB_package
 from "parts/FTDI_FT2232HL_REEL/FTDI_FT2232HL_REEL.ato" import FTDI_FT2232HL_REEL_package
@@ -1104,6 +1104,15 @@ module App:
     j11_argus.gnd ~ gnd
     j11_argus.sda ~ tvp.sda
     j11_argus.scl ~ tvp.scl
+
+    # --- ステータス表示用 SSD1306 I2C OLED(128x64)ヘッダ ---
+    # I2CバスをTVP7002と共有(OLED既定0x3C, TVP0x5C/EEPROM0x50-51と非衝突)。
+    # 描画はゲートウェア側(I2Cマスタ + SSD1306ドライバ)で実装。ピン順 GND/VDD/SCK/SDA。
+    j_oled = new HeaderOled
+    j_oled.gnd ~ gnd
+    j_oled.vdd ~ p3v3_io.hv
+    j_oled.scl ~ tvp.scl
+    j_oled.sda ~ tvp.sda
 
     # --- MACアドレスEEPROM(EUI-48) ×2: ETH0用=0x50, ETH1(将来の2ポート化)用=0x51 ---
     # グローバル一意MACにより複数台運用・2ポートストライピングで衝突管理が不要になる。

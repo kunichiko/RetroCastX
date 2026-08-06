@@ -40179,6 +40179,143 @@
 			)
 		)
 	)
+	(footprint "_mech:Header_1x4_P2.54mm"
+		(layer "F.Cu")
+		(uuid "1b82415b-e61f-4c3d-9bd5-8fd74642524b")
+		(at 0 0 0)
+		(descr "Generic 4x1 2.54mm pin header, hand-soldered (not JLC-assembled). Pad numbering standard; verify orientation vs EXT board before layout.")
+		(property "Reference" "J3"
+			(at -1.6 0 0)
+			(layer "F.SilkS")
+			(uuid "98ee1895-e9e1-4a68-a021-d0b75d9b4b79")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.15)
+				)
+				(justify right)
+			)
+		)
+		(property "Value" ""
+			(at 0 3 0)
+			(layer "F.Fab")
+			(uuid "b5f6a6aa-43b9-4279-aaf4-55c4fc7e45ed")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "64df0489-2bb0-42ab-8e49-ca423f0bb386")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Description" ""
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "2057cdd9-4033-4579-bce5-c731873ddc0c")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "atopile_address" "j_oled"
+			(at 0 0 0)
+			(layer "User.9")
+			(hide yes)
+			(uuid "87034a31-d967-47fd-b5c5-6df14642524b")
+		)
+		(attr through_hole exclude_from_pos_files)
+		(fp_line
+			(start -1.5 -1.5)
+			(end -1.5 1.5)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(uuid "df6d8059-90ef-48ac-85ce-25fa0028de60")
+		)
+		(fp_line
+			(start -1.5 -1.5)
+			(end 9.12 -1.5)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(uuid "21ff3f1c-aeea-4f99-80c8-ab61c9943b2b")
+		)
+		(fp_line
+			(start -1.5 1.5)
+			(end 9.12 1.5)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(uuid "94ca44cc-068c-4e48-a690-fdbe16c26988")
+		)
+		(fp_line
+			(start 9.12 -1.5)
+			(end 9.12 1.5)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(uuid "74013fce-4b22-421c-84a6-27f966d87092")
+		)
+		(pad "1" thru_hole rect
+			(at 0 0 0)
+			(size 1.7 1.7)
+			(drill 1)
+			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
+			(net 63 "gnd")
+			(uuid "b5a8976a-6c9f-4b83-8b35-5721ddf96c6d")
+		)
+		(pad "2" thru_hole oval
+			(at 2.54 0 0)
+			(size 1.7 1.7)
+			(drill 1)
+			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
+			(net 130 "p3v3_io-hv")
+			(uuid "d2178190-7eee-4472-a681-022bb0b6d0c3")
+		)
+		(pad "3" thru_hole oval
+			(at 5.08 0 0)
+			(size 1.7 1.7)
+			(drill 1)
+			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
+			(net 24 "scl")
+			(uuid "b6b2e5e7-d057-49f0-9c97-e85542b14c2f")
+		)
+		(pad "4" thru_hole oval
+			(at 7.62 0 0)
+			(size 1.7 1.7)
+			(drill 1)
+			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
+			(net 17 "sda")
+			(uuid "f8d4bf53-f247-4088-bb89-a67da25fcf03")
+		)
+		(embedded_fonts no)
+	)
 	(segment
 		(start 123.494214 85.36)
 		(end 123.494214 84.09)
