@@ -26,7 +26,7 @@ class I2CBus:
         self.last_reg = None
         self.rd_byte = 0
         self.wr_dcount = 0; self.wr_reg = None
-        self.regs = {0x00: 0x02, 0x01: 0x67, 0x02: 0x20}
+        self.regs = {0x00:0x02, 0x14:0x00, 0x37:0x02, 0x38:0x0D, 0x39:0x03, 0x3A:0x20, 0x19:0x00}
         self.frames = []; self.cur = []
 
     def _push(self):
@@ -95,27 +95,31 @@ def main():
             line = bus.step(scl, m_sda)
             yield dut.m.sda_in.eq(line)
             # TVP読出2つ完了 + OLEDデータフレーム(0x78,0x40)開始を確認したら十分
-            if (yield dut.wrb) == 0xA5 and bus.cur[:2] == [0x78, 0x40]:
+            if (yield dut.cpl_lo) == 0x20 and bus.cur[:2] == [0x78, 0x40]:
                 break
             yield
         if bus.cur:
             bus.frames.append(bus.cur)
         res['frames'] = bus.frames
         res['tvp_ack'] = (yield dut.tvp_ack)
-        res['rev'] = (yield dut.rev)
-        res['wrb'] = (yield dut.wrb)
+        res['sync'] = (yield dut.syncdet)
+        res['lpf'] = ((yield dut.lpf_hi) << 8) | (yield dut.lpf_lo)
+        res['cpl'] = ((yield dut.cpl_hi) << 8) | (yield dut.cpl_lo)
 
     run_simulation(dut, tb())
 
     frames = res['frames']
-    print(f"tvp_ack={res['tvp_ack']} rev={res['rev']:#04x} wrb={res['wrb']:#04x}")
+    print(f"tvp_ack={res['tvp_ack']} sync={res['sync']:#04x} lpf={res['lpf']:#06x} cpl={res['cpl']:#06x}")
     print(f"frames captured: {len(frames)}")
     for i, f in enumerate(frames[:6]):
         print(f"  frame{i}: " + " ".join(f"{b:02X}" for b in f[:8]) + (" ..." if len(f) > 8 else ""))
 
     assert res['tvp_ack'] == 1, "TVPがACKしていない"
-    assert res['rev'] == 0x02, f"rev={res['rev']:#x} (期待0x02=Chip Rev)"
-    assert res['wrb'] == 0xA5, f"wrb={res['wrb']:#x} (期待0xA5=書戻し)"
+    assert res['sync'] == 0x00, f"sync={res['sync']:#x}"
+    assert res['lpf'] == 0x020D, f"lpf={res['lpf']:#x} (期待0x020D)"
+    assert res['cpl'] == 0x0320, f"cpl={res['cpl']:#x} (期待0x0320)"
+    # 入力選択書込(B8 19 AA)を確認
+    assert any(len(f)>=3 and f[0]==0xB8 and f[1]==0x19 and f[2]==0xAA for f in frames), "0x19<-0xAA 書込フレームが無い"
 
     # OLED初期化フレーム(0x78,0x00,<INIT..>)
     oled_init = [f for f in frames if len(f) >= 2 and f[0] == 0x78 and f[1] == 0x00]

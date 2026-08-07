@@ -141,12 +141,12 @@ def _banner():
     lines = [
         "RetroCastX  i5",
         "----------------",
-        "TVP : ---",       # ACK/NAK @ col6..8
-        "REV : 0x--",      # reg0x00 hex @ col8,9 (正常02)
-        "WRB : 0x--",      # reg0x01 書戻し hex @ col8,9 (正常A5)
-        "UP  : 0x--------", # hex @ col8..15
-        "",
-        "i2c 0x5C / 0x3C",
+        "TVP : ---",        # ACK/NAK @ col6..8
+        "SYNC: 0x--",       # 0x14 hex @ col8,9
+        "LPF : 0x----",     # 0x37:0x38 hex @ col8..11
+        "CPL : 0x----",     # 0x39:0x3A hex @ col8..11
+        "UP  : 0x--------",  # hex @ col8..15
+        "in3 RGB  0x5C/3C",
     ]
     buf = []
     for r in range(ROWS):
@@ -167,8 +167,9 @@ class StatusDisplay(Module):
         self.resetb  = Signal(reset=0)      # TVP RESETB (0=reset, 1=解除)
         # 観測用
         self.tvp_ack = Signal()
-        self.rev = Signal(8)     # reg0x00 Chip Revision (既定0x02)
-        self.wrb = Signal(8)     # reg0x01 に0xA5書込→読戻し (正常0xA5)
+        self.syncdet = Signal(8)  # reg0x14 Sync Detect Status
+        self.lpf_hi = Signal(8); self.lpf_lo = Signal(8)  # 0x37/0x38 Lines/Frame
+        self.cpl_hi = Signal(8); self.cpl_lo = Signal(8)  # 0x39/0x3A Clocks/Line
 
         TVP_W = (tvp_addr << 1) & 0xFE       # 0xB8
         TVP_R = TVP_W | 1                    # 0xB9
@@ -217,13 +218,16 @@ class StatusDisplay(Module):
 
         # TVP read: 2レジスタ(0x01,0x02)
         # TVP手順ステップ: 0=read0x00(rev), 1=write0x01<-0xA5, 2=read0x01(wrb)
-        step = Signal(2)
-        WRVAL = 0xA5
-        reg_b = Signal(8); self.comb += reg_b.eq(Mux(step == 0, 0x00, 0x01))
-        is_wstep = Signal(); self.comb += is_wstep.eq(step == 1)
+        # TVPステップ: 0=write 0x19<-0xAA(入力=_3選択), 1..5=read 0x14/0x37/0x38/0x39/0x3A
+        step = Signal(3)
+        NSTEP = 6
+        WRVAL = 0xAA                          # 0x19: SOG/R/G/B すべて _3 入力を選択
+        reg_rom = Array(Constant(v, 8) for v in [0x19, 0x14, 0x37, 0x38, 0x39, 0x3A])
+        reg_b = Signal(8); self.comb += reg_b.eq(reg_rom[step])
+        is_wstep = Signal(); self.comb += is_wstep.eq(step == 0)
 
         # FORMAT
-        fi = Signal(4)
+        fi = Signal(5)   # 0..20 (NFMT=21)
         def hexch(nib):
             return Mux(nib < 10, ord('0') + nib, ord('A') - 10 + nib)
 
@@ -268,42 +272,54 @@ class StatusDisplay(Module):
             If(m.done, NextState("TP_READ")))
         fsm.act("TP_READ", self.resetb.eq(1), *issue(OP_READ, nack=1),
             If(m.done,
-                If(step == 0, NextValue(self.rev, m.rdata)),
-                If(step == 2, NextValue(self.wrb, m.rdata)),
+                Case(step, {
+                    1: NextValue(self.syncdet, m.rdata),
+                    2: NextValue(self.lpf_hi, m.rdata),
+                    3: NextValue(self.lpf_lo, m.rdata),
+                    4: NextValue(self.cpl_hi, m.rdata),
+                    5: NextValue(self.cpl_lo, m.rdata),
+                }),
                 NextState("TP_STOP")))
         fsm.act("TP_STOP", self.resetb.eq(1), *issue(OP_STOP),
             If(m.done,
-                If(step == 2,
+                If(step == NSTEP - 1,
                     NextValue(step, 0), NextValue(fi, 0), NextState("FMT"),
                 ).Else(
                     NextValue(step, step + 1), NextState("TP_START"),
                 )))
 
-        # 4) FORMAT: 動的15文字をテキストRAMへ書込
+        # 4) FORMAT: 動的21文字(ACK/SYNC/LPF/CPL/UP)をテキストRAMへ書込
+        NFMT = 21
         faddr = Signal(7); fchar = Signal(8)
         up = sec
         self.comb += [
             Case(fi, {
-                0: [faddr.eq(38), fchar.eq(Mux(self.tvp_ack, ord('A'), ord('N')))],
-                1: [faddr.eq(39), fchar.eq(Mux(self.tvp_ack, ord('C'), ord('A')))],
-                2: [faddr.eq(40), fchar.eq(ord('K'))],
-                3: [faddr.eq(56), fchar.eq(hexch(self.rev[4:8]))],
-                4: [faddr.eq(57), fchar.eq(hexch(self.rev[0:4]))],
-                5: [faddr.eq(72), fchar.eq(hexch(self.wrb[4:8]))],
-                6: [faddr.eq(73), fchar.eq(hexch(self.wrb[0:4]))],
-                7:  [faddr.eq(88), fchar.eq(hexch(up[28:32]))],
-                8:  [faddr.eq(89), fchar.eq(hexch(up[24:28]))],
-                9:  [faddr.eq(90), fchar.eq(hexch(up[20:24]))],
-                10: [faddr.eq(91), fchar.eq(hexch(up[16:20]))],
-                11: [faddr.eq(92), fchar.eq(hexch(up[12:16]))],
-                12: [faddr.eq(93), fchar.eq(hexch(up[8:12]))],
-                13: [faddr.eq(94), fchar.eq(hexch(up[4:8]))],
-                14: [faddr.eq(95), fchar.eq(hexch(up[0:4]))],
+                0:  [faddr.eq(38), fchar.eq(Mux(self.tvp_ack, ord('A'), ord('N')))],
+                1:  [faddr.eq(39), fchar.eq(Mux(self.tvp_ack, ord('C'), ord('A')))],
+                2:  [faddr.eq(40), fchar.eq(ord('K'))],
+                3:  [faddr.eq(56), fchar.eq(hexch(self.syncdet[4:8]))],
+                4:  [faddr.eq(57), fchar.eq(hexch(self.syncdet[0:4]))],
+                5:  [faddr.eq(72), fchar.eq(hexch(self.lpf_hi[4:8]))],
+                6:  [faddr.eq(73), fchar.eq(hexch(self.lpf_hi[0:4]))],
+                7:  [faddr.eq(74), fchar.eq(hexch(self.lpf_lo[4:8]))],
+                8:  [faddr.eq(75), fchar.eq(hexch(self.lpf_lo[0:4]))],
+                9:  [faddr.eq(88), fchar.eq(hexch(self.cpl_hi[4:8]))],
+                10: [faddr.eq(89), fchar.eq(hexch(self.cpl_hi[0:4]))],
+                11: [faddr.eq(90), fchar.eq(hexch(self.cpl_lo[4:8]))],
+                12: [faddr.eq(91), fchar.eq(hexch(self.cpl_lo[0:4]))],
+                13: [faddr.eq(104), fchar.eq(hexch(up[28:32]))],
+                14: [faddr.eq(105), fchar.eq(hexch(up[24:28]))],
+                15: [faddr.eq(106), fchar.eq(hexch(up[20:24]))],
+                16: [faddr.eq(107), fchar.eq(hexch(up[16:20]))],
+                17: [faddr.eq(108), fchar.eq(hexch(up[12:16]))],
+                18: [faddr.eq(109), fchar.eq(hexch(up[8:12]))],
+                19: [faddr.eq(110), fchar.eq(hexch(up[4:8]))],
+                20: [faddr.eq(111), fchar.eq(hexch(up[0:4]))],
             }),
         ]
         fsm.act("FMT", self.resetb.eq(1),
             twr.adr.eq(faddr), twr.dat_w.eq(fchar), twr.we.eq(1),
-            If(fi == 14, NextState("OD_START")).Else(NextValue(fi, fi+1)))
+            If(fi == NFMT - 1, NextState("OD_START")).Else(NextValue(fi, fi+1)))
 
         # 5) OLED data フレーム: START,0x78,0x40,<1024>,STOP
         fsm.act("OD_START", self.resetb.eq(1), *issue(OP_START),
