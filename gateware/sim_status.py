@@ -3,7 +3,7 @@
 
 open-drainバスを模擬し、0x5C=TVP7002(ACK + reg 0x01->0x11, 0x02->0x22 を返す)、
 0x3C=OLED(ACKのみ)のスレーブをモデル化。検証項目:
-- TVP応答: dut.tvp_ack==1, r01==0x11, r02==0x22
+- TVP応答: dut.tvp_ack==1, rev(0x00)==0x02, wrb(0x01書戻し)==0xA5
 - バス上に OLED初期化(0x78,0x00,..)/TVP読出(0xB8,reg,0xB9,..)/OLEDデータ(0x78,0x40) フレーム
 """
 import sys, os
@@ -25,7 +25,8 @@ class I2CBus:
         self.addr = None; self.rw = 0
         self.last_reg = None
         self.rd_byte = 0
-        self.regs = {0x01: 0x11, 0x02: 0x22}
+        self.wr_dcount = 0; self.wr_reg = None
+        self.regs = {0x00: 0x02, 0x01: 0x67, 0x02: 0x20}
         self.frames = []; self.cur = []
 
     def _push(self):
@@ -34,7 +35,7 @@ class I2CBus:
     def _start(self):
         self._push()
         self.txn = True; self.nbit = -1; self.shift = 0; self.mode = 'ADDR'
-        self.addr = None; self.slave_low = 0
+        self.addr = None; self.slave_low = 0; self.wr_dcount = 0
 
     def _stop(self):
         self._push(); self.txn = False; self.slave_low = 0
@@ -65,9 +66,12 @@ class I2CBus:
                             self.mode = 'READ'; self.rd_byte = self.regs.get(self.last_reg, 0)
                         elif self.rw == 0:
                             self.mode = 'WRITE'
-                    else:  # WRITE data
+                    else:  # WRITE data: 1st=reg, 2nd=value(格納)
                         if self.addr == 0x5C:
-                            self.last_reg = byte
+                            if self.wr_dcount == 0:
+                                self.wr_reg = byte; self.last_reg = byte; self.wr_dcount = 1
+                            else:
+                                self.regs[self.wr_reg] = byte; self.wr_dcount = 2
                     if self.addr in (0x3C, 0x5C):
                         self.slave_low = 1          # ACK
                 elif self.mode == 'READ':
@@ -91,27 +95,27 @@ def main():
             line = bus.step(scl, m_sda)
             yield dut.m.sda_in.eq(line)
             # TVP読出2つ完了 + OLEDデータフレーム(0x78,0x40)開始を確認したら十分
-            if (yield dut.r02) == 0x22 and bus.cur[:2] == [0x78, 0x40]:
+            if (yield dut.wrb) == 0xA5 and bus.cur[:2] == [0x78, 0x40]:
                 break
             yield
         if bus.cur:
             bus.frames.append(bus.cur)
         res['frames'] = bus.frames
         res['tvp_ack'] = (yield dut.tvp_ack)
-        res['r01'] = (yield dut.r01)
-        res['r02'] = (yield dut.r02)
+        res['rev'] = (yield dut.rev)
+        res['wrb'] = (yield dut.wrb)
 
     run_simulation(dut, tb())
 
     frames = res['frames']
-    print(f"tvp_ack={res['tvp_ack']} r01={res['r01']:#04x} r02={res['r02']:#04x}")
+    print(f"tvp_ack={res['tvp_ack']} rev={res['rev']:#04x} wrb={res['wrb']:#04x}")
     print(f"frames captured: {len(frames)}")
     for i, f in enumerate(frames[:6]):
         print(f"  frame{i}: " + " ".join(f"{b:02X}" for b in f[:8]) + (" ..." if len(f) > 8 else ""))
 
     assert res['tvp_ack'] == 1, "TVPがACKしていない"
-    assert res['r01'] == 0x11, f"r01={res['r01']:#x}"
-    assert res['r02'] == 0x22, f"r02={res['r02']:#x}"
+    assert res['rev'] == 0x02, f"rev={res['rev']:#x} (期待0x02=Chip Rev)"
+    assert res['wrb'] == 0xA5, f"wrb={res['wrb']:#x} (期待0xA5=書戻し)"
 
     # OLED初期化フレーム(0x78,0x00,<INIT..>)
     oled_init = [f for f in frames if len(f) >= 2 and f[0] == 0x78 and f[1] == 0x00]

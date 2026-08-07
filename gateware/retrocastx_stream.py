@@ -656,7 +656,9 @@ class RetroCastXStream(SoCMini):
                     Subsignal("resetb", Pins("C18")),
                     IOStandard("LVCMOS33"), Misc("PULLMODE=UP"))]
         platform.add_extension(_i2c_io)
-        self.status = StatusDisplay(platform.request("tvp_oled_i2c"), sys_clk_freq)
+        # I2Cは100kHz(長い手配線+弱プルアップでも読出しの取りこぼしを避ける)
+        self.status = StatusDisplay(platform.request("tvp_oled_i2c"), sys_clk_freq,
+                                    i2c_freq=100e3)
 
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
         self.streamer = RetroCastXStreamer(

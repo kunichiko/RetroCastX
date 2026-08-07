@@ -142,8 +142,8 @@ def _banner():
         "RetroCastX  i5",
         "----------------",
         "TVP : ---",       # ACK/NAK @ col6..8
-        "R01 : 0x--",      # hex @ col8,9
-        "R02 : 0x--",      # hex @ col8,9
+        "REV : 0x--",      # reg0x00 hex @ col8,9 (正常02)
+        "WRB : 0x--",      # reg0x01 書戻し hex @ col8,9 (正常A5)
         "UP  : 0x--------", # hex @ col8..15
         "",
         "i2c 0x5C / 0x3C",
@@ -167,8 +167,8 @@ class StatusDisplay(Module):
         self.resetb  = Signal(reset=0)      # TVP RESETB (0=reset, 1=解除)
         # 観測用
         self.tvp_ack = Signal()
-        self.r01 = Signal(8)
-        self.r02 = Signal(8)
+        self.rev = Signal(8)     # reg0x00 Chip Revision (既定0x02)
+        self.wrb = Signal(8)     # reg0x01 に0xA5書込→読戻し (正常0xA5)
 
         TVP_W = (tvp_addr << 1) & 0xFE       # 0xB8
         TVP_R = TVP_W | 1                    # 0xB9
@@ -216,8 +216,11 @@ class StatusDisplay(Module):
         rst_cnt = Signal(max=int(sys_clk_freq//10)+1)
 
         # TVP read: 2レジスタ(0x01,0x02)
-        regsel = Signal()   # 0->0x01, 1->0x02
-        reg_addr = Signal(8); self.comb += reg_addr.eq(Mux(regsel, 0x02, 0x01))
+        # TVP手順ステップ: 0=read0x00(rev), 1=write0x01<-0xA5, 2=read0x01(wrb)
+        step = Signal(2)
+        WRVAL = 0xA5
+        reg_b = Signal(8); self.comb += reg_b.eq(Mux(step == 0, 0x00, 0x01))
+        is_wstep = Signal(); self.comb += is_wstep.eq(step == 1)
 
         # FORMAT
         fi = Signal(4)
@@ -253,20 +256,28 @@ class StatusDisplay(Module):
             If(m.done, NextState("TP_ADDRW")))
         fsm.act("TP_ADDRW", self.resetb.eq(1), *issue(OP_WRITE, TVP_W),
             If(m.done, NextValue(self.tvp_ack, ~m.ackr), NextState("TP_REG")))
-        fsm.act("TP_REG", self.resetb.eq(1), *issue(OP_WRITE, reg_addr),
-            If(m.done, NextState("TP_RSTART")))
+        fsm.act("TP_REG", self.resetb.eq(1), *issue(OP_WRITE, reg_b),
+            If(m.done, If(is_wstep, NextState("TP_WVAL")).Else(NextState("TP_RSTART"))))
+        # 書込ステップ: 値を書いてSTOP
+        fsm.act("TP_WVAL", self.resetb.eq(1), *issue(OP_WRITE, WRVAL),
+            If(m.done, NextState("TP_STOP")))
+        # 読出ステップ: repeated START, 読出アドレス, READ
         fsm.act("TP_RSTART", self.resetb.eq(1), *issue(OP_START),
             If(m.done, NextState("TP_ADDRR")))
         fsm.act("TP_ADDRR", self.resetb.eq(1), *issue(OP_WRITE, TVP_R),
             If(m.done, NextState("TP_READ")))
         fsm.act("TP_READ", self.resetb.eq(1), *issue(OP_READ, nack=1),
             If(m.done,
-                If(regsel==0, NextValue(self.r01, m.rdata)).Else(NextValue(self.r02, m.rdata)),
+                If(step == 0, NextValue(self.rev, m.rdata)),
+                If(step == 2, NextValue(self.wrb, m.rdata)),
                 NextState("TP_STOP")))
         fsm.act("TP_STOP", self.resetb.eq(1), *issue(OP_STOP),
             If(m.done,
-                If(regsel==0, NextValue(regsel,1), NextState("TP_START")
-                  ).Else(NextValue(regsel,0), NextValue(fi,0), NextState("FMT"))))
+                If(step == 2,
+                    NextValue(step, 0), NextValue(fi, 0), NextState("FMT"),
+                ).Else(
+                    NextValue(step, step + 1), NextState("TP_START"),
+                )))
 
         # 4) FORMAT: 動的15文字をテキストRAMへ書込
         faddr = Signal(7); fchar = Signal(8)
@@ -276,10 +287,10 @@ class StatusDisplay(Module):
                 0: [faddr.eq(38), fchar.eq(Mux(self.tvp_ack, ord('A'), ord('N')))],
                 1: [faddr.eq(39), fchar.eq(Mux(self.tvp_ack, ord('C'), ord('A')))],
                 2: [faddr.eq(40), fchar.eq(ord('K'))],
-                3: [faddr.eq(56), fchar.eq(hexch(self.r01[4:8]))],
-                4: [faddr.eq(57), fchar.eq(hexch(self.r01[0:4]))],
-                5: [faddr.eq(72), fchar.eq(hexch(self.r02[4:8]))],
-                6: [faddr.eq(73), fchar.eq(hexch(self.r02[0:4]))],
+                3: [faddr.eq(56), fchar.eq(hexch(self.rev[4:8]))],
+                4: [faddr.eq(57), fchar.eq(hexch(self.rev[0:4]))],
+                5: [faddr.eq(72), fchar.eq(hexch(self.wrb[4:8]))],
+                6: [faddr.eq(73), fchar.eq(hexch(self.wrb[0:4]))],
                 7:  [faddr.eq(88), fchar.eq(hexch(up[28:32]))],
                 8:  [faddr.eq(89), fchar.eq(hexch(up[24:28]))],
                 9:  [faddr.eq(90), fchar.eq(hexch(up[20:24]))],
