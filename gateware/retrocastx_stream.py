@@ -646,16 +646,17 @@ class RetroCastXStream(SoCMini):
                               [audio_pads.dout_dsub, audio_pads.dout_line])
         self.spdif = SpdifDecoder(audio_pads.spdif, sys_clk_freq)
 
-        # --- ステータス表示 OLED (SSD1306 128x64, I2C) ---
-        # TVP7002と共有I2Cバス(SDA=U16, SCL=K18)にFPGAがマスタ接続し常時描画。
-        # (TVP設定I2Cは将来同バスへ相乗り。現状はOLED描画のみ)
-        from retrocastx_oled import Ssd1306Display
-        _oled_io = [("oled_i2c", 0,
-                     Subsignal("scl", Pins("K18")),
-                     Subsignal("sda", Pins("U16")),
-                     IOStandard("LVCMOS33"), Misc("PULLMODE=UP"))]
-        platform.add_extension(_oled_io)
-        self.oled = Ssd1306Display(platform.request("oled_i2c"), sys_clk_freq)
+        # --- ステータス表示 + TVP7002 I2C (共有バス) ---
+        # 1本のI2Cマスタで TVP(0x5C)のRESETB解除/レジスタR/W と OLED(0x3C)描画を時分割。
+        # SDA=U16, SCL=K18, RESETB(TVP)=C18。TVP応答/レジスタ値を OLED にライブ表示。
+        from retrocastx_i2c import StatusDisplay
+        _i2c_io = [("tvp_oled_i2c", 0,
+                    Subsignal("scl",    Pins("K18")),
+                    Subsignal("sda",    Pins("U16")),
+                    Subsignal("resetb", Pins("C18")),
+                    IOStandard("LVCMOS33"), Misc("PULLMODE=UP"))]
+        platform.add_extension(_i2c_io)
+        self.status = StatusDisplay(platform.request("tvp_oled_i2c"), sys_clk_freq)
 
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
         self.streamer = RetroCastXStreamer(
