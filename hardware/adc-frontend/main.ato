@@ -290,26 +290,29 @@ component Dsub15X68k:
 component Pcm1808:
     """TI PCM1808 stereo audio ADC (24bit ΔΣ, I2S/スレーブ動作), TSSOP-14。
 
-    LCSC: 要選定(PCM1808PWR)。
-    注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシート(SLES177)と必ず照合。
+    LCSC: C55513 (PCM1808PWR)。
+    ピン番号はデータシート SLES177B と照合済み(2026-08-08)。
     """
     trait is_atomic_part<manufacturer="TI", partnumber="PCM1808PWR", footprint="parts/TI_PCM1808PWR/TSSOP-14_L5.0-W4.4-P0.65-LS6.4-BL.kicad_mod", symbol="parts/TI_PCM1808PWR/PCM1808PWR.kicad_sym">
     trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C55513", manufacturer="TI", partno="PCM1808PWR">
     trait has_designator_prefix<prefix="U">
-    signal scki ~ pin 1    # システムクロック(256/384/512fs, スレーブ時自動判別)
-    signal bck ~ pin 2     # ビットクロック(64fs)
-    signal lrc ~ pin 3     # LRクロック(fs)
-    signal dgnd ~ pin 4
-    signal vdd ~ pin 5     # デジタル3.3V
-    signal dout ~ pin 6    # I2Sデータ出力
-    signal fmt ~ pin 7     # 0=I2S
-    signal md1 ~ pin 8     # MD1:MD0=00 でスレーブ
-    signal md0 ~ pin 9
-    signal vcc ~ pin 10    # アナログ5V
-    signal agnd ~ pin 11
-    signal vref ~ pin 12   # 基準電圧デカップリング
-    signal vinr ~ pin 13
-    signal vinl ~ pin 14
+    # ピン番号はデータシート SLES177B の Pin Configuration(TSSOP-14)どおり。
+    # 以前は「1から信号を順に並べた仮番号」のままで、VDDとDGNDが入れ替わり(電源逆接)、
+    # MD0に5Vが載り、VinL/VinRも逆という危険な状態だった。
+    signal vref ~ pin 1    # 基準電圧デカップリング
+    signal agnd ~ pin 2
+    signal vcc ~ pin 3     # アナログ5V
+    signal vdd ~ pin 4     # デジタル3.3V
+    signal dgnd ~ pin 5
+    signal scki ~ pin 6    # システムクロック(256/384/512fs, スレーブ時自動判別)
+    signal lrc ~ pin 7     # LRクロック(fs)
+    signal bck ~ pin 8     # ビットクロック(64fs)
+    signal dout ~ pin 9    # I2Sデータ出力
+    signal md0 ~ pin 10    # MD1:MD0=00 でスレーブ
+    signal md1 ~ pin 11
+    signal fmt ~ pin 12    # 0=I2S
+    signal vinl ~ pin 13
+    signal vinr ~ pin 14
 
 
 component AudioJack35:
@@ -343,8 +346,7 @@ component Eeprom24aa025e48:
 
     I2Cアドレス 0b1010_A2A1A0。MAC領域はハードウェア書込み保護済み、
     残り領域(~250B)は個体設定(IP・ボード名等)の保存に使える。
-    SOIC-8/TSSOP-8。LCSC: 要選定。
-    注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
+    SOIC-8。LCSC: C46840。ピン番号は取り込みシンボルと照合済み(2026-08-08)。
     """
     trait is_atomic_part<manufacturer="MICROCHIP", partnumber="24AA025E48-I/SN", footprint="parts/MICROCHIP_24AA025E48_I_SN/SOIC-8_L4.9-W3.9-P1.27-LS6.0-BL.kicad_mod", symbol="parts/MICROCHIP_24AA025E48_I_SN/24AA025E48-I_SN.kicad_sym">
     trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C46840", manufacturer="MICROCHIP", partno="24AA025E48-I/SN">
@@ -370,9 +372,9 @@ component DcJack:
 
 
 component UsbCPowerReceptacle:
-    """USB-C レセプタクル(USB2.0 16pin級)、電源入力用。TYPE-C-31-M-12 想定。LCSC: C165948
+    """USB-C レセプタクル(USB2.0 16pin級)、電源入力用。TYPE-C-31-M-12。LCSC: C165948
 
-    注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
+    パッド名は取り込みシンボルと照合済み(2026-08-08)。
     """
     trait is_atomic_part<manufacturer="韩国韩荣", partnumber="TYPE-C-31-M-12", footprint="parts/UNKNOWN_TYPE_C_31_M_12/USB-C_SMD-TYPE-C-31-M-12_1.kicad_mod", symbol="parts/UNKNOWN_TYPE_C_31_M_12/TYPE-C-31-M-12.kicad_sym">
     trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C165948", manufacturer="韩国韩荣", partno="TYPE-C-31-M-12">
@@ -1258,5 +1260,27 @@ module App:
     tvp.gin_4.override_net_name = "gin4_nc"
     tvp.sogin_1.override_net_name = "sogin1_nc"
     tvp.sogin_2.override_net_name = "sogin2_nc"
+
+    # 電源レールは明示命名する。atopileの自動命名は他ネットの命名状況に依存して
+    # 揺れ(あるレールに明示名を付けると別のレールが素の "hv" に変わる等)、
+    # レイアウト時にどのレールか判別できなくなるため。
+    # 音声用アナログ5V(FB1の出口→PCM1808×2のVCC)
+    fb_audio.p2.override_net_name = "p5v_audio"
+    # override_net_name は「生のElectricalな部品ピン」に付けないと効かない
+    # (ElectricPower の .hv に付けても無視される)。各レールはLDOの出力ピンを使う。
+    supply.ldo_io.vin.override_net_name = "p5v"   # 5V入力(USB-C/DCジャック/LDO入力)
+    supply.ldo_io.out.override_net_name = "p3v3_io"
+    # Ethernetジャックのセンタータップ(Bob Smith終端)。電源ではないが、自動命名だと
+    # 素の "hv" になりレイアウト時に電源と紛らわしい
+    eth.jack.ct.override_net_name = "eth1_ct"
+    eth.jack2.ct.override_net_name = "eth2_ct"
+    supply.ldo_a33.out.override_net_name = "p3v3_a"
+    # FT2232内部1.8V(VREGOUT→VCORE、VPHY/VPLLへフェライト分離給電)
+    ft2232.ft.VREGOUT.override_net_name = "ft_vcore_1v8"
+    # FT2232の水晶ノード(電源ではない)。自動命名だと素の "hv" になり紛らわしい
+    ft2232.xtal.OSC1.override_net_name = "ft_osci"
+    ft2232.xtal.OSC2.override_net_name = "ft_osco"
+    supply.ldo_a19.VOUT.override_net_name = "p1v9_a"
+    supply.ldo_d19.out.override_net_name = "p1v9_d"
 
     gnd.override_net_name = "gnd"
