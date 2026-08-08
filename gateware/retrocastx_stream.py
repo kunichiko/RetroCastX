@@ -201,7 +201,7 @@ class RetroCastXStreamer(LiteXModule):
                 mode_vtotal.eq(capture.meas_vtotal),
                 mode_dotclk.eq(capture.meas_dotclk),
                 mode_hfreq.eq(capture.meas_hfreq * 1000),
-                mode_vfreq.eq(capture.meas_vfreq * 1000),
+                mode_vfreq.eq(capture.meas_vfreq),   # 既にmHz(8秒積算で0.125Hz分解能)
             ]
         else:
             self.comb += [
@@ -684,12 +684,21 @@ _capture_io = [
 # XOは専用クロックピン F1=PCLKC6_1 で受けて aud ドメインを駆動し、その clock を
 # D2(P3 147)から出して両PCM1808のSCKIへ配る。P3のクロック対応ボールはE2=151のみで
 # DATACLKが使用中のため、XOを直接P3で受けることはできない。
+#
+# I2Sの出力(mclk_out/bck/lrck)は SLEWRATE=SLOW + DRIVE=4mA にする。試作配線では
+# これらのジャンパがアナログRGBを直交して横切っており、特に12.288MHzのMCLKの
+# 速いエッジが容量結合して映像に点状ノイズとして現れる(RGB555の1LSBは約22mVなので
+# 数mV〜数十mVの結合で見える)。最大12.288MHzと低速なのでエッジを鈍らせても
+# 波形品質には余裕があり、放射・結合を確実に減らせる。
 _audio_io = [
     ("audio", 0,
         Subsignal("mclk",      Pins("F1")),   # ← 12.288MHz XO(PCLKC6_1, P4 pin130)
-        Subsignal("mclk_out",  Pins("D2")),   # → PCM1808×2 SCKI(P3 pin147, バッファ)
-        Subsignal("bck",       Pins("B1")),   # → PCM1808×2(64fs, P3 pin143)
-        Subsignal("lrck",      Pins("C1")),   # → PCM1808×2(fs, P3 pin145)
+        Subsignal("mclk_out",  Pins("D2"),    # → PCM1808×2 SCKI(P3 pin147, バッファ)
+                  Misc("SLEWRATE=SLOW"), Misc("DRIVE=4")),
+        Subsignal("bck",       Pins("B1"),    # → PCM1808×2(64fs, P3 pin143)
+                  Misc("SLEWRATE=SLOW"), Misc("DRIVE=4")),
+        Subsignal("lrck",      Pins("C1"),    # → PCM1808×2(fs, P3 pin145)
+                  Misc("SLEWRATE=SLOW"), Misc("DRIVE=4")),
         Subsignal("dout_dsub", Pins("C2")),   # ← U1(D-SUB15音声, P3 pin141)
         Subsignal("dout_line", Pins("A3")),   # ← U2(LINE入力, P3 pin139)
         Subsignal("spdif",     Pins("E4")),   # ← TOSLINK受信モジュール(P4 pin128)
