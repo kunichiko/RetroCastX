@@ -832,10 +832,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", action="store_true")
     ap.add_argument("--revision", default="7.0", help="i5 board revision")
-    # タイミングは with_sys_datapath=True + sys 50MHz で収束。step2はseed3で
-    # eth_rx 130.8/125MHz, sys 52.9/50MHz(seed2はeth_rx 123.5MHzで僅かに未達)。
-    # seedは今後のリグレッション時の調整用ノブとして残す
-    ap.add_argument("--seed", type=int, default=3, help="nextpnr placement seed")
+    # タイミングは with_sys_datapath=True + sys 45MHz で収束するが、eth_rx の125MHzが
+    # 常に一番きつく、ロジックを足すと落ちる。実測タイミング(周波数カウンタ)を
+    # 追加した版では seed3 が 119.7MHz で未達になり、seed2 で 132.2MHz PASS になった。
+    # ビルド後は必ず全ドメインの PASS/FAIL を確認すること(dataclk だけ見ると
+    # eth_rx の違反を見落とす)。
+    ap.add_argument("--seed", type=int, default=2, help="nextpnr placement seed")
     ap.add_argument("--no-capture", action="store_true",
                     help="実キャプチャを無効化しテストパターンを送出")
     # 入力mux(0x19)の切り替え。既定は全て _3 = 基板配線。緑のクランプ異常の
