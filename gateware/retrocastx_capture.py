@@ -38,7 +38,10 @@ class TvpCapture(Module):
     def __init__(self, pads, width=1024, height=512, nface=8, fifo_depth=4,
                  hs_active_low=True, vs_active_low=True,
                  hs_offset=0, vs_offset=0, vs_min_rows=0, vtotal=0,
-                 vs_row_at_sync=0, hs_total=0, sys_clk_freq=45e6):
+                 vs_row_at_sync=0, hs_total=0, sys_clk_freq=45e6, measure=True):
+        # measure: 実測タイミング(周波数カウンタ)を作るか。34.8MHzで回る32bitカウンタが
+        #   増えるため、ノイズ切り分け用に無効化できるようにしてある。無効時はMODEの
+        #   諸元が0になる。
         # sys_clk_freq: 実測タイミングの1秒窓を作るのに使う(sysは25MHz水晶由来で正確)。
         # hs_total: 1ライン当たりのDATACLK数(=H-PLL分周比)。hs_offset+width がこれを
         #   超えると、行末側の列には一度も書き込まれずリングバッファの古い内容が
@@ -102,7 +105,15 @@ class TvpCapture(Module):
             layout, cd_from="pix", cd_to="sys", depth=max(fifo_depth, 4))
 
         # ================= pix ドメイン =================
-        r, g, b = pads.r, pads.g, pads.b
+        # RGB入力は必ず pix ドメインで1段レジスタに受ける。
+        # 以前はピンから組合せ論理(ビット切り出し)を経てBRAMの書き込みデータ端子へ
+        # 直結しており、ピン→BRAMの経路遅延が配置配線任せだった。DATACLKの分配遅延と
+        # データ経路遅延の差が実効サンプリング点を決めるので、ビルドごとに配置が変わると
+        # サンプリング点が動き、取りこぼし(下位ビットの化け=点状ノイズ)を起こし得る。
+        # レジスタで受ければピン→FFが短く固定され、以降はnextpnrが時間検証できる
+        # 内部経路になる。データはDATACLK同期なので1段でよい(非同期信号ではない)。
+        r = Signal(8); g = Signal(8); b = Signal(8)
+        self.sync.pix += [r.eq(pads.r), g.eq(pads.g), b.eq(pads.b)]
         # 入力2段FF(HSOUT/VSOUTはDATACLK同期だが念のため)
         hs0 = Signal(); vs0 = Signal(); hs = Signal(); vs = Signal()
         self.sync.pix += [hs0.eq(pads.hs), vs0.eq(pads.vs),
@@ -263,46 +274,47 @@ class TvpCapture(Module):
                     frame.eq(frame + 1), field.eq(~field)),
             ]
 
-        # --- 実測タイミング: 1秒窓(sysクロック基準=25MHz水晶由来で正確)で
-        #     DATACLK/HSYNC/VSYNC を数える。窓が1秒ちょうどなのでカウント値がHz。
-        #     htotal/vtotal は行内カウンタ/行カウンタをそのままラッチして得る。
-        m_clk = Signal(32); m_hs = Signal(32); m_vs = Signal(32)
-        s_clk = Signal(32); s_hs = Signal(32); s_vs = Signal(32)
-        s_htot = Signal(16); s_vtot = Signal(16)
-        htot_now = Signal(16); vtot_now = Signal(16)
-        self.sync.pix += [
-            If(hs_edge, htot_now.eq(x + 1)),   # x はライン先頭で0 → 次のedgeで period-1
-            If(vs_edge, vtot_now.eq(vrow)),    # vrow = 前回VSYNCからのHSYNC数
-        ]
-        # sys → pix へ「今のカウンタを確定して0に戻せ」のパルスを送る
-        self.submodules._samp = _samp = PulseSynchronizer("sys", "pix")
-        self.sync.pix += [
-            If(_samp.o,
-                s_clk.eq(m_clk), s_hs.eq(m_hs), s_vs.eq(m_vs),
-                s_htot.eq(htot_now), s_vtot.eq(vtot_now),
-                m_clk.eq(0), m_hs.eq(hs_edge), m_vs.eq(vs_edge),
-            ).Else(
-                m_clk.eq(m_clk + 1),
-                If(hs_edge, m_hs.eq(m_hs + 1)),
-                If(vs_edge, m_vs.eq(m_vs + 1)),
-            ),
-        ]
-        # sys側: 1秒ごとにサンプルパルスを出し、少し待って確定値を取り込む。
-        # s_* はパルス後しか変化しないので、待ってから MultiReg で受ければ安全。
-        WIN = int(sys_clk_freq)
-        win = Signal(max=WIN)
-        wait = Signal(6)
-        for src, dst in ((s_clk, self.meas_dotclk), (s_hs, self.meas_hfreq),
-                         (s_vs, self.meas_vfreq), (s_htot, self.meas_htotal),
-                         (s_vtot, self.meas_vtotal)):
-            stable = Signal(len(src))
-            self.specials += MultiReg(src, stable, "sys")
-            self.sync += If(wait == 1, dst.eq(stable))
-        self.comb += _samp.i.eq(win == WIN - 1)
-        self.sync += [
-            If(win == WIN - 1, win.eq(0)).Else(win.eq(win + 1)),
-            If(win == WIN - 1, wait.eq(32)).Elif(wait != 0, wait.eq(wait - 1)),
-        ]
+        if measure:
+            # --- 実測タイミング: 1秒窓(sysクロック基準=25MHz水晶由来で正確)で
+            #     DATACLK/HSYNC/VSYNC を数える。窓が1秒ちょうどなのでカウント値がHz。
+            #     htotal/vtotal は行内カウンタ/行カウンタをそのままラッチして得る。
+            m_clk = Signal(32); m_hs = Signal(32); m_vs = Signal(32)
+            s_clk = Signal(32); s_hs = Signal(32); s_vs = Signal(32)
+            s_htot = Signal(16); s_vtot = Signal(16)
+            htot_now = Signal(16); vtot_now = Signal(16)
+            self.sync.pix += [
+                If(hs_edge, htot_now.eq(x + 1)),   # x はライン先頭で0 → 次のedgeで period-1
+                If(vs_edge, vtot_now.eq(vrow)),    # vrow = 前回VSYNCからのHSYNC数
+            ]
+            # sys → pix へ「今のカウンタを確定して0に戻せ」のパルスを送る
+            self.submodules._samp = _samp = PulseSynchronizer("sys", "pix")
+            self.sync.pix += [
+                If(_samp.o,
+                    s_clk.eq(m_clk), s_hs.eq(m_hs), s_vs.eq(m_vs),
+                    s_htot.eq(htot_now), s_vtot.eq(vtot_now),
+                    m_clk.eq(0), m_hs.eq(hs_edge), m_vs.eq(vs_edge),
+                ).Else(
+                    m_clk.eq(m_clk + 1),
+                    If(hs_edge, m_hs.eq(m_hs + 1)),
+                    If(vs_edge, m_vs.eq(m_vs + 1)),
+                ),
+            ]
+            # sys側: 1秒ごとにサンプルパルスを出し、少し待って確定値を取り込む。
+            # s_* はパルス後しか変化しないので、待ってから MultiReg で受ければ安全。
+            WIN = int(sys_clk_freq)
+            win = Signal(max=WIN)
+            wait = Signal(6)
+            for src, dst in ((s_clk, self.meas_dotclk), (s_hs, self.meas_hfreq),
+                             (s_vs, self.meas_vfreq), (s_htot, self.meas_htotal),
+                             (s_vtot, self.meas_vtotal)):
+                stable = Signal(len(src))
+                self.specials += MultiReg(src, stable, "sys")
+                self.sync += If(wait == 1, dst.eq(stable))
+            self.comb += _samp.i.eq(win == WIN - 1)
+            self.sync += [
+                If(win == WIN - 1, win.eq(0)).Else(win.eq(win + 1)),
+                If(win == WIN - 1, wait.eq(32)).Elif(wait != 0, wait.eq(wait - 1)),
+            ]
 
         # ================= sys ドメイン =================
         self.comb += [

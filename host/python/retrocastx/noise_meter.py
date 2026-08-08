@@ -72,14 +72,40 @@ def main():
         m = mx[mx <= 3 * LSB]
         mean_dark.append(float(m.mean()) if m.size else 0.0)
 
+    # --- 時間差分(内容に依存しない指標) ---
+    # 静止した絵はフレーム間で一致するので差分に出ない。ランダムノイズだけが残る。
+    # 動く絵(レベルメーター等)がある画面では動体も混ざるので、比較は同じ画面で行う。
+    stack = np.stack([f.astype(np.int16) for f in frames])   # (N,H,W,3)
+    med = np.median(stack, axis=0)                # 各画素の中央値=「本来の絵」
+    dev = np.abs(stack - med).max(axis=3)         # 中央値からのずれ(RGB最大)
+    dark_mask = med.max(axis=2) <= 3 * LSB        # 暗部だけを見る
+    dark_dev = dev[:, dark_mask] if dark_mask.any() else dev.reshape(len(frames), -1)
+    flick = float((dark_dev > 0).mean())          # 暗部でちらつく画素の割合
+    flick_lvl = float(dark_dev[dark_dev > 0].mean()) if (dark_dev > 0).any() else 0.0
+    temporal_std = float(stack.std(axis=0).mean())
+
     npx = frames[0].shape[0] * frames[0].shape[1]
     head = f"[{args.label}] " if args.label else ""
     print(f"{head}{len(frames)} フレーム  {frames[0].shape[1]}x{frames[0].shape[0]}")
+    print("  --- 内容に依存する指標(同じ静止画面同士でのみ比較可)---")
     print(f"  dark_frac   {np.mean(dark_frac):.4f}  (完全な黒の割合)")
     print(f"  speckle     {np.mean(speckle):.0f} 画素/フレーム "
           f"(1〜3LSBだけ光る点ノイズ)")
     print(f"  speckle_ppm {np.mean(speckle) / npx * 1e6:.0f} ppm")
     print(f"  mean_dark   {np.mean(mean_dark):.2f} / 255")
+    print("  --- 時間差分(内容にほぼ依存しない。これで比較する)---")
+    print(f"  flicker     {flick*100:.2f} %  (暗部でフレーム毎に値が変わる画素の割合)")
+    print(f"  flick_lvl   {flick_lvl:.2f} / 255  (そのずれの平均振幅)")
+    print(f"  temporal_std {temporal_std:.3f} / 255  (全画素の時間標準偏差)")
+    # チャネル別(1本だけ外して比較する切り分けに使う。同期は繋いだままにすること)
+    print("  --- チャネル別の時間標準偏差 ---")
+    for ci, cname in enumerate("RGB"):
+        cstd = float(stack[:, :, :, ci].std(axis=0).mean())
+        # 暗部限定(明部の動きを除く)
+        dmask = med[:, :, ci] <= 3 * LSB
+        cdark = (float(stack[:, :, :, ci].std(axis=0)[dmask].mean())
+                 if dmask.any() else 0.0)
+        print(f"  {cname}  全体 {cstd:6.3f}   暗部 {cdark:6.3f}")
     return 0
 
 

@@ -42,7 +42,7 @@ class DUT(Module):
         self.pads = _Pads()
         self.port = _FakeUDPPort()
         self.submodules.cap = TvpCapture(self.pads, width=W, height=H, nface=NF,
-                                         hs_offset=0, vs_offset=VOFF)
+                                         hs_offset=1, vs_offset=VOFF)
         self.submodules.streamer = RetroCastXStreamer(
             self.port, SYS, width=W, height=H, fps=200.0,
             announce_period=0.02, mode_period=0.01, sub_timeout=0.05,

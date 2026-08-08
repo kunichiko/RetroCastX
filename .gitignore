@@ -30,3 +30,9 @@ client/target/
 
 # フラッシュ退避(工場LED受信カードFW等、コミット不要のバイナリ)
 gateware/backups/
+
+# 保管したビットストリーム(A/B比較用。バイナリはコミットしない)
+gateware/bitstreams/
+
+# 実機から録音した確認用WAV(生成物)
+*.wav

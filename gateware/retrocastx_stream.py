@@ -712,7 +712,8 @@ class RetroCastXStream(SoCMini):
     # (S/PDIFのUI分解能も45MHzで7.3サイクル/UI@48kHzと十分)
     def __init__(self, revision="7.0", sys_clk_freq=int(45e6), capture=True,
                  green_input=3, red_input=3, blue_input=3,
-                 pll_divide=1104, hs_offset=151, vs_row_at_sync=525):
+                 pll_divide=1104, hs_offset=152, vs_row_at_sync=525,
+                 measure=True, mclk_out=True):
         from litex_boards.platforms import colorlight_i5
         from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
         from liteeth.core import LiteEthUDPIPCore
@@ -753,7 +754,13 @@ class RetroCastXStream(SoCMini):
         # XO入力をそのまま出し直して両PCM1808のSCKIへ配る(P3 147)。ADCはスレーブで
         # SCKIは過サンプリング用、実データはFPGAが出すBCK/LRCKに従うので、出力段で
         # 数nsの遅延が付いても問題にならない。
-        self.comb += audio_pads.mclk_out.eq(ClockSignal("aud"))
+        # mclk_out=False なら0固定にする: 試作配線ではこの12.288MHzがアナログRGBを
+        # 横切っており、実測でノイズ源であることが確認できたため、切り分け用に
+        # 止められるようにしてある(音声は動かなくなる)。
+        if mclk_out:
+            self.comb += audio_pads.mclk_out.eq(ClockSignal("aud"))
+        else:
+            self.comb += audio_pads.mclk_out.eq(0)
         self.i2s = I2sCapture(audio_pads.bck, audio_pads.lrck,
                               [audio_pads.dout_dsub, audio_pads.dout_line])
         self.spdif = SpdifDecoder(audio_pads.spdif, sys_clk_freq)
@@ -800,14 +807,16 @@ class RetroCastXStream(SoCMini):
             #   512行。vtotal568のうちブランキング56行、その上側43行という妥当な値で、
             #   実機で文字枠が画面中央(row256)に来る位置。実測から算出した調整値。
             # hs_offset: 水平バックポーチ[DATACLK]。pll_divide を変えるとサンプルレートが
-            #   変わるので、この値も同じ比率で見直す必要がある。
+            #   変わるので、この値も同じ比率で見直す必要がある。RGB入力を1段レジスタで
+            #   受けるようにした分データが1サイクル遅れるので、151→152 に補正している。
             self.capture = TvpCapture(cap_pads, width=1024, height=512,
                                       hs_active_low=True, vs_active_low=True,
                                       vtotal=568, vs_min_rows=497,
                                       vs_row_at_sync=vs_row_at_sync,
                                       hs_offset=hs_offset, vs_offset=0,
                                       hs_total=pll_divide or 1650,
-                                      sys_clk_freq=sys_clk_freq)
+                                      sys_clk_freq=sys_clk_freq,
+                                      measure=measure)
             capture_obj = self.capture
 
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
@@ -843,10 +852,14 @@ def main():
                     help="H-PLL帰還分周比=1ライン当たりDATACLK数。入力の実水平トータル"
                          "[ドット]に合わせると1サンプル=1ドット(X68000 31kHz≒1104)。"
                          "0でTVP既定1650のまま")
-    ap.add_argument("--hs-offset", type=int, default=151,
+    ap.add_argument("--hs-offset", type=int, default=152,
                     help="水平バックポーチ[DATACLK]。増やすと画が左へ寄る")
     ap.add_argument("--vs-row-at-sync", type=int, default=525,
                     help="VSYNC時にrowへ入れる値。増やすと画が下へ寄る")
+    ap.add_argument("--no-measure", action="store_true",
+                    help="実測タイミング(周波数カウンタ)を作らない。ノイズ切り分け用")
+    ap.add_argument("--no-mclk-out", action="store_true",
+                    help="P3 147のMCLK出力を0固定にする(音声は止まる)。ノイズ切り分け用")
     args = ap.parse_args()
     soc = RetroCastXStream(revision=args.revision, capture=not args.no_capture,
                            green_input=args.green_input,
@@ -854,7 +867,9 @@ def main():
                            blue_input=args.blue_input,
                            pll_divide=args.pll_divide,
                            hs_offset=args.hs_offset,
-                           vs_row_at_sync=args.vs_row_at_sync)
+                           vs_row_at_sync=args.vs_row_at_sync,
+                           measure=not args.no_measure,
+                           mclk_out=not args.no_mclk_out)
     builder = Builder(soc, output_dir="build/colorlight_i5", compile_software=False)
     builder.build(run=args.build, seed=args.seed)
 

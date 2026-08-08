@@ -31,7 +31,7 @@ class Wrap(Module):
         self.submodules.cap = TvpCapture(
             self.pads, width=W, height=H, nface=NF,
             hs_active_low=True, vs_active_low=True,
-            hs_offset=0, vs_offset=VOFF)
+            hs_offset=1, vs_offset=VOFF)
 
 
 def expect_pix(x, row):
