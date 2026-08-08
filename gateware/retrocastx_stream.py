@@ -679,12 +679,15 @@ _capture_io = [
         IOStandard("LVCMOS33")),
 ]
 
-# hardware/adc-frontend のピン割当。I2Sデータ/BCK/LRCKはP3後半(139-145)、
-# S/PDIFとMCLKはP4(128/130)。MCLKは aud クロックドメインを駆動するので専用クロック
-# ピン F1=PCLKC6_1 に置く(P3のクロック対応はE2=151のみでDATACLKが使用中)。
+# hardware/adc-frontend のピン割当。ADC側の信号はP3に集約(139-147)、
+# S/PDIFとXO入力のみP4(128/130)。
+# XOは専用クロックピン F1=PCLKC6_1 で受けて aud ドメインを駆動し、その clock を
+# D2(P3 147)から出して両PCM1808のSCKIへ配る。P3のクロック対応ボールはE2=151のみで
+# DATACLKが使用中のため、XOを直接P3で受けることはできない。
 _audio_io = [
     ("audio", 0,
-        Subsignal("mclk",      Pins("F1")),   # 12.288MHz XO入力(PCLKC6_1, P4 pin130)
+        Subsignal("mclk",      Pins("F1")),   # ← 12.288MHz XO(PCLKC6_1, P4 pin130)
+        Subsignal("mclk_out",  Pins("D2")),   # → PCM1808×2 SCKI(P3 pin147, バッファ)
         Subsignal("bck",       Pins("B1")),   # → PCM1808×2(64fs, P3 pin143)
         Subsignal("lrck",      Pins("C1")),   # → PCM1808×2(fs, P3 pin145)
         Subsignal("dout_dsub", Pins("C2")),   # ← U1(D-SUB15音声, P3 pin141)
@@ -738,6 +741,10 @@ class RetroCastXStream(SoCMini):
         self.comb += self.cd_aud.clk.eq(audio_pads.mclk)
         self.specials += AsyncResetSynchronizer(self.cd_aud, ResetSignal("sys"))
         platform.add_period_constraint(audio_pads.mclk, 1e9 / 12.288e6)
+        # XO入力をそのまま出し直して両PCM1808のSCKIへ配る(P3 147)。ADCはスレーブで
+        # SCKIは過サンプリング用、実データはFPGAが出すBCK/LRCKに従うので、出力段で
+        # 数nsの遅延が付いても問題にならない。
+        self.comb += audio_pads.mclk_out.eq(ClockSignal("aud"))
         self.i2s = I2sCapture(audio_pads.bck, audio_pads.lrck,
                               [audio_pads.dout_dsub, audio_pads.dout_line])
         self.spdif = SpdifDecoder(audio_pads.spdif, sys_clk_freq)

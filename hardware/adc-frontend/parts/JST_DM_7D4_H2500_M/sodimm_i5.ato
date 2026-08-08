@@ -96,12 +96,14 @@ component SoDimmI5:
     signal io_c3 ~ pin 135
     signal io_e3 ~ pin 137
     signal io_e2 ~ pin 151   # PCLKC7_0: P3唯一のクロック対応ピン(DATACLK用)
-    # 音声系(P3後半へ移設)。いずれもクロック非対応ボールだがデータ/低速出力なので可。
-    # MCLKだけは専用クロックピンが要るためP4のF1(=PCLKC6_1)に残置(下記)。
+    # 音声系(ADC側の信号はP3に集約)。いずれもクロック非対応ボールだが、データ入力と
+    # 低速出力なので可。XOの受けだけは専用クロックピンが要るのでP4のF1(下記)を使い、
+    # FPGAでバッファした MCLK を 147 から出す。
     signal io_a3 ~ pin 139   # I2S_DOUT_LINE
     signal io_c2 ~ pin 141   # I2S_DOUT_DSUB
     signal io_b1 ~ pin 143   # AUD_BCK
     signal io_c1 ~ pin 145   # AUD_LRCK
+    signal io_d2 ~ pin 147   # AUD_MCLK (FPGA出力、XOバッファ)
 
     # --- FPGA GPIO: 現行 HeaderExtP4 のタイミング/I2C/音声 ---
     signal io_f2 ~ pin 155   # DATACLK (クロック対応ボール)

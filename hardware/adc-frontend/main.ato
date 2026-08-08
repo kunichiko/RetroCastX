@@ -1025,14 +1025,18 @@ module App:
     # クロック系: 12.288MHz XO(=256fs@48kHz)を両ADCのSCKIとFPGA(F1=PCLKC6_1)へ。
     # BCK(64fs)/LRCK(fs)はFPGAがMCLKから分周して両ADCへ共通供給。DOUTのみ個別
     # → 2系統のアナログ音声を同時キャプチャ可能。S/PDIFはゲートウェアでデコード。
-    signal audio_mclk
+    # MCLKは2ネットに分ける: XO→FPGA(P4 130, 専用クロックピン)で受け、FPGA内で
+    # バッファして P3 147 から出し、そこから両ADCのSCKIへ配る。こうするとADC側の
+    # 信号(SCKI/BCK/LRCK/DOUT×2)が全てP3に集まり、試作の配線が簡単になる。
+    signal audio_mclk_in     # XO出力 → SO-DIMM 130 (F1=PCLKC6_1)
+    signal audio_mclk        # SO-DIMM 147 (D2) → 両ADCのSCKI
     signal audio_bck
     signal audio_lrck
     xo_audio = new Xo12M288
     xo_audio.vcc ~ p3v3_io.hv
     xo_audio.en ~ p3v3_io.hv
     xo_audio.gnd ~ gnd
-    xo_audio.out ~ audio_mclk
+    xo_audio.out ~ audio_mclk_in
     c_xo_audio = new C100nF_0402
     xo_audio.vcc ~> c_xo_audio ~> gnd
 
@@ -1093,16 +1097,17 @@ module App:
     spdif.vcc ~> c_spdif ~> gnd
 
     # --- 音声系をP4に集約(pin128-138, 順序整理) ---
-    # I2Sデータ/BCK/LRCKはP3後半(139-145)、S/PDIFはP4(128)。
-    # MCLKだけはP4のF1(=PCLKC6_1)に残す: 12.288MHz XOで aud クロックドメインを
-    # 駆動するため専用クロックピンが要る。P3のクロック対応はE2(pin151)のみで
-    # DATACLKが使用中のため、P3には移せない。
+    # ADC側の信号はすべてP3に集約(139-147)。S/PDIFとXO入力のみP4(128/130)。
+    # MCLKはXOをP4 130(F1=PCLKC6_1, 専用クロックピン)で受け、FPGAでバッファして
+    # P3 147から出す。P3のクロック対応ボールはE2(pin151)のみでDATACLKが使用中なので
+    # XOを直接P3で受けることはできないため、この経路にしている。
     sodimm.io_e4 ~ spdif.out            # pin128 (E4) S/PDIFビットストリーム
-    sodimm.io_f1 ~ audio_mclk           # pin130 (F1=PCLKC6_1) 12.288MHz XO入力
+    sodimm.io_f1 ~ audio_mclk_in        # pin130 (F1=PCLKC6_1) XO 12.288MHz 入力
     sodimm.io_a3 ~ adc_line.adc.dout    # pin139 (A3) I2S DOUT(LINE入力)
     sodimm.io_c2 ~ adc_dsub.adc.dout    # pin141 (C2) I2S DOUT(DSUB音声)
     sodimm.io_b1 ~ audio_bck            # pin143 (B1) FPGA出力
     sodimm.io_c1 ~ audio_lrck           # pin145 (C1) FPGA出力
+    sodimm.io_d2 ~ audio_mclk           # pin147 (D2) FPGA出力(MCLKバッファ)→両ADC
 
     # --- ArgusX(RGBセレクタ)制御コネクタ: I2CバスをTVP7002と共有 ---
     j11_argus = new HeaderArgus
