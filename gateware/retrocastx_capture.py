@@ -37,7 +37,10 @@ class TvpCapture(Module):
     def __init__(self, pads, width=1024, height=512, nface=8, fifo_depth=4,
                  hs_active_low=True, vs_active_low=True,
                  hs_offset=0, vs_offset=0, vs_min_rows=0, vtotal=0,
-                 vs_row_at_sync=0):
+                 vs_row_at_sync=0, hs_total=0):
+        # hs_total: 1ライン当たりのDATACLK数(=H-PLL分周比)。hs_offset+width がこれを
+        #   超えると、行末側の列には一度も書き込まれずリングバッファの古い内容が
+        #   残って見える。その範囲を毎ライン先頭(バックポーチ期間)に黒で埋める。
         # vs_row_at_sync (vtotal時のみ): VSYNC検出時に row へ入れる値。既定0=
         #   「キャプチャ窓の先頭=VSYNC」。N を指定すると窓はVSYNCの N 行手前から
         #   始まる(=映像がN行下がって見える)。フレーム境界(frameの歩進)は常に
@@ -134,15 +137,42 @@ class TvpCapture(Module):
         ]
         xpix   = Signal(16)                       # 有効ピクセルx(= x - hs_offset)
         active = Signal()
+        pix_we = Signal()                         # 画素ペア書込(末尾クリアと区別)
+        # entry = xpix/2(entry_bits幅に切出)。xpix[1:]は15bit幅なので明示スライス
+        # しないと face がアドレス上位へ押し出される
+        pix_adr = Signal(entry_bits)
         self.comb += [
             xpix.eq(x - hs_offset),
             active.eq((x >= hs_offset) & (xpix < width) & row_ok),
-            # entry = xpix/2(entry_bits幅に切出), 面=face。xpix[1:]は15bit幅なので
-            # 明示スライスしないと face がアドレス上位へ押し出される
-            wr.adr.eq(Cat(xpix[1:1 + entry_bits], face)),
-            wr.dat_w.eq(Cat(pair_lo, pix555)),    # {奇数px, 偶数px}
-            wr.we.eq(active & xpix[0]),           # 奇数pxが揃った時に1ペア書込
+            pix_we.eq(active & xpix[0]),          # 奇数pxが揃った時に1ペア書込
+            pix_adr.eq(xpix[1:1 + entry_bits]),
         ]
+
+        # 窓が行末を超える分(= 毎ライン書かれないままリングの古い内容が見える列)を
+        # ライン先頭のバックポーチ期間に黒で埋める。1サイクル1エントリ。
+        if hs_total and hs_offset + width > hs_total:
+            first_unwritten = (hs_total - hs_offset) // 2
+            n_clear = entries - first_unwritten
+            assert 0 < n_clear <= hs_offset, (
+                f"末尾クリア {n_clear} entry はバックポーチ {hs_offset} cyc に収まらない")
+            clr = Signal(max=n_clear + 1, reset=n_clear)   # n_clear = 完了/待機
+            clr_busy = Signal()
+            clr_adr = Signal(entry_bits)
+            self.comb += [clr_busy.eq(clr < n_clear),
+                          clr_adr.eq(first_unwritten + clr)]
+            self.sync.pix += If(hs_edge, clr.eq(0)).Elif(clr_busy, clr.eq(clr + 1))
+            self.comb += If(clr_busy,
+                wr.adr.eq(Cat(clr_adr, face)), wr.dat_w.eq(0), wr.we.eq(1),
+            ).Else(
+                wr.adr.eq(Cat(pix_adr, face)),
+                wr.dat_w.eq(Cat(pair_lo, pix555)), wr.we.eq(pix_we),
+            )
+        else:
+            self.comb += [
+                wr.adr.eq(Cat(pix_adr, face)),
+                wr.dat_w.eq(Cat(pair_lo, pix555)),   # {奇数px, 偶数px}
+                wr.we.eq(pix_we),
+            ]
 
         # メタ push(hs_edge時、直前ラインが有効(row_ok)かつ1画素以上書いた場合)。
         # FIFO満杯なら drop。
@@ -164,7 +194,7 @@ class TvpCapture(Module):
         ]
         self.sync.pix += [
             If(active & ~xpix[0], pair_lo.eq(pix555)),  # 偶数x: 低位に保持
-            If(wr.we, wrote.eq(1)),
+            If(pix_we, wrote.eq(1)),   # 末尾クリアでは立てない(黒だけの行を送らない)
             If(x != 0xFFFF, x.eq(x + 1)),               # 行内カウンタ(飽和)
         ]
         if vtotal:

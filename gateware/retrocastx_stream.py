@@ -677,7 +677,8 @@ class RetroCastXStream(SoCMini):
     # 50MHzは音声パス追加後にタイミングが閉じなくなったため下げた
     # (S/PDIFのUI分解能も45MHzで7.3サイクル/UI@48kHzと十分)
     def __init__(self, revision="7.0", sys_clk_freq=int(45e6), capture=True,
-                 green_input=3, red_input=3, blue_input=3):
+                 green_input=3, red_input=3, blue_input=3,
+                 pll_divide=1104, hs_offset=151, vs_row_at_sync=525):
         from litex_boards.platforms import colorlight_i5
         from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
         from liteeth.core import LiteEthUDPIPCore
@@ -732,7 +733,8 @@ class RetroCastXStream(SoCMini):
         # I2Cは100kHz(長い手配線+弱プルアップでも読出しの取りこぼしを避ける)
         self.status = StatusDisplay(platform.request("tvp_oled_i2c"), sys_clk_freq,
                                     i2c_freq=100e3, green_input=green_input,
-                                    red_input=red_input, blue_input=blue_input)
+                                    red_input=red_input, blue_input=blue_input,
+                                    pll_divide=pll_divide)
 
         # --- TVP7002 映像キャプチャ(cd_pix=DATACLK)---
         capture_obj = None
@@ -759,11 +761,14 @@ class RetroCastXStream(SoCMini):
             #   過ぎた所でrowが0(=キャプチャ窓の先頭)になる → 窓はVSYNCの43行後から
             #   512行。vtotal568のうちブランキング56行、その上側43行という妥当な値で、
             #   実機で文字枠が画面中央(row256)に来る位置。実測から算出した調整値。
+            # hs_offset: 水平バックポーチ[DATACLK]。pll_divide を変えるとサンプルレートが
+            #   変わるので、この値も同じ比率で見直す必要がある。
             self.capture = TvpCapture(cap_pads, width=1024, height=512,
                                       hs_active_low=True, vs_active_low=True,
                                       vtotal=568, vs_min_rows=497,
-                                      vs_row_at_sync=525,
-                                      hs_offset=340, vs_offset=0)
+                                      vs_row_at_sync=vs_row_at_sync,
+                                      hs_offset=hs_offset, vs_offset=0,
+                                      hs_total=pll_divide or 1650)
             capture_obj = self.capture
 
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
@@ -794,11 +799,23 @@ def main():
                     help="赤に使うTVPの RIN_n (既定3=基板配線)")
     ap.add_argument("--blue-input", type=int, default=3, choices=(1, 2, 3),
                     help="青に使うTVPの BIN_n (既定3=基板配線)")
+    # 画枠の調整ノブ(実機を見ながら追い込む)
+    ap.add_argument("--pll-divide", type=int, default=1104,
+                    help="H-PLL帰還分周比=1ライン当たりDATACLK数。入力の実水平トータル"
+                         "[ドット]に合わせると1サンプル=1ドット(X68000 31kHz≒1104)。"
+                         "0でTVP既定1650のまま")
+    ap.add_argument("--hs-offset", type=int, default=151,
+                    help="水平バックポーチ[DATACLK]。増やすと画が左へ寄る")
+    ap.add_argument("--vs-row-at-sync", type=int, default=525,
+                    help="VSYNC時にrowへ入れる値。増やすと画が下へ寄る")
     args = ap.parse_args()
     soc = RetroCastXStream(revision=args.revision, capture=not args.no_capture,
                            green_input=args.green_input,
                            red_input=args.red_input,
-                           blue_input=args.blue_input)
+                           blue_input=args.blue_input,
+                           pll_divide=args.pll_divide,
+                           hs_offset=args.hs_offset,
+                           vs_row_at_sync=args.vs_row_at_sync)
     builder = Builder(soc, output_dir="build/colorlight_i5", compile_software=False)
     builder.build(run=args.build, seed=args.seed)
 

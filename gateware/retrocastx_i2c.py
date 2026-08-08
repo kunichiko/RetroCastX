@@ -160,7 +160,12 @@ class StatusDisplay(Module):
     """共有I2C(SDA/SCL) + RESETB を使い、TVP7002の応答/レジスタを読み OLEDに表示。"""
     def __init__(self, pads=None, sys_clk_freq=45e6, i2c_freq=400e3,
                  tvp_addr=0x5C, oled_addr=0x3C,
-                 green_input=3, red_input=3, blue_input=3):
+                 green_input=3, red_input=3, blue_input=3, pll_divide=0):
+        # pll_divide: H-PLL帰還分周比(=1ライン当たりのDATACLK数)。0なら書かない
+        #   (TVP既定1650)。入力の実水平トータル[ドット]に合わせると1サンプル=1ドットに
+        #   なる。既定1650のままだと実htotal(X68000 31kHz≒1104)より細かくサンプルする
+        #   ので、有効領域がキャプチャ幅1024を超えて右が切れる。
+        assert pll_divide == 0 or 1 <= pll_divide <= 0xFFF
         # {green,red,blue}_input: 各チャネルに使う入力ピン番号。既定3(基板配線)。
         #   0x19 = [7:6]SOG [5:4]Red [3:2]Green [1:0]Blue、各 00=_1 01=_2 10=_3 11=_4。
         #   緑のクランプ/レベル異常の切り分け用。R/Bも切り替えられるようにして
@@ -230,12 +235,26 @@ class StatusDisplay(Module):
         #                     既定0x03はbit0=1で全出力Hi-Z=DATACLKが出ない。SOG Enは1のまま)
         #          0x18<-0x01(CLK POL=1: データをDATACLK立下りでlaunch。FPGAは立上りで
         #                     安定サンプルできる。他ビットは既定0)
+        #          0x31<-0x18(ALC Placement: データシートが「PCグラフィックス/バイレベル
+        #                     同期のSDTV」に指定する値。既定0x5AはHDTV三値同期用)
+        #          0x10<-0x58(既定0x5DのRed CS(bit0)/Blue CS(bit2)を0にし、R/G/B全て
+        #                     bottom-levelクランプへ。既定はYPbPr向けで Pr(赤)/Pb(青)が
+        #                     mid-levelクランプ = blankレベルが512(中央値)にマップされ、
+        #                     黒が R,B≈128 になって背景が紫がかっていた。データシート:
+        #                     "Bottom-level clamping is required for Y and RGB inputs,
+        #                      while mid-level clamping is required for Pb and Pr inputs"。
+        #                     SOG Threshold[7:3]は既定のまま)
         #   read : 0x14(SyncDet) 0x37/0x38(Lines/Frame) 0x39/0x3A(Clocks/Line)
         # 0x19: SOGは_3固定、R/G/B は引数で選択(全て既定3 → 0xAA)。
         MUX1 = ((2 << 6) | ((red_input - 1) << 4) |
                 ((green_input - 1) << 2) | (blue_input - 1))
-        WR_REG = [0x19, 0x0E, 0x17, 0x18]
-        WR_VAL = [MUX1, 0x52, 0x02, 0x01]
+        WR_REG = [0x19, 0x0E, 0x17, 0x18, 0x31, 0x10]
+        WR_VAL = [MUX1, 0x52, 0x02, 0x01, 0x18, 0x58]
+        if pll_divide:
+            # 0x01=PLL divide[11:4], 0x02=[7:4]にPLL divide[3:0]。データシート指定どおり
+            # MSBs(0x01)を先に書く。
+            WR_REG += [0x01, 0x02]
+            WR_VAL += [(pll_divide >> 4) & 0xFF, (pll_divide & 0x0F) << 4]
         RD_REG = [0x14, 0x37, 0x38, 0x39, 0x3A]
         NWRITE = len(WR_REG); NREAD = len(RD_REG); NSTEP = NWRITE + NREAD
         step = Signal(max=NSTEP + 1)
