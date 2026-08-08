@@ -466,7 +466,12 @@ module AudioAdc:
     in_l ~> c_in_l ~> adc.vinl
     in_r ~> c_in_r ~> adc.vinr
 
-    # VREF・電源デカップリング
+    # VREF・電源デカップリング。データシート(SLES177B)のLayout Exampleどおり
+    # VREF/VCC(5V)/VDD(3.3V) の各々に 10µF + 0.1µF を「IC直近」に置く。
+    # PCM1808はΔΣ型でスイッチドキャパシタ回路がSCKI/BCKに同期した電流パルスを引く。
+    # 各ピン直近にバルク容量が無いと、その電流が長い経路を通って供給されるため
+    # 共有GNDに L·di/dt の電圧が生じ、同じ基板のTVPアナログ入力の基準電位を揺らす
+    # (試作でパスコン未実装のとき、映像の暗部に点状ノイズとして実測された)。
     c_vref_a = new C10uF_0805
     c_vref_b = new C100nF_0402
     adc.vref ~> c_vref_a ~> gnd
@@ -474,6 +479,9 @@ module AudioAdc:
     dec = new C100nF_0402[2]
     adc.vcc ~> dec[0] ~> gnd
     adc.vdd ~> dec[1] ~> gnd
+    bulk = new C10uF_0805[2]
+    adc.vcc ~> bulk[0] ~> gnd
+    adc.vdd ~> bulk[1] ~> gnd
 
 
 module PowerTree:
