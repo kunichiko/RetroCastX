@@ -36,14 +36,21 @@ class TvpCapture(Module):
     cd_pix に接続済みであること。width は偶数(2px/entry)。"""
     def __init__(self, pads, width=1024, height=512, nface=8, fifo_depth=4,
                  hs_active_low=True, vs_active_low=True,
-                 hs_offset=0, vs_offset=0, vs_min_rows=0, vtotal=0):
+                 hs_offset=0, vs_offset=0, vs_min_rows=0, vtotal=0,
+                 vs_row_at_sync=0):
+        # vs_row_at_sync (vtotal時のみ): VSYNC検出時に row へ入れる値。既定0=
+        #   「キャプチャ窓の先頭=VSYNC」。N を指定すると窓はVSYNCの N 行手前から
+        #   始まる(=映像がN行下がって見える)。フレーム境界(frameの歩進)は常に
+        #   row のラップ点=窓の先頭なので、1枚の絵が2つのframe番号に割れない。
         # vs_min_rows: VSYNCを「フレーム開始」として受理する最小行数。0=ガード無効。
         #   row(=vsync以降に数えたHSYNC数)が vs_min_rows 未満のVSYNCエッジは無視する。
         #   VSOUTの等化/セレーションやノイズでフレーム途中に出る偽VSYNCで frame が
         #   多重に進む(受信側で内容が縦にロール)のを防ぐ。DATACLK周波数に非依存。
-        # vtotal: >0 なら VSOUT を使わず「HSYNC を vtotal 行数えたら1フレーム」で
-        #   フレーム境界を決める(VSOUTノイズに完全免疫。HSYNCがクリーンな時に有効)。
-        #   TVP実測の Lines/Frame(例 568)を渡す。縦位置は vs_offset で合わせる。
+        # vtotal: >0 なら「HSYNC を vtotal 行数えたら1フレーム」の自走カウンタで
+        #   フレーム境界を決める(VSOUTにノイズが乗っても崩れない)。TVP実測の
+        #   Lines/Frame(例 568)を渡す。さらに vs_min_rows を併用すると、フレーム
+        #   末尾付近のVSYNCエッジだけを受理して row=0 に再整列するため、垂直位置が
+        #   本物のVSYNCへ自動で合う(自走のみだと開始位相が電源投入時のまま任意)。
         assert width % 2 == 0 and (width & (width - 1)) == 0, "width は2のべき乗"
         assert nface >= 2 and (nface & (nface - 1)) == 0
         # 面数 > 未処理メタ数 にして、送信中(head)の面が書込ポインタに追いつかれ
@@ -102,11 +109,18 @@ class TvpCapture(Module):
         wrote = Signal()                          # 現ラインに1画素以上書いたか
         pair_lo = Signal(16)                      # 偶数xピクセル保持
 
-        # VSYNCエッジ行数ガード: rowが vs_min_rows 以上のVSYNCのみフレーム開始として受理
+        # VSYNCエッジ行数ガード: 前回受理VSYNCからの経過行数(vrow)が vs_min_rows 以上の
+        # エッジのみ受理する。row ではなく vrow を使うのは、vs_row_at_sync で表示位相を
+        # ずらしても(=VSYNC時のrowが0でなくても)ガードが正しく効くようにするため。
+        vrow = Signal(12)
         if vs_min_rows:
-            self.comb += vs_edge.eq(vs_edge_raw & (row >= vs_min_rows))
+            self.comb += vs_edge.eq(vs_edge_raw & (vrow >= vs_min_rows))
         else:
             self.comb += vs_edge.eq(vs_edge_raw)
+        self.sync.pix += [
+            If(hs_edge, If(vrow != 0xFFF, vrow.eq(vrow + 1))),
+            If(vs_edge, vrow.eq(0)),
+        ]
 
         pix555 = Signal(16)
         self.comb += pix555.eq(rgb888_to_555(r, g, b))
@@ -142,34 +156,55 @@ class TvpCapture(Module):
             meta.sink.valid.eq(push),
         ]
         drops = Signal(16)
-        # フレーム境界: vtotal>0 なら HSYNC行数(row==vtotal-1)で、そうでなければ VSYNC で。
-        frame_wrap = Signal()
-        if vtotal:
-            self.comb += frame_wrap.eq(hs_edge & (row == vtotal - 1))
         _hs_body = [
             x.eq(0),
             wrote.eq(0),
             If(push & meta.sink.ready, face.eq(face + 1)),   # 受理時のみ面前進
             If(push & ~meta.sink.ready, drops.eq(drops + 1)),
         ]
-        if vtotal:
-            _hs_body += [
-                If(frame_wrap,
-                    row.eq(0), frame.eq(frame + 1), field.eq(~field),
-                ).Else(
-                    row.eq(row + 1),
-                ),
-            ]
-        else:
-            _hs_body += [If(row != 0xFFF, row.eq(row + 1))]
         self.sync.pix += [
             If(active & ~xpix[0], pair_lo.eq(pix555)),  # 偶数x: 低位に保持
             If(wr.we, wrote.eq(1)),
             If(x != 0xFFFF, x.eq(x + 1)),               # 行内カウンタ(飽和)
-            If(hs_edge, *_hs_body),
         ]
-        if not vtotal:
+        if vtotal:
+            # 自走(row==vtotal-1でラップ)+ 位相ゲート付きVSYNC再整列。
+            # フレーム境界(frame歩進)は常に row のラップ点=キャプチャ窓の先頭に固定。
+            # VSYNCは row を vs_row_at_sync に入れ直すだけで frame は進めない。これに
+            # より、窓をVSYNCより手前から開いても1枚の絵が2つのframe番号に割れない。
+            # VSYNCは即座に row を書き換えず「次のHSYNCで row:=vs_row_at_sync」と
+            # 保留する(vs_pend)。即時に書くと、その行は次のhs_edgeで row+1 されて
+            # しまい1行まるごと欠落する。また行の途中で row が変わると、その行の
+            # 行番号がずれる。
+            vs_pend = Signal()
+            # フレーム開始 = 「row が 0 に戻る瞬間」。自走ラップ(row==vtotal-1)か、
+            # vs_row_at_sync==0 のときはVSYNC再整列もそれに当たる。この規則にしないと、
+            # VSYNCがちょうどラップ点に来る(=vs_row_at_sync==0)場合に vs_pend が
+            # ラップを打ち消して frame が永久に進まなくなる。
+            wrap_now = Signal()
+            frame_start = Signal()
+            self.comb += wrap_now.eq(hs_edge & ~vs_pend & (row == vtotal - 1))
+            if vs_row_at_sync == 0:
+                self.comb += frame_start.eq(wrap_now | (hs_edge & vs_pend))
+            else:
+                self.comb += frame_start.eq(wrap_now)
             self.sync.pix += [
+                If(vs_edge, vs_pend.eq(1)),
+                If(hs_edge,
+                    *_hs_body,
+                    If(vs_pend,
+                        row.eq(vs_row_at_sync), vs_pend.eq(0),
+                    ).Elif(row == vtotal - 1,
+                        row.eq(0),
+                    ).Else(
+                        row.eq(row + 1),
+                    ),
+                ),
+                If(frame_start, frame.eq(frame + 1), field.eq(~field)),
+            ]
+        else:
+            self.sync.pix += [
+                If(hs_edge, *_hs_body, If(row != 0xFFF, row.eq(row + 1))),
                 If(vs_edge,
                     row.eq(0), wrote.eq(0),
                     frame.eq(frame + 1), field.eq(~field)),

@@ -159,7 +159,14 @@ def _banner():
 class StatusDisplay(Module):
     """共有I2C(SDA/SCL) + RESETB を使い、TVP7002の応答/レジスタを読み OLEDに表示。"""
     def __init__(self, pads=None, sys_clk_freq=45e6, i2c_freq=400e3,
-                 tvp_addr=0x5C, oled_addr=0x3C):
+                 tvp_addr=0x5C, oled_addr=0x3C,
+                 green_input=3, red_input=3, blue_input=3):
+        # {green,red,blue}_input: 各チャネルに使う入力ピン番号。既定3(基板配線)。
+        #   0x19 = [7:6]SOG [5:4]Red [3:2]Green [1:0]Blue、各 00=_1 01=_2 10=_3 11=_4。
+        #   緑のクランプ/レベル異常の切り分け用。R/Bも切り替えられるようにして
+        #   「muxの切り替えでクランプ電圧が別ピンへ移動するか」の対照実験に使う。
+        assert green_input in (1, 2, 3, 4)
+        assert red_input in (1, 2, 3) and blue_input in (1, 2, 3)  # _4はR/Bに無い
         self.submodules.m = m = I2CByteMaster(sys_clk_freq, i2c_freq)
         # open-drain 線(sim用に公開)
         self.scl_low = m.scl_low
@@ -224,8 +231,11 @@ class StatusDisplay(Module):
         #          0x18<-0x01(CLK POL=1: データをDATACLK立下りでlaunch。FPGAは立上りで
         #                     安定サンプルできる。他ビットは既定0)
         #   read : 0x14(SyncDet) 0x37/0x38(Lines/Frame) 0x39/0x3A(Clocks/Line)
+        # 0x19: SOGは_3固定、R/G/B は引数で選択(全て既定3 → 0xAA)。
+        MUX1 = ((2 << 6) | ((red_input - 1) << 4) |
+                ((green_input - 1) << 2) | (blue_input - 1))
         WR_REG = [0x19, 0x0E, 0x17, 0x18]
-        WR_VAL = [0xAA, 0x52, 0x02, 0x01]
+        WR_VAL = [MUX1, 0x52, 0x02, 0x01]
         RD_REG = [0x14, 0x37, 0x38, 0x39, 0x3A]
         NWRITE = len(WR_REG); NREAD = len(RD_REG); NSTEP = NWRITE + NREAD
         step = Signal(max=NSTEP + 1)

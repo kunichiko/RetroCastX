@@ -676,7 +676,8 @@ class RetroCastXStream(SoCMini):
     # sys 45MHz: 45M×32bit=180MB/s でGbE線速(125MB/s)に対し十分。
     # 50MHzは音声パス追加後にタイミングが閉じなくなったため下げた
     # (S/PDIFのUI分解能も45MHzで7.3サイクル/UI@48kHzと十分)
-    def __init__(self, revision="7.0", sys_clk_freq=int(45e6), capture=True):
+    def __init__(self, revision="7.0", sys_clk_freq=int(45e6), capture=True,
+                 green_input=3, red_input=3, blue_input=3):
         from litex_boards.platforms import colorlight_i5
         from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
         from liteeth.core import LiteEthUDPIPCore
@@ -730,7 +731,8 @@ class RetroCastXStream(SoCMini):
         platform.add_extension(_i2c_io)
         # I2Cは100kHz(長い手配線+弱プルアップでも読出しの取りこぼしを避ける)
         self.status = StatusDisplay(platform.request("tvp_oled_i2c"), sys_clk_freq,
-                                    i2c_freq=100e3)
+                                    i2c_freq=100e3, green_input=green_input,
+                                    red_input=red_input, blue_input=blue_input)
 
         # --- TVP7002 映像キャプチャ(cd_pix=DATACLK)---
         capture_obj = None
@@ -746,13 +748,22 @@ class RetroCastXStream(SoCMini):
             platform.add_period_constraint(cap_pads.dataclk, 1e9 / 75e6)
             # HSOUT/VSOUT は active-low 前提(SYNC=0x91: IHSPD=0/VSPD=0)。画がずれる
             # 場合は hs/vs_active_low と hs/vs_offset で調整。
-            # vtotal=568: VSOUTノイズを避け、クリーンなHSYNCの行数でフレーム境界を決める
-            #   (TVP実測 Lines/Frame=568)。→ 受信fpsが実VSYNC(~55Hz)に一致するはず。
-            # hs_offset: 水平バックポーチをスキップ(右寄りの内容を中央へ)。要現物調整。
-            # vs_offset: 縦位置(上の黒帯を詰める)。安定画を見てから調整。
+            # vtotal=568(TVP実測 Lines/Frame): HSYNC行数の自走カウンタでフレーム境界を
+            #   決めるのでVSOUTにノイズが乗っても崩れない。
+            # vs_min_rows=497: フレーム末尾付近のVSYNCだけを受理して row=0 に再整列
+            #   → 垂直位置が本物のVSYNCへ自動で合う(自走のみだと開始位相が任意で、
+            #     実機より上にずれて見えていた)。フレーム途中の偽VSYNCは無視。
+            # hs_offset: 水平バックポーチをスキップ(右寄りの内容を中央へ)。実機調整値。
+            # vs_offset: 垂直バックポーチ分。VSYNC整列後の残りずれを詰める。
+            # vs_row_at_sync=525: VSYNC時にrowへ入れる値。525なら 525..567 の43行が
+            #   過ぎた所でrowが0(=キャプチャ窓の先頭)になる → 窓はVSYNCの43行後から
+            #   512行。vtotal568のうちブランキング56行、その上側43行という妥当な値で、
+            #   実機で文字枠が画面中央(row256)に来る位置。実測から算出した調整値。
             self.capture = TvpCapture(cap_pads, width=1024, height=512,
                                       hs_active_low=True, vs_active_low=True,
-                                      vtotal=568, hs_offset=340, vs_offset=0)
+                                      vtotal=568, vs_min_rows=497,
+                                      vs_row_at_sync=525,
+                                      hs_offset=340, vs_offset=0)
             capture_obj = self.capture
 
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
@@ -774,8 +785,20 @@ def main():
     ap.add_argument("--seed", type=int, default=3, help="nextpnr placement seed")
     ap.add_argument("--no-capture", action="store_true",
                     help="実キャプチャを無効化しテストパターンを送出")
+    # 入力mux(0x19)の切り替え。既定は全て _3 = 基板配線。緑のクランプ異常の
+    # 切り分け用で、R/Bも動かして「切り替えでクランプ電圧が別ピンへ移動するか」
+    # の対照実験ができる。
+    ap.add_argument("--green-input", type=int, default=3, choices=(1, 2, 3, 4),
+                    help="緑に使うTVPの GIN_n (既定3=基板配線)")
+    ap.add_argument("--red-input", type=int, default=3, choices=(1, 2, 3),
+                    help="赤に使うTVPの RIN_n (既定3=基板配線)")
+    ap.add_argument("--blue-input", type=int, default=3, choices=(1, 2, 3),
+                    help="青に使うTVPの BIN_n (既定3=基板配線)")
     args = ap.parse_args()
-    soc = RetroCastXStream(revision=args.revision, capture=not args.no_capture)
+    soc = RetroCastXStream(revision=args.revision, capture=not args.no_capture,
+                           green_input=args.green_input,
+                           red_input=args.red_input,
+                           blue_input=args.blue_input)
     builder = Builder(soc, output_dir="build/colorlight_i5", compile_software=False)
     builder.build(run=args.build, seed=args.seed)
 
