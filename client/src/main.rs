@@ -563,6 +563,11 @@ impl eframe::App for ViewerApp {
             ui.monospace(format!("frames {}", s.frames));
             ui.monospace(format!("pkts {}  lost {}", s.packets, s.lost_packets));
             ui.monospace(format!("orphan lines {}", s.orphan_lines));
+            // 暗部のフレーム間差分=点状ノイズの量。配線やパスコンの効果を数値で見る
+            ui.monospace(format!(
+                "noise {:.1}%  lvl {:.1}",
+                s.noise_flicker, s.noise_level
+            ));
             ui.separator();
 
             ui.strong("Audio");

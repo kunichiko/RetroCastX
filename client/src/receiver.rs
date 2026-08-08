@@ -50,6 +50,60 @@ pub struct StatsSnapshot {
     pub lost_packets: u64,
     pub orphan_lines: u64,
     pub frames: u64,
+    /// 暗部でフレーム間に値が変わった画素の割合[%](=点状ノイズの量)
+    pub noise_flicker: f32,
+    /// そのずれの平均振幅[/255]
+    pub noise_level: f32,
+}
+
+/// 連続フレームの差分から暗部ノイズを測る。静止した絵は差分に出ないので、
+/// 内容にほぼ依存せずノイズ量だけを拾える(host/retrocastx/noise_meter.py と同趣旨。
+/// あちらは中央値からのずれ、こちらは前フレームとの差なので値は完全一致しない)。
+/// Viewerを開いたまま測れるようにするために内蔵している。
+#[derive(Default)]
+struct NoiseMeter {
+    prev: Vec<u8>,
+    nth: u32,
+    pub flicker: f32,
+    pub level: f32,
+}
+
+impl NoiseMeter {
+    /// RGBA8フレームを食わせる。負荷を抑えるため4フレームに1回、画素も4つ飛ばしで見る。
+    fn feed(&mut self, rgba: &[u8]) {
+        self.nth = self.nth.wrapping_add(1);
+        if self.nth % 4 != 0 {
+            return;
+        }
+        if self.prev.len() != rgba.len() {
+            self.prev = rgba.to_vec();
+            return;
+        }
+        const DARK: i32 = 24; // RGB555の3LSB相当(8bit展開で24)
+        let (mut n, mut chg, mut sum) = (0u32, 0u32, 0u64);
+        // 4画素(16バイト)おきにサンプル
+        for i in (0..rgba.len()).step_by(16) {
+            let (a, b) = (&rgba[i..i + 3], &self.prev[i..i + 3]);
+            let mx = a.iter().chain(b.iter()).map(|&v| v as i32).max().unwrap_or(0);
+            if mx > DARK {
+                continue; // 明部は絵の変化と区別できないので暗部だけ見る
+            }
+            n += 1;
+            let d = (0..3)
+                .map(|c| (a[c] as i32 - b[c] as i32).abs())
+                .max()
+                .unwrap_or(0);
+            if d > 0 {
+                chg += 1;
+                sum += d as u64;
+            }
+        }
+        if n > 0 {
+            self.flicker = chg as f32 * 100.0 / n as f32;
+            self.level = if chg > 0 { sum as f32 / chg as f32 } else { 0.0 };
+        }
+        self.prev.copy_from_slice(rgba);
+    }
 }
 
 #[derive(Clone)]
@@ -127,6 +181,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut last_report = Instant::now();
     let mut bytes_since = 0u64;
     let mut frames_since = 0u32;
+    let mut noise = NoiseMeter::default();
     // モード変化ログ用の直近キー
     let mut mode_key: Option<(u16, u16, u16, u16, u32, u32, u32)> = None;
 
@@ -154,7 +209,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         let (n, addr) = match sock.recv_from(&mut buf) {
             Ok(v) => v,
             Err(_) => {
-                tick_stats(&shared, &asm, &mut last_report, &mut bytes_since, &mut frames_since);
+                tick_stats(&shared, &asm, &noise, &mut last_report, &mut bytes_since, &mut frames_since);
                 continue;
             }
         };
@@ -228,12 +283,13 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
 
         if let Some(frame) = asm.feed(&buf[..n]) {
             frames_since += 1;
+            noise.feed(&frame.rgba);
             *shared.mode.lock().unwrap() = asm.mode.clone();
             *shared.frame.lock().unwrap() = Some(frame);
             shared.frame_gen.fetch_add(1, Ordering::Release);
             repaint();
         }
-        tick_stats(&shared, &asm, &mut last_report, &mut bytes_since, &mut frames_since);
+        tick_stats(&shared, &asm, &noise, &mut last_report, &mut bytes_since, &mut frames_since);
     }
 }
 
@@ -262,6 +318,7 @@ fn open_audio(
 fn tick_stats(
     shared: &Shared,
     asm: &FrameAssembler,
+    noise: &NoiseMeter,
     last_report: &mut Instant,
     bytes_since: &mut u64,
     frames_since: &mut u32,
@@ -279,6 +336,8 @@ fn tick_stats(
         lost_packets: asm.stats.lost_packets,
         orphan_lines: asm.stats.orphan_lines,
         frames: asm.stats.frames,
+        noise_flicker: noise.flicker,
+        noise_level: noise.level,
     };
     *last_report = Instant::now();
     *bytes_since = 0;
