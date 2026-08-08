@@ -25,10 +25,11 @@ def rgb888_to_555(r, g, b):
     return Cat(b[3:8], g[3:8], r[3:8], C(0, 1))
 
 
-# メタデータ(pix→sys AsyncFIFO のペイロード)
+# メタデータ(pix→sys AsyncFIFO のペイロード)。ts はそのラインの先頭画素における
+# DATACLK自走カウンタ値(プロトコルのタイムスタンプ=ドットクロック単位)。
 def _meta_layout(nface_bits, row_bits):
     return [("face", nface_bits), ("row", row_bits),
-            ("frame", 16), ("field", 1)]
+            ("frame", 16), ("field", 1), ("ts", 32)]
 
 
 class TvpCapture(Module):
@@ -37,7 +38,8 @@ class TvpCapture(Module):
     def __init__(self, pads, width=1024, height=512, nface=8, fifo_depth=4,
                  hs_active_low=True, vs_active_low=True,
                  hs_offset=0, vs_offset=0, vs_min_rows=0, vtotal=0,
-                 vs_row_at_sync=0, hs_total=0):
+                 vs_row_at_sync=0, hs_total=0, sys_clk_freq=45e6):
+        # sys_clk_freq: 実測タイミングの1秒窓を作るのに使う(sysは25MHz水晶由来で正確)。
         # hs_total: 1ライン当たりのDATACLK数(=H-PLL分周比)。hs_offset+width がこれを
         #   超えると、行末側の列には一度も書き込まれずリングバッファの古い内容が
         #   残って見える。その範囲を毎ライン先頭(バックポーチ期間)に黒で埋める。
@@ -72,6 +74,7 @@ class TvpCapture(Module):
         self.line_frame = Signal(16)
         self.line_field = Signal()
         self.line_face  = Signal(nface_bits)      # FIFO先頭ラインの面(pop前にラッチ)
+        self.line_ts    = Signal(32)              # 先頭ラインの先頭画素のDATACLKカウンタ
         self.line_ack   = Signal()                # 1パルスで pop(送出開始時)
         self.rd_face    = Signal(nface_bits)      # 読み出す面(送信側がラッチして固定)
         self.rd_word    = Signal(max=max(entries, 2))   # 面内ワード位置(=x/2)
@@ -79,6 +82,13 @@ class TvpCapture(Module):
         # 診断用(sysで観測)
         self.cap_frame  = Signal(16)
         self.cap_drops  = Signal(16)
+        # --- 実測タイミング(sysドメイン)。MODEパケットで報告する ---
+        # ビルド時の仮定値ではなく実信号から測る。1秒窓のカウントなので単位はHz。
+        self.meas_dotclk = Signal(32)             # DATACLK周波数 [Hz]
+        self.meas_hfreq  = Signal(32)             # 水平周波数 [Hz]
+        self.meas_vfreq  = Signal(32)             # 垂直周波数 [Hz]
+        self.meas_htotal = Signal(16)             # 1ライン当たりDATACLK数
+        self.meas_vtotal = Signal(16)             # 1フレーム当たりライン数
 
         # --- ラインバッファ(true dual-port: write=pix / read=sys)---
         self.specials.mem = mem = Memory(32, nface * entries)
@@ -176,6 +186,16 @@ class TvpCapture(Module):
 
         # メタ push(hs_edge時、直前ラインが有効(row_ok)かつ1画素以上書いた場合)。
         # FIFO満杯なら drop。
+        # DATACLK自走カウンタ = プロトコルのタイムスタンプ(ドットクロック単位)。
+        # 定数(htotal×frame番号)から算出すると仮定したモードでしか合わないが、
+        # 実カウンタなら常に正確で、音声との同期もモードに依らず成立する。
+        ts_cnt = Signal(32)
+        cur_ts = Signal(32)      # 現ラインの先頭画素(x=hs_offset)でのカウンタ値
+        self.sync.pix += [
+            ts_cnt.eq(ts_cnt + 1),
+            If(hs_edge, cur_ts.eq(ts_cnt + hs_offset)),
+        ]
+
         push = Signal()
         self.comb += [
             push.eq(hs_edge & wrote & row_ok),
@@ -183,6 +203,9 @@ class TvpCapture(Module):
             meta.sink.row.eq(row_eff[:row_bits]),
             meta.sink.frame.eq(frame),
             meta.sink.field.eq(field),
+            # hs_edge時点の cur_ts は「今終わったライン」の先頭値(更新はクロック端で
+            # 起きるため)。push するのもそのラインなので一致する。
+            meta.sink.ts.eq(cur_ts),
             meta.sink.valid.eq(push),
         ]
         drops = Signal(16)
@@ -240,6 +263,47 @@ class TvpCapture(Module):
                     frame.eq(frame + 1), field.eq(~field)),
             ]
 
+        # --- 実測タイミング: 1秒窓(sysクロック基準=25MHz水晶由来で正確)で
+        #     DATACLK/HSYNC/VSYNC を数える。窓が1秒ちょうどなのでカウント値がHz。
+        #     htotal/vtotal は行内カウンタ/行カウンタをそのままラッチして得る。
+        m_clk = Signal(32); m_hs = Signal(32); m_vs = Signal(32)
+        s_clk = Signal(32); s_hs = Signal(32); s_vs = Signal(32)
+        s_htot = Signal(16); s_vtot = Signal(16)
+        htot_now = Signal(16); vtot_now = Signal(16)
+        self.sync.pix += [
+            If(hs_edge, htot_now.eq(x + 1)),   # x はライン先頭で0 → 次のedgeで period-1
+            If(vs_edge, vtot_now.eq(vrow)),    # vrow = 前回VSYNCからのHSYNC数
+        ]
+        # sys → pix へ「今のカウンタを確定して0に戻せ」のパルスを送る
+        self.submodules._samp = _samp = PulseSynchronizer("sys", "pix")
+        self.sync.pix += [
+            If(_samp.o,
+                s_clk.eq(m_clk), s_hs.eq(m_hs), s_vs.eq(m_vs),
+                s_htot.eq(htot_now), s_vtot.eq(vtot_now),
+                m_clk.eq(0), m_hs.eq(hs_edge), m_vs.eq(vs_edge),
+            ).Else(
+                m_clk.eq(m_clk + 1),
+                If(hs_edge, m_hs.eq(m_hs + 1)),
+                If(vs_edge, m_vs.eq(m_vs + 1)),
+            ),
+        ]
+        # sys側: 1秒ごとにサンプルパルスを出し、少し待って確定値を取り込む。
+        # s_* はパルス後しか変化しないので、待ってから MultiReg で受ければ安全。
+        WIN = int(sys_clk_freq)
+        win = Signal(max=WIN)
+        wait = Signal(6)
+        for src, dst in ((s_clk, self.meas_dotclk), (s_hs, self.meas_hfreq),
+                         (s_vs, self.meas_vfreq), (s_htot, self.meas_htotal),
+                         (s_vtot, self.meas_vtotal)):
+            stable = Signal(len(src))
+            self.specials += MultiReg(src, stable, "sys")
+            self.sync += If(wait == 1, dst.eq(stable))
+        self.comb += _samp.i.eq(win == WIN - 1)
+        self.sync += [
+            If(win == WIN - 1, win.eq(0)).Else(win.eq(win + 1)),
+            If(win == WIN - 1, wait.eq(32)).Elif(wait != 0, wait.eq(wait - 1)),
+        ]
+
         # ================= sys ドメイン =================
         self.comb += [
             self.line_valid.eq(meta.source.valid),
@@ -247,6 +311,7 @@ class TvpCapture(Module):
             self.line_row.eq(meta.source.row),
             self.line_frame.eq(meta.source.frame),
             self.line_field.eq(meta.source.field),
+            self.line_ts.eq(meta.source.ts),
             meta.source.ready.eq(self.line_ack),
             rd.adr.eq(Cat(self.rd_word, self.rd_face)),  # 送信側ラッチ面を読む
             self.rd_data.eq(rd.dat_r),

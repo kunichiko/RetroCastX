@@ -158,6 +158,12 @@ def main():
     keys = [(p.frame, p.line) for p in lines]
     dups = [k for k, c in collections.Counter(keys).items() if c > 1]
     assert not dups, f"重複ライン(frame,row)が {len(dups)} 件: {dups[:5]}"
+    # タイムスタンプ(キャプチャのDATACLK自走カウンタ)は送出順に単調増加すること。
+    # 定数計算ではなく実カウンタ由来なので、CDC/ラッチ経路の健全性がここで効く。
+    ts = [p.timestamp for p in lines]
+    bad = [(a, b) for a, b in zip(ts, ts[1:]) if b <= a]
+    assert not bad, f"タイムスタンプが単調増加でない: {bad[:5]}"
+    print(f"timestamp: {ts[0]} → {ts[-1]} (単調増加, {len(ts)}本)")
     print(f"\n[OK] キャプチャ→ストリーマ統合: {len(lines)}本のLINEを画素一致で検証 "
           f"(全{H}行, 総画素{checked})")
 
