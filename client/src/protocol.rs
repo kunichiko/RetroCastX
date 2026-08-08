@@ -201,6 +201,30 @@ pub const CFG_FLAG_REPLY: u8 = 0x01;
 /// 全ボードに向けるワイルドカード宛先MAC(発見用/単一ボードLAN専用)。
 pub const WILDCARD_MAC: [u8; 6] = [0xFF; 6];
 
+/// CONFIG(24B): 共通ヘッダ8B + 宛先MAC 6B + 予約2B + target/op/key 4B + value 4B。
+/// op: 0=SET(値を書いて現在値を返す), 1=GET(現在値を返す)。
+/// target 0 = ボード本体の設定。key は gateware 側と対応:
+///   0x0001 音声ソース有効マスク / 0x0010 vbp / 0x0011 hs_offset / 0x0012 pll_divide
+pub fn pack_config(
+    seq: u16, target: u8, op: u8, key: u16, value: u32, mac: &[u8; 6],
+) -> [u8; 24] {
+    let mut p = [0u8; 24];
+    p[0] = MAGIC;
+    p[1] = VERSION;
+    p[2] = TYPE_CONFIG;
+    p[6..8].copy_from_slice(&seq.to_le_bytes());
+    p[8..14].copy_from_slice(mac);
+    p[16] = target;
+    p[17] = op;
+    p[18..20].copy_from_slice(&key.to_le_bytes());
+    p[20..24].copy_from_slice(&value.to_le_bytes());
+    p
+}
+
+pub const CFG_KEY_VBP: u16 = 0x0010;
+pub const CFG_KEY_HS_OFFSET: u16 = 0x0011;
+pub const CFG_KEY_PLL_DIVIDE: u16 = 0x0012;
+
 /// SUBSCRIBE(16B): 共通ヘッダ8B + 宛先MAC 6B + 予約2B。
 /// mac で宛先ボードを指名する(WILDCARD_MAC で全ボード)。
 pub fn pack_subscribe(seq: u16, announce_only: bool, mac: &[u8; 6]) -> [u8; 16] {

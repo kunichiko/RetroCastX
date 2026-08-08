@@ -307,6 +307,11 @@ struct ViewerApp {
     /// キャプチャ範囲の外側の色と、境界の枠線表示
     backdrop: Backdrop,
     show_border: bool,
+    /// 画枠パラメータ(ボードへCONFIGで送る値)。モードごとに最適値が違うので、
+    /// ビルドし直さずにここで追い込む。
+    tune_vbp: i32,
+    tune_hs_offset: i32,
+    tune_pll_divide: i32,
     texture: Option<egui::TextureHandle>,
     seen_gen: u64,
     integer_scale: bool,
@@ -348,6 +353,9 @@ impl ViewerApp {
             settings_dirty: None,
             backdrop: Backdrop::from_str(&cfg.backdrop),
             show_border: cfg.show_border,
+            tune_vbp: cfg.tune_vbp,
+            tune_hs_offset: cfg.tune_hs_offset,
+            tune_pll_divide: cfg.tune_pll_divide,
             texture: None,
             seen_gen: 0,
             integer_scale: cfg.integer_scale,
@@ -403,6 +411,9 @@ impl ViewerApp {
             integer_scale: self.integer_scale,
             backdrop: self.backdrop.label().to_string(),
             show_border: self.show_border,
+            tune_vbp: self.tune_vbp,
+            tune_hs_offset: self.tune_hs_offset,
+            tune_pll_divide: self.tune_pll_divide,
         }
         .save();
     }
@@ -525,6 +536,51 @@ impl ViewerApp {
     }
 }
 
+impl ViewerApp {
+    /// 画枠パラメータをボードへ即時反映するUI。モードごとに最適値が違い、
+    /// ビルドし直していては追い込めないのでCONFIGパケットで実行時に送る。
+    fn tune_ui(&mut self, ui: &mut egui::Ui) {
+        let mut send: Vec<(u16, u32)> = Vec::new();
+        let mut row = |ui: &mut egui::Ui, label: &str, val: &mut i32,
+                       lo: i32, hi: i32, key: u16, send: &mut Vec<(u16, u32)>| {
+            ui.horizontal(|ui| {
+                ui.monospace(format!("{label:<10}"));
+                if ui.small_button("-").clicked() {
+                    *val = (*val - 1).max(lo);
+                    send.push((key, *val as u32));
+                }
+                ui.add(
+                    egui::DragValue::new(val)
+                        .range(lo..=hi)
+                        .speed(1.0),
+                );
+                if ui.small_button("+").clicked() {
+                    *val = (*val + 1).min(hi);
+                    send.push((key, *val as u32));
+                }
+                if ui.small_button("send").clicked() {
+                    send.push((key, *val as u32));
+                }
+            });
+        };
+        row(ui, "vbp", &mut self.tune_vbp, 0, 400,
+            protocol::CFG_KEY_VBP, &mut send);
+        row(ui, "hs_offset", &mut self.tune_hs_offset, 0, 2000,
+            protocol::CFG_KEY_HS_OFFSET, &mut send);
+        row(ui, "pll_div", &mut self.tune_pll_divide, 200, 4095,
+            protocol::CFG_KEY_PLL_DIVIDE, &mut send);
+        if ui.button("send all").clicked() {
+            send.push((protocol::CFG_KEY_VBP, self.tune_vbp as u32));
+            send.push((protocol::CFG_KEY_HS_OFFSET, self.tune_hs_offset as u32));
+            send.push((protocol::CFG_KEY_PLL_DIVIDE, self.tune_pll_divide as u32));
+        }
+        if !send.is_empty() {
+            self.shared.config_queue.lock().unwrap().extend(send);
+            self.mark_settings_dirty();
+        }
+    }
+}
+
 impl eframe::App for ViewerApp {
     /// 終了時にも保存する(遅延書込の待ち時間中に閉じても取りこぼさない)
     fn on_exit(&mut self) {
@@ -583,6 +639,10 @@ impl eframe::App for ViewerApp {
 
             ui.strong("Audio");
             self.audio_ui(ui);
+            ui.separator();
+
+            ui.strong("Tune");
+            self.tune_ui(ui);
             ui.separator();
 
             ui.strong("Boards");

@@ -38,7 +38,10 @@ class TvpCapture(Module):
     def __init__(self, pads, width=1024, height=512, nface=8, fifo_depth=4,
                  hs_active_low=True, vs_active_low=True,
                  hs_offset=0, vs_offset=0, vs_min_rows=0, vtotal=0,
-                 vs_row_at_sync=0, hs_total=0, sys_clk_freq=45e6, measure=True):
+                 vs_row_at_sync=0, hs_total=0, sys_clk_freq=45e6, measure=True,
+                 auto_vtotal=False, vbp=43):
+        # auto_vtotal: 実測vtotalに追従してフレーム境界と垂直位置を自動設定する。
+        # vbp: 窓の先頭をVSYNCの何行後にするか(垂直バックポーチ相当)。
         # measure: 実測タイミング(周波数カウンタ)を作るか。34.8MHzで回る32bitカウンタが
         #   増えるため、ノイズ切り分け用に無効化できるようにしてある。無効時はMODEの
         #   諸元が0になる。
@@ -98,6 +101,12 @@ class TvpCapture(Module):
         _fu = ((hs_total - hs_offset) // 2
                if (hs_total and hs_offset + width > hs_total) else 0)
         self.cfg_clear_from    = Signal(max=entries + 1, reset=_fu)
+        # 垂直バックポーチ[行]。窓の先頭をVSYNCの何行後にするか。モードごとに違うので
+        # 実行時に変えられるようにする(CONFIGパケットから調整する)。
+        self.cfg_vbp           = Signal(13, reset=vbp)
+        # 送出する行数。vtotalが小さいモードで512行送ると空きが出るので、
+        # min(height, vtotal - vbp) を自動で入れる。
+        self.cfg_vactive       = Signal(max=height + 1, reset=height)
 
         # --- 実測タイミング(sysドメイン)。MODEパケットで報告する ---
         # ビルド時の仮定値ではなく実信号から測る。1秒窓のカウントなので単位はHz。
@@ -159,6 +168,18 @@ class TvpCapture(Module):
             If(hs_edge, If(vrow != 0x1FFF, vrow.eq(vrow + 1))),
             If(vs_edge, vrow.eq(0)),
         ]
+        # 測定用のVSYNCは cfg_vs_min_rows に依存させない。設定が現在のモードに
+        # 合っていないと(例: vtotal 262 のモードでガードが497)VSYNCが全て捨てられ、
+        # vtotalが測れなくなってモード追従が始められない(鶏と卵)。
+        # 等化パルス除けの固定ガードだけ掛ける(実在モードの最小vtotalより十分小さい値)。
+        VS_MEAS_GUARD = 64
+        vrow_m = Signal(13)
+        vs_meas = Signal()
+        self.comb += vs_meas.eq(vs_edge_raw & (vrow_m >= VS_MEAS_GUARD))
+        self.sync.pix += [
+            If(hs_edge, If(vrow_m != 0x1FFF, vrow_m.eq(vrow_m + 1))),
+            If(vs_meas, vrow_m.eq(0)),
+        ]
 
         pix555 = Signal(16)
         self.comb += pix555.eq(rgb888_to_555(r, g, b))
@@ -168,7 +189,7 @@ class TvpCapture(Module):
         row_ok  = Signal()
         self.comb += [
             row_eff.eq(row - self.cfg_vs_offset),
-            row_ok.eq((row >= self.cfg_vs_offset) & (row_eff < height)),
+            row_ok.eq((row >= self.cfg_vs_offset) & (row_eff < self.cfg_vactive)),
         ]
         xpix   = Signal(16)                       # 有効ピクセルx(= x - hs_offset)
         active = Signal()
@@ -292,7 +313,7 @@ class TvpCapture(Module):
             htot_now = Signal(16); vtot_now = Signal(16)
             self.sync.pix += [
                 If(hs_edge, htot_now.eq(x + 1)),   # xはライン先頭で0→次のedgeでperiod-1
-                If(vs_edge, vtot_now.eq(vrow)),    # vrow = 前回VSYNCからのHSYNC数
+                If(vs_meas, vtot_now.eq(vrow_m)),  # 前回VSYNCからのHSYNC数
             ]
             # sys → pix へ「今のカウンタを確定して0に戻せ」のパルスを送る
             self.submodules._samp = _samp = PulseSynchronizer("sys", "pix")
@@ -300,11 +321,11 @@ class TvpCapture(Module):
                 If(_samp.o,
                     s_clk.eq(m_clk), s_hs.eq(m_hs), s_vs.eq(m_vs),
                     s_htot.eq(htot_now), s_vtot.eq(vtot_now),
-                    m_clk.eq(0), m_hs.eq(hs_edge), m_vs.eq(vs_edge),
+                    m_clk.eq(0), m_hs.eq(hs_edge), m_vs.eq(vs_meas),
                 ).Else(
                     m_clk.eq(m_clk + 1),
                     If(hs_edge, m_hs.eq(m_hs + 1)),
-                    If(vs_edge, m_vs.eq(m_vs + 1)),
+                    If(vs_meas, m_vs.eq(m_vs + 1)),
                 ),
             ]
             # sys側: 1秒ごとにサンプルパルスを出し、少し待って確定値を取り込む。
@@ -339,6 +360,40 @@ class TvpCapture(Module):
                 ).Else(
                     vacc.eq(vacc + vs_stable), vwin.eq(vwin + 1),
                 ))
+
+        # --- モード自動追従(垂直) ---
+        # 実測 vtotal が安定したら cfg_* に反映する。これをやらないと、モードが
+        # 変わったとき自走カウンタのラップ点が合わず、絵が縦に繰り返して見える
+        # (実測: 24kHz 1024x424 は vtotal 930。568固定のままだと2枚に割れる)。
+        # 位置(vs_row_at_sync)は「VSYNCの何行後から窓を開くか」で持つ。
+        # 垂直バックポーチはモードで多少違うが、まず vbp 固定で追従させる。
+        # 揺れで書き換え続けないよう、同じ値が連続してから反映する(ヒステリシス)。
+        if auto_vtotal:
+            v_last = Signal(16)
+            v_cnt = Signal(3)
+            self.sync += [
+                If(self.meas_vtotal != v_last,
+                    v_last.eq(self.meas_vtotal), v_cnt.eq(0),
+                ).Elif(v_cnt != 4,
+                    v_cnt.eq(v_cnt + 1),
+                ),
+                # 現実的な範囲の値が3回続いたら採用する
+                If((v_cnt == 3) & (self.meas_vtotal >= 100)
+                                & (self.meas_vtotal < 1500),
+                    self.cfg_vtotal.eq(self.meas_vtotal),
+                    # VSYNC位相ゲートは vtotal の 3/4(モードに依らず妥当な比率)
+                    self.cfg_vs_min_rows.eq(self.meas_vtotal -
+                                            (self.meas_vtotal >> 2)),
+                    # 窓の先頭 = VSYNCの vbp 行後
+                    self.cfg_vs_row_at_sync.eq(self.meas_vtotal - self.cfg_vbp),
+                    # 送出行数 = min(height, vtotal - vbp)
+                    If(self.meas_vtotal - self.cfg_vbp < height,
+                        self.cfg_vactive.eq(self.meas_vtotal - self.cfg_vbp),
+                    ).Else(
+                        self.cfg_vactive.eq(height),
+                    ),
+                ),
+            ]
 
         # ================= sys ドメイン =================
         self.comb += [

@@ -131,6 +131,9 @@ pub struct Shared {
     pub audio_request: Mutex<Option<AudioRequest>>,
     /// 現在の再生状態(UI表示用)
     pub audio_now: Mutex<AudioNow>,
+    /// UI→ボードへ送るCONFIG要求(key, value)。受信スレッドが取り出して送信する。
+    /// ソケットは受信スレッドが持っているので、UIから直接は送れない。
+    pub config_queue: Mutex<Vec<(u16, u32)>>,
 }
 
 #[derive(Clone, Default)]
@@ -197,6 +200,23 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 );
                 sub_seq = sub_seq.wrapping_add(1);
                 last_subscribe = Some(Instant::now());
+            }
+        }
+
+        // UIからのCONFIG要求をボードへ送る(画枠パラメータの実行時調整)
+        {
+            let mut q = shared.config_queue.lock().unwrap();
+            if !q.is_empty() {
+                if let Some(dest) = &cfg.subscribe_to {
+                    let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
+                    for (key, value) in q.drain(..) {
+                        let pkt = proto::pack_config(sub_seq, 0, 0, key, value, &mac);
+                        let _ = sock.send_to(&pkt, (dest.as_str(), cfg.port));
+                        sub_seq = sub_seq.wrapping_add(1);
+                    }
+                } else {
+                    q.clear();
+                }
             }
         }
 

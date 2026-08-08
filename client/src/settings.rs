@@ -24,6 +24,10 @@ pub struct Settings {
     pub backdrop: String,
     /// キャプチャ範囲の境界に枠線を描く
     pub show_border: bool,
+    /// 画枠パラメータ(ボードへCONFIGで送る値)
+    pub tune_vbp: i32,
+    pub tune_hs_offset: i32,
+    pub tune_pll_divide: i32,
 }
 
 impl Default for Settings {
@@ -36,6 +40,9 @@ impl Default for Settings {
             integer_scale: true,
             backdrop: "dark gray".into(),
             show_border: true,
+            tune_vbp: 43,
+            tune_hs_offset: 152,
+            tune_pll_divide: 1104,
         }
     }
 }
@@ -69,6 +76,9 @@ impl Settings {
                 "integer_scale" => s.integer_scale = v == "true",
                 "show_border" => s.show_border = v == "true",
                 "backdrop" => s.backdrop = v.to_string(),
+                "tune_vbp" => { if let Ok(x) = v.parse() { s.tune_vbp = x } }
+                "tune_hs_offset" => { if let Ok(x) = v.parse() { s.tune_hs_offset = x } }
+                "tune_pll_divide" => { if let Ok(x) = v.parse() { s.tune_pll_divide = x } }
                 "audio_source" => {
                     s.audio_source = if v == "off" { None } else { v.parse().ok() };
                 }
@@ -96,7 +106,10 @@ impl Settings {
              audio_device = {}\n\
              integer_scale = {}\n\
              backdrop = {}\n\
-             show_border = {}\n",
+             show_border = {}\n\
+             tune_vbp = {}\n\
+             tune_hs_offset = {}\n\
+             tune_pll_divide = {}\n",
             self.volume,
             self.muted,
             self.audio_source.map(|v| v.to_string()).unwrap_or_else(|| "off".into()),
@@ -104,6 +117,9 @@ impl Settings {
             self.integer_scale,
             self.backdrop,
             self.show_border,
+            self.tune_vbp,
+            self.tune_hs_offset,
+            self.tune_pll_divide,
         );
         // 書けなくても致命的ではないので黙って諦める(次回は既定値で起動する)
         if let Ok(mut f) = std::fs::File::create(&path) {

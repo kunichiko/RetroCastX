@@ -16,9 +16,9 @@ from migen import *
 from retrocastx_capture import TvpCapture
 
 W, H = 8, 4
-VTOTAL = 16          # 1フレーム=16ライン
-LINE_CYCLES = 20     # 1ライン=20 pixクロック(HSYNCパルス込み)
-WIN = 400            # 測定窓[sysクロック] = sys_clk_freq に渡す値
+VTOTAL = 100         # 1フレーム=100ライン(測定用VSYNCガード64より大きくする)
+LINE_CYCLES = 8      # 1ライン=8 pixクロック(SIM時間を抑える)
+WIN = 2000           # 測定窓[sysクロック] = sys_clk_freq に渡す値
 
 
 class _Pads:
@@ -34,7 +34,7 @@ class Wrap(Module):
         self.pads = _Pads()
         self.submodules.cap = TvpCapture(
             self.pads, width=W, height=H, nface=8,
-            vtotal=VTOTAL, vs_min_rows=VTOTAL - 2, vs_offset=1, hs_offset=1,
+            vtotal=VTOTAL, vs_min_rows=VTOTAL - 8, vs_offset=1, hs_offset=1,
             sys_clk_freq=WIN)
 
 

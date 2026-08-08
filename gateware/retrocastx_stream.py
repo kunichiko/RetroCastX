@@ -124,7 +124,8 @@ class RetroCastXStreamer(LiteXModule):
                  announce_ip=HOST_IP, udp_port_nr=UDP_PORT,
                  mtu_payload=1472, interlace=False,
                  audio_sources=None, audio_nsamples=240,
-                 mac_address=MAC_ADDRESS, capture=None):
+                 mac_address=MAC_ADDRESS, capture=None,
+                 cfg_vbp=43, cfg_hs_offset=152, cfg_pll_divide=1104):
         # capture: TvpCapture(sysドメインI/F) を渡すと、テストパターンの代わりに
         #   実キャプチャライン(line_valid/line_row/line_frame/rd_*)を源にする。
         #   None の場合は従来どおり自走テストパターン。
@@ -194,11 +195,14 @@ class RetroCastXStreamer(LiteXModule):
         # MODEで報告する諸元。capture時はFPGAが実信号から測った値を使う(ビルド時の
         # 仮定値ではない)。周波数フィールドはmHz単位なので実測Hzを1000倍する。
         mode_htotal = Signal(16); mode_vtotal = Signal(16)
+        # 送出する行数。vtotalが小さいモードでは512行送ると下が空くので実測に従う
+        mode_vactive = Signal(16)
         mode_dotclk = Signal(32); mode_hfreq = Signal(32); mode_vfreq = Signal(32)
         if cap_mode:
             self.comb += [
                 mode_htotal.eq(capture.meas_htotal),
                 mode_vtotal.eq(capture.meas_vtotal),
+                mode_vactive.eq(capture.cfg_vactive),
                 mode_dotclk.eq(capture.meas_dotclk),
                 mode_hfreq.eq(capture.meas_hfreq * 1000),
                 mode_vfreq.eq(capture.meas_vfreq),   # 既にmHz(8秒積算で0.125Hz分解能)
@@ -206,6 +210,7 @@ class RetroCastXStreamer(LiteXModule):
         else:
             self.comb += [
                 mode_htotal.eq(htotal), mode_vtotal.eq(vtotal),
+                mode_vactive.eq(height),
                 mode_dotclk.eq(dotclk), mode_hfreq.eq(hfreq_mhz),
                 mode_vfreq.eq(vfreq_mhz),
             ]
@@ -268,6 +273,12 @@ class RetroCastXStreamer(LiteXModule):
         cfg_done = (rx.valid & rx.last & in_pkt & (rx_type == 5) &
                     (rx_widx == 5) & cfg_mac_ok)
 
+        # --- CONFIG(target=0)で実行時に変えられる画枠パラメータ ---
+        # モードごとに最適値が違い、ビルドし直していては追い込めないため、
+        # Viewerから即時に調整できるようにする。見つけた値がモード表の中身になる。
+        self.cfg_vbp        = Signal(13, reset=cfg_vbp)         # key 0x10
+        self.cfg_hs_offset  = Signal(13, reset=cfg_hs_offset)   # key 0x11
+        self.cfg_pll_divide = Signal(12, reset=cfg_pll_divide)  # key 0x12
         audio_mask = Signal(3, reset=0b111)      # key 0x0001: 音声ソース有効マスク
         argus_reg = Signal(32)                   # target=1(ArgusX)の仮レジスタ
                                                  # (実機step4でI2C書き込みに置換)
@@ -318,6 +329,15 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 1),
                         audio_mask.eq(rx.data[:3]),
                     ),
+                    If((cfg_target == 0) & (cfg_key == 0x10),
+                        self.cfg_vbp.eq(rx.data[:13]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x11),
+                        self.cfg_hs_offset.eq(rx.data[:13]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x12),
+                        self.cfg_pll_divide.eq(rx.data[:12]),
+                    ),
                     If(cfg_target == 1,
                         argus_reg.eq(rx.data),
                     ),
@@ -331,6 +351,12 @@ class RetroCastXStreamer(LiteXModule):
                 cfg_reply_val.eq(argus_reg),
             ).Elif(cfg_key == 1,
                 cfg_reply_val.eq(audio_mask),
+            ).Elif(cfg_key == 0x10,
+                cfg_reply_val.eq(self.cfg_vbp),
+            ).Elif(cfg_key == 0x11,
+                cfg_reply_val.eq(self.cfg_hs_offset),
+            ).Elif(cfg_key == 0x12,
+                cfg_reply_val.eq(self.cfg_pll_divide),
             ),
         ]
 
@@ -488,7 +514,7 @@ class RetroCastXStreamer(LiteXModule):
                 0: hdr.eq(0x52 | (1 << 16)),                       # type=MODE
                 2: hdr.eq(mode_id | (pixfmt << 8) | (mflags << 16)),
                 3: hdr.eq(Cat(C(width, 16), mode_htotal)),
-                4: hdr.eq(Cat(C(height, 16), mode_vtotal)),
+                4: hdr.eq(Cat(mode_vactive, mode_vtotal)),
                 5: hdr.eq(mode_dotclk),
                 6: hdr.eq(mode_hfreq),                             # mHz
                 7: hdr.eq(mode_vfreq),                             # mHz
@@ -713,7 +739,7 @@ class RetroCastXStream(SoCMini):
     def __init__(self, revision="7.0", sys_clk_freq=int(45e6), capture=True,
                  green_input=3, red_input=3, blue_input=3,
                  pll_divide=1104, hs_offset=152, vs_row_at_sync=525,
-                 measure=True, mclk_out=True):
+                 measure=True, mclk_out=True, auto_vtotal=True, vbp=43):
         from litex_boards.platforms import colorlight_i5
         from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
         from liteeth.core import LiteEthUDPIPCore
@@ -813,6 +839,9 @@ class RetroCastXStream(SoCMini):
                                       hs_active_low=True, vs_active_low=True,
                                       vtotal=568, vs_min_rows=497,
                                       vs_row_at_sync=vs_row_at_sync,
+                                      # 実測vtotalに追従(モードが変わると
+                                      # ラップ点が合わず絵が縦に繰り返すため)
+                                      auto_vtotal=auto_vtotal, vbp=vbp,
                                       hs_offset=hs_offset, vs_offset=0,
                                       hs_total=pll_divide or 1650,
                                       sys_clk_freq=sys_clk_freq,
@@ -825,7 +854,20 @@ class RetroCastXStream(SoCMini):
             audio_sources=[(self.i2s.sources[0], 48000),
                            (self.i2s.sources[1], 48000),
                            (self.spdif.source, self.spdif.rate_hz)],
-            capture=capture_obj)
+            capture=capture_obj,
+            cfg_vbp=vbp, cfg_hs_offset=hs_offset, cfg_pll_divide=pll_divide)
+
+        if capture:
+            # CONFIGで書き換わる画枠パラメータをキャプチャ/TVPへ配る。
+            # 末尾クリアの開始entryは (1ラインのサンプル数 - 水平オフセット)/2。
+            # pll_divide や hs_offset を変えると必要範囲も変わるので実行時に算出する。
+            self.comb += [
+                self.capture.cfg_vbp.eq(self.streamer.cfg_vbp),
+                self.capture.cfg_hs_offset.eq(self.streamer.cfg_hs_offset),
+                self.status.cfg_pll_divide.eq(self.streamer.cfg_pll_divide),
+                self.capture.cfg_clear_from.eq(
+                    (self.streamer.cfg_pll_divide - self.streamer.cfg_hs_offset)[1:]),
+            ]
 
 
 def main():
@@ -837,7 +879,7 @@ def main():
     # 追加した版では seed3 が 119.7MHz で未達になり、seed2 で 132.2MHz PASS になった。
     # ビルド後は必ず全ドメインの PASS/FAIL を確認すること(dataclk だけ見ると
     # eth_rx の違反を見落とす)。
-    ap.add_argument("--seed", type=int, default=2, help="nextpnr placement seed")
+    ap.add_argument("--seed", type=int, default=5, help="nextpnr placement seed")
     ap.add_argument("--no-capture", action="store_true",
                     help="実キャプチャを無効化しテストパターンを送出")
     # 入力mux(0x19)の切り替え。既定は全て _3 = 基板配線。緑のクランプ異常の
@@ -860,6 +902,10 @@ def main():
                     help="VSYNC時にrowへ入れる値。増やすと画が下へ寄る")
     ap.add_argument("--no-measure", action="store_true",
                     help="実測タイミング(周波数カウンタ)を作らない。ノイズ切り分け用")
+    ap.add_argument("--no-auto-vtotal", action="store_true",
+                    help="実測vtotalへの自動追従を切る(固定値で動かす)")
+    ap.add_argument("--vbp", type=int, default=43,
+                    help="キャプチャ窓の先頭をVSYNCの何行後にするか(垂直バックポーチ)")
     ap.add_argument("--no-mclk-out", action="store_true",
                     help="P3 147のMCLK出力を0固定にする(音声は止まる)。ノイズ切り分け用")
     args = ap.parse_args()
@@ -871,7 +917,9 @@ def main():
                            hs_offset=args.hs_offset,
                            vs_row_at_sync=args.vs_row_at_sync,
                            measure=not args.no_measure,
-                           mclk_out=not args.no_mclk_out)
+                           mclk_out=not args.no_mclk_out,
+                           auto_vtotal=not args.no_auto_vtotal,
+                           vbp=args.vbp)
     builder = Builder(soc, output_dir="build/colorlight_i5", compile_software=False)
     builder.build(run=args.build, seed=args.seed)
 
