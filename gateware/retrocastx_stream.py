@@ -455,7 +455,12 @@ class RetroCastXStreamer(LiteXModule):
         aud_fifos = []
         aud_ts_arr = []
         for k, (ep, rate) in enumerate(audio_srcs):
-            fifo = _stream.SyncFIFO([("data", 32)], 2 * audio_nsamples)
+            # buffered=True(同期読み出し)にするとBRAMへ載る。非バッファ版は
+            # 非同期読み出しなのでBRAMにマップできず、480深さ×32bit×3系統が
+            # 分散RAM(TRELLIS_DPR16X4)としてLUTを約3500個食っていた。
+            # BRAMは9/56しか使っておらず余っている。
+            fifo = _stream.SyncFIFO([("data", 32)], 2 * audio_nsamples,
+                                    buffered=True)
             self.submodules += fifo
             ts_first = Signal(32)
             self.comb += [
@@ -874,12 +879,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", action="store_true")
     ap.add_argument("--revision", default="7.0", help="i5 board revision")
-    # タイミングは with_sys_datapath=True + sys 45MHz で収束するが、eth_rx の125MHzが
-    # 常に一番きつく、ロジックを足すと落ちる。実測タイミング(周波数カウンタ)を
-    # 追加した版では seed3 が 119.7MHz で未達になり、seed2 で 132.2MHz PASS になった。
-    # ビルド後は必ず全ドメインの PASS/FAIL を確認すること(dataclk だけ見ると
-    # eth_rx の違反を見落とす)。
-    ap.add_argument("--seed", type=int, default=5, help="nextpnr placement seed")
+    # 以前は eth_rx の125MHzが常にぎりぎりで、ロジックを足すとシード次第で落ちていた。
+    # 原因は音声FIFOが分散RAM(LUT)に載っていたことで、LUT使用率が63%あった。
+    # buffered=True でBRAMへ移して36%まで下げたところ、seed 1/2/3/5 のいずれでも
+    # 全ドメインが余裕を持って通るようになった(eth_rx 130〜136MHz)。
+    # ビルド後は必ず全ドメインの PASS/FAIL を確認すること(途中経過ではなく
+    # ルーティング後の最終値を見る。dataclk だけ見ると eth_rx の違反を見落とす)。
+    ap.add_argument("--seed", type=int, default=2, help="nextpnr placement seed")
     ap.add_argument("--no-capture", action="store_true",
                     help="実キャプチャを無効化しテストパターンを送出")
     # 入力mux(0x19)の切り替え。既定は全て _3 = 基板配線。緑のクランプ異常の
