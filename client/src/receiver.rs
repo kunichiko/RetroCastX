@@ -165,15 +165,28 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         // 操作できるように、専用ツールではなくここで記録する。
         if n >= 3 && buf[2] == proto::TYPE_MODE {
             if let Ok(Packet::Mode(m)) = proto::parse(&buf[..n]) {
-                // 実測値は僅かに揺れるので、粗い量子化で「変化」を判定する
-                let key = (
-                    m.hactive, m.vactive, m.htotal, m.vtotal,
-                    m.dotclk_hz / 10_000,
-                    m.hfreq_mhz_x1000 / 10_000,
-                    m.vfreq_mhz_x1000 / 100,
-                );
-                if mode_key != Some(key) {
-                    mode_key = Some(key);
+                // 実測値は測定分解能のぶん常に揺れる(fHは1秒窓の計数なので±1Hz、
+                // fVは8秒積算で0.125Hz刻み)。量子化では境界で必ずばたつくので、
+                // 相対誤差のしきい値で「本当にモードが変わったか」を判定する。
+                let changed = match mode_key {
+                    None => true,
+                    Some(p) => {
+                        let rel = |a: u32, b: u32, tol: f64| {
+                            let (a, b) = (a as f64, b as f64);
+                            (a - b).abs() > b.max(1.0) * tol
+                        };
+                        p.0 != m.hactive || p.1 != m.vactive
+                            || p.2 != m.htotal || p.3 != m.vtotal
+                            || rel(m.dotclk_hz, p.4, 0.01)
+                            || rel(m.hfreq_mhz_x1000, p.5, 0.01)
+                            || rel(m.vfreq_mhz_x1000, p.6, 0.02)
+                    }
+                };
+                if changed {
+                    mode_key = Some((
+                        m.hactive, m.vactive, m.htotal, m.vtotal,
+                        m.dotclk_hz, m.hfreq_mhz_x1000, m.vfreq_mhz_x1000,
+                    ));
                     eprintln!(
                         "mode: active {}x{}  total {}x{}  dotclk {:.4}MHz  \
                          h {:.3}kHz  v {:.2}Hz",
