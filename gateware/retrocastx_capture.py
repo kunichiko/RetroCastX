@@ -34,11 +34,14 @@ def _meta_layout(nface_bits, row_bits):
 class TvpCapture(Module):
     """pads: r(8) g(8) b(8) hs vs [fid] を持つ Record。dataclk は呼び出し側で
     cd_pix に接続済みであること。width は偶数(2px/entry)。"""
-    def __init__(self, pads, width=1024, height=512, nface=4,
+    def __init__(self, pads, width=1024, height=512, nface=8, fifo_depth=4,
                  hs_active_low=True, vs_active_low=True,
                  hs_offset=0, vs_offset=0):
         assert width % 2 == 0 and (width & (width - 1)) == 0, "width は2のべき乗"
         assert nface >= 2 and (nface & (nface - 1)) == 0
+        # 面数 > 未処理メタ数 にして、送信中(head)の面が書込ポインタに追いつかれ
+        # 上書きされる事を防ぐ(CDCのパイプライン段も見込んで +2 マージン)
+        assert nface >= fifo_depth + 2, "nface は fifo_depth+2 以上"
         self.width = width
         self.height = height
         nface_bits = log2_int(nface)
@@ -51,8 +54,9 @@ class TvpCapture(Module):
         self.line_row   = Signal(row_bits)        # 先頭ラインのフレーム内行
         self.line_frame = Signal(16)
         self.line_field = Signal()
-        self.line_face  = Signal(nface_bits)
+        self.line_face  = Signal(nface_bits)      # FIFO先頭ラインの面(pop前にラッチ)
         self.line_ack   = Signal()                # 1パルスで pop(送出開始時)
+        self.rd_face    = Signal(nface_bits)      # 読み出す面(送信側がラッチして固定)
         self.rd_word    = Signal(max=max(entries, 2))   # 面内ワード位置(=x/2)
         self.rd_data    = Signal(32)              # {pix1, pix0}
         # 診断用(sysで観測)
@@ -68,7 +72,7 @@ class TvpCapture(Module):
         # --- メタデータ CDC(pix → sys)。sink=pix / source=sys ---
         layout = _meta_layout(nface_bits, row_bits)
         self.submodules.meta = meta = stream.ClockDomainCrossing(
-            layout, cd_from="pix", cd_to="sys", depth=max(nface, 4))
+            layout, cd_from="pix", cd_to="sys", depth=max(fifo_depth, 4))
 
         # ================= pix ドメイン =================
         r, g, b = pads.r, pads.g, pads.b
@@ -150,7 +154,7 @@ class TvpCapture(Module):
             self.line_frame.eq(meta.source.frame),
             self.line_field.eq(meta.source.field),
             meta.source.ready.eq(self.line_ack),
-            rd.adr.eq(Cat(self.rd_word, self.line_face)),
+            rd.adr.eq(Cat(self.rd_word, self.rd_face)),  # 送信側ラッチ面を読む
             self.rd_data.eq(rd.dat_r),
         ]
         # 診断CDC

@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from migen import *
 from retrocastx_capture import TvpCapture
 
-W, H, NF = 8, 4, 4
+W, H, NF = 8, 4, 8
 VOFF = 2                     # 先頭2行は blanking(row_eff<0)
 
 
@@ -84,6 +84,7 @@ def main():
             face = (yield cap.line_face)
             row  = (yield cap.line_row)
             frm  = (yield cap.line_frame)
+            yield cap.rd_face.eq(face)   # 読み出す面を固定
             # face 読み出し(1cyc latency)
             words = []
             for e in range(W // 2):

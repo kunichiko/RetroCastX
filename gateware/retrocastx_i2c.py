@@ -221,9 +221,11 @@ class StatusDisplay(Module):
         #          0x0E<-0x52(AHSS=0/AVSS=0: 外部HSYNC/VSYNC を有効HSYNC/VSYNCに)
         #          0x17<-0x02(Output En=0: RGB/DATACLK/HSOUT/VSOUT/FIDOUT 出力ON。
         #                     既定0x03はbit0=1で全出力Hi-Z=DATACLKが出ない。SOG Enは1のまま)
+        #          0x18<-0x01(CLK POL=1: データをDATACLK立下りでlaunch。FPGAは立上りで
+        #                     安定サンプルできる。他ビットは既定0)
         #   read : 0x14(SyncDet) 0x37/0x38(Lines/Frame) 0x39/0x3A(Clocks/Line)
-        WR_REG = [0x19, 0x0E, 0x17]
-        WR_VAL = [0xAA, 0x52, 0x02]
+        WR_REG = [0x19, 0x0E, 0x17, 0x18]
+        WR_VAL = [0xAA, 0x52, 0x02, 0x01]
         RD_REG = [0x14, 0x37, 0x38, 0x39, 0x3A]
         NWRITE = len(WR_REG); NREAD = len(RD_REG); NSTEP = NWRITE + NREAD
         step = Signal(max=NSTEP + 1)

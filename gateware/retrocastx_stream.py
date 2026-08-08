@@ -124,7 +124,11 @@ class RetroCastXStreamer(LiteXModule):
                  announce_ip=HOST_IP, udp_port_nr=UDP_PORT,
                  mtu_payload=1472, interlace=False,
                  audio_sources=None, audio_nsamples=240,
-                 mac_address=MAC_ADDRESS):
+                 mac_address=MAC_ADDRESS, capture=None):
+        # capture: TvpCapture(sysドメインI/F) を渡すと、テストパターンの代わりに
+        #   実キャプチャライン(line_valid/line_row/line_frame/rd_*)を源にする。
+        #   None の場合は従来どおり自走テストパターン。
+        cap_mode = capture is not None
         # 自MAC(SUBSCRIBE/CONFIGの宛先照合とCONFIG応答に使用)。
         # リトルエンディアンのワード表現(伝送バイト順=MAC表記順)
         mac_bytes = mac_address.to_bytes(6, "big")
@@ -196,9 +200,12 @@ class RetroCastXStreamer(LiteXModule):
         cap_ts_frame = Signal(32)
         cap_ts_line  = Signal(32)
 
-        # フルフレーム座標の行番号(step3ではTVP7002のFIDOUT由来のfieldを使う)
+        # フルフレーム座標の行番号。capture時は送信開始時にラッチした行を使う。
         row = Signal(max=height)
-        if interlace:
+        cap_row = Signal(max=height)               # capture: ラッチした送信対象行
+        if cap_mode:
+            self.comb += row.eq(cap_row)
+        elif interlace:
             self.comb += row.eq(Cat(field, line))   # row = line*2 + field
         else:
             self.comb += row.eq(line)
@@ -325,51 +332,69 @@ class RetroCastXStreamer(LiteXModule):
         ann_cnt  = Signal(max=max(int(sys_clk_freq * announce_period), 2))
         mode_cnt = Signal(max=max(int(sys_clk_freq * mode_period), 2))
         line_cnt = Signal(max=max(line_interval, 2))
-        self.sync += [
+        # ANNOUNCE/MODE タイマは両モード共通
+        _timer = [
             If(ann_cnt == 0,
                 ann_cnt.eq(int(sys_clk_freq * announce_period) - 1),
             ).Else(ann_cnt.eq(ann_cnt - 1)),
-            # MODE/LINEのタイマは購読中のみ進める(非購読時はリセット保持)
             If(~sub_valid,
                 mode_cnt.eq(int(sys_clk_freq * mode_period) - 1),
-                line_cnt.eq(line_interval - 1),
-                cap_line.eq(0),
             ).Else(
                 If(mode_cnt == 0,
                     mode_cnt.eq(int(sys_clk_freq * mode_period) - 1),
                 ).Else(mode_cnt.eq(mode_cnt - 1)),
-                If(line_cnt == 0,
-                    line_cnt.eq(line_interval - 1),
-                    # 源の自走(GbEの状態に無関係にライン/フレームを一定間隔で進める)
-                    If(cap_line == lines_per_unit - 1,
-                        cap_line.eq(0),
-                        cap_frame.eq(cap_frame + 1),
-                        cap_ts_frame.eq(cap_ts_frame + unit_ticks),
-                        cap_ts_line.eq(cap_ts_frame + unit_ticks),
-                        *([field.eq(~field)] if interlace else []),
-                    ).Else(
-                        cap_line.eq(cap_line + 1),
-                        cap_ts_line.eq(cap_ts_line + htotal),
-                    ),
-                ).Else(line_cnt.eq(line_cnt - 1)),
             ),
+        ]
+        if not cap_mode:
+            # テストパターン: 源(cap_*)を line_interval 毎に自走させる
+            _timer += [
+                If(~sub_valid,
+                    line_cnt.eq(line_interval - 1),
+                    cap_line.eq(0),
+                ).Else(
+                    If(line_cnt == 0,
+                        line_cnt.eq(line_interval - 1),
+                        If(cap_line == lines_per_unit - 1,
+                            cap_line.eq(0),
+                            cap_frame.eq(cap_frame + 1),
+                            cap_ts_frame.eq(cap_ts_frame + unit_ticks),
+                            cap_ts_line.eq(cap_ts_frame + unit_ticks),
+                            *([field.eq(~field)] if interlace else []),
+                        ).Else(
+                            cap_line.eq(cap_line + 1),
+                            cap_ts_line.eq(cap_ts_line + htotal),
+                        ),
+                    ).Else(line_cnt.eq(line_cnt - 1)),
+                ),
+            ]
+        _timer += [
             # クリアより後に書く=セット優先
             If(ann_clr, ann_pending.eq(0)),
             If(mode_clr, mode_pending.eq(0)),
             If(line_clr, line_pending.eq(0)),
             If((ann_cnt == 0) | sub_hit_any, ann_pending.eq(1)),
             If((sub_valid & (mode_cnt == 0)) | sub_hit, mode_pending.eq(1)),
-            If(sub_valid & (line_cnt == 0), line_pending.eq(1)),
         ]
+        if cap_mode:
+            # capture: キャプチャ済みライン(sysドメイン)が有れば送出要求
+            _timer.append(If(sub_valid & capture.line_valid, line_pending.eq(1)))
+        else:
+            _timer.append(If(sub_valid & (line_cnt == 0), line_pending.eq(1)))
+        self.sync += _timer
 
-        # --- テストパターン(1ワード=2ピクセル) ---
-        x = Signal(max=width)              # 常に偶数(ピクセルペアの左)
-        self.pix0 = pix0 = PatternPixel(width, height)
-        self.pix1 = pix1 = PatternPixel(width, height)
-        self.comb += [
-            pix0.x.eq(x),          pix0.y.eq(row), pix0.frame.eq(frame),
-            pix1.x.eq(x | 1),      pix1.y.eq(row), pix1.frame.eq(frame),
-        ]
+        # --- 画素源(1ワード=2ピクセル)。x はライン内ピクセル位置(常に偶数)---
+        x = Signal(max=width + 2)          # +2: フラグ境界で最終+2しても飽和しない
+        if not cap_mode:
+            self.pix0 = pix0 = PatternPixel(width, height)
+            self.pix1 = pix1 = PatternPixel(width, height)
+            self.comb += [
+                pix0.x.eq(x),          pix0.y.eq(row), pix0.frame.eq(frame),
+                pix1.x.eq(x | 1),      pix1.y.eq(row), pix1.frame.eq(frame),
+            ]
+        else:
+            # 送信中は FIFO 先頭(head)の面を読む。head は送信完了時に pop するまで
+            # 上書きされない(FIFO満杯保護で書込ポインタが head 面へ進めない)ので安全。
+            self.comb += capture.rd_face.eq(capture.line_face)
 
         # --- 音声バッファ(sysドメイン)。audio_nsamplesサンプル溜まったらパケット化 ---
         from litex.soc.interconnect import stream as _stream
@@ -468,6 +493,7 @@ class RetroCastXStreamer(LiteXModule):
                 3: hdr.eq(aud_rate),
                 4: hdr.eq(aud_ts[asrc]),
             })
+        line_pixdata = capture.rd_data if cap_mode else Cat(pix0.pix, pix1.pix)
         self.comb += [
             line_flags.eq(Cat(frag_idx == n_frags - 1, field)),
             ts_frag.eq(ts_line + frag_off_arr[frag_idx]),
@@ -479,13 +505,27 @@ class RetroCastXStreamer(LiteXModule):
             Case(ptype, cases),
             If(word_idx == 1, hdr.eq(w1)),
             If((ptype == _T_LINE) & (word_idx >= 5),
-                sink.data.eq(Cat(pix0.pix, pix1.pix)),
+                sink.data.eq(line_pixdata),
             ).Elif((ptype == _T_AUDIO) & (word_idx >= 5),
                 sink.data.eq(aud_data),
             ).Else(
                 sink.data.eq(hdr),
             ),
         ]
+        if cap_mode:
+            # ラインバッファ読出(BRAM 1cyc遅延)。アドレスは「次サイクルのx」を先出し
+            # → dat_r が常に現在の x に対応(バックプレッシャ時も保持されて正しい)。
+            x_adv = Signal()
+            self.comb += x_adv.eq(
+                sink.valid & sink.ready & (ptype == _T_LINE) & (
+                    ((word_idx >= 5) & (word_idx != nwords - 1)) |
+                    ((word_idx == nwords - 1) & (frag_idx != n_frags - 1))))
+            x_next = Signal(max=width + 2)
+            self.comb += x_next.eq(x + Mux(x_adv, 2, 0))
+            self.comb += capture.rd_word.eq(x_next[1:])   # entry = x_next/2
+            # capture: ts はフレーム/行から算出(A/V同期用の近似)
+            self.comb += [ts_frame.eq(frame * unit_ticks),
+                          ts_line.eq(frame * unit_ticks + row * htotal)]
         # AUDIOペイロード送出時のFIFOポップ(最終ワードも含めword>=5で1ワード=1ポップ)
         for k in range(n_aud):
             self.comb += aud_pop[k].eq(
@@ -516,7 +556,23 @@ class RetroCastXStreamer(LiteXModule):
             NextValue(length, 32),
             NextValue(nwords, 8),
             NextState("SEND"),
-        ).Elif(line_pending & sub_valid,
+        )
+        # LINE送出開始時に「送るライン」を源からスナップショット(送信中は固定)。
+        if cap_mode:
+            # 行/フレーム/フィールドを固定(面は head を直読)。pop は送信完了時。
+            line_snap = [
+                NextValue(cap_row, capture.line_row),
+                NextValue(frame, capture.line_frame),
+                NextValue(field, capture.line_field),
+            ]
+        else:
+            line_snap = [
+                NextValue(line, cap_line),
+                NextValue(frame, cap_frame),
+                NextValue(ts_frame, cap_ts_frame),
+                NextValue(ts_line, cap_ts_line),
+            ]
+        idle_if = idle_if.Elif(line_pending & sub_valid,
             line_clr.eq(1),
             NextValue(ptype, _T_LINE),
             NextValue(dst_ip, sub_ip),
@@ -525,12 +581,7 @@ class RetroCastXStreamer(LiteXModule):
             NextValue(length, frag_len_arr[0]),
             NextValue(nwords, frag_nwords_arr[0]),
             NextValue(x, 0),
-            # 送信するラインを源からスナップショット(送信中は固定)。ビジー中に源が
-            # 先へ進んでいれば、その間のラインは送られず=ドロップされている。
-            NextValue(line, cap_line),
-            NextValue(frame, cap_frame),
-            NextValue(ts_frame, cap_ts_frame),
-            NextValue(ts_line, cap_ts_line),
+            *line_snap,
             NextState("SEND"),
         )
         for k in range(n_aud):
@@ -564,8 +615,10 @@ class RetroCastXStreamer(LiteXModule):
                         NextValue(length, frag_len_arr[frag_idx + 1]),
                         NextValue(nwords, frag_nwords_arr[frag_idx + 1]),
                     ).Else(
-                        # 実キャプチャ模擬: line/frame/tsの進行は源(cap_*)で自走する。
-                        # 送信完了時は次パケットのためIDLEへ戻るだけ(ここでは進めない)。
+                        # ライン(全断片)完了。capture時はここで FIFO を pop(head前進)。
+                        # pattern時は源(cap_*)が自走するのでIDLEへ戻るだけ。
+                        *([If(ptype == _T_LINE, capture.line_ack.eq(1))]
+                          if cap_mode else []),
                         NextState("IDLE"),
                     ),
                 ).Else(
@@ -587,6 +640,21 @@ class _CRG(LiteXModule):
         pll.create_clkout(self.cd_sys, sys_clk_freq)
 
 
+# TVP7002 映像出力(RGB[9:2]=RGB888, DATACLK, HSOUT/VSOUT/FIDOUT)。
+# ボール割当は hardware/adc-frontend/main.ato と一致(sodimm io_* 名=ボール名)。
+# r/g/b の Pins は bit0(=TVP r2/g2/b2, LSB)→bit7(=r9/g9/b9, MSB)の順。
+_capture_io = [
+    ("tvp_capture", 0,
+        Subsignal("dataclk", Pins("E2")),                        # PCLKC7_0(P3唯一のクロック)
+        Subsignal("r", Pins("T18 R18 R17 P17 M17 T17 U18 U17")), # R[9:2]
+        Subsignal("g", Pins("P18 N17 N18 M18 L20 L18 K20 J20")), # G[9:2]
+        Subsignal("b", Pins("F20 D20 B20 B19 B18 A19 C17 A18")), # B[9:2]
+        Subsignal("hs",  Pins("B4")),                            # HSOUT
+        Subsignal("vs",  Pins("C3")),                            # VSOUT
+        Subsignal("fid", Pins("E3")),                            # FIDOUT(未使用)
+        IOStandard("LVCMOS33")),
+]
+
 # hardware/adc-frontend の J4(EXT P4ミラー)ピン割当(README参照)
 _audio_io = [
     ("audio", 0,
@@ -604,7 +672,7 @@ class RetroCastXStream(SoCMini):
     # sys 45MHz: 45M×32bit=180MB/s でGbE線速(125MB/s)に対し十分。
     # 50MHzは音声パス追加後にタイミングが閉じなくなったため下げた
     # (S/PDIFのUI分解能も45MHzで7.3サイクル/UI@48kHzと十分)
-    def __init__(self, revision="7.0", sys_clk_freq=int(45e6)):
+    def __init__(self, revision="7.0", sys_clk_freq=int(45e6), capture=True):
         from litex_boards.platforms import colorlight_i5
         from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
         from liteeth.core import LiteEthUDPIPCore
@@ -660,12 +728,31 @@ class RetroCastXStream(SoCMini):
         self.status = StatusDisplay(platform.request("tvp_oled_i2c"), sys_clk_freq,
                                     i2c_freq=100e3)
 
+        # --- TVP7002 映像キャプチャ(cd_pix=DATACLK)---
+        capture_obj = None
+        if capture:
+            from retrocastx_capture import TvpCapture
+            platform.add_extension(_capture_io)
+            cap_pads = platform.request("tvp_capture")
+            self.cd_pix = ClockDomain()
+            self.comb += self.cd_pix.clk.eq(cap_pads.dataclk)
+            self.specials += AsyncResetSynchronizer(self.cd_pix,
+                                                    ResetSignal("sys"))
+            # DATACLK は 31.5kHz×分周比。X68000 各モードの最大~70MHz を見込み75MHz制約
+            platform.add_period_constraint(cap_pads.dataclk, 1e9 / 75e6)
+            # HSOUT/VSOUT は active-low 前提(SYNC=0x91: IHSPD=0/VSPD=0)。画がずれる
+            # 場合は hs/vs_active_low と hs/vs_offset で調整。
+            self.capture = TvpCapture(cap_pads, width=1024, height=512,
+                                      hs_active_low=True, vs_active_low=True)
+            capture_obj = self.capture
+
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
         self.streamer = RetroCastXStreamer(
             udp_port, sys_clk_freq, width=1024, height=512, fps=60.0,
             audio_sources=[(self.i2s.sources[0], 48000),
                            (self.i2s.sources[1], 48000),
-                           (self.spdif.source, self.spdif.rate_hz)])
+                           (self.spdif.source, self.spdif.rate_hz)],
+            capture=capture_obj)
 
 
 def main():
@@ -676,8 +763,10 @@ def main():
     # eth_rx 130.8/125MHz, sys 52.9/50MHz(seed2はeth_rx 123.5MHzで僅かに未達)。
     # seedは今後のリグレッション時の調整用ノブとして残す
     ap.add_argument("--seed", type=int, default=3, help="nextpnr placement seed")
+    ap.add_argument("--no-capture", action="store_true",
+                    help="実キャプチャを無効化しテストパターンを送出")
     args = ap.parse_args()
-    soc = RetroCastXStream(revision=args.revision)
+    soc = RetroCastXStream(revision=args.revision, capture=not args.no_capture)
     builder = Builder(soc, output_dir="build/colorlight_i5", compile_software=False)
     builder.build(run=args.build, seed=args.seed)
 
