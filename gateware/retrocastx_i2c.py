@@ -216,15 +216,24 @@ class StatusDisplay(Module):
         # 起動後リセット解除タイマ
         rst_cnt = Signal(max=int(sys_clk_freq//10)+1)
 
-        # TVP read: 2レジスタ(0x01,0x02)
-        # TVP手順ステップ: 0=read0x00(rev), 1=write0x01<-0xA5, 2=read0x01(wrb)
-        # TVPステップ: 0=write 0x19<-0xAA(入力=_3選択), 1..5=read 0x14/0x37/0x38/0x39/0x3A
-        step = Signal(3)
-        NSTEP = 6
-        WRVAL = 0xAA                          # 0x19: SOG/R/G/B すべて _3 入力を選択
-        reg_rom = Array(Constant(v, 8) for v in [0x19, 0x14, 0x37, 0x38, 0x39, 0x3A])
-        reg_b = Signal(8); self.comb += reg_b.eq(reg_rom[step])
-        is_wstep = Signal(); self.comb += is_wstep.eq(step == 0)
+        # TVPステップ: 先頭NWRITE個=初期化書込(reg<-val)、残り=ステータス読出
+        #   write: 0x19<-0xAA(SOG/R/G/B 全て _3 入力を選択, OSSC互換)
+        #          0x0E<-0x52(AHSS=0/AVSS=0: 外部HSYNC/VSYNC を有効HSYNC/VSYNCに)
+        #          0x17<-0x02(Output En=0: RGB/DATACLK/HSOUT/VSOUT/FIDOUT 出力ON。
+        #                     既定0x03はbit0=1で全出力Hi-Z=DATACLKが出ない。SOG Enは1のまま)
+        #   read : 0x14(SyncDet) 0x37/0x38(Lines/Frame) 0x39/0x3A(Clocks/Line)
+        WR_REG = [0x19, 0x0E, 0x17]
+        WR_VAL = [0xAA, 0x52, 0x02]
+        RD_REG = [0x14, 0x37, 0x38, 0x39, 0x3A]
+        NWRITE = len(WR_REG); NREAD = len(RD_REG); NSTEP = NWRITE + NREAD
+        step = Signal(max=NSTEP + 1)
+        wreg_rom = Array(Constant(v, 8) for v in WR_REG)
+        wval_rom = Array(Constant(v, 8) for v in WR_VAL)
+        rreg_rom = Array(Constant(v, 8) for v in RD_REG)
+        rstep = Signal(max=NREAD + 1); self.comb += rstep.eq(step - NWRITE)
+        is_wstep = Signal(); self.comb += is_wstep.eq(step < NWRITE)
+        reg_b = Signal(8); self.comb += reg_b.eq(Mux(is_wstep, wreg_rom[step], rreg_rom[rstep]))
+        wval_b = Signal(8); self.comb += wval_b.eq(wval_rom[step])
 
         # FORMAT
         fi = Signal(5)   # 0..20 (NFMT=21)
@@ -263,7 +272,7 @@ class StatusDisplay(Module):
         fsm.act("TP_REG", self.resetb.eq(1), *issue(OP_WRITE, reg_b),
             If(m.done, If(is_wstep, NextState("TP_WVAL")).Else(NextState("TP_RSTART"))))
         # 書込ステップ: 値を書いてSTOP
-        fsm.act("TP_WVAL", self.resetb.eq(1), *issue(OP_WRITE, WRVAL),
+        fsm.act("TP_WVAL", self.resetb.eq(1), *issue(OP_WRITE, wval_b),
             If(m.done, NextState("TP_STOP")))
         # 読出ステップ: repeated START, 読出アドレス, READ
         fsm.act("TP_RSTART", self.resetb.eq(1), *issue(OP_START),
@@ -272,12 +281,12 @@ class StatusDisplay(Module):
             If(m.done, NextState("TP_READ")))
         fsm.act("TP_READ", self.resetb.eq(1), *issue(OP_READ, nack=1),
             If(m.done,
-                Case(step, {
-                    1: NextValue(self.syncdet, m.rdata),
-                    2: NextValue(self.lpf_hi, m.rdata),
-                    3: NextValue(self.lpf_lo, m.rdata),
-                    4: NextValue(self.cpl_hi, m.rdata),
-                    5: NextValue(self.cpl_lo, m.rdata),
+                Case(rstep, {
+                    0: NextValue(self.syncdet, m.rdata),
+                    1: NextValue(self.lpf_hi, m.rdata),
+                    2: NextValue(self.lpf_lo, m.rdata),
+                    3: NextValue(self.cpl_hi, m.rdata),
+                    4: NextValue(self.cpl_lo, m.rdata),
                 }),
                 NextState("TP_STOP")))
         fsm.act("TP_STOP", self.resetb.eq(1), *issue(OP_STOP),
@@ -299,14 +308,16 @@ class StatusDisplay(Module):
                 2:  [faddr.eq(40), fchar.eq(ord('K'))],
                 3:  [faddr.eq(56), fchar.eq(hexch(self.syncdet[4:8]))],
                 4:  [faddr.eq(57), fchar.eq(hexch(self.syncdet[0:4]))],
-                5:  [faddr.eq(72), fchar.eq(hexch(self.lpf_hi[4:8]))],
-                6:  [faddr.eq(73), fchar.eq(hexch(self.lpf_hi[0:4]))],
-                7:  [faddr.eq(74), fchar.eq(hexch(self.lpf_lo[4:8]))],
-                8:  [faddr.eq(75), fchar.eq(hexch(self.lpf_lo[0:4]))],
-                9:  [faddr.eq(88), fchar.eq(hexch(self.cpl_hi[4:8]))],
-                10: [faddr.eq(89), fchar.eq(hexch(self.cpl_hi[0:4]))],
-                11: [faddr.eq(90), fchar.eq(hexch(self.cpl_lo[4:8]))],
-                12: [faddr.eq(91), fchar.eq(hexch(self.cpl_lo[0:4]))],
+                # Lines/Frame[11:0]=(0x38[3:0]<<8)|0x37 → 4桁表示 0x0NNN(上位nibは常に0)
+                5:  [faddr.eq(72), fchar.eq(ord('0'))],
+                6:  [faddr.eq(73), fchar.eq(hexch(self.lpf_lo[0:4]))],
+                7:  [faddr.eq(74), fchar.eq(hexch(self.lpf_hi[4:8]))],
+                8:  [faddr.eq(75), fchar.eq(hexch(self.lpf_hi[0:4]))],
+                # Clocks/Line[11:0]=(0x3A[3:0]<<8)|0x39 → 4桁表示 0x0NNN
+                9:  [faddr.eq(88), fchar.eq(ord('0'))],
+                10: [faddr.eq(89), fchar.eq(hexch(self.cpl_lo[0:4]))],
+                11: [faddr.eq(90), fchar.eq(hexch(self.cpl_hi[4:8]))],
+                12: [faddr.eq(91), fchar.eq(hexch(self.cpl_hi[0:4]))],
                 13: [faddr.eq(104), fchar.eq(hexch(up[28:32]))],
                 14: [faddr.eq(105), fchar.eq(hexch(up[24:28]))],
                 15: [faddr.eq(106), fchar.eq(hexch(up[20:24]))],
