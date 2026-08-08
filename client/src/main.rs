@@ -20,6 +20,7 @@ mod audio;
 mod fullscreen;
 mod protocol;
 mod receiver;
+mod settings;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -34,7 +35,11 @@ fn main() -> eframe::Result {
     let mut fullscreen_mode = false;
     let mut target_mac: Option<[u8; 6]> = None;
     let mut decay = 0.8f32;
+    // 保存済み設定を読み、CLI引数があればそれで上書きする(その回だけ有効)
+    let mut cfg = settings::Settings::load();
+    eprintln!("settings: {}", settings::Settings::path().display());
     let mut audio = receiver::AudioOpts::default();
+    audio.source = cfg.audio_source;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -57,9 +62,18 @@ fn main() -> eframe::Result {
             // 音声: 再生するsource(0=RGB端子音声, 1=LINE入力, 2=S/PDIF)
             "--audio" => {
                 audio.source =
-                    Some(args.next().expect("--audio needs 0|1|2").parse().unwrap())
+                    Some(args.next().expect("--audio needs 0|1|2").parse().unwrap());
+                cfg.audio_source = audio.source;
             }
-            "--no-audio" => audio.source = None,
+            "--no-audio" => {
+                audio.source = None;
+                cfg.audio_source = None;
+            }
+            // 音量[%]。保存値より優先(その回だけ)
+            "--volume" => {
+                let pct: f32 = args.next().expect("--volume needs 0..150").parse().unwrap();
+                cfg.volume = (pct / 100.0).clamp(0.0, 1.5);
+            }
             // 音声バッファ[ms]。小さいほど低遅延だが枯渇(音切れ)しやすい
             "--audio-buffer" => {
                 audio.prebuffer_ms =
@@ -96,7 +110,8 @@ fn main() -> eframe::Result {
         "RetroCastX Viewer",
         options,
         Box::new(move |cc| {
-            Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, no_vsync, decay, audio)))
+            Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, no_vsync, decay,
+                                       audio, cfg.clone())))
         }),
     )
 }
@@ -240,9 +255,11 @@ struct ViewerApp {
     audio_devices: Vec<String>,
     /// UIで選択中のデバイス。None は「システム既定」
     audio_device_sel: Option<String>,
-    /// 音量(0.0..2.0、1.0=原音)。ミュート時も値は保持してトグルで戻せるようにする
+    /// 音量(0.0..1.5、1.0=原音)。ミュート時も値は保持してトグルで戻せるようにする
     audio_volume: f32,
     audio_muted: bool,
+    /// 設定の保存(スライダー操作中に毎フレーム書かないよう、変更後に少し待って書く)
+    settings_dirty: Option<std::time::Instant>,
     texture: Option<egui::TextureHandle>,
     seen_gen: u64,
     integer_scale: bool,
@@ -261,6 +278,7 @@ impl ViewerApp {
         no_vsync: bool,
         decay: f32,
         audio: receiver::AudioOpts,
+        cfg: settings::Settings,
     ) -> Self {
         let audio_source = audio.source;
         install_cjk_font(&cc.egui_ctx);
@@ -277,12 +295,13 @@ impl ViewerApp {
             shared,
             audio_source,
             audio_devices: audio::output_devices(),
-            audio_device_sel: None,
-            audio_volume: 1.0,
-            audio_muted: false,
+            audio_device_sel: cfg.audio_device.clone(),
+            audio_volume: cfg.volume,
+            audio_muted: cfg.muted,
+            settings_dirty: None,
             texture: None,
             seen_gen: 0,
-            integer_scale: true,
+            integer_scale: cfg.integer_scale,
             rx_error,
             subscribe_to,
             no_vsync,
@@ -313,6 +332,30 @@ impl ViewerApp {
 }
 
 impl ViewerApp {
+    /// 現在のUI状態を設定として書き出す。スライダー操作中に毎フレーム書くのを
+    /// 避けるため、変更を記録して少し待ってから1回だけ保存する。
+    fn mark_settings_dirty(&mut self) {
+        self.settings_dirty = Some(std::time::Instant::now());
+    }
+
+    fn flush_settings(&mut self) {
+        let due = self
+            .settings_dirty
+            .map_or(false, |t| t.elapsed() >= std::time::Duration::from_millis(700));
+        if !due {
+            return;
+        }
+        self.settings_dirty = None;
+        settings::Settings {
+            volume: self.audio_volume,
+            muted: self.audio_muted,
+            audio_source: self.audio_source,
+            audio_device: self.audio_device_sel.clone(),
+            integer_scale: self.integer_scale,
+        }
+        .save();
+    }
+
     /// 音声の状態表示 + 出力デバイス/source の選択UI。
     /// cpalのStreamは生成スレッドから動かせないので、選択は「要求」として置き、
     /// 受信スレッドが再生器を作り直す。
@@ -345,6 +388,7 @@ impl ViewerApp {
         });
         if src != self.audio_source {
             self.audio_source = src;
+            self.mark_settings_dirty();
             request = Some(receiver::AudioRequest {
                 device: self.audio_device_sel.clone(),
                 source: src,
@@ -371,6 +415,7 @@ impl ViewerApp {
         });
         if dev != self.audio_device_sel {
             self.audio_device_sel = dev.clone();
+            self.mark_settings_dirty();
             request = Some(receiver::AudioRequest { device: dev, source: self.audio_source });
         }
 
@@ -379,6 +424,7 @@ impl ViewerApp {
         }
 
         // 音量。ミュートは値を保持したままゲインだけ0にする
+        let (vol0, mute0) = (self.audio_volume, self.audio_muted);
         ui.horizontal(|ui| {
             let icon = if self.audio_muted { "🔇" } else { "🔊" };
             if ui.button(icon).on_hover_text("mute").clicked() {
@@ -391,6 +437,9 @@ impl ViewerApp {
             );
             ui.monospace(format!("{:3.0}%", self.audio_volume * 100.0));
         });
+        if self.audio_volume != vol0 || self.audio_muted != mute0 {
+            self.mark_settings_dirty();
+        }
         if let Some(a) = &astats {
             let g = if self.audio_muted { 0.0 } else { self.audio_volume };
             audio::AudioPlayer::set_gain(a, g);
@@ -426,9 +475,18 @@ impl ViewerApp {
 }
 
 impl eframe::App for ViewerApp {
+    /// 終了時にも保存する(遅延書込の待ち時間中に閉じても取りこぼさない)
+    fn on_exit(&mut self) {
+        // 遅延を無視して即座に書く
+        self.settings_dirty = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        self.flush_settings();
+    }
+
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
         self.refresh_texture(&ctx);
+        // 変更があれば少し待って1回だけ保存する(スライダー操作中の連続書込を避ける)
+        self.flush_settings();
 
         egui::Panel::right(egui::Id::new("info")).show(root, |ui| {
             ui.heading("RetroCastX");
@@ -484,7 +542,9 @@ impl eframe::App for ViewerApp {
             drop(boards);
             ui.separator();
 
-            ui.checkbox(&mut self.integer_scale, "integer scaling");
+            if ui.checkbox(&mut self.integer_scale, "integer scaling").changed() {
+                self.mark_settings_dirty();
+            }
         });
 
         egui::CentralPanel::default()
