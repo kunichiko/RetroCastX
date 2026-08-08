@@ -371,14 +371,18 @@ class RetroCastXStreamer(LiteXModule):
             # クリアより後に書く=セット優先
             If(ann_clr, ann_pending.eq(0)),
             If(mode_clr, mode_pending.eq(0)),
-            If(line_clr, line_pending.eq(0)),
             If((ann_cnt == 0) | sub_hit_any, ann_pending.eq(1)),
             If((sub_valid & (mode_cnt == 0)) | sub_hit, mode_pending.eq(1)),
         ]
         if cap_mode:
-            # capture: キャプチャ済みライン(sysドメイン)が有れば送出要求
-            _timer.append(If(sub_valid & capture.line_valid, line_pending.eq(1)))
+            # capture: FIFOに実データが有る間だけ送出要求(組合せ)。
+            # sticky レジスタにすると、送信中ずっと line_valid=1 で再セットされ、
+            # 送信完了時の pop で FIFO が空になった直後に「空ヘッドの残留値」で
+            # 余分なラインを送ってしまう(古いframe番号が混ざり、受信側で
+            # frameが N↔N+1 を往復=実フレームの5倍のfpsに見える)。
+            self.comb += line_pending.eq(capture.line_valid)
         else:
+            _timer.append(If(line_clr, line_pending.eq(0)))
             _timer.append(If(sub_valid & (line_cnt == 0), line_pending.eq(1)))
         self.sync += _timer
 

@@ -7,7 +7,7 @@
 
 RGB符号化: r=xpix<<3, g=row<<3, b=0 → pix555 = xpix<<10 | row<<5。
 """
-import os, sys
+import collections, os, sys
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "host", "python"))
 from migen import *
@@ -152,6 +152,12 @@ def main():
                 f"(off={pkt.offset_px} cnt={pkt.count_px})")
             checked += 1
     assert set(rows_seen) == set(range(H)), f"全行が揃っていない: {rows_seen}"
+    # 重複ライン検出: (frame,row) は一意でなければならない。sticky な送出要求で
+    # FIFOが空になった直後に「空ヘッドの残留値」を再送すると、ここで重複が出る
+    # (実機では受信側のframe番号が N↔N+1 を往復し、見かけfpsが5倍になった)。
+    keys = [(p.frame, p.line) for p in lines]
+    dups = [k for k, c in collections.Counter(keys).items() if c > 1]
+    assert not dups, f"重複ライン(frame,row)が {len(dups)} 件: {dups[:5]}"
     print(f"\n[OK] キャプチャ→ストリーマ統合: {len(lines)}本のLINEを画素一致で検証 "
           f"(全{H}行, 総画素{checked})")
 
