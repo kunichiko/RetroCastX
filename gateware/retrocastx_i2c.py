@@ -182,6 +182,11 @@ class StatusDisplay(Module):
         self.syncdet = Signal(8)  # reg0x14 Sync Detect Status
         self.lpf_hi = Signal(8); self.lpf_lo = Signal(8)  # 0x37/0x38 Lines/Frame
         self.cpl_hi = Signal(8); self.cpl_lo = Signal(8)  # 0x39/0x3A Clocks/Line
+        # H-PLL帰還分周比(=1ライン当たりDATACLK数)。実行時に変更可。
+        # このFSMは初期化書き込みを毎周(約30回/秒)繰り返すので、値を変えれば
+        # 次の周で自動的にTVPへ書き込まれる(別途トリガは不要)。
+        # pll_divide=0 でビルドした場合は 0x01/0x02 を書かないので効かない。
+        self.cfg_pll_divide = Signal(12, reset=pll_divide)
 
         TVP_W = (tvp_addr << 1) & 0xFE       # 0xB8
         TVP_R = TVP_W | 1                    # 0xB9
@@ -265,6 +270,13 @@ class StatusDisplay(Module):
         is_wstep = Signal(); self.comb += is_wstep.eq(step < NWRITE)
         reg_b = Signal(8); self.comb += reg_b.eq(Mux(is_wstep, wreg_rom[step], rreg_rom[rstep]))
         wval_b = Signal(8); self.comb += wval_b.eq(wval_rom[step])
+        # 分周比(0x01/0x02)の書込値は cfg_pll_divide から取る(後の代入が優先される)
+        if 0x01 in WR_REG:
+            self.comb += If(step == WR_REG.index(0x01),
+                            wval_b.eq(self.cfg_pll_divide[4:12]))
+        if 0x02 in WR_REG:
+            self.comb += If(step == WR_REG.index(0x02),
+                            wval_b.eq(Cat(C(0, 4), self.cfg_pll_divide[0:4])))
 
         # FORMAT
         fi = Signal(5)   # 0..20 (NFMT=21)
