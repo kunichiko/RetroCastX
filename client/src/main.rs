@@ -16,6 +16,7 @@
 //! (sender_simはSUBSCRIBEを無視して--dest宛に送るため)。
 
 mod assembler;
+mod audio;
 mod fullscreen;
 mod protocol;
 mod receiver;
@@ -33,6 +34,7 @@ fn main() -> eframe::Result {
     let mut fullscreen_mode = false;
     let mut target_mac: Option<[u8; 6]> = None;
     let mut decay = 0.8f32;
+    let mut audio = receiver::AudioOpts::default();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -52,6 +54,18 @@ fn main() -> eframe::Result {
             "--decay" => {
                 decay = args.next().expect("--decay needs a value (e.g. 0.8)").parse().unwrap()
             }
+            // 音声: 再生するsource(0=RGB端子音声, 1=LINE入力, 2=S/PDIF)
+            "--audio" => {
+                audio.source =
+                    Some(args.next().expect("--audio needs 0|1|2").parse().unwrap())
+            }
+            "--no-audio" => audio.source = None,
+            // 音声バッファ[ms]。小さいほど低遅延だが枯渇(音切れ)しやすい
+            "--audio-buffer" => {
+                audio.prebuffer_ms =
+                    args.next().expect("--audio-buffer needs ms").parse().unwrap();
+                audio.max_ms = audio.prebuffer_ms * 3;
+            }
             other => {
                 eprintln!("unknown arg: {other}");
                 std::process::exit(2);
@@ -60,10 +74,10 @@ fn main() -> eframe::Result {
     }
 
     if let Some(secs) = headless_secs {
-        return run_headless(port, subscribe_to, target_mac, secs, decay);
+        return run_headless(port, subscribe_to, target_mac, secs, decay, audio);
     }
     if fullscreen_mode {
-        fullscreen::run(port, subscribe_to, target_mac, decay); // 戻らない
+        fullscreen::run(port, subscribe_to, target_mac, decay, audio); // 戻らない
     }
 
     let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
@@ -82,9 +96,45 @@ fn main() -> eframe::Result {
         "RetroCastX Viewer",
         options,
         Box::new(move |cc| {
-            Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, no_vsync, decay)))
+            Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, no_vsync, decay, audio)))
         }),
     )
+}
+
+
+/// CJKを含むシステムフォントをeguiへ追加する。
+/// 出力デバイス名はOS由来で日本語を含むことがあり、egui既定フォントにはCJKの
+/// グリフが無いため豆腐(□)になる。フォントは同梱せず、実行環境のものを使う。
+fn install_cjk_font(ctx: &egui::Context) {
+    // 単一フォント(.ttf/.otf)のみ。.ttc はコレクションでab_glyphが扱えない
+    const CANDIDATES: &[&str] = &[
+        // macOS
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+        // Linux (Noto/VLGothic)
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttf",
+        "/usr/share/fonts/truetype/vlgothic/VL-Gothic-Regular.ttf",
+        // Windows
+        "C:/Windows/Fonts/meiryo.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+        "C:/Windows/Fonts/YuGothR.ttc",
+    ];
+    for path in CANDIDATES {
+        let Ok(bytes) = std::fs::read(path) else { continue };
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "cjk".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+        );
+        // 既定フォントの後ろに足す(ASCIIは既定の見た目を保ち、CJKだけ補完)
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            fonts.families.entry(family).or_default().push("cjk".to_owned());
+        }
+        ctx.set_fonts(fonts);
+        return;
+    }
+    eprintln!("font: CJK対応フォントが見つからないため日本語が豆腐になります");
 }
 
 /// "AA:BB:CC:DD:EE:FF" → [u8; 6](区切りは ':' or '-')。
@@ -105,10 +155,11 @@ fn run_headless(
     target_mac: Option<[u8; 6]>,
     secs: u64,
     decay: f32,
+    audio: receiver::AudioOpts,
 ) -> eframe::Result {
     let shared = Arc::new(receiver::Shared::default());
     receiver::spawn(
-        receiver::Config { port, subscribe_to, target_mac, decay },
+        receiver::Config { port, subscribe_to, target_mac, decay, audio },
         shared.clone(),
         || {},
     )
@@ -183,6 +234,12 @@ impl PaceMeter {
 
 struct ViewerApp {
     shared: Arc<receiver::Shared>,
+    /// 再生中の音声source(UI表示用)
+    audio_source: Option<u8>,
+    /// 出力デバイス一覧(起動時に列挙。再列挙ボタンで更新)
+    audio_devices: Vec<String>,
+    /// UIで選択中のデバイス。None は「システム既定」
+    audio_device_sel: Option<String>,
     texture: Option<egui::TextureHandle>,
     seen_gen: u64,
     integer_scale: bool,
@@ -200,11 +257,14 @@ impl ViewerApp {
         target_mac: Option<[u8; 6]>,
         no_vsync: bool,
         decay: f32,
+        audio: receiver::AudioOpts,
     ) -> Self {
+        let audio_source = audio.source;
+        install_cjk_font(&cc.egui_ctx);
         let shared = Arc::new(receiver::Shared::default());
         let ctx = cc.egui_ctx.clone();
         let rx_error = receiver::spawn(
-            receiver::Config { port, subscribe_to: subscribe_to.clone(), target_mac, decay },
+            receiver::Config { port, subscribe_to: subscribe_to.clone(), target_mac, decay, audio },
             shared.clone(),
             move || ctx.request_repaint(),
         )
@@ -212,6 +272,9 @@ impl ViewerApp {
         .map(|e| format!("UDP {port} bind failed: {e}"));
         Self {
             shared,
+            audio_source,
+            audio_devices: audio::output_devices(),
+            audio_device_sel: None,
             texture: None,
             seen_gen: 0,
             integer_scale: true,
@@ -240,6 +303,101 @@ impl ViewerApp {
         match &mut self.texture {
             Some(t) => t.set(image, opts),
             None => self.texture = Some(ctx.load_texture("video", image, opts)),
+        }
+    }
+}
+
+impl ViewerApp {
+    /// 音声の状態表示 + 出力デバイス/source の選択UI。
+    /// cpalのStreamは生成スレッドから動かせないので、選択は「要求」として置き、
+    /// 受信スレッドが再生器を作り直す。
+    fn audio_ui(&mut self, ui: &mut egui::Ui) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let now = self.shared.audio_now.lock().unwrap().clone();
+        let astats = self.shared.audio.lock().unwrap().clone();
+
+        let mut request: Option<receiver::AudioRequest> = None;
+
+        // 音声source(0=RGB端子, 1=LINE入力, 2=S/PDIF)。OFFで停止。
+        let mut src = self.audio_source;
+        ui.horizontal(|ui| {
+            ui.label("src");
+            let label = match src {
+                None => "off".to_string(),
+                Some(0) => "0 RGB".to_string(),
+                Some(1) => "1 LINE".to_string(),
+                Some(2) => "2 S/PDIF".to_string(),
+                Some(n) => n.to_string(),
+            };
+            egui::ComboBox::from_id_salt("audio_src")
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut src, None, "off");
+                    ui.selectable_value(&mut src, Some(0), "0 RGB (D-SUB15)");
+                    ui.selectable_value(&mut src, Some(1), "1 LINE in");
+                    ui.selectable_value(&mut src, Some(2), "2 S/PDIF");
+                });
+        });
+        if src != self.audio_source {
+            self.audio_source = src;
+            request = Some(receiver::AudioRequest {
+                device: self.audio_device_sel.clone(),
+                source: src,
+            });
+        }
+
+        // 出力デバイス
+        let mut dev = self.audio_device_sel.clone();
+        ui.horizontal(|ui| {
+            ui.label("out");
+            let sel_text = dev.clone().unwrap_or_else(|| "(system default)".to_string());
+            egui::ComboBox::from_id_salt("audio_dev")
+                .selected_text(sel_text)
+                .width(180.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut dev, None, "(system default)");
+                    for d in &self.audio_devices {
+                        ui.selectable_value(&mut dev, Some(d.clone()), d);
+                    }
+                });
+            if ui.small_button("⟳").on_hover_text("rescan devices").clicked() {
+                self.audio_devices = audio::output_devices();
+            }
+        });
+        if dev != self.audio_device_sel {
+            self.audio_device_sel = dev.clone();
+            request = Some(receiver::AudioRequest { device: dev, source: self.audio_source });
+        }
+
+        if let Some(req) = request {
+            *self.shared.audio_request.lock().unwrap() = Some(req);
+        }
+
+        match astats {
+            Some(a) => {
+                let rate = a.device_rate.load(Relaxed).max(1);
+                ui.monospace(format!(
+                    "{}  {} Hz",
+                    if a.playing.load(Relaxed) { "playing" } else { "buffering" },
+                    rate
+                ));
+                if !now.device.is_empty() {
+                    ui.monospace(format!("dev {}", now.device));
+                }
+                ui.monospace(format!(
+                    "buffered {:.0} ms  pkts {}",
+                    a.buffered.load(Relaxed) as f64 * 1000.0 / rate as f64,
+                    a.packets.load(Relaxed)
+                ));
+                ui.monospace(format!(
+                    "underruns {}  dropped {}",
+                    a.underruns.load(Relaxed),
+                    a.dropped.load(Relaxed)
+                ));
+            }
+            None => {
+                ui.monospace("stopped");
+            }
         }
     }
 }
@@ -282,6 +440,10 @@ impl eframe::App for ViewerApp {
             ui.monospace(format!("frames {}", s.frames));
             ui.monospace(format!("pkts {}  lost {}", s.packets, s.lost_packets));
             ui.monospace(format!("orphan lines {}", s.orphan_lines));
+            ui.separator();
+
+            ui.strong("Audio");
+            self.audio_ui(ui);
             ui.separator();
 
             ui.strong("Boards");

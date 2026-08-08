@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::assembler::{CompletedFrame, FrameAssembler};
+use crate::audio::AudioPlayer;
 use crate::protocol::{self as proto, Packet};
 
 pub struct Config {
@@ -20,6 +21,25 @@ pub struct Config {
     pub target_mac: Option<[u8; 6]>,
     /// 欠損ライン減衰率(1.0=前フレーム保持, 0.8=毎フレーム80%へ暗転)。
     pub decay: f32,
+    /// 音声再生の設定。
+    pub audio: AudioOpts,
+}
+
+#[derive(Clone, Copy)]
+pub struct AudioOpts {
+    /// 再生するsource(0=RGB端子音声, 1=LINE入力, 2=S/PDIF)。None なら再生しない。
+    pub source: Option<u8>,
+    /// プリバッファ[ms]。小さいほど低遅延だが枯渇しやすい。
+    pub prebuffer_ms: u32,
+    /// バッファ上限[ms]。超えた分は古いサンプルを捨てて遅延の蓄積を防ぐ。
+    pub max_ms: u32,
+}
+
+impl Default for AudioOpts {
+    fn default() -> Self {
+        // D-SUB15音声を既定に。80ms貯めて最大240msで頭打ち(GbE LANなら十分小さい)
+        Self { source: Some(0), prebuffer_ms: 80, max_ms: 240 }
+    }
 }
 
 #[derive(Default, Clone)]
@@ -50,6 +70,27 @@ pub struct Shared {
     pub stats: Mutex<StatsSnapshot>,
     pub boards: Mutex<HashMap<String, BoardInfo>>,
     pub stop: AtomicBool,
+    /// 音声再生の統計(再生器が無い場合は既定値のまま)
+    pub audio: Mutex<Option<Arc<crate::audio::AudioStats>>>,
+    /// UI→受信スレッドへの切替要求。cpalのStreamは生成スレッドから動かせないので、
+    /// UIは要求を置くだけにして、受信スレッドが再生器を作り直す。
+    pub audio_request: Mutex<Option<AudioRequest>>,
+    /// 現在の再生状態(UI表示用)
+    pub audio_now: Mutex<AudioNow>,
+}
+
+#[derive(Clone, Default)]
+pub struct AudioRequest {
+    /// 出力デバイス名。None なら既定デバイス。
+    pub device: Option<String>,
+    /// 再生するsource。None なら再生停止。
+    pub source: Option<u8>,
+}
+
+#[derive(Clone, Default)]
+pub struct AudioNow {
+    pub device: String,
+    pub source: Option<u8>,
 }
 
 pub fn spawn(
@@ -75,6 +116,9 @@ pub fn spawn(
 }
 
 fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
+    // 音声再生器(デバイスが開けなければ再生なしで続行)
+    let mut audio_dev: Option<String> = None;
+    let mut audio = open_audio(&cfg, &shared, cfg.audio.source, None);
     let mut asm = FrameAssembler::new();
     asm.set_decay(cfg.decay);
     let mut buf = vec![0u8; 65536];
@@ -99,6 +143,12 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             }
         }
 
+        // UIからの音声切替要求(デバイス/source)を反映する
+        if let Some(req) = shared.audio_request.lock().unwrap().take() {
+            audio_dev = req.device.clone();
+            audio = open_audio(&cfg, &shared, req.source, audio_dev.as_deref());
+        }
+
         let (n, addr) = match sock.recv_from(&mut buf) {
             Ok(v) => v,
             Err(_) => {
@@ -107,6 +157,18 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             }
         };
         bytes_since += n as u64;
+
+        // 音声は先に振り分ける(映像は数万パケット/秒来るので、typeバイトだけ見る
+        // 安価な判定で音声を取りこぼさないようにする)
+        if n >= 3 && buf[2] == proto::TYPE_AUDIO {
+            if let Some(player) = &audio {
+                if let Ok(Packet::Audio(a)) = proto::parse(&buf[..n]) {
+                    if a.source == player.source {
+                        player.push(a.samples);
+                    }
+                }
+            }
+        }
 
         // 発見情報はアセンブラと別に集計(送信元アドレスが正)
         if let Ok(Packet::Announce(a)) = proto::parse(&buf[..n]) {
@@ -132,6 +194,28 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         }
         tick_stats(&shared, &asm, &mut last_report, &mut bytes_since, &mut frames_since);
     }
+}
+
+/// 音声再生器を開き、Sharedの表示用状態を更新する。source=None なら再生しない。
+fn open_audio(
+    cfg: &Config,
+    shared: &Shared,
+    source: Option<u8>,
+    device: Option<&str>,
+) -> Option<AudioPlayer> {
+    let player = source.and_then(|src| {
+        let p = AudioPlayer::new(src, cfg.audio.prebuffer_ms, cfg.audio.max_ms, device);
+        if p.is_none() {
+            eprintln!("audio: 出力デバイスを開けないため音声再生を無効化します");
+        }
+        p
+    });
+    *shared.audio.lock().unwrap() = player.as_ref().map(|p| p.stats.clone());
+    *shared.audio_now.lock().unwrap() = AudioNow {
+        device: player.as_ref().map(|p| p.device_name.clone()).unwrap_or_default(),
+        source: player.as_ref().map(|p| p.source),
+    };
+    player
 }
 
 fn tick_stats(

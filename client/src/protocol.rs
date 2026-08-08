@@ -56,6 +56,21 @@ pub struct Line<'a> {
     pub pixels: &'a [u8],
 }
 
+/// AUDIO(type=2): s16le L/R interleaved。timestamp は映像LINEと同一の
+/// ドットクロックカウンタ(A/V同期用)。
+#[derive(Debug)]
+pub struct Audio<'a> {
+    pub source: u8,          // 0=RGB端子音声, 1=LINE入力, 2=S/PDIF
+    pub format: u8,          // 0=PCM16
+    pub nsamples: u16,       // サンプルフレーム数(L+Rで1)
+    pub rate_hz: u32,
+    pub timestamp: u32,
+    pub samples: &'a [u8],
+    pub seq: u16,
+}
+
+pub const AUDIO_FMT_PCM16: u8 = 0;
+
 #[derive(Debug, Clone)]
 pub struct Announce {
     pub mac: [u8; 6],
@@ -70,8 +85,9 @@ pub struct Announce {
 pub enum Packet<'a> {
     Line(Line<'a>),
     Mode(Mode),
+    Audio(Audio<'a>),
     Announce(Announce),
-    /// AUDIO/CONFIG等(共通seq空間の追跡に必要な範囲のみ保持)
+    /// CONFIG応答等(共通seq空間の追跡に必要な範囲のみ保持)
     Other { ptype: u8, flags: u8, seq: u16 },
 }
 
@@ -132,6 +148,30 @@ pub fn parse(d: &[u8]) -> Result<Packet<'_>, &'static str> {
                 dotclk_hz: u32le(body, 12),
                 hfreq_mhz_x1000: u32le(body, 16),
                 vfreq_mhz_x1000: u32le(body, 20),
+                seq,
+            }))
+        }
+        TYPE_AUDIO => {
+            if body.len() < 12 {
+                return Err("short AUDIO packet");
+            }
+            let format = body[1];
+            let nsamples = u16le(body, 2);
+            let samples = &body[12..];
+            if format != AUDIO_FMT_PCM16 {
+                return Err("unknown audio format");
+            }
+            // s16le × 2ch = 4B/フレーム
+            if samples.len() != nsamples as usize * 4 {
+                return Err("AUDIO payload size mismatch");
+            }
+            Ok(Packet::Audio(Audio {
+                source: body[0],
+                format,
+                nsamples,
+                rate_hz: u32le(body, 4),
+                timestamp: u32le(body, 8),
+                samples,
                 seq,
             }))
         }

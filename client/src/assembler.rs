@@ -71,13 +71,22 @@ impl FrameAssembler {
         self.stats.packets += 1;
         self.stats.bytes += datagram.len() as u64;
         match pkt {
+            // 音声は receiver 側で再生器へ渡す。ここでは共通seq空間の追跡だけ。
+            Packet::Audio(a) => {
+                self.track_seq(a.seq);
+                None
+            }
             Packet::Announce(a) => {
                 self.track_seq(a.seq); // ANNOUNCEも共通seq空間を消費する
                 None
             }
             Packet::Mode(m) => {
                 self.track_seq(m.seq);
-                if self.mode.as_ref().map(|c| c.mode_id) != Some(m.mode_id) {
+                // フレームバッファの作り直しは解像度が変わった時だけ(毎秒のMODEで
+                // 描画中フレームを捨てないため)。
+                let resized = self.width != m.hactive as usize
+                    || self.height != m.vactive as usize;
+                if self.mode.as_ref().map(|c| c.mode_id) != Some(m.mode_id) || resized {
                     self.width = m.hactive as usize;
                     self.height = m.vactive as usize;
                     self.fb = vec![0u8; self.width * self.height * 4];
@@ -88,8 +97,11 @@ impl FrameAssembler {
                     self.line_seen = vec![false; self.height];
                     self.cur_frame = None;
                     self.px_filled = 0;
-                    self.mode = Some(m);
                 }
+                // 諸元(dotclk/hfreq/vfreq/htotal/vtotal)はボードが毎秒実測して送るので
+                // mode_idが同じでも必ず取り込む。以前はmode_id変化時のみ更新していたため
+                // 起動後に測定値が更新されても表示が古いままだった。
+                self.mode = Some(m);
                 None
             }
             Packet::Line(l) => {
