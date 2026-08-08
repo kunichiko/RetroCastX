@@ -1093,15 +1093,16 @@ module App:
     spdif.vcc ~> c_spdif ~> gnd
 
     # --- 音声系をP4に集約(pin128-138, 順序整理) ---
-    # S/PDIFのみP4に残置、I2S系はP3後半(139-147)へ移設。
-    # 注意: 139-147 はいずれもクロック非対応ボール(P3のクロックはE2=151のみで
-    # DATACLKが使用中)。MCLKは12.288MHz XO入力だが汎用ルーティング経由になる。
+    # I2Sデータ/BCK/LRCKはP3後半(139-145)、S/PDIFはP4(128)。
+    # MCLKだけはP4のF1(=PCLKC6_1)に残す: 12.288MHz XOで aud クロックドメインを
+    # 駆動するため専用クロックピンが要る。P3のクロック対応はE2(pin151)のみで
+    # DATACLKが使用中のため、P3には移せない。
     sodimm.io_e4 ~ spdif.out            # pin128 (E4) S/PDIFビットストリーム
+    sodimm.io_f1 ~ audio_mclk           # pin130 (F1=PCLKC6_1) 12.288MHz XO入力
     sodimm.io_a3 ~ adc_line.adc.dout    # pin139 (A3) I2S DOUT(LINE入力)
     sodimm.io_c2 ~ adc_dsub.adc.dout    # pin141 (C2) I2S DOUT(DSUB音声)
     sodimm.io_b1 ~ audio_bck            # pin143 (B1) FPGA出力
     sodimm.io_c1 ~ audio_lrck           # pin145 (C1) FPGA出力
-    sodimm.io_d2 ~ audio_mclk           # pin147 (D2) 12.288MHz XO入力
 
     # --- ArgusX(RGBセレクタ)制御コネクタ: I2CバスをTVP7002と共有 ---
     j11_argus = new HeaderArgus

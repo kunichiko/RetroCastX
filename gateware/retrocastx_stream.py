@@ -679,12 +679,12 @@ _capture_io = [
         IOStandard("LVCMOS33")),
 ]
 
-# hardware/adc-frontend のピン割当。I2S系はP3後半(139-147)、S/PDIFのみP4(128)。
-# 139-147 はいずれもクロック非対応ボール(P3のクロックはE2=151のみでDATACLKが使用中)。
-# MCLKは12.288MHz XO入力だが汎用ルーティング経由でグローバルクロックに載る。
+# hardware/adc-frontend のピン割当。I2Sデータ/BCK/LRCKはP3後半(139-145)、
+# S/PDIFとMCLKはP4(128/130)。MCLKは aud クロックドメインを駆動するので専用クロック
+# ピン F1=PCLKC6_1 に置く(P3のクロック対応はE2=151のみでDATACLKが使用中)。
 _audio_io = [
     ("audio", 0,
-        Subsignal("mclk",      Pins("D2")),   # 12.288MHz XO入力(P3 pin147)
+        Subsignal("mclk",      Pins("F1")),   # 12.288MHz XO入力(PCLKC6_1, P4 pin130)
         Subsignal("bck",       Pins("B1")),   # → PCM1808×2(64fs, P3 pin143)
         Subsignal("lrck",      Pins("C1")),   # → PCM1808×2(fs, P3 pin145)
         Subsignal("dout_dsub", Pins("C2")),   # ← U1(D-SUB15音声, P3 pin141)
