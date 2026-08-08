@@ -103,7 +103,7 @@ class TvpCapture(Module):
         # ビルド時の仮定値ではなく実信号から測る。1秒窓のカウントなので単位はHz。
         self.meas_dotclk = Signal(32)             # DATACLK周波数 [Hz]
         self.meas_hfreq  = Signal(32)             # 水平周波数 [Hz]
-        self.meas_vfreq  = Signal(32)             # 垂直周波数 [Hz]
+        self.meas_vfreq  = Signal(32)             # 垂直周波数 [mHz] (8秒積算)
         self.meas_htotal = Signal(16)             # 1ライン当たりDATACLK数
         self.meas_vtotal = Signal(16)             # 1フレーム当たりライン数
 
@@ -281,6 +281,64 @@ class TvpCapture(Module):
             If(vs_edge & ~free_run, row.eq(0), wrote.eq(0)),
             If(frame_start, frame.eq(frame + 1), field.eq(~field)),
         ]
+
+        # --- 実測タイミング: 1秒窓(sysクロック基準=25MHz水晶由来で正確)で
+        #     DATACLK/HSYNC/VSYNC を数える。窓が1秒ちょうどなのでカウント値がHz。
+        #     htotal/vtotal は行内カウンタ/行カウンタをそのままラッチして得る。
+        if measure:
+            m_clk = Signal(32); m_hs = Signal(32); m_vs = Signal(32)
+            s_clk = Signal(32); s_hs = Signal(32); s_vs = Signal(32)
+            s_htot = Signal(16); s_vtot = Signal(16)
+            htot_now = Signal(16); vtot_now = Signal(16)
+            self.sync.pix += [
+                If(hs_edge, htot_now.eq(x + 1)),   # xはライン先頭で0→次のedgeでperiod-1
+                If(vs_edge, vtot_now.eq(vrow)),    # vrow = 前回VSYNCからのHSYNC数
+            ]
+            # sys → pix へ「今のカウンタを確定して0に戻せ」のパルスを送る
+            self.submodules._samp = _samp = PulseSynchronizer("sys", "pix")
+            self.sync.pix += [
+                If(_samp.o,
+                    s_clk.eq(m_clk), s_hs.eq(m_hs), s_vs.eq(m_vs),
+                    s_htot.eq(htot_now), s_vtot.eq(vtot_now),
+                    m_clk.eq(0), m_hs.eq(hs_edge), m_vs.eq(vs_edge),
+                ).Else(
+                    m_clk.eq(m_clk + 1),
+                    If(hs_edge, m_hs.eq(m_hs + 1)),
+                    If(vs_edge, m_vs.eq(m_vs + 1)),
+                ),
+            ]
+            # sys側: 1秒ごとにサンプルパルスを出し、少し待って確定値を取り込む。
+            # s_* はパルス後しか変化しないので、待ってから MultiReg で受ければ安全。
+            WIN = max(int(sys_clk_freq), 4)
+            win = Signal(max=WIN)
+            wait = Signal(6)
+            vs_stable = None
+            for src, dst in ((s_clk, self.meas_dotclk), (s_hs, self.meas_hfreq),
+                             (s_vs, None), (s_htot, self.meas_htotal),
+                             (s_vtot, self.meas_vtotal)):
+                stable = Signal(len(src))
+                self.specials += MultiReg(src, stable, "sys")
+                if dst is None:
+                    vs_stable = stable      # VSYNCは下の8秒積算で使う
+                else:
+                    self.sync += If(wait == 1, dst.eq(stable))
+            self.comb += _samp.i.eq(win == WIN - 1)
+            self.sync += [
+                If(win == WIN - 1, win.eq(0)).Else(win.eq(win + 1)),
+                If(win == WIN - 1, wait.eq(32)).Elif(wait != 0, wait.eq(wait - 1)),
+            ]
+            # vfreqは1秒窓のエッジ数だと分解能±1Hz(55.456Hz→55と表示された)。
+            # 8秒積算して×125すれば mHz 単位で 0.125Hz 分解能になる。htotal/vtotal と
+            # dotclk は1秒窓のままにして応答性(モード変化の検出)を保つ。
+            vacc = Signal(24)
+            vwin = Signal(3)
+            self.sync += If(wait == 1,
+                If(vwin == 7,
+                    self.meas_vfreq.eq((vacc + vs_stable) * 125),   # mHz
+                    vacc.eq(0), vwin.eq(0),
+                ).Else(
+                    vacc.eq(vacc + vs_stable), vwin.eq(vwin + 1),
+                ))
 
         # ================= sys ドメイン =================
         self.comb += [

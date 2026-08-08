@@ -20,6 +20,10 @@ pub struct Settings {
     /// 出力デバイス名。None はシステム既定
     pub audio_device: Option<String>,
     pub integer_scale: bool,
+    /// キャプチャ範囲の外側の色: black|dark gray|magenta
+    pub backdrop: String,
+    /// キャプチャ範囲の境界に枠線を描く
+    pub show_border: bool,
 }
 
 impl Default for Settings {
@@ -30,6 +34,8 @@ impl Default for Settings {
             audio_source: Some(0),
             audio_device: None,
             integer_scale: true,
+            backdrop: "dark gray".into(),
+            show_border: true,
         }
     }
 }
@@ -61,6 +67,8 @@ impl Settings {
                 }
                 "muted" => s.muted = v == "true",
                 "integer_scale" => s.integer_scale = v == "true",
+                "show_border" => s.show_border = v == "true",
+                "backdrop" => s.backdrop = v.to_string(),
                 "audio_source" => {
                     s.audio_source = if v == "off" { None } else { v.parse().ok() };
                 }
@@ -86,12 +94,16 @@ impl Settings {
              muted = {}\n\
              audio_source = {}\n\
              audio_device = {}\n\
-             integer_scale = {}\n",
+             integer_scale = {}\n\
+             backdrop = {}\n\
+             show_border = {}\n",
             self.volume,
             self.muted,
             self.audio_source.map(|v| v.to_string()).unwrap_or_else(|| "off".into()),
             self.audio_device.clone().unwrap_or_default(),
             self.integer_scale,
+            self.backdrop,
+            self.show_border,
         );
         // 書けなくても致命的ではないので黙って諦める(次回は既定値で起動する)
         if let Ok(mut f) = std::fs::File::create(&path) {

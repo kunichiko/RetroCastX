@@ -247,6 +247,39 @@ impl PaceMeter {
     }
 }
 
+/// キャプチャ範囲の外側に塗る色。取り込んだ絵が黒いと画枠が分からないため。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Backdrop {
+    Black,
+    DarkGray,
+    Magenta,
+}
+
+impl Backdrop {
+    fn color(self) -> egui::Color32 {
+        match self {
+            Backdrop::Black => egui::Color32::BLACK,
+            Backdrop::DarkGray => egui::Color32::from_gray(40),
+            // 映像には出にくい色。画枠を厳密に見たいとき用
+            Backdrop::Magenta => egui::Color32::from_rgb(120, 0, 120),
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Backdrop::Black => "black",
+            Backdrop::DarkGray => "dark gray",
+            Backdrop::Magenta => "magenta",
+        }
+    }
+    fn from_str(s: &str) -> Self {
+        match s {
+            "black" => Backdrop::Black,
+            "magenta" => Backdrop::Magenta,
+            _ => Backdrop::DarkGray,
+        }
+    }
+}
+
 struct ViewerApp {
     shared: Arc<receiver::Shared>,
     /// 再生中の音声source(UI表示用)
@@ -260,6 +293,9 @@ struct ViewerApp {
     audio_muted: bool,
     /// 設定の保存(スライダー操作中に毎フレーム書かないよう、変更後に少し待って書く)
     settings_dirty: Option<std::time::Instant>,
+    /// キャプチャ範囲の外側の色と、境界の枠線表示
+    backdrop: Backdrop,
+    show_border: bool,
     texture: Option<egui::TextureHandle>,
     seen_gen: u64,
     integer_scale: bool,
@@ -299,6 +335,8 @@ impl ViewerApp {
             audio_volume: cfg.volume,
             audio_muted: cfg.muted,
             settings_dirty: None,
+            backdrop: Backdrop::from_str(&cfg.backdrop),
+            show_border: cfg.show_border,
             texture: None,
             seen_gen: 0,
             integer_scale: cfg.integer_scale,
@@ -352,6 +390,8 @@ impl ViewerApp {
             audio_source: self.audio_source,
             audio_device: self.audio_device_sel.clone(),
             integer_scale: self.integer_scale,
+            backdrop: self.backdrop.label().to_string(),
+            show_border: self.show_border,
         }
         .save();
     }
@@ -545,10 +585,30 @@ impl eframe::App for ViewerApp {
             if ui.checkbox(&mut self.integer_scale, "integer scaling").changed() {
                 self.mark_settings_dirty();
             }
+            if ui.checkbox(&mut self.show_border, "capture border").changed() {
+                self.mark_settings_dirty();
+            }
+            ui.horizontal(|ui| {
+                ui.label("outside");
+                let mut bd = self.backdrop;
+                egui::ComboBox::from_id_salt("backdrop")
+                    .selected_text(bd.label())
+                    .show_ui(ui, |ui| {
+                        for v in [Backdrop::Black, Backdrop::DarkGray, Backdrop::Magenta] {
+                            ui.selectable_value(&mut bd, v, v.label());
+                        }
+                    });
+                if bd != self.backdrop {
+                    self.backdrop = bd;
+                    self.mark_settings_dirty();
+                }
+            });
         });
 
+        // キャプチャ範囲の外側は背景色で塗る。取り込んだ絵が真っ黒だと画枠の
+        // 位置が分からないので、黒以外を選べるようにしてある(既定は暗い灰)。
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+            .frame(egui::Frame::NONE.fill(self.backdrop.color()))
             .show(root, |ui| {
                 let Some(tex) = &self.texture else {
                     ui.centered_and_justified(|ui| {
@@ -561,9 +621,20 @@ impl eframe::App for ViewerApp {
                 let fit = (avail.x / tex_size.x).min(avail.y / tex_size.y);
                 let scale = if self.integer_scale && fit >= 1.0 { fit.floor() } else { fit };
                 let size = tex_size * scale;
-                ui.centered_and_justified(|ui| {
-                    ui.add(egui::Image::new((tex.id(), size)));
+                let resp = ui.centered_and_justified(|ui| {
+                    ui.add(egui::Image::new((tex.id(), size)))
                 });
+                // キャプチャ範囲の境界に枠線。画の内容に埋もれないよう、外周の
+                // すぐ外側(1px外)に引く
+                if self.show_border {
+                    let r = resp.inner.rect.expand(1.0);
+                    ui.painter().rect_stroke(
+                        r,
+                        0.0,
+                        egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 64, 64)),
+                        egui::StrokeKind::Outside,
+                    );
+                }
             });
 
         // ストリーム停止中でもUI(統計・発見リスト)を更新し続ける
