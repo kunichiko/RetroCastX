@@ -240,6 +240,9 @@ struct ViewerApp {
     audio_devices: Vec<String>,
     /// UIで選択中のデバイス。None は「システム既定」
     audio_device_sel: Option<String>,
+    /// 音量(0.0..2.0、1.0=原音)。ミュート時も値は保持してトグルで戻せるようにする
+    audio_volume: f32,
+    audio_muted: bool,
     texture: Option<egui::TextureHandle>,
     seen_gen: u64,
     integer_scale: bool,
@@ -275,6 +278,8 @@ impl ViewerApp {
             audio_source,
             audio_devices: audio::output_devices(),
             audio_device_sel: None,
+            audio_volume: 1.0,
+            audio_muted: false,
             texture: None,
             seen_gen: 0,
             integer_scale: true,
@@ -371,6 +376,24 @@ impl ViewerApp {
 
         if let Some(req) = request {
             *self.shared.audio_request.lock().unwrap() = Some(req);
+        }
+
+        // 音量。ミュートは値を保持したままゲインだけ0にする
+        ui.horizontal(|ui| {
+            let icon = if self.audio_muted { "🔇" } else { "🔊" };
+            if ui.button(icon).on_hover_text("mute").clicked() {
+                self.audio_muted = !self.audio_muted;
+            }
+            ui.spacing_mut().slider_width = 150.0;
+            ui.add(
+                egui::Slider::new(&mut self.audio_volume, 0.0..=1.5)
+                    .show_value(false),
+            );
+            ui.monospace(format!("{:3.0}%", self.audio_volume * 100.0));
+        });
+        if let Some(a) = &astats {
+            let g = if self.audio_muted { 0.0 } else { self.audio_volume };
+            audio::AudioPlayer::set_gain(a, g);
         }
 
         match astats {

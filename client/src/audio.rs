@@ -10,7 +10,7 @@
 //! バッファ長で吸収し、溢れ/枯渇の回数を統計として出す(A/V同期の作り込みは
 //! タイムスタンプを使う将来課題)。
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -28,6 +28,9 @@ pub struct AudioStats {
     pub device_rate: AtomicU64,
     /// 再生中か(プリバッファ完了)
     pub playing: AtomicBool,
+    /// 音量。f32をビットパターンで持つ(コールバックからロックなしで読むため)。
+    /// 1.0=原音、0.0=無音。1.0超も許すが、クリップは出力時に飽和させる。
+    pub gain_bits: AtomicU32,
 }
 
 impl Default for AudioStats {
@@ -39,6 +42,7 @@ impl Default for AudioStats {
             packets: AtomicU64::new(0),
             device_rate: AtomicU64::new(0),
             playing: AtomicBool::new(false),
+            gain_bits: AtomicU32::new(1.0f32.to_bits()),
         }
     }
 }
@@ -146,13 +150,16 @@ impl AudioPlayer {
                             return;
                         }
                     }
+                    // 音量はコールバックの頭で1回読む(ブロック内で一定にする)
+                    let gain = f32::from_bits(stats_cb.gain_bits.load(Ordering::Relaxed));
                     for f in out.chunks_mut(channels) {
                         let l = r.buf.pop_front();
                         let rr = r.buf.pop_front();
                         match (l, rr) {
                             (Some(l), Some(rr)) => {
-                                let lf = l as f32 / 32768.0;
-                                let rf = rr as f32 / 32768.0;
+                                // 1.0超のゲインでも歪ませないよう ±1.0 で飽和させる
+                                let lf = (l as f32 / 32768.0 * gain).clamp(-1.0, 1.0);
+                                let rf = (rr as f32 / 32768.0 * gain).clamp(-1.0, 1.0);
                                 for (i, s) in f.iter_mut().enumerate() {
                                     // ステレオ以上は L,R を先頭2chへ、残りは0
                                     *s = match i {
@@ -190,6 +197,11 @@ impl AudioPlayer {
             max_frames,
             _stream: Some(stream),
         })
+    }
+
+    /// 音量を設定する(1.0=原音)。コールバックは次のブロックから反映する。
+    pub fn set_gain(stats: &AudioStats, gain: f32) {
+        stats.gain_bits.store(gain.to_bits(), Ordering::Relaxed);
     }
 
     /// AUDIOパケットのペイロード(s16le L/R interleaved)を積む。
