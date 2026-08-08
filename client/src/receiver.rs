@@ -127,6 +127,8 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut last_report = Instant::now();
     let mut bytes_since = 0u64;
     let mut frames_since = 0u32;
+    // モード変化ログ用の直近キー
+    let mut mode_key: Option<(u16, u16, u16, u16, u32, u32, u32)> = None;
 
     while !shared.stop.load(Ordering::Relaxed) {
         // 購読キープアライブ(ボードは10秒で失効させる)
@@ -157,6 +159,32 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             }
         };
         bytes_since += n as u64;
+
+        // モード変化を端末にログする(モード表を作る調査用)。ボードが毎秒送る
+        // 実測値なので、X68000のモードを切り替えると1行出る。Viewerを開いたまま
+        // 操作できるように、専用ツールではなくここで記録する。
+        if n >= 3 && buf[2] == proto::TYPE_MODE {
+            if let Ok(Packet::Mode(m)) = proto::parse(&buf[..n]) {
+                // 実測値は僅かに揺れるので、粗い量子化で「変化」を判定する
+                let key = (
+                    m.hactive, m.vactive, m.htotal, m.vtotal,
+                    m.dotclk_hz / 10_000,
+                    m.hfreq_mhz_x1000 / 10_000,
+                    m.vfreq_mhz_x1000 / 100,
+                );
+                if mode_key != Some(key) {
+                    mode_key = Some(key);
+                    eprintln!(
+                        "mode: active {}x{}  total {}x{}  dotclk {:.4}MHz  \
+                         h {:.3}kHz  v {:.2}Hz",
+                        m.hactive, m.vactive, m.htotal, m.vtotal,
+                        m.dotclk_hz as f64 / 1e6,
+                        m.hfreq_mhz_x1000 as f64 / 1e6,
+                        m.vfreq_mhz_x1000 as f64 / 1e3
+                    );
+                }
+            }
+        }
 
         // 音声は先に振り分ける(映像は数万パケット/秒来るので、typeバイトだけ見る
         // 安価な判定で音声を取りこぼさないようにする)

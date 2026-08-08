@@ -422,6 +422,8 @@ impl eframe::App for ViewerApp {
             if let Some(m) = self.shared.mode.lock().unwrap().clone() {
                 ui.monospace(format!("{}x{} (id {})", m.hactive, m.vactive, m.mode_id));
                 ui.monospace(format!("pixfmt {}", m.pixfmt));
+                // htotal×vtotal もボードの実測値。モード表を作る調査で必要なので出す
+                ui.monospace(format!("total {}x{}", m.htotal, m.vtotal));
                 ui.monospace(format!("dotclk {:.4} MHz", m.dotclk_hz as f64 / 1e6));
                 ui.monospace(format!("h {:.3} kHz", m.hfreq_mhz_x1000 as f64 / 1e6));
                 ui.monospace(format!("v {:.3} Hz", m.vfreq_mhz_x1000 as f64 / 1e3));
