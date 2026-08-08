@@ -191,6 +191,25 @@ class RetroCastXStreamer(LiteXModule):
         ts_frame = Signal(32)              # 現伝送単位先頭のドットクロックカウンタ
         ts_line  = Signal(32)              # 現ライン先頭(= ts_frame + line*htotal)
 
+        # MODEで報告する諸元。capture時はFPGAが実信号から測った値を使う(ビルド時の
+        # 仮定値ではない)。周波数フィールドはmHz単位なので実測Hzを1000倍する。
+        mode_htotal = Signal(16); mode_vtotal = Signal(16)
+        mode_dotclk = Signal(32); mode_hfreq = Signal(32); mode_vfreq = Signal(32)
+        if cap_mode:
+            self.comb += [
+                mode_htotal.eq(capture.meas_htotal),
+                mode_vtotal.eq(capture.meas_vtotal),
+                mode_dotclk.eq(capture.meas_dotclk),
+                mode_hfreq.eq(capture.meas_hfreq * 1000),
+                mode_vfreq.eq(capture.meas_vfreq * 1000),
+            ]
+        else:
+            self.comb += [
+                mode_htotal.eq(htotal), mode_vtotal.eq(vtotal),
+                mode_dotclk.eq(dotclk), mode_hfreq.eq(hfreq_mhz),
+                mode_vfreq.eq(vfreq_mhz),
+            ]
+
         # 実アナログキャプチャ模擬: 源はGbEの状態に無関係に一定間隔で走り続ける。
         # cap_* が「今キャプチャ中」の位置(自走)。line/frame/ts_* は送信開始時に
         # cap_* からスナップショットする(送信中は固定)。送信FSMがビジーで間に合わ
@@ -468,11 +487,11 @@ class RetroCastXStreamer(LiteXModule):
             _T_MODE: Case(word_idx, {
                 0: hdr.eq(0x52 | (1 << 16)),                       # type=MODE
                 2: hdr.eq(mode_id | (pixfmt << 8) | (mflags << 16)),
-                3: hdr.eq(width | (htotal << 16)),
-                4: hdr.eq(height | (vtotal << 16)),
-                5: hdr.eq(dotclk),
-                6: hdr.eq(hfreq_mhz),
-                7: hdr.eq(vfreq_mhz),
+                3: hdr.eq(Cat(C(width, 16), mode_htotal)),
+                4: hdr.eq(Cat(C(height, 16), mode_vtotal)),
+                5: hdr.eq(mode_dotclk),
+                6: hdr.eq(mode_hfreq),                             # mHz
+                7: hdr.eq(mode_vfreq),                             # mHz
             }),
             _T_LINE: Case(word_idx, {
                 0: hdr.eq(Cat(C(0x52, 8), C(0, 8), C(0, 8), line_flags)),
@@ -527,9 +546,9 @@ class RetroCastXStreamer(LiteXModule):
             x_next = Signal(max=width + 2)
             self.comb += x_next.eq(x + Mux(x_adv, 2, 0))
             self.comb += capture.rd_word.eq(x_next[1:])   # entry = x_next/2
-            # capture: ts はフレーム/行から算出(A/V同期用の近似)
-            self.comb += [ts_frame.eq(frame * unit_ticks),
-                          ts_line.eq(frame * unit_ticks + row * htotal)]
+            # ts はキャプチャのDATACLK自走カウンタ(LINE開始時にラッチ)。定数
+            # (htotal×frame番号)からの算出だと仮定したモードでしか合わないが、
+            # 実カウンタなら常に正確で音声との同期もモードに依らず成立する。
         # AUDIOペイロード送出時のFIFOポップ(最終ワードも含めword>=5で1ワード=1ポップ)
         for k in range(n_aud):
             self.comb += aud_pop[k].eq(
@@ -568,6 +587,7 @@ class RetroCastXStreamer(LiteXModule):
                 NextValue(cap_row, capture.line_row),
                 NextValue(frame, capture.line_frame),
                 NextValue(field, capture.line_field),
+                NextValue(ts_line, capture.line_ts),   # 実DATACLKカウンタ
             ]
         else:
             line_snap = [
@@ -659,14 +679,16 @@ _capture_io = [
         IOStandard("LVCMOS33")),
 ]
 
-# hardware/adc-frontend の J4(EXT P4ミラー)ピン割当(README参照)
+# hardware/adc-frontend のピン割当。I2S系はP3後半(139-147)、S/PDIFのみP4(128)。
+# 139-147 はいずれもクロック非対応ボール(P3のクロックはE2=151のみでDATACLKが使用中)。
+# MCLKは12.288MHz XO入力だが汎用ルーティング経由でグローバルクロックに載る。
 _audio_io = [
     ("audio", 0,
-        Subsignal("mclk",      Pins("F1")),   # 12.288MHz XO入力(PCLKC6_1, P4 pin130)
-        Subsignal("bck",       Pins("F3")),   # → PCM1808×2(64fs, P4 pin132)
-        Subsignal("lrck",      Pins("G3")),   # → PCM1808×2(fs, P4 pin134)
-        Subsignal("dout_dsub", Pins("H3")),   # ← U11(D-SUB15音声, P4 pin136)
-        Subsignal("dout_line", Pins("H4")),   # ← U12(LINE入力, P4 pin138)
+        Subsignal("mclk",      Pins("D2")),   # 12.288MHz XO入力(P3 pin147)
+        Subsignal("bck",       Pins("B1")),   # → PCM1808×2(64fs, P3 pin143)
+        Subsignal("lrck",      Pins("C1")),   # → PCM1808×2(fs, P3 pin145)
+        Subsignal("dout_dsub", Pins("C2")),   # ← U1(D-SUB15音声, P3 pin141)
+        Subsignal("dout_line", Pins("A3")),   # ← U2(LINE入力, P3 pin139)
         Subsignal("spdif",     Pins("E4")),   # ← TOSLINK受信モジュール(P4 pin128)
         IOStandard("LVCMOS33")),
 ]
@@ -768,7 +790,8 @@ class RetroCastXStream(SoCMini):
                                       vtotal=568, vs_min_rows=497,
                                       vs_row_at_sync=vs_row_at_sync,
                                       hs_offset=hs_offset, vs_offset=0,
-                                      hs_total=pll_divide or 1650)
+                                      hs_total=pll_divide or 1650,
+                                      sys_clk_freq=sys_clk_freq)
             capture_obj = self.capture
 
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
