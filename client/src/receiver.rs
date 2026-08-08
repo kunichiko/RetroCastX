@@ -54,6 +54,65 @@ pub struct StatsSnapshot {
     pub noise_flicker: f32,
     /// そのずれの平均振幅[/255]
     pub noise_level: f32,
+    /// 有効映像(黒でない範囲)の外接矩形。pll_div/hs_offset/vbp を数値で合わせるため。
+    /// 内容が無い(真っ暗な)フレームでは直前の値を保持する。
+    pub active_x: u16,
+    pub active_y: u16,
+    pub active_w: u16,
+    pub active_h: u16,
+}
+
+/// 有効映像の外接矩形を求める。ノイズを拾わないよう、しきい値を超える画素が
+/// 一定数ある行/列だけを「内容あり」とみなす。
+#[derive(Default)]
+struct ActiveBox {
+    nth: u32,
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
+    col: Vec<u16>,
+}
+
+impl ActiveBox {
+    fn feed(&mut self, rgba: &[u8], width: usize, height: usize) {
+        self.nth = self.nth.wrapping_add(1);
+        if self.nth % 8 != 0 || width == 0 || height == 0 {
+            return;
+        }
+        const TH: u8 = 24; // RGB555の3LSB相当。点状ノイズを拾わない程度
+        const MIN_PX: u16 = 4; // 行/列を「内容あり」とみなす最小画素数
+        self.col.clear();
+        self.col.resize(width, 0);
+        let (mut top, mut bot) = (u16::MAX, 0u16);
+        for y in 0..height {
+            let row = &rgba[y * width * 4..(y + 1) * width * 4];
+            let mut n = 0u16;
+            for (x, px) in row.chunks_exact(4).enumerate() {
+                if px[0] > TH || px[1] > TH || px[2] > TH {
+                    n += 1;
+                    self.col[x] = self.col[x].saturating_add(1);
+                }
+            }
+            if n >= MIN_PX {
+                if top == u16::MAX {
+                    top = y as u16;
+                }
+                bot = y as u16;
+            }
+        }
+        if top == u16::MAX {
+            return; // 内容なし(真っ暗)。直前の値を保持する
+        }
+        let left = self.col.iter().position(|&c| c >= MIN_PX);
+        let right = self.col.iter().rposition(|&c| c >= MIN_PX);
+        if let (Some(l), Some(r)) = (left, right) {
+            self.x = l as u16;
+            self.w = (r - l + 1) as u16;
+        }
+        self.y = top;
+        self.h = bot - top + 1;
+    }
 }
 
 /// 連続フレームの差分から暗部ノイズを測る。静止した絵は差分に出ないので、
@@ -185,6 +244,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut bytes_since = 0u64;
     let mut frames_since = 0u32;
     let mut noise = NoiseMeter::default();
+    let mut abox = ActiveBox::default();
     // モード変化ログ用の直近キー
     let mut mode_key: Option<(u16, u16, u16, u16, u32, u32, u32)> = None;
 
@@ -229,11 +289,27 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         let (n, addr) = match sock.recv_from(&mut buf) {
             Ok(v) => v,
             Err(_) => {
-                tick_stats(&shared, &asm, &noise, &mut last_report, &mut bytes_since, &mut frames_since);
+                tick_stats(&shared, &asm, &noise, &abox, &mut last_report, &mut bytes_since, &mut frames_since);
                 continue;
             }
         };
         bytes_since += n as u64;
+
+        // CONFIG応答(ボードが受理した現在値)を端末に出す。設定が届いているか、
+        // どの値が入ったかを確認できるようにする。
+        if n >= 24 && buf[2] == proto::TYPE_CONFIG
+            && buf[3] & proto::CFG_FLAG_REPLY != 0
+        {
+            let key = u16::from_le_bytes([buf[18], buf[19]]);
+            let val = u32::from_le_bytes([buf[20], buf[21], buf[22], buf[23]]);
+            let name = match key {
+                proto::CFG_KEY_VBP => "vbp",
+                proto::CFG_KEY_HS_OFFSET => "hs_offset",
+                proto::CFG_KEY_PLL_DIVIDE => "pll_divide",
+                _ => "key",
+            };
+            eprintln!("config reply: {name}(0x{key:04x}) = {val}");
+        }
 
         // モード変化を端末にログする(モード表を作る調査用)。ボードが毎秒送る
         // 実測値なので、X68000のモードを切り替えると1行出る。Viewerを開いたまま
@@ -304,12 +380,13 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         if let Some(frame) = asm.feed(&buf[..n]) {
             frames_since += 1;
             noise.feed(&frame.rgba);
+            abox.feed(&frame.rgba, frame.width, frame.height);
             *shared.mode.lock().unwrap() = asm.mode.clone();
             *shared.frame.lock().unwrap() = Some(frame);
             shared.frame_gen.fetch_add(1, Ordering::Release);
             repaint();
         }
-        tick_stats(&shared, &asm, &noise, &mut last_report, &mut bytes_since, &mut frames_since);
+        tick_stats(&shared, &asm, &noise, &abox, &mut last_report, &mut bytes_since, &mut frames_since);
     }
 }
 
@@ -339,6 +416,7 @@ fn tick_stats(
     shared: &Shared,
     asm: &FrameAssembler,
     noise: &NoiseMeter,
+    abox: &ActiveBox,
     last_report: &mut Instant,
     bytes_since: &mut u64,
     frames_since: &mut u32,
@@ -358,6 +436,10 @@ fn tick_stats(
         frames: asm.stats.frames,
         noise_flicker: noise.flicker,
         noise_level: noise.level,
+        active_x: abox.x,
+        active_y: abox.y,
+        active_w: abox.w,
+        active_h: abox.h,
     };
     *last_report = Instant::now();
     *bytes_since = 0;

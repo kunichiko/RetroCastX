@@ -312,6 +312,8 @@ struct ViewerApp {
     tune_vbp: i32,
     tune_hs_offset: i32,
     tune_pll_divide: i32,
+    /// 目標の有効幅[ドット](そのモードの水平解像度)。pll_div の推奨値算出に使う
+    tune_target_w: i32,
     texture: Option<egui::TextureHandle>,
     seen_gen: u64,
     integer_scale: bool,
@@ -356,6 +358,7 @@ impl ViewerApp {
             tune_vbp: cfg.tune_vbp,
             tune_hs_offset: cfg.tune_hs_offset,
             tune_pll_divide: cfg.tune_pll_divide,
+            tune_target_w: cfg.tune_target_w,
             texture: None,
             seen_gen: 0,
             integer_scale: cfg.integer_scale,
@@ -414,6 +417,7 @@ impl ViewerApp {
             tune_vbp: self.tune_vbp,
             tune_hs_offset: self.tune_hs_offset,
             tune_pll_divide: self.tune_pll_divide,
+            tune_target_w: self.tune_target_w,
         }
         .save();
     }
@@ -569,6 +573,27 @@ impl ViewerApp {
             protocol::CFG_KEY_HS_OFFSET, &mut send);
         row(ui, "pll_div", &mut self.tune_pll_divide, 200, 4095,
             protocol::CFG_KEY_PLL_DIVIDE, &mut send);
+        // 実測した有効映像の大きさと、そこから求まる pll_div の推奨値。
+        // pll_div は「1ラインを何サンプルで取るか」なので、有効幅は pll_div に比例する。
+        // 目標のドット数になるよう比例計算すれば一発で決まる(勘で動かす必要はない)。
+        let st = self.shared.stats.lock().unwrap().clone();
+        ui.monospace(format!(
+            "active {}x{} at ({},{})",
+            st.active_w, st.active_h, st.active_x, st.active_y
+        ));
+        ui.horizontal(|ui| {
+            ui.monospace("target w  ");
+            ui.add(egui::DragValue::new(&mut self.tune_target_w).range(64..=2048));
+            if st.active_w > 0 {
+                let want = (self.tune_pll_divide as f64 * self.tune_target_w as f64
+                    / st.active_w as f64)
+                    .round() as i32;
+                if ui.button(format!("→ pll {want}")).clicked() {
+                    self.tune_pll_divide = want.clamp(200, 4095);
+                    send.push((protocol::CFG_KEY_PLL_DIVIDE, self.tune_pll_divide as u32));
+                }
+            }
+        });
         if ui.button("send all").clicked() {
             send.push((protocol::CFG_KEY_VBP, self.tune_vbp as u32));
             send.push((protocol::CFG_KEY_HS_OFFSET, self.tune_hs_offset as u32));

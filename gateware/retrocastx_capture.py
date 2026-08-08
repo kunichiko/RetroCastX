@@ -378,20 +378,31 @@ class TvpCapture(Module):
                     v_cnt.eq(v_cnt + 1),
                 ),
                 # 現実的な範囲の値が3回続いたら採用する
-                If((v_cnt == 3) & (self.meas_vtotal >= 100)
+                If((v_cnt >= 3) & (self.meas_vtotal >= 100)
                                 & (self.meas_vtotal < 1500),
                     self.cfg_vtotal.eq(self.meas_vtotal),
-                    # VSYNC位相ゲートは vtotal の 3/4(モードに依らず妥当な比率)
-                    self.cfg_vs_min_rows.eq(self.meas_vtotal -
-                                            (self.meas_vtotal >> 2)),
-                    # 窓の先頭 = VSYNCの vbp 行後
-                    self.cfg_vs_row_at_sync.eq(self.meas_vtotal - self.cfg_vbp),
-                    # 送出行数 = min(height, vtotal - vbp)
-                    If(self.meas_vtotal - self.cfg_vbp < height,
-                        self.cfg_vactive.eq(self.meas_vtotal - self.cfg_vbp),
-                    ).Else(
-                        self.cfg_vactive.eq(height),
-                    ),
+                ),
+            ]
+            # vbp から導く値は毎サイクル更新する。以前は上の「安定判定が成立した1回」
+            # の中で代入していたため、vtotalが安定している間はvbpを変えても何も
+            # 起きなかった(実機で発覚)。
+            # 組合せにするとsysのレジスタからpixドメインへ減算器を挟んで渡ることに
+            # なり、配置次第でタイミングが悪化した(eth_rxが130→116MHzに落ちた)。
+            # レジスタのまま毎サイクル更新すれば、1クロック遅れるだけで即座に反映され、
+            # pix側は短いレジスタ出力を見るだけで済む。
+            vstart = Signal(13)
+            self.comb += vstart.eq(self.cfg_vtotal - self.cfg_vbp)
+            self.sync += [
+                # VSYNC位相ゲートは vtotal の 3/4(モードに依らず妥当な比率)
+                self.cfg_vs_min_rows.eq(self.cfg_vtotal -
+                                        (self.cfg_vtotal >> 2)),
+                # 窓の先頭 = VSYNCの vbp 行後
+                self.cfg_vs_row_at_sync.eq(vstart),
+                # 送出行数 = min(height, vtotal - vbp)
+                If(vstart < height,
+                    self.cfg_vactive.eq(vstart),
+                ).Else(
+                    self.cfg_vactive.eq(height),
                 ),
             ]
 
