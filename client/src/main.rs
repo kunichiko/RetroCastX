@@ -247,6 +247,17 @@ impl PaceMeter {
     }
 }
 
+/// 実測タイミングから「まともな映像が来ているか」を判定する。
+/// 無信号だとTVPのH-PLLがロックを失い、DATACLKが低速で自走してADCが浮いた入力の
+/// ノイズを拾うため、砂嵐が表示される。実測値が現実的な範囲を外れたら無信号とみなす。
+fn signal_is_valid(m: &protocol::Mode) -> bool {
+    let fh_hz = m.hfreq_mhz_x1000 as f64 / 1000.0;
+    // 15kHz系(≒15.98k)〜31kHz系(≒31.5k)を含む余裕のある範囲
+    (12_000.0..80_000.0).contains(&fh_hz)
+        && (100..1500).contains(&m.vtotal)
+        && m.dotclk_hz > 5_000_000
+}
+
 /// キャプチャ範囲の外側に塗る色。取り込んだ絵が黒いと画枠が分からないため。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Backdrop {
@@ -621,6 +632,24 @@ impl eframe::App for ViewerApp {
                     });
                     return;
                 };
+                // 無信号(同期喪失)は砂嵐になるので、絵を出さずに状態を示す
+                let mode = self.shared.mode.lock().unwrap().clone();
+                let valid = mode.as_ref().map_or(false, signal_is_valid);
+                if !valid {
+                    ui.centered_and_justified(|ui| {
+                        let txt = match &mode {
+                            Some(m) => format!(
+                                "NO SIGNAL\n\nh {:.3} kHz   v {:.3} Hz\nvtotal {}",
+                                m.hfreq_mhz_x1000 as f64 / 1e6,
+                                m.vfreq_mhz_x1000 as f64 / 1e3,
+                                m.vtotal
+                            ),
+                            None => "NO SIGNAL".to_string(),
+                        };
+                        ui.label(egui::RichText::new(txt).size(20.0).weak());
+                    });
+                    return;
+                }
                 let tex_size = tex.size_vec2();
                 let avail = ui.available_size();
                 let fit = (avail.x / tex_size.x).min(avail.y / tex_size.y);
