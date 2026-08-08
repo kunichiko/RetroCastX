@@ -36,7 +36,14 @@ class TvpCapture(Module):
     cd_pix に接続済みであること。width は偶数(2px/entry)。"""
     def __init__(self, pads, width=1024, height=512, nface=8, fifo_depth=4,
                  hs_active_low=True, vs_active_low=True,
-                 hs_offset=0, vs_offset=0):
+                 hs_offset=0, vs_offset=0, vs_min_rows=0, vtotal=0):
+        # vs_min_rows: VSYNCを「フレーム開始」として受理する最小行数。0=ガード無効。
+        #   row(=vsync以降に数えたHSYNC数)が vs_min_rows 未満のVSYNCエッジは無視する。
+        #   VSOUTの等化/セレーションやノイズでフレーム途中に出る偽VSYNCで frame が
+        #   多重に進む(受信側で内容が縦にロール)のを防ぐ。DATACLK周波数に非依存。
+        # vtotal: >0 なら VSOUT を使わず「HSYNC を vtotal 行数えたら1フレーム」で
+        #   フレーム境界を決める(VSOUTノイズに完全免疫。HSYNCがクリーンな時に有効)。
+        #   TVP実測の Lines/Frame(例 568)を渡す。縦位置は vs_offset で合わせる。
         assert width % 2 == 0 and (width & (width - 1)) == 0, "width は2のべき乗"
         assert nface >= 2 and (nface & (nface - 1)) == 0
         # 面数 > 未処理メタ数 にして、送信中(head)の面が書込ポインタに追いつかれ
@@ -83,7 +90,9 @@ class TvpCapture(Module):
         hs_p = Signal(); vs_p = Signal()
         self.sync.pix += [hs_p.eq(hs), vs_p.eq(vs)]
         hs_edge = (hs_p & ~hs) if hs_active_low else (~hs_p & hs)  # アクティブ開始
-        vs_edge = (vs_p & ~vs) if vs_active_low else (~vs_p & vs)
+        vs_edge_raw = (vs_p & ~vs) if vs_active_low else (~vs_p & vs)
+        # vs_edge は row 定義後に行数ガードを掛ける(下記)
+        vs_edge = Signal()
 
         x     = Signal(16)                        # 行内DATACLKカウンタ(hs後,飽和)
         face  = Signal(nface_bits)                # 書き込み中の面
@@ -92,6 +101,12 @@ class TvpCapture(Module):
         field = Signal()
         wrote = Signal()                          # 現ラインに1画素以上書いたか
         pair_lo = Signal(16)                      # 偶数xピクセル保持
+
+        # VSYNCエッジ行数ガード: rowが vs_min_rows 以上のVSYNCのみフレーム開始として受理
+        if vs_min_rows:
+            self.comb += vs_edge.eq(vs_edge_raw & (row >= vs_min_rows))
+        else:
+            self.comb += vs_edge.eq(vs_edge_raw)
 
         pix555 = Signal(16)
         self.comb += pix555.eq(rgb888_to_555(r, g, b))
@@ -127,24 +142,38 @@ class TvpCapture(Module):
             meta.sink.valid.eq(push),
         ]
         drops = Signal(16)
+        # フレーム境界: vtotal>0 なら HSYNC行数(row==vtotal-1)で、そうでなければ VSYNC で。
+        frame_wrap = Signal()
+        if vtotal:
+            self.comb += frame_wrap.eq(hs_edge & (row == vtotal - 1))
+        _hs_body = [
+            x.eq(0),
+            wrote.eq(0),
+            If(push & meta.sink.ready, face.eq(face + 1)),   # 受理時のみ面前進
+            If(push & ~meta.sink.ready, drops.eq(drops + 1)),
+        ]
+        if vtotal:
+            _hs_body += [
+                If(frame_wrap,
+                    row.eq(0), frame.eq(frame + 1), field.eq(~field),
+                ).Else(
+                    row.eq(row + 1),
+                ),
+            ]
+        else:
+            _hs_body += [If(row != 0xFFF, row.eq(row + 1))]
         self.sync.pix += [
             If(active & ~xpix[0], pair_lo.eq(pix555)),  # 偶数x: 低位に保持
             If(wr.we, wrote.eq(1)),
             If(x != 0xFFFF, x.eq(x + 1)),               # 行内カウンタ(飽和)
-            If(hs_edge,
-                x.eq(0),
-                wrote.eq(0),
-                If(push & meta.sink.ready, face.eq(face + 1)),  # 受理時のみ面前進
-                If(push & ~meta.sink.ready, drops.eq(drops + 1)),
-                If(row != 0xFFF, row.eq(row + 1)),
-            ),
-            If(vs_edge,
-                row.eq(0),
-                wrote.eq(0),
-                frame.eq(frame + 1),
-                field.eq(~field),
-            ),
+            If(hs_edge, *_hs_body),
         ]
+        if not vtotal:
+            self.sync.pix += [
+                If(vs_edge,
+                    row.eq(0), wrote.eq(0),
+                    frame.eq(frame + 1), field.eq(~field)),
+            ]
 
         # ================= sys ドメイン =================
         self.comb += [

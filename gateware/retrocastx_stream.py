@@ -742,8 +742,13 @@ class RetroCastXStream(SoCMini):
             platform.add_period_constraint(cap_pads.dataclk, 1e9 / 75e6)
             # HSOUT/VSOUT は active-low 前提(SYNC=0x91: IHSPD=0/VSPD=0)。画がずれる
             # 場合は hs/vs_active_low と hs/vs_offset で調整。
+            # vtotal=568: VSOUTノイズを避け、クリーンなHSYNCの行数でフレーム境界を決める
+            #   (TVP実測 Lines/Frame=568)。→ 受信fpsが実VSYNC(~55Hz)に一致するはず。
+            # hs_offset: 水平バックポーチをスキップ(右寄りの内容を中央へ)。要現物調整。
+            # vs_offset: 縦位置(上の黒帯を詰める)。安定画を見てから調整。
             self.capture = TvpCapture(cap_pads, width=1024, height=512,
-                                      hs_active_low=True, vs_active_low=True)
+                                      hs_active_low=True, vs_active_low=True,
+                                      vtotal=568, hs_offset=340, vs_offset=0)
             capture_obj = self.capture
 
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
