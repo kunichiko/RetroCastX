@@ -85,6 +85,20 @@ class TvpCapture(Module):
         # 診断用(sysで観測)
         self.cap_frame  = Signal(16)
         self.cap_drops  = Signal(16)
+        # --- モードパラメータ(実行時に変更可。モード自動判定が書き換える)---
+        # 既定値はコンストラクタ引数。cfg_* を駆動しなければその値のまま動く。
+        # pixドメインで使うので、sysから変えるときは値が落ち着いてから使うこと
+        # (モード切替時の1〜2フレームが乱れるだけなので、CDCは掛けていない)。
+        self.cfg_vtotal        = Signal(13, reset=vtotal or 0)
+        self.cfg_vs_min_rows   = Signal(13, reset=vs_min_rows)
+        self.cfg_vs_row_at_sync = Signal(13, reset=vs_row_at_sync)
+        self.cfg_hs_offset     = Signal(13, reset=hs_offset)
+        self.cfg_vs_offset     = Signal(13, reset=vs_offset)
+        # 末尾クリアの開始entry。= (hs_total - hs_offset)/2。0ならクリアしない。
+        _fu = ((hs_total - hs_offset) // 2
+               if (hs_total and hs_offset + width > hs_total) else 0)
+        self.cfg_clear_from    = Signal(max=entries + 1, reset=_fu)
+
         # --- 実測タイミング(sysドメイン)。MODEパケットで報告する ---
         # ビルド時の仮定値ではなく実信号から測る。1秒窓のカウントなので単位はHz。
         self.meas_dotclk = Signal(32)             # DATACLK周波数 [Hz]
@@ -127,7 +141,7 @@ class TvpCapture(Module):
 
         x     = Signal(16)                        # 行内DATACLKカウンタ(hs後,飽和)
         face  = Signal(nface_bits)                # 書き込み中の面
-        row   = Signal(12)                        # vsync以降の行番号(blanking含む,12bit)
+        row   = Signal(13)                        # vsync以降の行番号(blanking含む)
         frame = Signal(16)
         field = Signal()
         wrote = Signal()                          # 現ラインに1画素以上書いたか
@@ -136,13 +150,13 @@ class TvpCapture(Module):
         # VSYNCエッジ行数ガード: 前回受理VSYNCからの経過行数(vrow)が vs_min_rows 以上の
         # エッジのみ受理する。row ではなく vrow を使うのは、vs_row_at_sync で表示位相を
         # ずらしても(=VSYNC時のrowが0でなくても)ガードが正しく効くようにするため。
-        vrow = Signal(12)
-        if vs_min_rows:
-            self.comb += vs_edge.eq(vs_edge_raw & (vrow >= vs_min_rows))
-        else:
-            self.comb += vs_edge.eq(vs_edge_raw)
+        vrow = Signal(13)
+        # cfg_vs_min_rows==0 ならガード無効(全VSYNCを受理)
+        self.comb += vs_edge.eq(vs_edge_raw &
+                                ((self.cfg_vs_min_rows == 0) |
+                                 (vrow >= self.cfg_vs_min_rows)))
         self.sync.pix += [
-            If(hs_edge, If(vrow != 0xFFF, vrow.eq(vrow + 1))),
+            If(hs_edge, If(vrow != 0x1FFF, vrow.eq(vrow + 1))),
             If(vs_edge, vrow.eq(0)),
         ]
 
@@ -150,11 +164,11 @@ class TvpCapture(Module):
         self.comb += pix555.eq(rgb888_to_555(r, g, b))
 
         # 有効行 row_eff = row - vs_offset(アクティブ行の0起点index)
-        row_eff = Signal(12)
+        row_eff = Signal(13)
         row_ok  = Signal()
         self.comb += [
-            row_eff.eq(row - vs_offset),
-            row_ok.eq((row >= vs_offset) & (row_eff < height)),
+            row_eff.eq(row - self.cfg_vs_offset),
+            row_ok.eq((row >= self.cfg_vs_offset) & (row_eff < height)),
         ]
         xpix   = Signal(16)                       # 有効ピクセルx(= x - hs_offset)
         active = Signal()
@@ -163,37 +177,32 @@ class TvpCapture(Module):
         # しないと face がアドレス上位へ押し出される
         pix_adr = Signal(entry_bits)
         self.comb += [
-            xpix.eq(x - hs_offset),
-            active.eq((x >= hs_offset) & (xpix < width) & row_ok),
+            xpix.eq(x - self.cfg_hs_offset),
+            active.eq((x >= self.cfg_hs_offset) & (xpix < width) & row_ok),
             pix_we.eq(active & xpix[0]),          # 奇数pxが揃った時に1ペア書込
             pix_adr.eq(xpix[1:1 + entry_bits]),
         ]
 
         # 窓が行末を超える分(= 毎ライン書かれないままリングの古い内容が見える列)を
         # ライン先頭のバックポーチ期間に黒で埋める。1サイクル1エントリ。
-        if hs_total and hs_offset + width > hs_total:
-            first_unwritten = (hs_total - hs_offset) // 2
-            n_clear = entries - first_unwritten
-            assert 0 < n_clear <= hs_offset, (
-                f"末尾クリア {n_clear} entry はバックポーチ {hs_offset} cyc に収まらない")
-            clr = Signal(max=n_clear + 1, reset=n_clear)   # n_clear = 完了/待機
-            clr_busy = Signal()
-            clr_adr = Signal(entry_bits)
-            self.comb += [clr_busy.eq(clr < n_clear),
-                          clr_adr.eq(first_unwritten + clr)]
-            self.sync.pix += If(hs_edge, clr.eq(0)).Elif(clr_busy, clr.eq(clr + 1))
-            self.comb += If(clr_busy,
-                wr.adr.eq(Cat(clr_adr, face)), wr.dat_w.eq(0), wr.we.eq(1),
-            ).Else(
-                wr.adr.eq(Cat(pix_adr, face)),
-                wr.dat_w.eq(Cat(pair_lo, pix555)), wr.we.eq(pix_we),
-            )
-        else:
-            self.comb += [
-                wr.adr.eq(Cat(pix_adr, face)),
-                wr.dat_w.eq(Cat(pair_lo, pix555)),   # {奇数px, 偶数px}
-                wr.we.eq(pix_we),
-            ]
+        # cfg_clear_from(=(hs_total-hs_offset)/2)から entries-1 までを埋める。
+        # モードが変わると必要範囲も変わるので実行時信号にしてある。0ならクリアしない。
+        # バックポーチ中は active=0 なので画素書込と衝突しない。間に合わなくても
+        # そのラインの末尾が古い値のまま残るだけで、破綻はしない。
+        clr_adr = Signal(max=entries + 1)
+        clr_busy = Signal()
+        self.comb += clr_busy.eq((self.cfg_clear_from != 0) &
+                                 (x < self.cfg_hs_offset) &
+                                 (clr_adr < entries))
+        self.sync.pix += If(hs_edge, clr_adr.eq(self.cfg_clear_from)) \
+                         .Elif(clr_busy, clr_adr.eq(clr_adr + 1))
+        self.comb += If(clr_busy,
+            wr.adr.eq(Cat(clr_adr[:entry_bits], face)), wr.dat_w.eq(0), wr.we.eq(1),
+        ).Else(
+            wr.adr.eq(Cat(pix_adr, face)),
+            wr.dat_w.eq(Cat(pair_lo, pix555)),   # {奇数px, 偶数px}
+            wr.we.eq(pix_we),
+        )
 
         # メタ push(hs_edge時、直前ラインが有効(row_ok)かつ1画素以上書いた場合)。
         # FIFO満杯なら drop。
@@ -231,90 +240,47 @@ class TvpCapture(Module):
             If(pix_we, wrote.eq(1)),   # 末尾クリアでは立てない(黒だけの行を送らない)
             If(x != 0xFFFF, x.eq(x + 1)),               # 行内カウンタ(飽和)
         ]
-        if vtotal:
-            # 自走(row==vtotal-1でラップ)+ 位相ゲート付きVSYNC再整列。
-            # フレーム境界(frame歩進)は常に row のラップ点=キャプチャ窓の先頭に固定。
-            # VSYNCは row を vs_row_at_sync に入れ直すだけで frame は進めない。これに
-            # より、窓をVSYNCより手前から開いても1枚の絵が2つのframe番号に割れない。
-            # VSYNCは即座に row を書き換えず「次のHSYNCで row:=vs_row_at_sync」と
-            # 保留する(vs_pend)。即時に書くと、その行は次のhs_edgeで row+1 されて
-            # しまい1行まるごと欠落する。また行の途中で row が変わると、その行の
-            # 行番号がずれる。
-            vs_pend = Signal()
-            # フレーム開始 = 「row が 0 に戻る瞬間」。自走ラップ(row==vtotal-1)か、
-            # vs_row_at_sync==0 のときはVSYNC再整列もそれに当たる。この規則にしないと、
-            # VSYNCがちょうどラップ点に来る(=vs_row_at_sync==0)場合に vs_pend が
-            # ラップを打ち消して frame が永久に進まなくなる。
-            wrap_now = Signal()
-            frame_start = Signal()
-            self.comb += wrap_now.eq(hs_edge & ~vs_pend & (row == vtotal - 1))
-            if vs_row_at_sync == 0:
-                self.comb += frame_start.eq(wrap_now | (hs_edge & vs_pend))
-            else:
-                self.comb += frame_start.eq(wrap_now)
-            self.sync.pix += [
-                If(vs_edge, vs_pend.eq(1)),
-                If(hs_edge,
-                    *_hs_body,
-                    If(vs_pend,
-                        row.eq(vs_row_at_sync), vs_pend.eq(0),
-                    ).Elif(row == vtotal - 1,
-                        row.eq(0),
-                    ).Else(
-                        row.eq(row + 1),
-                    ),
-                ),
-                If(frame_start, frame.eq(frame + 1), field.eq(~field)),
-            ]
-        else:
-            self.sync.pix += [
-                If(hs_edge, *_hs_body, If(row != 0xFFF, row.eq(row + 1))),
-                If(vs_edge,
-                    row.eq(0), wrote.eq(0),
-                    frame.eq(frame + 1), field.eq(~field)),
-            ]
-
-        if measure:
-            # --- 実測タイミング: 1秒窓(sysクロック基準=25MHz水晶由来で正確)で
-            #     DATACLK/HSYNC/VSYNC を数える。窓が1秒ちょうどなのでカウント値がHz。
-            #     htotal/vtotal は行内カウンタ/行カウンタをそのままラッチして得る。
-            m_clk = Signal(32); m_hs = Signal(32); m_vs = Signal(32)
-            s_clk = Signal(32); s_hs = Signal(32); s_vs = Signal(32)
-            s_htot = Signal(16); s_vtot = Signal(16)
-            htot_now = Signal(16); vtot_now = Signal(16)
-            self.sync.pix += [
-                If(hs_edge, htot_now.eq(x + 1)),   # x はライン先頭で0 → 次のedgeで period-1
-                If(vs_edge, vtot_now.eq(vrow)),    # vrow = 前回VSYNCからのHSYNC数
-            ]
-            # sys → pix へ「今のカウンタを確定して0に戻せ」のパルスを送る
-            self.submodules._samp = _samp = PulseSynchronizer("sys", "pix")
-            self.sync.pix += [
-                If(_samp.o,
-                    s_clk.eq(m_clk), s_hs.eq(m_hs), s_vs.eq(m_vs),
-                    s_htot.eq(htot_now), s_vtot.eq(vtot_now),
-                    m_clk.eq(0), m_hs.eq(hs_edge), m_vs.eq(vs_edge),
+        # 自走(row==cfg_vtotal-1でラップ)+ 位相ゲート付きVSYNC再整列。
+        # フレーム境界(frame歩進)は常に row のラップ点=キャプチャ窓の先頭に固定。
+        # VSYNCは row を cfg_vs_row_at_sync に入れ直すだけで frame は進めない。これに
+        # より、窓をVSYNCより手前から開いても1枚の絵が2つのframe番号に割れない。
+        # VSYNCは即座に row を書き換えず「次のHSYNCで row:=cfg_vs_row_at_sync」と
+        # 保留する(vs_pend)。即時に書くと、その行は次のhs_edgeで row+1 されて
+        # しまい1行まるごと欠落する。また行の途中で row が変わると行番号がずれる。
+        # cfg_vtotal==0 なら自走せずVSYNCだけでフレーム境界を決める(旧来の挙動)。
+        vs_pend = Signal()
+        # フレーム開始 = 「row が 0 に戻る瞬間」。自走ラップか、cfg_vs_row_at_sync==0
+        # のときはVSYNC再整列もそれに当たる。この規則にしないと、VSYNCがちょうど
+        # ラップ点に来る場合に vs_pend がラップを打ち消して frame が永久に進まなくなる。
+        wrap_now = Signal()
+        frame_start = Signal()
+        free_run = Signal()
+        self.comb += [
+            free_run.eq(self.cfg_vtotal != 0),
+            wrap_now.eq(hs_edge & ~vs_pend & free_run &
+                        (row == self.cfg_vtotal - 1)),
+            frame_start.eq(wrap_now |
+                           (hs_edge & vs_pend & (self.cfg_vs_row_at_sync == 0)) |
+                           (vs_edge & ~free_run)),
+        ]
+        self.sync.pix += [
+            # vs_pend は自走時のみ使う(非自走ではVSYNCで即座にrow=0にするので、
+            # 保留すると次のhs_edgeでもrowが0に戻り、行番号が1つ重複してしまう)
+            If(vs_edge & free_run, vs_pend.eq(1)),
+            If(hs_edge,
+                *_hs_body,
+                If(vs_pend,
+                    row.eq(self.cfg_vs_row_at_sync), vs_pend.eq(0),
+                ).Elif(wrap_now,
+                    row.eq(0),
                 ).Else(
-                    m_clk.eq(m_clk + 1),
-                    If(hs_edge, m_hs.eq(m_hs + 1)),
-                    If(vs_edge, m_vs.eq(m_vs + 1)),
+                    row.eq(row + 1),
                 ),
-            ]
-            # sys側: 1秒ごとにサンプルパルスを出し、少し待って確定値を取り込む。
-            # s_* はパルス後しか変化しないので、待ってから MultiReg で受ければ安全。
-            WIN = int(sys_clk_freq)
-            win = Signal(max=WIN)
-            wait = Signal(6)
-            for src, dst in ((s_clk, self.meas_dotclk), (s_hs, self.meas_hfreq),
-                             (s_vs, self.meas_vfreq), (s_htot, self.meas_htotal),
-                             (s_vtot, self.meas_vtotal)):
-                stable = Signal(len(src))
-                self.specials += MultiReg(src, stable, "sys")
-                self.sync += If(wait == 1, dst.eq(stable))
-            self.comb += _samp.i.eq(win == WIN - 1)
-            self.sync += [
-                If(win == WIN - 1, win.eq(0)).Else(win.eq(win + 1)),
-                If(win == WIN - 1, wait.eq(32)).Elif(wait != 0, wait.eq(wait - 1)),
-            ]
+            ),
+            # 自走しない設定ではVSYNCで即座にrowを0へ(旧来の挙動)
+            If(vs_edge & ~free_run, row.eq(0), wrote.eq(0)),
+            If(frame_start, frame.eq(frame + 1), field.eq(~field)),
+        ]
 
         # ================= sys ドメイン =================
         self.comb += [
