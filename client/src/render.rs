@@ -1,0 +1,357 @@
+//! 表示の共通描画(GPU)。
+//!
+//! 通常モードとフルスクリーンで見え方が食い違わないよう、切り出し・管面への
+//! 引き伸ばし・回転・補間を1つのシェーダにまとめる。両モードともこれを使う。
+//!
+//! 考え方は実際のCRTと同じ:
+//!   1. 受け取った絵から有効映像を切り出す
+//!   2. それを「管面」(縦横比だけが決まった長方形)いっぱいに引き伸ばす
+//!      → 512x256 でも 768x512 でも同じ管面に映る。CRTの偏向がやっていること
+//!   3. 管面をウィンドウ/画面に収める(余った側は黒)
+//!
+//! 補間は sharp-bilinear を既定にしている。非整数倍で拡大すると、ニアレストでは
+//! ドットの幅が不揃いになり(512→3840なら7.5倍で7pxと8pxが混ざる)、バイリニア
+//! では全体がぼやける。sharp-bilinear はドットの内部をそのまま保ち、境目だけを
+//! 出力1画素分で繋ぐので、どちらの欠点も出ない。
+
+use eframe::wgpu;
+
+/// 補間方式
+pub const FILTER_NEAREST: u32 = 0;
+pub const FILTER_LINEAR: u32 = 1;
+pub const FILTER_SHARP: u32 = 2;
+
+#[derive(Clone, Copy, Debug)]
+pub struct Params {
+    /// 回転 0/1/2/3 = 時計回りに 0/90/180/270 度
+    pub rotate: u32,
+    /// 切り出し範囲[画素] x,y,w,h。w/h が 0 なら全体
+    pub crop: [u32; 4],
+    /// 管面の縦横比 (幅/高さ)。0 なら切り出した絵の比をそのまま使う
+    pub tube: f32,
+    pub filter: u32,
+}
+
+impl Default for Params {
+    fn default() -> Self {
+        Self { rotate: 0, crop: [0; 4], tube: 0.0, filter: FILTER_SHARP }
+    }
+}
+
+/// シェーダへ渡す値。16バイト境界に合わせて4つのvec4にまとめる。
+fn uniforms(p: &Params, tex_w: u32, tex_h: u32, dst_w: f32, dst_h: f32) -> [u8; 64] {
+    let (tw, th) = (tex_w.max(1) as f32, tex_h.max(1) as f32);
+    // 切り出し(範囲外の指定は無視して全体にする)
+    let ok = p.crop[2] > 0
+        && p.crop[3] > 0
+        && p.crop[0] + p.crop[2] <= tex_w
+        && p.crop[1] + p.crop[3] <= tex_h;
+    let (cx, cy, cw, ch) = if ok {
+        (p.crop[0] as f32, p.crop[1] as f32, p.crop[2] as f32, p.crop[3] as f32)
+    } else {
+        (0.0, 0.0, tw, th)
+    };
+    // 管面の縦横比。0 なら切り出した絵の比をそのまま使う(引き伸ばさない)
+    let aspect = if p.tube > 0.0 { p.tube } else { cw / ch.max(1.0) };
+    // 画面に占める向き。90/270度では幅と高さが入れ替わる
+    let (fw, fh) = if p.rotate % 2 == 1 { (1.0, aspect) } else { (aspect, 1.0) };
+    let sc = (dst_w / fw).min(dst_h / fh);
+    let (draw_w, draw_h) = (fw * sc, fh * sc);
+    let (kx, ky) = (dst_w / draw_w.max(1e-6), dst_h / draw_h.max(1e-6));
+    // sharp-bilinear 用: テクスチャ1テクセルが出力何画素に拡大されるか
+    let (su, sv) = if p.rotate % 2 == 1 {
+        (draw_h / cw, draw_w / ch)
+    } else {
+        (draw_w / cw, draw_h / ch)
+    };
+    let vals: [f32; 16] = [
+        kx, ky, p.rotate as f32, p.filter as f32,
+        cx / tw, cy / th, cw / tw, ch / th,
+        su.max(1e-6), sv.max(1e-6), tw, th,
+        0.0, 0.0, 0.0, 0.0,
+    ];
+    let mut buf = [0u8; 64];
+    for (i, v) in vals.iter().enumerate() {
+        buf[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+    }
+    buf
+}
+
+pub const SHADER: &str = r#"
+@group(0) @binding(0) var t: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+
+// a: kx, ky, rotate, filter
+// b: 切り出し(UV) x, y, w, h
+// c: 1テクセルあたりの出力画素数 u, v / テクスチャ寸法 w, h
+struct U { a: vec4<f32>, b: vec4<f32>, c: vec4<f32>, d: vec4<f32> };
+@group(0) @binding(2) var<uniform> u: U;
+
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+
+@vertex fn vs(@builtin(vertex_index) i: u32) -> VOut {
+    var p = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    var out: VOut;
+    out.pos = vec4<f32>(p[i], 0.0, 1.0);
+    out.uv = vec2<f32>((p[i].x + 1.0) * 0.5, 1.0 - (p[i].y + 1.0) * 0.5);
+    return out;
+}
+
+@fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
+    // 描画先の中で、管面が占める部分だけを使う。外側は黒(letterbox/pillarbox)
+    let e = vec2<f32>(0.5, 0.5) + (in.uv - vec2<f32>(0.5, 0.5)) * u.a.xy;
+    if (e.x < 0.0 || e.x > 1.0 || e.y < 0.0 || e.y > 1.0) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    // 回転(管面座標 → 切り出した絵の座標)
+    var q: vec2<f32>;
+    let r = u.a.z;
+    if (r < 0.5) {
+        q = e;
+    } else if (r < 1.5) {
+        q = vec2<f32>(e.y, 1.0 - e.x);
+    } else if (r < 2.5) {
+        q = vec2<f32>(1.0 - e.x, 1.0 - e.y);
+    } else {
+        q = vec2<f32>(1.0 - e.y, e.x);
+    }
+
+    let tex = u.c.zw;
+    let uv0 = u.b.xy + q * u.b.zw;   // テクスチャ全体でのUV
+    let mode = u.a.w;
+
+    if (mode < 0.5) {
+        // ニアレスト: テクセル中心へ吸着させてから線形サンプラで拾う
+        let c = (floor(uv0 * tex) + vec2<f32>(0.5, 0.5)) / tex;
+        return textureSample(t, samp, c);
+    }
+    if (mode < 1.5) {
+        return textureSample(t, samp, uv0);
+    }
+    // sharp-bilinear: テクセルの内部はそのまま、境目だけ出力1画素分で繋ぐ。
+    // 非整数倍でもドット幅が不揃いにならず、かつ全体がぼやけない。
+    let texel = uv0 * tex;
+    let base = floor(texel);
+    let frac = texel - base;
+    let scale = max(u.c.xy, vec2<f32>(1.0, 1.0));
+    let range = vec2<f32>(0.5, 0.5) - vec2<f32>(0.5, 0.5) / scale;
+    let dist = frac - vec2<f32>(0.5, 0.5);
+    let f = (dist - clamp(dist, -range, range)) * scale + vec2<f32>(0.5, 0.5);
+    return textureSample(t, samp, (base + f) / tex);
+}
+"#;
+
+/// パイプラインとサンプラ。テクスチャは呼び出し側が持つ。
+pub struct Pipeline {
+    pub pipeline: wgpu::RenderPipeline,
+    pub layout: wgpu::BindGroupLayout,
+    pub sampler: wgpu::Sampler,
+}
+
+impl Pipeline {
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("retrocastx-blit"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("retrocastx-blit"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&layout)],
+            ..Default::default()
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("retrocastx-blit"),
+            layout: Some(&pl),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs"),
+                targets: &[Some(format.into())],
+                compilation_options: Default::default(),
+            }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        // 補間はシェーダ側で決めるので、サンプラは線形で固定する
+        // (ニアレストもテクセル中心へ吸着させて実現している)
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
+        Self { pipeline, layout, sampler }
+    }
+
+    pub fn write_uniforms(
+        &self, queue: &wgpu::Queue, buf: &wgpu::Buffer,
+        p: &Params, tex_w: u32, tex_h: u32, dst_w: f32, dst_h: f32,
+    ) {
+        queue.write_buffer(buf, 0, &uniforms(p, tex_w, tex_h, dst_w, dst_h));
+    }
+
+    pub fn make_uniform_buffer(&self, device: &wgpu::Device) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("retrocastx-blit-u"),
+            size: 64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    pub fn bind_group(
+        &self, device: &wgpu::Device, view: &wgpu::TextureView, uniform: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: uniform.as_entire_binding() },
+            ],
+        })
+    }
+}
+
+// ---- egui(通常モード)から同じシェーダを使うための paint callback ----
+
+/// egui の描画中に GPU リソースへ触れるための入れ物。
+/// eframe の RenderState に1つだけ登録し、フレームごとに更新して使う。
+pub struct EguiBlit {
+    pub pipeline: Pipeline,
+    pub uniform: wgpu::Buffer,
+    /// (テクスチャ, ビュー, バインド, 幅, 高さ)
+    pub tex: Option<(wgpu::Texture, wgpu::TextureView, wgpu::BindGroup, u32, u32)>,
+}
+
+impl EguiBlit {
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        let pipeline = Pipeline::new(device, format);
+        let uniform = pipeline.make_uniform_buffer(device);
+        Self { pipeline, uniform, tex: None }
+    }
+
+    /// 受信した RGBA をテクスチャへ載せる(寸法が変わったら作り直す)
+    pub fn upload(
+        &mut self, device: &wgpu::Device, queue: &wgpu::Queue,
+        rgba: &[u8], w: u32, h: u32,
+    ) {
+        let need = self.tex.as_ref().map(|t| (t.3, t.4)) != Some((w, h));
+        if need {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("video"),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                // 映像データはsRGB符号化済み。リニア扱いにすると出力段で二重に
+                // 符号化され中間調が持ち上がる(フルスクリーンで実際に起きた)
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&Default::default());
+            let bind = self.pipeline.bind_group(device, &view, &self.uniform);
+            self.tex = Some((tex, view, bind, w, h));
+        }
+        let (tex, ..) = self.tex.as_ref().unwrap();
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * w),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+    }
+}
+
+/// egui の Shape として積む描画命令。矩形は egui 側で決め、その中を
+/// フルスクリーンと同じシェーダで塗る。
+pub struct Callback {
+    pub params: Params,
+    /// 描画先の画素数(論理座標ではなく実画素。Retinaでは2倍になる)
+    pub dst: (f32, f32),
+}
+
+impl eframe::egui_wgpu::CallbackTrait for Callback {
+    fn prepare(
+        &self,
+        _device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _screen: &eframe::egui_wgpu::ScreenDescriptor,
+        _encoder: &mut wgpu::CommandEncoder,
+        res: &mut eframe::egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        if let Some(b) = res.get::<EguiBlit>() {
+            if let Some((_, _, _, w, h)) = b.tex.as_ref() {
+                b.pipeline.write_uniforms(
+                    queue, &b.uniform, &self.params, *w, *h, self.dst.0, self.dst.1);
+            }
+        }
+        Vec::new()
+    }
+
+    fn paint(
+        &self,
+        _info: eframe::egui::PaintCallbackInfo,
+        rp: &mut wgpu::RenderPass<'static>,
+        res: &eframe::egui_wgpu::CallbackResources,
+    ) {
+        if let Some(b) = res.get::<EguiBlit>() {
+            if let Some((_, _, bind, _, _)) = b.tex.as_ref() {
+                rp.set_pipeline(&b.pipeline.pipeline);
+                rp.set_bind_group(0, bind, &[]);
+                rp.draw(0..3, 0..1);
+            }
+        }
+    }
+}

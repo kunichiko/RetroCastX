@@ -46,6 +46,12 @@ pub struct Settings {
     pub vscale: f32,
     /// 画面回転 0/1/2/3 = 時計回りに 0/90/180/270 度(縦画面のゲーム用)
     pub rotate: u32,
+    /// 管面(表示領域)の縦横比 幅/高さ。0 なら有効映像の比をそのまま使う。
+    /// 実際のCRTは「何ドットか」を知らず、偏向で決まった管面いっぱいに描く。
+    /// ここを 4/3 にすれば 512x256 でも 768x512 でも同じ形で表示される。
+    pub tube_aspect: f32,
+    /// 補間 0=ニアレスト 1=バイリニア 2=sharp-bilinear
+    pub filter: u32,
     /// 表示する切り出し範囲[画素]。w か h が 0 なら切り出さない(全体を表示)
     pub crop_x: u32,
     pub crop_y: u32,
@@ -78,6 +84,8 @@ impl Default for Settings {
             tune_video_bw: 15,
             vscale: 1.0,
             rotate: 0,
+            tube_aspect: 0.0,
+            filter: 2,
             crop_x: 0,
             crop_y: 0,
             crop_w: 0,
@@ -139,6 +147,12 @@ impl Settings {
                         s.rotate = if x < 4 { x } else { 0 };
                     }
                 }
+                "tube_aspect" => {
+                    if let Ok(x) = v.parse::<f32>() {
+                        s.tube_aspect = if (0.0..=10.0).contains(&x) { x } else { 0.0 };
+                    }
+                }
+                "filter" => { if let Ok(x) = v.parse::<u32>() { s.filter = x.min(2) } }
                 "crop_x" => { if let Ok(x) = v.parse() { s.crop_x = x } }
                 "crop_y" => { if let Ok(x) = v.parse() { s.crop_y = x } }
                 "crop_w" => { if let Ok(x) = v.parse() { s.crop_w = x } }
@@ -197,6 +211,8 @@ impl Settings {
              tune_field_src = {}\n\
              tune_video_bw = {}\n\
              rotate = {}\n\
+             tube_aspect = {:.4}\n\
+             filter = {}\n\
              crop_x = {}\n\
              crop_y = {}\n\
              crop_w = {}\n\
@@ -222,6 +238,8 @@ impl Settings {
             self.tune_field_src,
             self.tune_video_bw,
             self.rotate,
+            self.tube_aspect,
+            self.filter,
             self.crop_x,
             self.crop_y,
             self.crop_w,

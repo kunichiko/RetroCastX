@@ -18,6 +18,7 @@
 mod assembler;
 mod audio;
 mod fullscreen;
+mod render;
 mod protocol;
 mod receiver;
 mod settings;
@@ -101,8 +102,13 @@ fn main() -> eframe::Result {
     }
     if fullscreen_mode {
         let rot = if rotate == u32::MAX { cfg.rotate } else { rotate };
-        fullscreen::run(port, subscribe_to, target_mac, decay, audio, rot, cfg.vscale,
-                        [cfg.crop_x, cfg.crop_y, cfg.crop_w, cfg.crop_h]); // 戻らない
+        let p = render::Params {
+            rotate: rot,
+            crop: [cfg.crop_x, cfg.crop_y, cfg.crop_w, cfg.crop_h],
+            tube: cfg.tube_aspect,
+            filter: cfg.filter,
+        };
+        fullscreen::run(port, subscribe_to, target_mac, decay, audio, p); // 戻らない
     }
 
     let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
@@ -370,7 +376,9 @@ struct ViewerApp {
     did_autofit: bool,
     /// 次のフレームでウィンドウを等倍に合わせる
     want_fit: bool,
-    texture: Option<egui::TextureHandle>,
+    /// 受信中フレームの寸法(GPUテクスチャは callback_resources 側が持つ)
+    frame_size: (u32, u32),
+    render_state: Option<eframe::egui_wgpu::RenderState>,
     seen_gen: u64,
     integer_scale: bool,
     /// 表示時の縦倍率(ドットが正方形でないモードの縦つぶれを直す)
@@ -379,6 +387,10 @@ struct ViewerApp {
     rotate: u32,
     /// 表示する切り出し範囲[画素]。w か h が 0 なら全体を表示
     crop: [u32; 4],
+    /// 管面の縦横比(幅/高さ)。0 なら有効映像の比のまま
+    tube_aspect: f32,
+    /// 補間 0=ニアレスト 1=バイリニア 2=sharp-bilinear
+    filter: u32,
     rx_error: Option<String>,
     subscribe_to: Option<String>,
     no_vsync: bool,
@@ -398,6 +410,11 @@ impl ViewerApp {
     ) -> Self {
         let audio_source = audio.source;
         install_cjk_font(&cc.egui_ctx);
+        // 通常モードもフルスクリーンと同じシェーダで描く。見え方が食い違わないように。
+        if let Some(rs) = cc.wgpu_render_state.as_ref() {
+            let blit = render::EguiBlit::new(&rs.device, rs.target_format);
+            rs.renderer.write().callback_resources.insert(blit);
+        }
         let shared = Arc::new(receiver::Shared::default());
         let ctx = cc.egui_ctx.clone();
         let rx_error = receiver::spawn(
@@ -436,12 +453,15 @@ impl ViewerApp {
             last_tex: egui::Vec2::ZERO,
             did_autofit: false,
             want_fit: false,
-            texture: None,
+            frame_size: (0, 0),
+            render_state: cc.wgpu_render_state.clone(),
             seen_gen: 0,
             integer_scale: cfg.integer_scale,
             vscale: cfg.vscale,
             rotate: cfg.rotate,
             crop: [cfg.crop_x, cfg.crop_y, cfg.crop_w, cfg.crop_h],
+            tube_aspect: cfg.tube_aspect,
+            filter: cfg.filter,
             rx_error,
             subscribe_to,
             no_vsync,
@@ -458,16 +478,15 @@ impl ViewerApp {
         self.pace.on_new_frame();
         let guard = self.shared.frame.lock().unwrap();
         let Some(frame) = guard.as_ref() else { return };
-        let image = egui::ColorImage::from_rgba_unmultiplied(
-            [frame.width, frame.height],
-            &frame.rgba,
-        );
-        // レトロ画面はニアレスト(整数拡大でドットがくっきり)
-        let opts = egui::TextureOptions::NEAREST;
-        match &mut self.texture {
-            Some(t) => t.set(image, opts),
-            None => self.texture = Some(ctx.load_texture("video", image, opts)),
+        self.frame_size = (frame.width as u32, frame.height as u32);
+        if let Some(rs) = self.render_state.as_ref() {
+            let mut w = rs.renderer.write();
+            if let Some(b) = w.callback_resources.get_mut::<render::EguiBlit>() {
+                b.upload(&rs.device, &rs.queue, &frame.rgba,
+                         frame.width as u32, frame.height as u32);
+            }
         }
+        let _ = ctx;
     }
 }
 
@@ -494,6 +513,8 @@ impl ViewerApp {
             integer_scale: self.integer_scale,
             vscale: self.vscale,
             rotate: self.rotate,
+            tube_aspect: self.tube_aspect,
+            filter: self.filter,
             crop_x: self.crop[0],
             crop_y: self.crop[1],
             crop_w: self.crop[2],
@@ -1213,6 +1234,53 @@ impl eframe::App for ViewerApp {
                 }
             });
             ui.horizontal(|ui| {
+                // 管面(表示領域)の縦横比。実際のCRTと同じで、ドット数ではなく
+                // 管面の形が表示を決める。4:3 にすれば 512x256 でも 768x512 でも
+                // 同じ形に映る。
+                ui.monospace("管面");
+                let cur = self.tube_aspect;
+                let mut sel = cur;
+                let name = |a: f32| -> &'static str {
+                    if a <= 0.0 { "そのまま" }
+                    else if (a - 4.0 / 3.0).abs() < 0.01 { "4:3" }
+                    else if (a - 1.0).abs() < 0.01 { "1:1" }
+                    else if (a - 16.0 / 9.0).abs() < 0.01 { "16:9" }
+                    else { "任意" }
+                };
+                egui::ComboBox::from_id_salt("tube")
+                    .width(96.0)
+                    .selected_text(name(cur))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut sel, 0.0, "そのまま");
+                        ui.selectable_value(&mut sel, 4.0 / 3.0, "4:3");
+                        ui.selectable_value(&mut sel, 1.0, "1:1");
+                        ui.selectable_value(&mut sel, 16.0 / 9.0, "16:9");
+                    });
+                if sel != cur {
+                    self.tube_aspect = sel;
+                    self.mark_settings_dirty();
+                    self.want_fit = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                // 拡大時の補間。sharp-bilinear は非整数倍でもドット幅が不揃いに
+                // ならず、かつ全体がぼやけない。高解像度モニタ向けの既定。
+                ui.monospace("補間");
+                let mut f = self.filter;
+                egui::ComboBox::from_id_salt("filter")
+                    .width(120.0)
+                    .selected_text(["ニアレスト", "バイリニア", "sharp-bilinear"][f as usize])
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut f, 0, "ニアレスト");
+                        ui.selectable_value(&mut f, 1, "バイリニア");
+                        ui.selectable_value(&mut f, 2, "sharp-bilinear");
+                    });
+                if f != self.filter {
+                    self.filter = f;
+                    self.mark_settings_dirty();
+                }
+            });
+            ui.horizontal(|ui| {
                 ui.monospace("縦倍率");
                 if ui
                     .add(egui::DragValue::new(&mut self.vscale).speed(0.01).range(0.25..=4.0))
@@ -1266,85 +1334,52 @@ impl eframe::App for ViewerApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(self.backdrop.color()))
             .show(root, |ui| {
-                let Some(tex) = &self.texture else {
+                if self.frame_size.0 == 0 {
                     ui.centered_and_justified(|ui| {
                         ui.weak("waiting for stream...");
                     });
                     return;
-                };
-                // 無信号(同期喪失)は砂嵐になるので、絵を出さずに状態を示す
-                let mode = self.shared.mode.lock().unwrap().clone();
-                let valid = mode.as_ref().map_or(false, signal_is_valid);
-                if !valid {
-                    ui.centered_and_justified(|ui| {
-                        let txt = match &mode {
-                            Some(m) => format!(
-                                "NO SIGNAL\n\nh {:.3} kHz   v {:.3} Hz\nvtotal {}",
-                                m.hfreq_mhz_x1000 as f64 / 1e6,
-                                m.vfreq_mhz_x1000 as f64 / 1e3,
-                                m.vtotal
-                            ),
-                            None => "NO SIGNAL".to_string(),
-                        };
-                        ui.label(egui::RichText::new(txt).size(20.0).weak());
-                    });
-                    return;
                 }
-                let tex_size = tex.size_vec2();
+                let tex_size = egui::vec2(self.frame_size.0 as f32, self.frame_size.1 as f32);
                 let avail = ui.available_size();
-                // 縦倍率を掛けた見かけの大きさで画面に収める。X68000の
-                // 15kHz 512x256 のようにドットが正方形でないモードは、等倍だと
-                // 縦につぶれて見える。
-                // 縦倍率をかけた見かけの大きさ。90/270度回転では画面に占める
-                // 向きが入れ替わるので、幅と高さを入れ替えて収める。
-                // 切り出し範囲(未設定なら全体)。取り込みバッファにはブランキング
-                // 由来の黒が含まれるので、回転すると余白として目立つ。
-                let (cx, cy, cw, ch) = (self.crop[0] as f32, self.crop[1] as f32,
-                                        self.crop[2] as f32, self.crop[3] as f32);
-                let use_crop = cw > 0.0 && ch > 0.0
-                    && cx + cw <= tex_size.x && cy + ch <= tex_size.y;
-                let (src_w, src_h) = if use_crop { (cw, ch) } else { (tex_size.x, tex_size.y) };
-                let uv = if use_crop {
-                    egui::Rect::from_min_max(
-                        egui::pos2(cx / tex_size.x, cy / tex_size.y),
-                        egui::pos2((cx + cw) / tex_size.x, (cy + ch) / tex_size.y),
-                    )
+                // 有効映像(切り出し)を「管面」いっぱいに引き伸ばして表示する。
+                // 実際のCRTと同じ考え方で、ドット数ではなく管面の形が表示を決める。
+                let (cw, ch) = if self.crop[2] > 0 && self.crop[3] > 0 {
+                    (self.crop[2] as f32, self.crop[3] as f32)
                 } else {
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))
+                    (tex_size.x, tex_size.y)
                 };
-                let scaled = egui::vec2(src_w, src_h * self.vscale);
+                let aspect = if self.tube_aspect > 0.0 { self.tube_aspect } else { cw / ch.max(1.0) };
                 let disp = if self.rotate % 2 == 1 {
-                    egui::vec2(scaled.y, scaled.x)
+                    egui::vec2(1.0, aspect)
                 } else {
-                    scaled
+                    egui::vec2(aspect, 1.0)
                 };
                 // ウィンドウを画にぴったり合わせるのに使う(余白 = 内寸 - この領域)
                 self.last_avail = avail;
-                self.last_tex = disp;
                 let fit = (avail.x / disp.x).min(avail.y / disp.y);
-                // 起動直後に画が入り切らない場合だけ、一度だけ等倍に合わせる。
-                // 縮小されるとラインが間引かれて欠けたように見えるため。
-                // 以後はユーザーの操作したサイズを尊重する(一度きり)。
+                let size = disp * fit;
+                self.last_tex = size;
                 if !self.did_autofit {
                     self.did_autofit = true;
-                    if fit < 1.0 {
-                        self.want_fit = true;
-                    }
                 }
-                let scale = if self.integer_scale && fit >= 1.0 { fit.floor() } else { fit };
-                let size = disp * scale;
                 let resp = ui.centered_and_justified(|ui| {
                     let (rect, r) = ui.allocate_exact_size(size, egui::Sense::hover());
-                    // 回転前の大きさで、割り当てた矩形の中心に描く。egui は
-                    // Image::rotate が中心まわりに回すので、これで収まる。
-                    let inner = egui::Rect::from_center_size(rect.center(), scaled * scale);
-                    let img = egui::Image::new((tex.id(), scaled * scale)).uv(uv);
-                    if self.rotate == 0 {
-                        img.paint_at(ui, inner);
-                    } else {
-                        let a = std::f32::consts::FRAC_PI_2 * self.rotate as f32;
-                        img.rotate(a, egui::vec2(0.5, 0.5)).paint_at(ui, inner);
-                    }
+                    // Retina では論理座標と実画素が違う。sharp-bilinear は出力
+                    // 画素数を基準に境目の幅を決めるので、実画素で渡す。
+                    let ppp = ui.ctx().pixels_per_point();
+                    ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
+                        rect,
+                        render::Callback {
+                            params: render::Params {
+                                rotate: self.rotate,
+                                crop: self.crop,
+                                tube: self.tube_aspect,
+                                filter: self.filter,
+                            },
+                            dst: (rect.width() * ppp, rect.height() * ppp),
+                        },
+                    ));
                     r
                 });
                 // キャプチャ範囲の境界に枠線。画の内容に埋もれないよう、外周の
