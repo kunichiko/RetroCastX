@@ -200,6 +200,13 @@ class StatusDisplay(Module):
         # B +2.0% → +0.3%、G +2.6% → +2.2% と改善した。時定数(bit[4:3])は
         # 効果が無く、原因はチャンネル間のクロストークだった。
         self.cfg_fine_clamp = Signal(8, reset=0x87)
+        # PLL設定(0x03)とクランプ位置(0x05/0x06)はTVPの既定値のまま書く。
+        # データシートの規定と合っていない箇所があるので実測したが、良好な電源の
+        # 下ではどちらも測定可能な効果が無かった(下記)。実行時に変更できるように
+        # だけしてある(CONFIG key 0x19 / 0x1A / 0x1B)。
+        self.cfg_pll_ctl = Signal(8, reset=0xA8)
+        self.cfg_clamp_start = Signal(8, reset=0x32)
+        self.cfg_clamp_width = Signal(8, reset=0x20)
 
         TVP_W = (tvp_addr << 1) & 0xFE       # 0xB8
         TVP_R = TVP_W | 1                    # 0xB9
@@ -272,8 +279,8 @@ class StatusDisplay(Module):
         #                     雑音がそのまま折り返して絵に乗る。最小設定でも50MHz以上
         #                     なので折り返しは残るが、それより上の雑音は減らせる。
         #                     実行時に振って効果を測れるようCONFIGから変えられる。
-        WR_REG = [0x19, 0x0E, 0x17, 0x18, 0x31, 0x10, 0x3F, 0x2A]
-        WR_VAL = [MUX1, 0x52, 0x02, 0x01, 0x18, 0x58, 0x0F, 0x87]
+        WR_REG = [0x19, 0x0E, 0x17, 0x18, 0x31, 0x10, 0x3F, 0x2A, 0x03, 0x05, 0x06]
+        WR_VAL = [MUX1, 0x52, 0x02, 0x01, 0x18, 0x58, 0x0F, 0x87, 0xA8, 0x32, 0x20]
         if pll_divide:
             # 0x01=PLL divide[11:4], 0x02=[7:4]にPLL divide[3:0]。データシート指定どおり
             # MSBs(0x01)を先に書く。
@@ -302,6 +309,15 @@ class StatusDisplay(Module):
         if 0x2A in WR_REG:
             self.comb += If(step == WR_REG.index(0x2A),
                             wval_b.eq(self.cfg_fine_clamp))
+        if 0x03 in WR_REG:
+            self.comb += If(step == WR_REG.index(0x03),
+                            wval_b.eq(self.cfg_pll_ctl))
+        if 0x05 in WR_REG:
+            self.comb += If(step == WR_REG.index(0x05),
+                            wval_b.eq(self.cfg_clamp_start))
+        if 0x06 in WR_REG:
+            self.comb += If(step == WR_REG.index(0x06),
+                            wval_b.eq(self.cfg_clamp_width))
 
         # FORMAT
         fi = Signal(5)   # 0..20 (NFMT=21)

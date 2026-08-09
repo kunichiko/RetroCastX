@@ -41,6 +41,9 @@ CFG_KEY_FIELD_SWAP = 0x0015     # フィールドの偶奇を入れ替える
 CFG_KEY_FIELD_SRC = 0x0016      # 方式2の極性の取得元 0=位相 1=FIDOUT
 CFG_KEY_VIDEO_BW = 0x0017       # TVPのアナログ映像帯域 0=最大 〜 15=最小
 CFG_KEY_FINE_CLAMP = 0x0018     # TVPのファインクランプ制御(レジスタ0x2A)
+CFG_KEY_PLL_CTL = 0x0019        # TVPのPLL設定(レジスタ0x03 VCOレンジ+チャージポンプ)
+CFG_KEY_CLAMP_START = 0x001A    # TVPのクランプ開始位置(レジスタ0x05)
+CFG_KEY_CLAMP_WIDTH = 0x001B    # TVPのクランプ幅(レジスタ0x06)
 
 # アプリ→ボードのパケット(SUBSCRIBE/CONFIG)の宛先MACワイルドカード。
 # 同一LANの全ボードが反応するため、複数ボード環境では実MACを指名すること
