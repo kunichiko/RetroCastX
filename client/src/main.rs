@@ -314,6 +314,8 @@ struct ViewerApp {
     tune_pll_divide: i32,
     /// 目標の有効幅[ドット](そのモードの水平解像度)。pll_div の推奨値算出に使う
     tune_target_w: i32,
+    /// 推奨値を8の倍数に丸める(X68000のhtotalは8ドット単位)
+    tune_snap8: bool,
     texture: Option<egui::TextureHandle>,
     seen_gen: u64,
     integer_scale: bool,
@@ -359,6 +361,7 @@ impl ViewerApp {
             tune_hs_offset: cfg.tune_hs_offset,
             tune_pll_divide: cfg.tune_pll_divide,
             tune_target_w: cfg.tune_target_w,
+            tune_snap8: cfg.tune_snap8,
             texture: None,
             seen_gen: 0,
             integer_scale: cfg.integer_scale,
@@ -418,6 +421,7 @@ impl ViewerApp {
             tune_hs_offset: self.tune_hs_offset,
             tune_pll_divide: self.tune_pll_divide,
             tune_target_w: self.tune_target_w,
+            tune_snap8: self.tune_snap8,
         }
         .save();
     }
@@ -581,13 +585,31 @@ impl ViewerApp {
             "active {}x{} at ({},{})",
             st.active_w, st.active_h, st.active_x, st.active_y
         ));
+        if st.active_w > 0 {
+            let r = self.tune_target_w as f32 / st.active_w as f32;
+            if !(0.75..=1.35).contains(&r) {
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 170, 60),
+                    format!("target w が active({}) とかけ離れています", st.active_w),
+                );
+            }
+        }
         ui.horizontal(|ui| {
             ui.monospace("target w  ");
             ui.add(egui::DragValue::new(&mut self.tune_target_w).range(64..=2048));
+            // X68000のCRTCは水平トータルを8ドット単位で持つので、正解は必ず
+            // 8の倍数になる。丸めておくと実測の端数に引きずられない
+            // (24kHz 1024x424 で 1407.7 → 1408 = 176×8)。他機種で外したい
+            // ことがあるかもしれないので切れるようにしておく。
+            ui.checkbox(&mut self.tune_snap8, "×8");
             if st.active_w > 0 {
-                let want = (self.tune_pll_divide as f64 * self.tune_target_w as f64
-                    / st.active_w as f64)
-                    .round() as i32;
+                let raw = self.tune_pll_divide as f64 * self.tune_target_w as f64
+                    / st.active_w as f64;
+                let want = if self.tune_snap8 {
+                    ((raw / 8.0).round() * 8.0) as i32
+                } else {
+                    raw.round() as i32
+                };
                 if ui.button(format!("→ pll {want}")).clicked() {
                     let old = self.tune_pll_divide.max(1);
                     self.tune_pll_divide = want.clamp(200, 4095);
