@@ -833,9 +833,15 @@ impl ViewerApp {
             "active {}x{} at ({},{})",
             st.active_w, st.active_h, st.active_x, st.active_y
         ));
+        // 測定が信用できるか。有効映像が窓に入り切っていないと外接矩形は
+        // 有効映像の幅を表さず、そこから計算した推奨値は正しい方向へ行かない。
+        // 実際この状態で押し続けて pll_div が上限まで走り、DATACLKが100MHzを
+        // 超えてボードがハングした。信用できないときはボタンを押せなくする。
+        let mut measure_ok = st.active_w > 0;
         if st.active_w > 0 {
             let r = self.tune_target_w as f32 / st.active_w as f32;
             if !(0.75..=1.35).contains(&r) {
+                measure_ok = false;
                 ui.colored_label(
                     egui::Color32::from_rgb(220, 170, 60),
                     format!("target w が active({}) とかけ離れています", st.active_w),
@@ -865,7 +871,20 @@ impl ViewerApp {
                     (self.tune_pll_divide / 2).max(200),
                     (self.tune_pll_divide * 2).min(2304),
                 );
-                if ui.button(format!("→ pll {want}")).clicked() {
+                let btn = ui.add_enabled(
+                    measure_ok,
+                    egui::Button::new(format!("→ pll {want}")),
+                );
+                let btn = if measure_ok {
+                    btn
+                } else {
+                    btn.on_disabled_hover_text(
+                        "実測(active)が目標と合っていないので計算できません。\n\
+                         絵が窓に入り切っていない可能性があります。\n\
+                         pll_div を手で入れて絵全体が入る状態にしてから使ってください。",
+                    )
+                };
+                if btn.clicked() {
                     let old = self.tune_pll_divide.max(1);
                     self.tune_pll_divide = want.clamp(200, 4095);
                     // pll_divに比例するのはHSYNCからの絶対位置、つまり
