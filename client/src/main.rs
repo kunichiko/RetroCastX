@@ -821,10 +821,28 @@ impl ViewerApp {
         let hs_max = (self.tune_pll_divide / 2).max(1);
         row(ui, "hs_offset", &mut self.tune_hs_offset, 0, hs_max,
             protocol::CFG_KEY_HS_OFFSET, &mut send);
-        // 上限はgateware側の制限と同じ。これを超えるとDATACLKがpixドメインの
-        // タイミング制約を超え、実機ではボードごとハングした(4095で14秒)
-        row(ui, "pll_div", &mut self.tune_pll_divide, 200, 2304,
+        // 下限は「ピクセルクロック12MHz」から決まる。TVP7002のPLLは12〜165MHzしか
+        // 保証されておらず(データシート)、下回るとクランプが効かなくなって画面の
+        // 下ほど色がずれる。実測でも 12.02MHz は正常、11.25MHz から崩れ始め、
+        // 9.72MHz では白の青/赤比が上下で0.43も違った。
+        // 上限はgateware側の制限と同じ。超えるとDATACLKがpixドメインのタイミング
+        // 制約を超え、実機ではボードごとハングした(4095で14秒)。
+        let pll_min = match self.shared.mode.lock().unwrap().as_ref() {
+            Some(m) if m.hfreq_mhz_x1000 > 0 => {
+                // fH[Hz] = hfreq_mhz_x1000 / 1000。pll_div >= 12e6 / fH
+                let fh = m.hfreq_mhz_x1000 as f64 / 1000.0;
+                ((12.0e6 / fh).ceil() as i32).clamp(200, 2304)
+            }
+            _ => 200,
+        };
+        row(ui, "pll_div", &mut self.tune_pll_divide, pll_min, 2304,
             protocol::CFG_KEY_PLL_DIVIDE, &mut send);
+        if self.tune_pll_divide < pll_min {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 170, 60),
+                format!("pll_div は {pll_min} 以上に(12MHz未満はTVPの範囲外)"),
+            );
+        }
         // 実測した有効映像の大きさと、そこから求まる pll_div の推奨値。
         // pll_div は「1ラインを何サンプルで取るか」なので、有効幅は pll_div に比例する。
         // 目標のドット数になるよう比例計算すれば一発で決まる(勘で動かす必要はない)。
@@ -859,22 +877,35 @@ impl ViewerApp {
             if st.active_w > 0 {
                 let raw = self.tune_pll_divide as f64 * self.tune_target_w as f64
                     / st.active_w as f64;
-                let want = if self.tune_snap8 {
+                let base = if self.tune_snap8 {
                     ((raw / 8.0).round() * 8.0) as i32
                 } else {
                     raw.round() as i32
+                };
+                // 1サンプル=1ドットにするとTVPの下限(12MHz)を割るモードがある
+                // (15kHz 512x480 の 1:1 は 608 = 9.7MHz)。その場合は2倍、
+                // 足りなければ4倍にして範囲内へ入れる。オーバーサンプリングなので
+                // 情報は失われず、8の倍数のままでもある。
+                let mut want = base.max(1);
+                let mut over = 1;
+                while want < pll_min && want * 2 <= 2304 {
+                    want *= 2;
+                    over *= 2;
                 }
+                let want = want
                 // 測定が壊れていると推奨値が青天井に走る。実際、連打してDATACLKが
                 // 100MHzを超え、ボードがハングした。1回の変化は2倍までに抑え、
                 // 上限もgateware側と揃える。
                 .clamp(
-                    (self.tune_pll_divide / 2).max(200),
+                    (self.tune_pll_divide / 2).max(pll_min),
                     (self.tune_pll_divide * 2).min(2304),
                 );
-                let btn = ui.add_enabled(
-                    measure_ok,
-                    egui::Button::new(format!("→ pll {want}")),
-                );
+                let label = if over > 1 {
+                    format!("→ pll {want} (×{over})")
+                } else {
+                    format!("→ pll {want}")
+                };
+                let btn = ui.add_enabled(measure_ok, egui::Button::new(label));
                 let btn = if measure_ok {
                     btn
                 } else {
