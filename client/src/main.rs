@@ -344,6 +344,8 @@ struct ViewerApp {
     tune_pending: std::collections::HashMap<u16, (u32, std::time::Instant)>,
     /// 次に現在値を問い合わせる時刻。全キーが揃うまで繰り返す
     tune_get_at: Option<std::time::Instant>,
+    /// ボードの現在値を取り込み済みか。起動時に1回だけ合わせる
+    tune_synced: bool,
     /// インターレースの織り込み方を自動判定している最中の状態
     weave_auto: Option<WeaveAuto>,
     /// 現在のウィンドウ内寸(保存用)
@@ -409,6 +411,7 @@ impl ViewerApp {
             tune_field_src: cfg.tune_field_src,
             tune_pending: Default::default(),
             tune_get_at: None,
+            tune_synced: false,
             weave_auto: None,
             window_size: egui::vec2(cfg.window_w, cfg.window_h),
             last_avail: egui::Vec2::ZERO,
@@ -734,6 +737,12 @@ impl ViewerApp {
     /// 消え、Viewerの保存値とは別々に動くため)。送信パケットが落ちたときも
     /// ずれるので、応答で確認できた値を正としてUIを合わせる。
     fn sync_tune_from_board(&mut self) {
+        // 取り込みは起動時の1回だけにする。毎フレーム反映すると、手で入力した値が
+        // send を押す前にボードの値へ戻されてしまう(未送信の変更は pending に
+        // 入らないため)。ずれ直したときは「読む」で取り直せる。
+        if self.tune_synced {
+            return;
+        }
         let now = std::time::Instant::now();
         let state = self.shared.config_state.lock().unwrap().clone();
         // 未取得のキーがあるうちは定期的に問い合わせる
@@ -769,6 +778,12 @@ impl ViewerApp {
                 protocol::CFG_KEY_FIELD_SRC => self.tune_field_src = val as u8,
                 _ => {}
             }
+        }
+        if Self::TUNE_KEYS
+            .iter()
+            .all(|k| self.shared.config_state.lock().unwrap().contains_key(k))
+        {
+            self.tune_synced = true;
         }
     }
 
@@ -941,6 +956,15 @@ impl ViewerApp {
                 {
                     send.push((protocol::CFG_KEY_F2_ROW, self.tune_f2_row as u32));
                 }
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.button("読む").on_hover_text(
+                "ボードの現在値を取り込んで表示を合わせる").clicked()
+            {
+                self.tune_synced = false;
+                self.tune_get_at = None;
+                self.shared.config_state.lock().unwrap().clear();
             }
         });
         if ui.button("send all").clicked() {
