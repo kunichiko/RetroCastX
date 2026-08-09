@@ -806,7 +806,9 @@ impl ViewerApp {
         let hs_max = (self.tune_pll_divide / 2).max(1);
         row(ui, "hs_offset", &mut self.tune_hs_offset, 0, hs_max,
             protocol::CFG_KEY_HS_OFFSET, &mut send);
-        row(ui, "pll_div", &mut self.tune_pll_divide, 200, 4095,
+        // 上限はgateware側の制限と同じ。これを超えるとDATACLKがpixドメインの
+        // タイミング制約を超え、実機ではボードごとハングした(4095で14秒)
+        row(ui, "pll_div", &mut self.tune_pll_divide, 200, 2304,
             protocol::CFG_KEY_PLL_DIVIDE, &mut send);
         // 実測した有効映像の大きさと、そこから求まる pll_div の推奨値。
         // pll_div は「1ラインを何サンプルで取るか」なので、有効幅は pll_div に比例する。
@@ -840,7 +842,14 @@ impl ViewerApp {
                     ((raw / 8.0).round() * 8.0) as i32
                 } else {
                     raw.round() as i32
-                };
+                }
+                // 測定が壊れていると推奨値が青天井に走る。実際、連打してDATACLKが
+                // 100MHzを超え、ボードがハングした。1回の変化は2倍までに抑え、
+                // 上限もgateware側と揃える。
+                .clamp(
+                    (self.tune_pll_divide / 2).max(200),
+                    (self.tune_pll_divide * 2).min(2304),
+                );
                 if ui.button(format!("→ pll {want}")).clicked() {
                     let old = self.tune_pll_divide.max(1);
                     self.tune_pll_divide = want.clamp(200, 4095);

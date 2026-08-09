@@ -904,6 +904,29 @@ class RetroCastXStream(SoCMini):
             # CONFIGで書き換わる画枠パラメータをキャプチャ/TVPへ配る。
             # 末尾クリアの開始entryは (1ラインのサンプル数 - 水平オフセット)/2。
             # pll_divide や hs_offset を変えると必要範囲も変わるので実行時に算出する。
+            # pll_divide(=1ライン当たりDATACLK数)を安全な範囲に制限する。
+            # これを大きくするとDATACLKが上がり、pixドメインのタイミング制約
+            # (75MHz)を超えると動作が壊れる。実機で pll_divide=4095
+            # (24kHz入力でDATACLK 101MHz)にすると14秒でボードごとハングした
+            # (Ethernetも応答しなくなる)。2304 では60秒間安定。
+            # 2304なら 31.5kHz でも 72.6MHz に収まり、実用上必要な最大値
+            # (15kHzの÷2候補 2176)より大きいので不足しない。
+            # CONFIGはツールや他のクライアントからも送れるので、UI側の制限では
+            # 足りずここで止める必要がある。
+            PLL_MAX = 2304
+            PLL_MIN = 200
+            # 組合せのままだと比較器がファンアウトの多い経路の前に挟まり、
+            # eth_rx が 125MHz 要求に対し 108〜120MHz まで落ちた。設定値は
+            # めったに変わらないのでレジスタに落とす(1クロック遅れるだけ)。
+            pll_use = Signal(12)
+            self.sync += If(self.streamer.cfg_pll_divide > PLL_MAX,
+                pll_use.eq(PLL_MAX),
+            ).Elif(self.streamer.cfg_pll_divide < PLL_MIN,
+                pll_use.eq(PLL_MIN),
+            ).Else(
+                pll_use.eq(self.streamer.cfg_pll_divide),
+            )
+
             # hs_offset は必ずラインの前半に収める。これを超えるとキャプチャ窓が
             # ライン終端より後ろから始まり、x >= hs_offset が一度も成立せずライン
             # が1本も出なくなる(映像が止まる)。CONFIGはツールや他のクライアント
@@ -911,25 +934,22 @@ class RetroCastXStream(SoCMini):
             # 末尾クリアの開始entry (pll_divide - hs_offset)/2 の桁借りも防げる。
             hs_lim = Signal(13)
             hs_use = Signal(13)
-            self.comb += [
-                hs_lim.eq(self.streamer.cfg_pll_divide[1:]),   # pll_divide / 2
-                If(self.streamer.cfg_hs_offset < hs_lim,
-                    hs_use.eq(self.streamer.cfg_hs_offset),
-                ).Else(
-                    hs_use.eq(hs_lim),
-                ),
-            ]
+            self.comb += hs_lim.eq(pll_use[1:])                # pll_divide / 2
+            self.sync += If(self.streamer.cfg_hs_offset < hs_lim,
+                hs_use.eq(self.streamer.cfg_hs_offset),
+            ).Else(
+                hs_use.eq(hs_lim),
+            )
             self.comb += [
                 self.capture.cfg_vbp.eq(self.streamer.cfg_vbp),
                 self.capture.cfg_hs_offset.eq(hs_use),
                 self.capture.cfg_interlace.eq(self.streamer.cfg_interlace),
                 self.capture.cfg_f2_row.eq(self.streamer.cfg_f2_row),
                 self.capture.cfg_field_src.eq(self.streamer.cfg_field_src),
-                self.capture.cfg_hs_total.eq(self.streamer.cfg_pll_divide),
+                self.capture.cfg_hs_total.eq(pll_use),
                 self.capture.cfg_field_swap.eq(self.streamer.cfg_field_swap),
-                self.status.cfg_pll_divide.eq(self.streamer.cfg_pll_divide),
-                self.capture.cfg_clear_from.eq(
-                    (self.streamer.cfg_pll_divide - hs_use)[1:]),
+                self.status.cfg_pll_divide.eq(pll_use),
+                self.capture.cfg_clear_from.eq((pll_use - hs_use)[1:]),
             ]
 
 
@@ -959,7 +979,8 @@ def main():
     ap.add_argument("--pll-divide", type=int, default=1104,
                     help="H-PLL帰還分周比=1ライン当たりDATACLK数。入力の実水平トータル"
                          "[ドット]に合わせると1サンプル=1ドット(X68000 31kHz≒1104)。"
-                         "0でTVP既定1650のまま")
+                         "0でTVP既定1650のまま。実行時は200〜2304に制限される"
+                         "(DATACLKがpixドメインのタイミング制約を超えると破綻するため)")
     ap.add_argument("--hs-offset", type=int, default=152,
                     help="水平バックポーチ[DATACLK]。増やすと画が左へ寄る")
     ap.add_argument("--vs-row-at-sync", type=int, default=525,
