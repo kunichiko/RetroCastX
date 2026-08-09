@@ -391,6 +391,10 @@ struct ViewerApp {
     tube_aspect: f32,
     /// 補間 0=ニアレスト 1=バイリニア 2=sharp-bilinear
     filter: u32,
+    /// モードごとの切り出し・回転。キーは fH_vtotal_htotal
+    modes: std::collections::BTreeMap<String, [u32; 5]>,
+    /// いま適用しているモードのキー(変化したら保存・復元する)
+    mode_key: String,
     rx_error: Option<String>,
     subscribe_to: Option<String>,
     no_vsync: bool,
@@ -462,6 +466,8 @@ impl ViewerApp {
             crop: [cfg.crop_x, cfg.crop_y, cfg.crop_w, cfg.crop_h],
             tube_aspect: cfg.tube_aspect,
             filter: cfg.filter,
+            modes: cfg.modes.clone(),
+            mode_key: String::new(),
             rx_error,
             subscribe_to,
             no_vsync,
@@ -498,6 +504,11 @@ impl ViewerApp {
     }
 
     fn flush_settings(&mut self) {
+        if !self.mode_key.is_empty() {
+            let k = self.mode_key.clone();
+            self.modes.insert(k, [self.crop[0], self.crop[1], self.crop[2],
+                                  self.crop[3], self.rotate]);
+        }
         let due = self
             .settings_dirty
             .map_or(false, |t| t.elapsed() >= std::time::Duration::from_millis(700));
@@ -515,6 +526,7 @@ impl ViewerApp {
             rotate: self.rotate,
             tube_aspect: self.tube_aspect,
             filter: self.filter,
+            modes: self.modes.clone(),
             crop_x: self.crop[0],
             crop_y: self.crop[1],
             crop_w: self.crop[2],
@@ -784,6 +796,45 @@ impl ViewerApp {
     /// チェックボックスは外れたまま、という状態が起きた(設定はボードの電源で
     /// 消え、Viewerの保存値とは別々に動くため)。送信パケットが落ちたときも
     /// ずれるので、応答で確認できた値を正としてUIを合わせる。
+    /// いまの入力モードのキー。同じ31kHzでも 768x512 と 256x256 は同期信号が
+    /// 同一なので、htotal(= pll_divide)まで含めないと区別できない。
+    fn current_mode_key(&self) -> Option<String> {
+        let m = self.shared.mode.lock().unwrap().clone()?;
+        if m.htotal == 0 || m.vtotal == 0 || m.hfreq_mhz_x1000 == 0 {
+            return None;
+        }
+        let fh = (m.hfreq_mhz_x1000 as f64 / 1000.0 / 100.0).round() as u32;
+        Some(format!("{fh}_{}_{}", m.vtotal, m.htotal))
+    }
+
+    /// モードが変わったら、いまの切り出し・回転を旧モードへ保存し、
+    /// 新モードの値を復元する。未知のモードでは切り出しを解除する
+    /// (別モードの座標で切り出すと絵が切れるため)。
+    fn follow_mode(&mut self) {
+        let Some(key) = self.current_mode_key() else { return };
+        if key == self.mode_key {
+            return;
+        }
+        if !self.mode_key.is_empty() {
+            let old = self.mode_key.clone();
+            self.modes.insert(old, [self.crop[0], self.crop[1], self.crop[2],
+                                    self.crop[3], self.rotate]);
+        }
+        match self.modes.get(&key) {
+            Some(v) => {
+                self.crop = [v[0], v[1], v[2], v[3]];
+                self.rotate = v[4].min(3);
+            }
+            None => {
+                self.crop = [0; 4];
+                self.rotate = 0;
+            }
+        }
+        self.mode_key = key;
+        self.mark_settings_dirty();
+        self.want_fit = true;
+    }
+
     fn sync_tune_from_board(&mut self) {
         // 取り込みは起動時の1回だけにする。毎フレーム反映すると、手で入力した値が
         // send を押す前にボードの値へ戻されてしまう(未送信の変更は pending に
@@ -839,6 +890,7 @@ impl ViewerApp {
     }
 
     fn tune_ui(&mut self, ui: &mut egui::Ui) {
+        self.follow_mode();
         self.sync_tune_from_board();
         self.weave_auto_step();
         let vtotal = self.shared.mode.lock().unwrap().as_ref().map(|m| m.vtotal);

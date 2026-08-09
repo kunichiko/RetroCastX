@@ -8,6 +8,7 @@
 //! `~/.config/retrocastx/viewer.conf`)。起動時にパスを1行表示して、
 //! 「どこかに勝手に作られた忘れられる設定」にならないようにしている。
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -57,6 +58,12 @@ pub struct Settings {
     pub crop_y: u32,
     pub crop_w: u32,
     pub crop_h: u32,
+    /// モードごとの設定。キーは "fH[100Hz単位]_vtotal_htotal"。
+    /// 同じ31kHzでも 768x512 と 256x256 は同期信号が同一なので、htotal
+    /// (= pll_divide)まで含めないと区別できない。pll_divide を合わせた時点で
+    /// モードが確定するので、それ以降は自動で復元される。
+    /// 値は crop_x,crop_y,crop_w,crop_h,rotate
+    pub modes: BTreeMap<String, [u32; 5]>,
     /// 前回のウィンドウ内寸。次回起動時に復元する
     pub window_w: f32,
     pub window_h: f32,
@@ -84,6 +91,7 @@ impl Default for Settings {
             tune_video_bw: 15,
             vscale: 1.0,
             rotate: 0,
+            modes: BTreeMap::new(),
             tube_aspect: 0.0,
             filter: 2,
             crop_x: 0,
@@ -145,6 +153,14 @@ impl Settings {
                 "rotate" => {
                     if let Ok(x) = v.parse::<u32>() {
                         s.rotate = if x < 4 { x } else { 0 };
+                    }
+                }
+                k if k.starts_with("mode.") => {
+                    let nums: Vec<u32> =
+                        v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    if nums.len() == 5 {
+                        s.modes.insert(k[5..].to_string(),
+                                       [nums[0], nums[1], nums[2], nums[3], nums[4]]);
                     }
                 }
                 "tube_aspect" => {
@@ -248,6 +264,11 @@ impl Settings {
             self.window_w,
             self.window_h,
         );
+        let mut body = body;
+        for (k, v) in &self.modes {
+            body.push_str(&format!(
+                "mode.{k} = {},{},{},{},{}\n", v[0], v[1], v[2], v[3], v[4]));
+        }
         // 書けなくても致命的ではないので黙って諦める(次回は既定値で起動する)
         if let Ok(mut f) = std::fs::File::create(&path) {
             let _ = f.write_all(body.as_bytes());
