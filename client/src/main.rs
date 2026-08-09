@@ -756,7 +756,8 @@ impl ViewerApp {
                 .unwrap()
                 .extend(Self::TUNE_KEYS);
         }
-        for (key, val) in state {
+        for (key, val) in &state {
+            let (key, val) = (*key, *val);
             // 送信直後は応答が返るまで自分の値を優先する。応答が一致したら解除、
             // 一定時間返らなければ諦めてボードの値に合わせる(送信が落ちた場合)
             if let Some((want, at)) = self.tune_pending.get(&key) {
@@ -779,10 +780,11 @@ impl ViewerApp {
                 _ => {}
             }
         }
-        if Self::TUNE_KEYS
-            .iter()
-            .all(|k| self.shared.config_state.lock().unwrap().contains_key(k))
-        {
+        // 完了判定は「いま適用したのと同じスナップショット」で行う。config_state を
+        // 取り直すと、スナップショット後に届いた応答を適用しないまま完了扱いになり、
+        // 以後この関数が早期returnして二度と読まれない(hs_offset だけ古い値のまま
+        // 残る、という形で実機で発覚した)。
+        if Self::TUNE_KEYS.iter().all(|k| state.contains_key(k)) {
             self.tune_synced = true;
         }
     }
