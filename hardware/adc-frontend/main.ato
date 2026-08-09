@@ -428,7 +428,26 @@ component GbeMagJack:
 
 
 module VideoInputChannel:
-    """1ch分のアナログ入力段: 75Ω終端 -> 100nF ACカップリング -> TVP入力。"""
+    """1ch分のアナログ入力段:
+       75Ω終端 -> 100nF ACカップリング -> RCアンチエイリアス -> TVP入力。
+
+    アンチエイリアスフィルタは必須。TVP7002のアナログ帯域は350〜500MHz
+    (データシート実測値)ある一方、サンプリングは8〜44MHzしかない。ナイキスト
+    (4〜22MHz)より上の雑音がそのまま折り返して絵に畳み込まれる。TVP内蔵の帯域
+    制御(レジスタ3Fh)は最小設定でも50MHz以上あり、この用途には使えない。
+
+    試作機で 220Ω + 15pF(実効25pF、遮断28.9MHz)を後付けして実測した結果:
+        ノイズ            40〜60%  →  3.9%
+        暗部の底          9.2      →  0.01
+        エッジ後のリンギング  19サンプル周期で6山  →  消滅
+    ノイズとリンギングは同一原因(折り返し)だった。
+
+    定数は 220Ω + 33pF とした。TVPの入力容量10pF(データシート)が並列に入るので
+    実効43pF、遮断は 1/(2π*220*43p) = 16.8MHz。最も高いモード(31kHz 768ドット、
+    ドットクロック34.78MHz)のナイキスト17.4MHzにほぼ一致する。試作の28.9MHzより
+    折り返しを削れる代わりに、隣接ドットが交互に変わる最細パターンは3dB落ちる。
+    鮮鋭さを優先するなら15〜22pFに下げる(その場合は部品を追加すること)。
+    """
     signal input
     signal output
     power = new ElectricPower  # 終端のグラウンド基準
@@ -436,8 +455,16 @@ module VideoInputChannel:
     r_term = new R75_0402
     input ~> r_term ~> power.lv
 
+    signal coupled
     c_ac = new C100nF_0402
-    input ~> c_ac ~> output
+    input ~> c_ac ~> coupled
+
+    # アンチエイリアス。c_aa は TVP の入力ピン直近に置くこと(ここが効く)。
+    # r_aa は c_ac の直後で構わない。
+    r_aa = new R220_0402
+    coupled ~> r_aa ~> output
+    c_aa = new C33pF_0603
+    output ~> c_aa ~> power.lv
 
 
 module AudioAdc:
