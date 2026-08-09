@@ -101,7 +101,7 @@ fn main() -> eframe::Result {
     }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1160.0, 820.0])
+            .with_inner_size([cfg.window_w, cfg.window_h])
             .with_title("RetroCastX Viewer"),
         wgpu_options,
         ..Default::default()
@@ -343,6 +343,15 @@ struct ViewerApp {
     tune_get_at: Option<std::time::Instant>,
     /// インターレースの織り込み方を自動判定している最中の状態
     weave_auto: Option<WeaveAuto>,
+    /// 現在のウィンドウ内寸(保存用)
+    window_size: egui::Vec2,
+    /// 中央の描画領域と画のサイズ。ウィンドウを等倍に合わせるのに使う
+    last_avail: egui::Vec2,
+    last_tex: egui::Vec2,
+    /// 起動後に一度だけ自動で等倍に合わせたか
+    did_autofit: bool,
+    /// 次のフレームでウィンドウを等倍に合わせる
+    want_fit: bool,
     texture: Option<egui::TextureHandle>,
     seen_gen: u64,
     integer_scale: bool,
@@ -395,6 +404,11 @@ impl ViewerApp {
             tune_pending: Default::default(),
             tune_get_at: None,
             weave_auto: None,
+            window_size: egui::vec2(cfg.window_w, cfg.window_h),
+            last_avail: egui::Vec2::ZERO,
+            last_tex: egui::Vec2::ZERO,
+            did_autofit: false,
+            want_fit: false,
             texture: None,
             seen_gen: 0,
             integer_scale: cfg.integer_scale,
@@ -448,6 +462,8 @@ impl ViewerApp {
             audio_source: self.audio_source,
             audio_device: self.audio_device_sel.clone(),
             integer_scale: self.integer_scale,
+            window_w: self.window_size.x,
+            window_h: self.window_size.y,
             backdrop: self.backdrop.label().to_string(),
             show_border: self.show_border,
             tune_vbp: self.tune_vbp,
@@ -881,6 +897,14 @@ impl eframe::App for ViewerApp {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
         self.refresh_texture(&ctx);
+        // ウィンドウ内寸を覚えておき、次回起動時に復元する
+        if let Some(r) = ctx.input(|i| i.viewport().inner_rect) {
+            let sz = r.size();
+            if (sz - self.window_size).length() > 1.0 {
+                self.window_size = sz;
+                self.mark_settings_dirty();
+            }
+        }
         // 変更があれば少し待って1回だけ保存する(スライダー操作中の連続書込を避ける)
         self.flush_settings();
 
@@ -947,6 +971,9 @@ impl eframe::App for ViewerApp {
             drop(boards);
             ui.separator();
 
+            if ui.button("画に合わせる (1:1)").clicked() {
+                self.want_fit = true;
+            }
             if ui.checkbox(&mut self.integer_scale, "integer scaling").changed() {
                 self.mark_settings_dirty();
             }
@@ -1001,7 +1028,19 @@ impl eframe::App for ViewerApp {
                 }
                 let tex_size = tex.size_vec2();
                 let avail = ui.available_size();
+                // ウィンドウを画にぴったり合わせるのに使う(余白 = 内寸 - この領域)
+                self.last_avail = avail;
+                self.last_tex = tex_size;
                 let fit = (avail.x / tex_size.x).min(avail.y / tex_size.y);
+                // 起動直後に画が入り切らない場合だけ、一度だけ等倍に合わせる。
+                // 縮小されるとラインが間引かれて欠けたように見えるため。
+                // 以後はユーザーの操作したサイズを尊重する(一度きり)。
+                if !self.did_autofit {
+                    self.did_autofit = true;
+                    if fit < 1.0 {
+                        self.want_fit = true;
+                    }
+                }
                 let scale = if self.integer_scale && fit >= 1.0 { fit.floor() } else { fit };
                 let size = tex_size * scale;
                 let resp = ui.centered_and_justified(|ui| {
@@ -1019,6 +1058,22 @@ impl eframe::App for ViewerApp {
                     );
                 }
             });
+
+        // ウィンドウを画にぴったり合わせる。中央パネルを描いた後に行う
+        // (今フレームの描画領域が分かってから計算するため)。
+        // 画の外側の余白 = ウィンドウ内寸 - 中央の描画領域。右パネルとフレームの
+        // 分がここに入るので、内寸をこれだけ変えれば画がちょうど等倍で収まる。
+        if self.want_fit && self.last_tex.x > 0.0 && self.last_avail.x > 0.0 {
+            self.want_fit = false;
+            let chrome = self.window_size - self.last_avail;
+            let mut want = self.last_tex + chrome;
+            // 画面より大きくしない(はみ出すと操作できなくなる)
+            let mon = ctx.input(|i| i.viewport().monitor_size);
+            if let Some(mon) = mon {
+                want = want.min(mon * 0.95);
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
+        }
 
         // ストリーム停止中でもUI(統計・発見リスト)を更新し続ける
         ctx.request_repaint_after(std::time::Duration::from_millis(250));

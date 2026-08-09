@@ -38,6 +38,9 @@ pub struct Settings {
     pub tune_f2_row: i32,
     /// フィールドの偶奇を入れ替える
     pub tune_field_swap: bool,
+    /// 前回のウィンドウ内寸。次回起動時に復元する
+    pub window_w: f32,
+    pub window_h: f32,
 }
 
 impl Default for Settings {
@@ -58,6 +61,8 @@ impl Default for Settings {
             tune_interlace: false,
             tune_f2_row: 0,
             tune_field_swap: false,
+            window_w: 1160.0,
+            window_h: 820.0,
         }
     }
 }
@@ -99,6 +104,16 @@ impl Settings {
                 "tune_interlace" => s.tune_interlace = v == "true",
                 "tune_f2_row" => { if let Ok(x) = v.parse() { s.tune_f2_row = x } }
                 "tune_field_swap" => s.tune_field_swap = v == "true",
+                "window_w" => {
+                    if let Ok(x) = v.parse::<f32>() {
+                        s.window_w = x.clamp(480.0, 8192.0);
+                    }
+                }
+                "window_h" => {
+                    if let Ok(x) = v.parse::<f32>() {
+                        s.window_h = x.clamp(360.0, 8192.0);
+                    }
+                }
                 "audio_source" => {
                     s.audio_source = if v == "off" { None } else { v.parse().ok() };
                 }
@@ -134,7 +149,9 @@ impl Settings {
              tune_snap8 = {}\n\
              tune_interlace = {}\n\
              tune_f2_row = {}\n\
-             tune_field_swap = {}\n",
+             tune_field_swap = {}\n\
+             window_w = {:.0}\n\
+             window_h = {:.0}\n",
             self.volume,
             self.muted,
             self.audio_source.map(|v| v.to_string()).unwrap_or_else(|| "off".into()),
@@ -150,6 +167,8 @@ impl Settings {
             self.tune_interlace,
             self.tune_f2_row,
             self.tune_field_swap,
+            self.window_w,
+            self.window_h,
         );
         // 書けなくても致命的ではないので黙って諦める(次回は既定値で起動する)
         if let Ok(mut f) = std::fs::File::create(&path) {
