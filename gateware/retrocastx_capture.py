@@ -27,9 +27,14 @@ def rgb888_to_555(r, g, b):
 
 # メタデータ(pix→sys AsyncFIFO のペイロード)。ts はそのラインの先頭画素における
 # DATACLK自走カウンタ値(プロトコルのタイムスタンプ=ドットクロック単位)。
-def _meta_layout(nface_bits, row_bits):
+def _meta_layout(nface_bits, row_bits, entry_bits):
+    # x_lo/x_hi はライン内の「黒でない範囲」をentry単位(=2画素)で示す。
+    # (first/last はLiteXのストリームendpointで予約済みの名前なので使えない)
+    # hs_offset を 0 にしてラインの頭から取り込む代わりに、送るのはこの範囲だけに
+    # する。こうすると hs_offset は調整項目でなくなり、帯域も有効映像の幅ぶんで済む。
     return [("face", nface_bits), ("row", row_bits),
-            ("frame", 16), ("field", 1), ("ts", 32)]
+            ("frame", 16), ("field", 1), ("ts", 32),
+            ("x_lo", entry_bits), ("x_hi", entry_bits)]
 
 
 class TvpCapture(Module):
@@ -85,6 +90,8 @@ class TvpCapture(Module):
         self.line_field = Signal()
         self.line_face  = Signal(nface_bits)      # FIFO先頭ラインの面(pop前にラッチ)
         self.line_ts    = Signal(32)              # 先頭ラインの先頭画素のDATACLKカウンタ
+        self.line_first = Signal(entry_bits)      # 非黒範囲の先頭entry(=x/2)
+        self.line_last  = Signal(entry_bits)      # 非黒範囲の末尾entry(内包)
         self.line_ack   = Signal()                # 1パルスで pop(送出開始時)
         self.rd_face    = Signal(nface_bits)      # 読み出す面(送信側がラッチして固定)
         self.rd_word    = Signal(max=max(entries, 2))   # 面内ワード位置(=x/2)
@@ -124,6 +131,8 @@ class TvpCapture(Module):
         # 方式2でフィールド極性をどこから取るか。0=VSYNCの水平位相 / 1=TVPのFIDOUT。
         # どちらが正しく出るかは実機で確かめられるよう選べるようにしてある。
         self.cfg_field_src     = Signal()
+        # 1: VSYNCの半ライン位相を行位置に反映する(既定)。0: 無視する
+        self.cfg_half_line     = Signal(reset=1)
         # 1ライン当たりのDATACLK数(=H-PLL分周比)。位相判定のしきい値に使う
         self.cfg_hs_total      = Signal(13, reset=hs_total or 0)
         # 診断用(sysで観測): VSYNCエッジ時の行内カウンタと、そのときのFIDOUT
@@ -147,7 +156,7 @@ class TvpCapture(Module):
         self.specials += wr, rd
 
         # --- メタデータ CDC(pix → sys)。sink=pix / source=sys ---
-        layout = _meta_layout(nface_bits, row_bits)
+        layout = _meta_layout(nface_bits, row_bits, entry_bits)
         self.submodules.meta = meta = stream.ClockDomainCrossing(
             layout, cd_from="pix", cd_to="sys", depth=max(fifo_depth, 4))
 
@@ -207,6 +216,9 @@ class TvpCapture(Module):
 
         pix555 = Signal(16)
         self.comb += pix555.eq(rgb888_to_555(r, g, b))
+        # 「黒でない」の判定しきい値(RGB555の各成分, 0..31)。ノイズで真っ暗な所が
+        # 0にならないので、少し上げないと範囲が毎ライン全幅に広がってしまう。
+        self.cfg_black_th = Signal(5, reset=2)
 
         # 有効行 row_eff = row - vs_offset(アクティブ行の0起点index)
         #
@@ -238,6 +250,12 @@ class TvpCapture(Module):
             fld.eq(Mux(self.cfg_field_src, fid_in, ph)),
         )
 
+        # 位相から決まるフィールド極性。VSYNCがラインの中央付近に来たフィールドは
+        # 半ライン分あとから始まるので、そのラインは1スロット下へ落ちる。
+        # どちらが先かは物理で決まるので swap の設定は要らない。
+        fld_pos = Signal()
+        self.comb += fld_pos.eq(Mux(self.cfg_field_src, fid_vs, fld))
+
         f2_row = Signal(13)
         in_f2  = Signal()
         frow   = Signal(13)          # フィールド内行
@@ -255,24 +273,34 @@ class TvpCapture(Module):
         # row は hs_edge でしか変わらず、画素が始まるのは hs_offset(数百クロック)
         # 後なので、1クロック遅れても取りこぼさない。hs_edge 時点の値は「いま
         # 終わったライン」のもので、push の判定に使う値として正しい。
-        row_eff = Signal(13)
+        row_eff = Signal(14)
         row_ok  = Signal()
         field_r = Signal()
-        fpar    = Signal()           # 出力行の偶奇(=最下位ビット)
+        ph_r    = Signal()           # 半ライン位相(このVSYNC周期のフィールド)
         il_on   = Signal()
-        self.comb += [
-            il_on.eq(self.cfg_interlace != 0),
-            fpar.eq(Mux(self.cfg_interlace == 2, fld, in_f2) ^ self.cfg_field_swap),
-        ]
+        self.comb += il_on.eq(self.cfg_interlace != 0)
+        # 行位置は「VSYNCから何半ライン後か」で決める。
+        #
+        # インターレースの原理そのもので、第2フィールドのVSYNCは半ライン分ずれた
+        # 位置に来るので、そのフィールドのラインは第1フィールドのラインの物理的に
+        # 間へ落ちる。だから位置を時間(半ライン単位)で決めれば、織り込みは設定
+        # 無しで勝手に成立する。以前は il/f2_row/swap/field_src の4つで教えて
+        # いたが、どれも「行番号で並べる」という実装の都合から生まれたもので、
+        # 信号自体には無かった情報である。
+        #
+        # プログレッシブでは ph が毎フレーム同じ値になるので、スロットは1つ飛びに
+        # 並ぶ。空くスロットは受信側が「次のラインまでの間隔」ぶん太らせて埋める
+        # (ビームには太さがあるので物理的にも正しい)。
+        #
+        # cfg_half_line=0 にすると位相を無視する(位相判定が誤る信号に当たった
+        # ときの逃げ道。既定は1)。
         self.sync.pix += [
             row_ok.eq((frow >= self.cfg_vs_offset) & (fe < self.cfg_vactive)),
-            field_r.eq(fpar),
-            If(il_on,
-                row_eff.eq(Cat(fpar, fe)),    # = fe*2 + fpar
-            ).Else(
-                row_eff.eq(fe),
-            ),
+            ph_r.eq(fld_pos),
+            field_r.eq(fld_pos),
+            row_eff.eq(Cat(fld_pos & self.cfg_half_line, fe)),   # = fe*2 + 位相
         ]
+
         xpix   = Signal(16)                       # 有効ピクセルx(= x - hs_offset)
         active = Signal()
         pix_we = Signal()                         # 画素ペア書込(末尾クリアと区別)
@@ -284,6 +312,27 @@ class TvpCapture(Module):
             active.eq((x >= self.cfg_hs_offset) & (xpix < width) & row_ok),
             pix_we.eq(active & xpix[0]),          # 奇数pxが揃った時に1ペア書込
             pix_adr.eq(xpix[1:1 + entry_bits]),
+        ]
+
+        # --- ライン内の「黒でない範囲」を entry 単位で記録する ---
+        # 送るのはこの範囲だけにする。ライン全体(ブランキング込み)を送ると帯域が
+        # 1.4倍になって入らないため。範囲はラインが終わってから push するので、
+        # 1ライン分バッファしている今の構造のまま実現できる。
+        def _nz(p):
+            return ((p[0:5] > self.cfg_black_th)
+                    | (p[5:10] > self.cfg_black_th)
+                    | (p[10:15] > self.cfg_black_th))
+        pair_nz = Signal()
+        self.comb += pair_nz.eq(pix_we & (_nz(pix555) | _nz(pair_lo)))
+        ln_first = Signal(entry_bits, reset=2 ** entry_bits - 1)
+        ln_last = Signal(entry_bits)
+        ln_any = Signal()
+        self.sync.pix += [
+            If(pair_nz,
+                If(~ln_any | (pix_adr < ln_first), ln_first.eq(pix_adr)),
+                If(~ln_any | (pix_adr > ln_last), ln_last.eq(pix_adr)),
+                ln_any.eq(1),
+            ),
         ]
 
         # 窓が行末を超える分(= 毎ライン書かれないままリングの古い内容が見える列)を
@@ -345,18 +394,27 @@ class TvpCapture(Module):
             # hs_edge時点の cur_ts は「今終わったライン」の先頭値(更新はクロック端で
             # 起きるため)。push するのもそのラインなので一致する。
             meta.sink.ts.eq(cur_ts),
+            meta.sink.x_lo.eq(ln_first),
+            meta.sink.x_hi.eq(ln_last),
             meta.sink.valid.eq(push),
         ]
         drops = Signal(16)
         _hs_body = [
             x.eq(0),
             wrote.eq(0),
+            ln_any.eq(0), ln_first.eq(2 ** entry_bits - 1), ln_last.eq(0),
             If(push & meta.sink.ready, face.eq(face + 1)),   # 受理時のみ面前進
             If(push & ~meta.sink.ready, drops.eq(drops + 1)),
         ]
         self.sync.pix += [
             If(active & ~xpix[0], pair_lo.eq(pix555)),  # 偶数x: 低位に保持
-            If(pix_we, wrote.eq(1)),   # 末尾クリアでは立てない(黒だけの行を送らない)
+            # 「1画素以上書いたか」。末尾クリアでは立てない。
+            # 黒でない画素があったかどうかとは別に持つ。全黒の行を送らない設計に
+            # すると、Viewer側が「黒い行」と「届かなかった行」を区別できなくなり、
+            # 前フレームの内容が残る(インターレースのSIMでも、内容が0の行が
+            # まるごと落ちて織り込みが崩れた)。行は必ず送り、中身の範囲だけを
+            # x_lo/x_hi で示す(全黒なら空範囲)。
+            If(pix_we, wrote.eq(1)),
             If(x != 0xFFFF, x.eq(x + 1)),               # 行内カウンタ(飽和)
         ]
         # 自走(row==cfg_vtotal-1でラップ)+ 位相ゲート付きVSYNC再整列。
@@ -506,45 +564,35 @@ class TvpCapture(Module):
                 ),
             ]
             self.sync += [
-                # VSYNC位相ゲートは vtotal の 3/4(モードに依らず妥当な比率)
-                self.cfg_vs_min_rows.eq(self.cfg_vtotal -
-                                        (self.cfg_vtotal >> 2)),
+                # VSYNC位相ゲートは vtotal の 3/8。
+                #
+                # 以前は 3/4 にしていたため、インターレース信号の「フィールド毎に
+                # 来るVSYNC」のうち2本目(前のVSYNCから約 vtotal/2 後)が捨てられて
+                # いた。すると vtotal が2フィールド分(931など)として測られ、その
+                # 大きな vtotal からゲートが更に上がって自己強化する。結果
+                # 「1VSYNCに2フィールド入っている」ように見えていた(24kHz
+                # 1024x848 で vtotal 931 と測れたのはこれ)。等化パルスは
+                # VSYNCの直近に出るので 3/8 でも十分に落とせる。
+                self.cfg_vs_min_rows.eq((self.cfg_vtotal >> 2) +
+                                        (self.cfg_vtotal >> 3)),
                 # 窓の先頭 = VSYNCの vbp 行後
                 self.cfg_vs_row_at_sync.eq(vs_row),
-                # 送出行数 = min(height, vtotal - vbp)
-                # インターレース時は「1フィールドあたり」の行数なので、上限は
-                # フィールドの行数(vtotal/2)と height/2 の小さい方になる。
-                If(self.cfg_interlace == 1,
-                    # 非インターレースの vtotal-vbp と同じ考え方をフィールドに
-                    # 適用する。vtotal/2 のままだとフィールドのブランキングまで
-                    # 送ってしまい、下端に次フレームの切れ端が帯になって出る。
-                    If(fstart < (height >> 1),
-                        self.cfg_vactive.eq(fstart),
-                    ).Else(
-                        self.cfg_vactive.eq(height >> 1),
-                    ),
-                ).Elif(self.cfg_interlace == 2,
-                    # 方式2は1つのVSYNCが1フィールドなので行数の考え方は
-                    # 非インターレースと同じ。ただし織り込むと2倍になるので
-                    # 上限は height の半分
-                    If(vstart < (height >> 1),
-                        self.cfg_vactive.eq(vstart),
-                    ).Else(
-                        self.cfg_vactive.eq(height >> 1),
-                    ),
-                ).Elif(vstart < height,
+                # 送出行数(フィールド内の有効行数) = min(height/2, vtotal - vbp)。
+                #
+                # 行位置は常に半ライン単位のスロットなので、スロットは最大で
+                # vactive*2 になる。バッファの行数を超えないよう上限は height/2。
+                # 以前は cfg_interlace で分岐していたが、位置決めが位相ベースに
+                # なったので分岐は要らない。
+                If(vstart < (height >> 1),
                     self.cfg_vactive.eq(vstart),
                 ).Else(
-                    self.cfg_vactive.eq(height),
+                    self.cfg_vactive.eq(height >> 1),
                 ),
             ]
 
-        # 報告用の行数。ウィーブ後はフィールド内行数の2倍になる。
-        self.comb += If(il_on,
-            self.out_vactive.eq(Cat(0, self.cfg_vactive)),   # = vactive*2
-        ).Else(
-            self.out_vactive.eq(self.cfg_vactive),
-        )
+        # 報告用の行数。行位置は常に半ライン単位のスロットなので、フィールド内
+        # 行数の2倍になる(プログレッシブでも1つ飛びに並ぶだけで範囲は2倍)。
+        self.comb += self.out_vactive.eq(Cat(0, self.cfg_vactive))   # = vactive*2
 
         # ================= sys ドメイン =================
         self.comb += [
@@ -554,6 +602,8 @@ class TvpCapture(Module):
             self.line_frame.eq(meta.source.frame),
             self.line_field.eq(meta.source.field),
             self.line_ts.eq(meta.source.ts),
+            self.line_first.eq(meta.source.x_lo),
+            self.line_last.eq(meta.source.x_hi),
             meta.source.ready.eq(self.line_ack),
             rd.adr.eq(Cat(self.rd_word, self.rd_face)),  # 送信側ラッチ面を読む
             self.rd_data.eq(rd.dat_r),

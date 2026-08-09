@@ -12,7 +12,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 from migen import *
 from retrocastx_capture import TvpCapture
 
-W, H, NF = 8, 4, 8
+# 行位置は半ライン単位のスロットになったので、有効行 NL 本を収めるにはバッファの
+# 行数 H = 2*NL が要る(row_bits = log2(H) がスロット番号の幅になる)。
+W, NL, NF = 8, 4, 8
+H = 2 * NL
 VOFF = 2                     # 先頭2行は blanking(row_eff<0)
 
 
@@ -56,14 +59,14 @@ def main():
         # row は hs_edge で先にインクリメントされるので、最初のアクティブ行は
         # L=VOFF-1(その区間で module row=VOFF → row_eff=0)。
         first = VOFF - 1
-        total_lines = first + H + 1    # +1: 最終アクティブ行を flush する hs
+        total_lines = first + NL + 1    # +1: 最終アクティブ行を flush する hs
         for L in range(total_lines):
             # HSYNC(active-low): 1cyc low
             yield p.hs.eq(0); yield
             yield p.hs.eq(1); yield
             yield                       # 2FF伝播 → この後 x=0
             row_eff = L - first
-            if 0 <= row_eff < H:
+            if 0 <= row_eff < NL:
                 for xp in range(W):
                     yield p.r.eq((xp << 3) & 0xFF)
                     yield p.g.eq((row_eff << 3) & 0xFF)
@@ -79,7 +82,7 @@ def main():
         # --- sys 側: メタを pop しつつ各 face を読み出し ---
         for _ in range(4):
             yield
-        for _ in range(H):
+        for _ in range(NL):
             assert (yield cap.line_valid) == 1, f"line_valid=0 @line{_}"
             face = (yield cap.line_face)
             row  = (yield cap.line_row)
@@ -113,21 +116,26 @@ def main():
 
     # 検証
     rows_seen = [m[1] for m in res["meta"]]
-    assert rows_seen == list(range(H)), f"row順不一致: {rows_seen}"
+    # 行位置は半ライン単位のスロット。プログレッシブでは位相が毎フレーム同じなので
+    # 1つ飛びに並ぶ(空くスロットは受信側が「次のラインまでの間隔」ぶん太らせて
+    # 埋める)。インターレースでは第2フィールドが間のスロットへ入る。
+    assert rows_seen == [2 * k for k in range(len(rows_seen))], \
+        f"row順不一致: {rows_seen} (期待 0,2,4,... の半ラインスロット)"
     assert all(m[2] == 1 for m in res["meta"]), f"frame!=1: {res['meta']}"
     assert res["drops"] == 0, f"drops={res['drops']}"
-    for row in range(H):
-        words = res["faces"][row]
+    # 中身は「何行目を流したか」で符号化してある。スロット番号は行番号の2倍
+    for line in range(NL):
+        words = res["faces"][2 * line]
         for e in range(W // 2):
             lo = words[e] & 0xFFFF
             hi = (words[e] >> 16) & 0xFFFF
-            exp_lo = expect_pix(2 * e, row)
-            exp_hi = expect_pix(2 * e + 1, row)
-            assert lo == exp_lo, f"row{row} e{e} lo={lo:#06x} exp={exp_lo:#06x}"
-            assert hi == exp_hi, f"row{row} e{e} hi={hi:#06x} exp={exp_hi:#06x}"
+            exp_lo = expect_pix(2 * e, line)
+            exp_hi = expect_pix(2 * e + 1, line)
+            assert lo == exp_lo, f"line{line} e{e} lo={lo:#06x} exp={exp_lo:#06x}"
+            assert hi == exp_hi, f"line{line} e{e} hi={hi:#06x} exp={exp_hi:#06x}"
 
-    print("\n[OK] TvpCapture: 4アクティブ行を座標どおり face 0..3 に格納 + "
-          "メタCDC(row 0..3, frame 1)を確認")
+    print(f"\n[OK] TvpCapture: {NL}アクティブ行を座標どおり face に格納 + "
+          f"メタCDC(スロット 0,2,4,6 / frame 1)を確認")
 
 
 if __name__ == "__main__":

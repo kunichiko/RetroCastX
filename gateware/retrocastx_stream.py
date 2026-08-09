@@ -125,7 +125,7 @@ class RetroCastXStreamer(LiteXModule):
                  mtu_payload=1472, interlace=False,
                  audio_sources=None, audio_nsamples=240,
                  mac_address=MAC_ADDRESS, capture=None,
-                 cfg_vbp=43, cfg_hs_offset=152, cfg_pll_divide=1104,
+                 cfg_vbp=43, cfg_hs_offset=0, cfg_pll_divide=1104,
                  cfg_interlace=0):
         # capture: TvpCapture(sysドメインI/F) を渡すと、テストパターンの代わりに
         #   実キャプチャライン(line_valid/line_row/line_frame/rd_*)を源にする。
@@ -161,6 +161,7 @@ class RetroCastXStreamer(LiteXModule):
         # --- ライン断片化(host/python の protocol.fragment_line と同一の分割) ---
         frag_px_max = ((mtu_payload - 20) // 2) & ~1  # RGB555 2B/px、偶数px(ワード整列)
         assert frag_px_max >= 2, "MTU too small"
+        FRAG_PX = frag_px_max          # 1断片の最大ピクセル数(偶数)
         frags = []
         off = 0
         while off < width:
@@ -190,6 +191,13 @@ class RetroCastXStreamer(LiteXModule):
         line     = Signal(max=max(lines_per_unit, 2))  # 伝送単位内の行番号
         field    = Signal()                # インターレースのフィールド極性(0=偶)
         frag_idx = Signal(max=max(n_frags, 2))
+        # 断片パラメータは実行時に決める。ライン毎に「黒でない範囲」だけを送るので、
+        # 送出開始位置も長さも一定ではない。これにより hs_offset が不要になる
+        # (取り込みはラインの頭から。どこを送るかはFPGAが中身を見て決める)。
+        frag_off = Signal(16)          # この断片の先頭ピクセル位置(ライン内絶対)
+        frag_cnt = Signal(16)          # この断片のピクセル数
+        frag_last = Signal()           # 最終断片か
+        px_end = Signal(16)            # このラインで送る範囲の終端(この値は含まない)
         ts_frame = Signal(32)              # 現伝送単位先頭のドットクロックカウンタ
         ts_line  = Signal(32)              # 現ライン先頭(= ts_frame + line*htotal)
 
@@ -615,9 +623,8 @@ class RetroCastXStreamer(LiteXModule):
             }),
             _T_LINE: Case(word_idx, {
                 0: hdr.eq(Cat(C(0x52, 8), C(0, 8), C(0, 8), line_flags)),
-                2: hdr.eq(Cat(row, C(0, 16 - len(row)), frag_off_arr[frag_idx])),
-                3: hdr.eq(Cat(frag_cnt_arr[frag_idx],
-                              C(pixfmt, 8), C(mode_id, 8))),
+                2: hdr.eq(Cat(row, C(0, 16 - len(row)), frag_off)),
+                3: hdr.eq(Cat(frag_cnt, C(pixfmt, 8), C(mode_id, 8))),
                 4: hdr.eq(ts_frag),
             }),
             _T_CFG: Case(word_idx, {
@@ -638,8 +645,8 @@ class RetroCastXStreamer(LiteXModule):
             })
         line_pixdata = capture.rd_data if cap_mode else Cat(pix0.pix, pix1.pix)
         self.comb += [
-            line_flags.eq(Cat(frag_idx == n_frags - 1, field)),
-            ts_frag.eq(ts_line + frag_off_arr[frag_idx]),
+            line_flags.eq(Cat(frag_last, field)),
+            ts_frag.eq(ts_line + frag_off),
             If((ptype == _T_ANN) | (ptype == _T_CFG),
                 w1.eq(Cat(C(0, 16), seq)),           # frame=0
             ).Else(
@@ -662,7 +669,7 @@ class RetroCastXStreamer(LiteXModule):
             self.comb += x_adv.eq(
                 sink.valid & sink.ready & (ptype == _T_LINE) & (
                     ((word_idx >= 5) & (word_idx != nwords - 1)) |
-                    ((word_idx == nwords - 1) & (frag_idx != n_frags - 1))))
+                    ((word_idx == nwords - 1) & ~frag_last)))
             x_next = Signal(max=width + 2)
             self.comb += x_next.eq(x + Mux(x_adv, 2, 0))
             self.comb += capture.rd_word.eq(x_next[1:])   # entry = x_next/2
@@ -700,6 +707,52 @@ class RetroCastXStreamer(LiteXModule):
             NextValue(nwords, 8),
             NextState("SEND"),
         )
+        # 送る範囲(ライン内の「黒でない範囲」)を決める。
+        #
+        # キャプチャはラインの頭から取り込む(hs_offset=0)。そのままライン全体を
+        # 送ると帯域が1.4倍になって入らないので、中身のある範囲だけを送り、位置は
+        # offset_px で伝える。受信側は offset_px をライン内の絶対位置として扱うので、
+        # 「どこから取り込むか」という調整項目そのものが無くなる。
+        if cap_mode:
+            span_lo = Signal(16)
+            span_hi = Signal(16)
+            span_n = Signal(16)
+            self.comb += [
+                span_lo.eq(Cat(C(0, 1), capture.line_first)),        # entry*2
+                # line_last は内包。全黒の行では line_first > line_last になるので
+                # その場合は空(送るピクセル0)にする。行自体は送る(落とすと受信側が
+                # 「黒い行」と「届かなかった行」を区別できない)。
+                If(capture.line_last >= capture.line_first,
+                    span_hi.eq(Cat(C(0, 1), capture.line_last) + 2),
+                ).Else(
+                    span_hi.eq(span_lo),
+                ),
+                If(span_hi - span_lo > FRAG_PX,
+                    span_n.eq(FRAG_PX),
+                ).Else(
+                    span_n.eq(span_hi - span_lo),
+                ),
+            ]
+            line_span = [
+                NextValue(x, span_lo),
+                NextValue(frag_off, span_lo),
+                NextValue(frag_cnt, span_n),
+                NextValue(px_end, span_hi),
+                NextValue(frag_last, span_lo + span_n >= span_hi),
+                NextValue(length, 20 + Cat(C(0, 1), span_n)),
+                NextValue(nwords, 5 + span_n[1:]),
+            ]
+        else:
+            line_span = [
+                NextValue(x, 0),
+                NextValue(frag_off, 0),
+                NextValue(frag_cnt, frags[0][1]),
+                NextValue(px_end, width),
+                NextValue(frag_last, n_frags == 1),
+                NextValue(length, frag_len_arr[0]),
+                NextValue(nwords, frag_nwords_arr[0]),
+            ]
+
         # LINE送出開始時に「送るライン」を源からスナップショット(送信中は固定)。
         if cap_mode:
             # 行/フレーム/フィールドを固定(面は head を直読)。pop は送信完了時。
@@ -722,9 +775,7 @@ class RetroCastXStreamer(LiteXModule):
             NextValue(dst_ip, sub_ip),
             NextValue(dst_port, sub_port),
             NextValue(frag_idx, 0),
-            NextValue(length, frag_len_arr[0]),
-            NextValue(nwords, frag_nwords_arr[0]),
-            NextValue(x, 0),
+            *line_span,
             *line_snap,
             NextState("SEND"),
         )
@@ -739,6 +790,17 @@ class RetroCastXStreamer(LiteXModule):
                 NextState("SEND"),
             )
 
+        # 次断片のパラメータ(組合せ)。frag_off/frag_cnt から積算で出すので
+        # 乗算は要らない
+        nx_off = Signal(16)
+        nx_cnt = Signal(16)
+        nx_rem = Signal(16)
+        self.comb += [
+            nx_off.eq(frag_off + frag_cnt),
+            nx_rem.eq(px_end - nx_off),
+            If(nx_rem > FRAG_PX, nx_cnt.eq(FRAG_PX)).Else(nx_cnt.eq(nx_rem)),
+        ]
+
         self.fsm = fsm = FSM(reset_state="IDLE")
         fsm.act("IDLE",
             NextValue(word_idx, 0),
@@ -751,13 +813,16 @@ class RetroCastXStreamer(LiteXModule):
                 If(word_idx == nwords - 1,
                     NextValue(seq, seq + 1),
                     NextValue(word_idx, 0),
-                    If((ptype == _T_LINE) & (frag_idx != n_frags - 1),
+                    If((ptype == _T_LINE) & ~frag_last,
                         # 同一ラインの次断片へ(宛先/種別は不変)。最終ワードも
                         # ピクセルペアなのでxを進めておく(次断片先頭=offset+count)
                         NextValue(x, x + 2),
                         NextValue(frag_idx, frag_idx + 1),
-                        NextValue(length, frag_len_arr[frag_idx + 1]),
-                        NextValue(nwords, frag_nwords_arr[frag_idx + 1]),
+                        NextValue(frag_off, nx_off),
+                        NextValue(frag_cnt, nx_cnt),
+                        NextValue(frag_last, nx_off + nx_cnt >= px_end),
+                        NextValue(length, 20 + Cat(C(0, 1), nx_cnt)),
+                        NextValue(nwords, 5 + nx_cnt[1:]),
                     ).Else(
                         # ライン(全断片)完了。capture時はここで FIFO を pop(head前進)。
                         # pattern時は源(cap_*)が自走するのでIDLEへ戻るだけ。
@@ -832,7 +897,7 @@ class RetroCastXStream(SoCMini):
     # (S/PDIFのUI分解能も45MHzで7.3サイクル/UI@48kHzと十分)
     def __init__(self, revision="7.0", sys_clk_freq=int(45e6), capture=True,
                  green_input=3, red_input=3, blue_input=3,
-                 pll_divide=1104, hs_offset=152, vs_row_at_sync=525,
+                 pll_divide=1104, hs_offset=0, vs_row_at_sync=525,
                  measure=True, mclk_out=True, auto_vtotal=True, vbp=43,
                  interlace_cap=0):
         from litex_boards.platforms import colorlight_i5
@@ -930,7 +995,12 @@ class RetroCastXStream(SoCMini):
             # hs_offset: 水平バックポーチ[DATACLK]。pll_divide を変えるとサンプルレートが
             #   変わるので、この値も同じ比率で見直す必要がある。RGB入力を1段レジスタで
             #   受けるようにした分データが1サイクル遅れるので、151→152 に補正している。
-            self.capture = TvpCapture(cap_pads, width=1024, height=1024,
+            # width はラインを丸ごと保持できる大きさにする(15kHz 1216 / 24kHz 1408 /
+            # 31kHz 1104 の htotal がすべて入る)。hs_offset=0 でラインの頭から
+            # 取り込み、送るのは中身のある範囲だけにするので、hs_offset は調整
+            # 項目でなくなる。height は行位置が半ライン単位のスロットになった分
+            # 2倍必要(BRAMはラインバッファ nface 本ぶんだけなので縦は費用ゼロ)。
+            self.capture = TvpCapture(cap_pads, width=2048, height=2048,
                                       hs_active_low=True, vs_active_low=True,
                                       vtotal=568, vs_min_rows=497,
                                       vs_row_at_sync=vs_row_at_sync,
@@ -946,7 +1016,7 @@ class RetroCastXStream(SoCMini):
 
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
         self.streamer = RetroCastXStreamer(
-            udp_port, sys_clk_freq, width=1024, height=1024, fps=60.0,
+            udp_port, sys_clk_freq, width=2048, height=2048, fps=60.0,
             audio_sources=[(self.i2s.sources[0], 48000),
                            (self.i2s.sources[1], 48000),
                            (self.spdif.source, self.spdif.rate_hz)],
@@ -1044,7 +1114,7 @@ def main():
                          "[ドット]に合わせると1サンプル=1ドット(X68000 31kHz≒1104)。"
                          "0でTVP既定1650のまま。実行時は200〜2304に制限される"
                          "(DATACLKがpixドメインのタイミング制約を超えると破綻するため)")
-    ap.add_argument("--hs-offset", type=int, default=152,
+    ap.add_argument("--hs-offset", type=int, default=0,
                     help="水平バックポーチ[DATACLK]。増やすと画が左へ寄る")
     ap.add_argument("--vs-row-at-sync", type=int, default=525,
                     help="VSYNC時にrowへ入れる値。増やすと画が下へ寄る")

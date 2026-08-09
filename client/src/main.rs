@@ -108,12 +108,7 @@ fn main() -> eframe::Result {
             filter: cfg.filter,
             window: cfg.window,
             time_based: cfg.tube_time_based,
-            span_us: cfg.tube_span_us,
-            span_ms: cfg.tube_span_ms,
-            link_v: cfg.tube_link_v,
-            v_trim: cfg.tube_v_trim,
-            off_us: cfg.tube_off_us,
-            off_ms: cfg.tube_off_ms,
+            h_size: 1.0, h_pos: 0.0, v_size: 1.0, v_pos: 0.0,
             ..Default::default()
         };
         fullscreen::run(port, subscribe_to, target_mac, decay, audio, p); // 戻らない
@@ -438,19 +433,16 @@ struct ViewerApp {
     /// 管面が映す時間窓 [h0,h1,v0,v1]。CRTのH位置/H幅・V位置/V幅に相当
     window: [f32; 4],
     tube_time_based: bool,
-    tube_span_us: f32,
-    tube_span_ms: f32,
-    tube_link_v: bool,
-    tube_v_trim: f32,
-    tube_bands: std::collections::BTreeMap<u32, [f32; 4]>,
-    tube_fit_margin: f32,
+    /// いまの帯域のモニタプロファイル [H幅, H位置, V幅, V位置]。
+    /// 1周期のうち管面に出る割合と、周期の中心からのずれ
+    mon: [f32; 4],
+    /// 帯域ごとのモニタプロファイル(CZ-612Dのような3モードディスプレイに相当)
+    mon_bands: std::collections::BTreeMap<u32, [f32; 4]>,
     /// いまの周波数帯[kHz]。0 は未確定
     band_khz: u32,
     auto: Option<AutoTune>,
     /// 自動調整の結果表示(完了後に残す)
     auto_done: Option<String>,
-    tube_off_us: f32,
-    tube_off_ms: f32,
     /// モードごとの切り出し・回転。キーは fH_vtotal_htotal
     modes: std::collections::BTreeMap<String, [u32; 6]>,
     /// いま適用しているモードのキー(変化したら保存・復元する)
@@ -529,17 +521,11 @@ impl ViewerApp {
             filter: cfg.filter,
             window: cfg.window,
             tube_time_based: cfg.tube_time_based,
-            tube_span_us: cfg.tube_span_us,
-            tube_span_ms: cfg.tube_span_ms,
-            tube_link_v: cfg.tube_link_v,
-            tube_v_trim: cfg.tube_v_trim,
-            tube_bands: cfg.tube_bands.clone(),
-            tube_fit_margin: cfg.tube_fit_margin,
+            mon: cfg.mon,
+            mon_bands: cfg.mon_bands.clone(),
             band_khz: 0,
             auto: None,
             auto_done: None,
-            tube_off_us: cfg.tube_off_us,
-            tube_off_ms: cfg.tube_off_ms,
             modes: cfg.modes.clone(),
             mode_key: String::new(),
             rx_error,
@@ -580,8 +566,7 @@ impl ViewerApp {
     fn flush_settings(&mut self) {
         if self.band_khz > 0 {
             let k = self.band_khz;
-            self.tube_bands.insert(k, [self.tube_span_us, self.tube_v_trim,
-                                       self.tube_off_us, self.tube_off_ms]);
+            self.mon_bands.insert(k, self.mon);
         }
         if !self.mode_key.is_empty() {
             let k = self.mode_key.clone();
@@ -607,14 +592,8 @@ impl ViewerApp {
             filter: self.filter,
             window: self.window,
             tube_time_based: self.tube_time_based,
-            tube_span_us: self.tube_span_us,
-            tube_span_ms: self.tube_span_ms,
-            tube_link_v: self.tube_link_v,
-            tube_v_trim: self.tube_v_trim,
-            tube_bands: self.tube_bands.clone(),
-            tube_fit_margin: self.tube_fit_margin,
-            tube_off_us: self.tube_off_us,
-            tube_off_ms: self.tube_off_ms,
+            mon: self.mon,
+            mon_bands: self.mon_bands.clone(),
             modes: self.modes.clone(),
             crop_x: self.crop[0],
             crop_y: self.crop[1],
@@ -900,13 +879,11 @@ impl ViewerApp {
             hactive: m.as_ref().map_or(0, |m| m.hactive as u32),
             vactive: m.as_ref().map_or(0, |m| m.vactive as u32),
             time_based: self.tube_time_based,
-            span_us: self.tube_span_us,
-            span_ms: self.tube_span_ms,
-            link_v: self.tube_link_v,
-            v_trim: self.tube_v_trim,
+            h_size: self.mon[0],
+            h_pos: self.mon[1],
+            v_size: self.mon[2],
+            v_pos: self.mon[3],
             act_x: act.0, act_y: act.1, act_w: act.2, act_h: act.3,
-            off_us: self.tube_off_us,
-            off_ms: self.tube_off_ms,
         }
     }
 
@@ -1031,33 +1008,15 @@ impl ViewerApp {
         if khz == self.band_khz {
             return;
         }
-        // 未知の帯域は有効映像の実測から掃引時間を決めるので、実測が取れるまで
-        // 確定させない。起動直後は統計がまだ空で、そのまま確定すると前の帯域の
-        // 掃引時間(58µs等)がそのままプリセットとして焼き付いてしまう。
-        if !self.tube_bands.contains_key(&khz) && self.active_us().is_none() {
-            return;
-        }
         if self.band_khz > 0 {
             let old = self.band_khz;
-            self.tube_bands.insert(old, [self.tube_span_us, self.tube_v_trim,
-                                         self.tube_off_us, self.tube_off_ms]);
+            self.mon_bands.insert(old, self.mon);
         }
-        match self.tube_bands.get(&khz).copied() {
-            Some(v) => {
-                self.tube_span_us = v[0];
-                self.tube_v_trim = v[1];
-                self.tube_off_us = v[2];
-                self.tube_off_ms = v[3];
-            }
-            None => {
-                // 未知の帯域は、いまの有効映像がちょうど収まる掃引時間から始める
-                if let Some(us) = self.active_us() {
-                    self.tube_span_us = (us * self.tube_fit_margin).clamp(4.0, 300.0);
-                }
-                self.tube_off_us = 0.0;
-                self.tube_off_ms = 0.0;
-            }
-        }
+        // 未知の帯域は「1周期まるごとが管面に出る」から始める。管面の横幅は 1/fH
+        // そのものなので、これで必ず全体が収まる。あとは実機のモニタに合わせて
+        // H幅/V幅を1未満へ詰めていけばよい(帰線の間ビームは戻っているので、
+        // 実際のCRTは 0.85〜0.95 あたりが近い)。
+        self.mon = self.mon_bands.get(&khz).copied().unwrap_or([1.0, 0.0, 1.0, 0.0]);
         self.band_khz = khz;
         self.mark_settings_dirty();
         self.want_fit = true;
@@ -1808,94 +1767,75 @@ impl eframe::App for ViewerApp {
 
             // 管面(ブラウン管の物理的な表示領域)。
             //
-            // 実CRTは偏向の傾きが固定なので、掃引にかかった時間がそのまま管面上の
-            // 幅になる。だから同じ512x512でも 15kHz は 31kHz の2.4倍の幅で描かれる
-            // (有効映像の絶対時間が 52.7µs 対 22.1µs)。X68000で15kHzが管面いっぱい
-            // に広がり31kHzが中央に寄って見えるのはこれ。
+            // 管面(ブラウン管の物理的な表示領域)。
             //
-            // 以前は管面を「ラインに対する割合」で持っていたため、どのモードでも
-            // 同じ大きさに描かれ、かつ 15kHz(有効映像が0.842)が管面の0.72に
-            // 入らずに左右が切れていた。掃引時間で持つとどちらも解決する。
+            // 3モードディスプレイの偏向は「1HSYNC周期でブラウン管の左右をちょうど
+            // 掃引する」ように周波数ごとに速度が切り替わる。だから管面の横幅は
+            // 1/fH そのもので、掃引時間は設定項目ではない。縦も 1VSYNC周期が
+            // 管面の高さになる。
+            //
+            // ここで決めるのは「1周期のうち実際に管面へ出る割合」と「位置」だけ。
+            // 1.0 なら周期全体が見えるので何も切れない。実際のCRTは帰線の間ビームが
+            // 戻っているので 0.85〜0.95 あたりが現実に近い。
+            //
+            // 掃引時間を絶対時間で持つ方式も試したが実機と違った。横のサイズは
+            // 1/fH に比例するのに、X68000はどのモードも fV が53〜61Hzで1フレームの
+            // 時間がほぼ一定なので縦は変わらない。実測で24kHzが横51%・縦95%になり
+            // 縦長に潰れた。
             ui.horizontal(|ui| {
                 if ui.checkbox(&mut self.tube_time_based, "時間ベース")
-                    .on_hover_text("実CRTと同じく掃引時間で管面上の幅を決める。\n                                    切ると旧方式(ラインに対する割合)になる")
+                    .on_hover_text("1HSYNC周期を管面の横幅、1VSYNC周期を高さとする\n\
+                                    (3モードディスプレイの偏向と同じ)。\n\
+                                    切ると旧方式(割合を直接指定)になる")
                     .changed()
                 {
                     self.mark_settings_dirty();
                 }
-                // いまのモードで有効映像が管面をどれだけ占めるかを出す。
-                // 掃引時間を決めるときの目安になる
                 if let Some(m) = self.shared.mode.lock().unwrap().as_ref() {
                     let fh_khz = m.hfreq_mhz_x1000 as f32 / 1_000_000.0;
-                    if fh_khz > 1.0 && m.htotal > 0 {
-                        let line_us = 1000.0 / fh_khz;
-                        let act_us = m.hactive as f32 / m.htotal as f32 * line_us;
-                        ui.weak(format!("1ライン {line_us:.1}µs / 有効 {act_us:.1}µs                                          → 管面の{:.0}%", act_us / self.tube_span_us * 100.0));
+                    if fh_khz > 1.0 {
+                        ui.weak(format!("1ライン {:.1}µs = 管面の横幅", 1000.0 / fh_khz));
                     }
                 }
             });
             if self.tube_time_based {
                 self.band_leds(ui);
                 ui.horizontal(|ui| {
-                    // 実機のマルチスキャンモニタは周波数帯ごとに走査速度を切り替える。
-                    // 掃引時間を全帯域で共通にすると15kHzに合わせた管面で31kHzが
-                    // 42%の大きさになってしまう(実測で確認した)。
-                    let act = self.active_us();
-                    if ui.add_enabled(act.is_some(), egui::Button::new("絵に合わせる"))
-                        .on_hover_text("いまの有効映像がちょうど管面に収まる掃引時間にする。\n\
-                                        この帯域のプリセットとして覚える")
-                        .clicked()
-                    {
-                        if let Some(us) = act {
-                            self.tube_span_us = (us * self.tube_fit_margin).clamp(4.0, 300.0);
-                            self.mark_settings_dirty();
-                            self.want_fit = true;
-                        }
-                    }
-                    ui.monospace("余裕");
-                    if ui.add(egui::DragValue::new(&mut self.tube_fit_margin)
-                              .speed(0.005).range(0.5..=1.5).fixed_decimals(3))
-                        .on_hover_text("1.0で有効映像がちょうど収まる。\n\
-                                        1未満で実機のようなオーバースキャン(周囲が切れる)")
+                    ui.monospace("H幅");
+                    if ui.add(egui::DragValue::new(&mut self.mon[0])
+                              .speed(0.002).range(0.2..=2.0).fixed_decimals(3))
+                        .on_hover_text("1HSYNC周期のうち管面に出る割合。\n\
+                                        1.0で帰線期間まで全部見える")
+                        .changed() { self.mark_settings_dirty(); }
+                    ui.monospace("H位置");
+                    if ui.add(egui::DragValue::new(&mut self.mon[1])
+                              .speed(0.002).range(-0.5..=0.5).fixed_decimals(3))
                         .changed() { self.mark_settings_dirty(); }
                 });
                 ui.horizontal(|ui| {
-                    ui.monospace("掃引H");
-                    if ui.add(egui::DragValue::new(&mut self.tube_span_us)
-                              .speed(0.2).range(4.0..=300.0).suffix("µs")
-                              .fixed_decimals(1))
-                        .on_hover_text("管面の横幅に相当する時間。\n                                        大きくすると絵が小さくなる(管面が広がる)")
+                    ui.monospace("V幅");
+                    if ui.add(egui::DragValue::new(&mut self.mon[2])
+                              .speed(0.002).range(0.2..=2.0).fixed_decimals(3))
+                        .on_hover_text("1VSYNC周期のうち管面に出る割合")
                         .changed() { self.mark_settings_dirty(); }
-                    ui.monospace("位置H");
-                    if ui.add(egui::DragValue::new(&mut self.tube_off_us)
-                              .speed(0.1).range(-50.0..=50.0).suffix("µs")
-                              .fixed_decimals(1)).changed() { self.mark_settings_dirty(); }
+                    ui.monospace("V位置");
+                    if ui.add(egui::DragValue::new(&mut self.mon[3])
+                              .speed(0.002).range(-0.5..=0.5).fixed_decimals(3))
+                        .changed() { self.mark_settings_dirty(); }
                 });
-                ui.horizontal(|ui| {
-                    // 偏向の傾きを縦横とも固定にすると縦横比が崩れる(横は 1/fH に
-                    // 比例するのに、fVがほぼ一定なので縦は変わらない)。連動させると
-                    // 絵は形を保ったまま拡縮し、「15kHzは管面いっぱい / 31kHzは中央に
-                    // 寄る」になる。
-                    if ui.checkbox(&mut self.tube_link_v, "縦を横に連動")
-                        .on_hover_text("絵の形を保ったまま拡縮する。\n\
-                                        切ると縦も掃引時間で決める(縦横比が崩れる)")
-                        .changed() { self.mark_settings_dirty(); }
-                    if self.tube_link_v {
-                        ui.monospace("縦倍");
-                        if ui.add(egui::DragValue::new(&mut self.tube_v_trim)
-                                  .speed(0.005).range(0.3..=3.0)
-                                  .fixed_decimals(3)).changed() { self.mark_settings_dirty(); }
-                    } else {
-                        ui.monospace("掃引V");
-                        if ui.add(egui::DragValue::new(&mut self.tube_span_ms)
-                                  .speed(0.05).range(2.0..=60.0).suffix("ms")
-                                  .fixed_decimals(2)).changed() { self.mark_settings_dirty(); }
+                // 有効映像が管面のどれだけを占めるか。モードごとに違って当然で、
+                // 15kHzはラインの0.842を占めるので大きく、31kHzは0.696なので小さい
+                let (aw, ah) = {
+                    let st = self.shared.stats.lock().unwrap();
+                    (st.span_w as f32, st.span_h as f32)
+                };
+                if let Some(m) = self.shared.mode.lock().unwrap().as_ref() {
+                    if m.htotal > 0 && m.vtotal > 0 && aw > 0.0 {
+                        let fw = aw / m.htotal as f32 / self.mon[0].max(0.01) * 100.0;
+                        let fh = ah / m.vtotal as f32 / self.mon[2].max(0.01) * 100.0;
+                        ui.weak(format!("有効映像は管面の {fw:.0}% x {fh:.0}%"));
                     }
-                    ui.monospace("位置V");
-                    if ui.add(egui::DragValue::new(&mut self.tube_off_ms)
-                              .speed(0.02).range(-20.0..=20.0).suffix("ms")
-                              .fixed_decimals(2)).changed() { self.mark_settings_dirty(); }
-                });
+                }
             } else {
                 ui.horizontal(|ui| {
                     ui.monospace("H位置");

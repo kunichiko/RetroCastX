@@ -44,21 +44,19 @@ pub struct Params {
     /// 有効映像のサンプル数/ライン数。管面の中心を決めるのに使う
     pub hactive: u32,
     pub vactive: u32,
-    /// 管面の掃引時間(横)。実際のCRTは偏向の傾きが固定なので、管面上の幅は
-    /// 「掃引にかかった時間」で決まる。fHが低いモードほど絵が広がる。
-    pub span_us: f32,
-    /// 管面の掃引時間(縦)。link_v=true なら横から算出するので使わない
-    pub span_ms: f32,
-    /// 縦の掃引を横に連動させ、絵の形を保ったまま拡縮する。
+    /// 管面プロファイル(モニタの帯域ごとのプリセット)。
     ///
-    /// 偏向の傾きを縦横とも固定にすると縦横比が崩れる。横のサイズは 1/fH に
-    /// 比例するが、X68000はどのモードも fV が53〜61Hzで1フレームの時間がほぼ
-    /// 一定なので、縦のサイズは変わらない。実測で 24kHz が横51%・縦95%になり
-    /// 縦長に潰れた。実機のモニタは縦横を両方モード別に補正しているので、
-    /// 「15kHzは管面いっぱい / 31kHzは中央に寄る」を再現するにはこちらが要る。
-    pub link_v: bool,
-    /// 縦の大きさの微調整(link_v のときの倍率)
-    pub v_trim: f32,
+    /// 3モードディスプレイの偏向は「1HSYNC周期でブラウン管の左右をちょうど掃引する」
+    /// ように周波数ごとに速度が切り替わる。だから管面の横幅は 1/fH そのもので、
+    /// 掃引時間は自由パラメータではない。縦も同様に 1VSYNC周期が管面の高さになる。
+    ///
+    /// プロファイルが持つのは「その周期のうち実際に管面へ出る割合」と「位置」だけ。
+    /// 1.0 なら周期全体(帰線期間まで)が見える。実際のCRTは帰線の間ビームが戻るので
+    /// 少し小さい値(0.85〜0.95)が現実に近いが、既定は何も切れない 1.0 にしてある。
+    pub h_size: f32,
+    pub h_pos: f32,
+    pub v_size: f32,
+    pub v_pos: f32,
     /// 実測した有効映像の外接矩形[サンプル/ライン]。管面の中心と、縦の連動に使う。
     /// MODEの hactive は送出フレームの幅(常に1024)で有効映像の幅ではないため、
     /// 実測値が要る。0 のときは中心を0.5とみなす
@@ -66,9 +64,6 @@ pub struct Params {
     pub act_y: u32,
     pub act_w: u32,
     pub act_h: u32,
-    /// 管面の位置合わせ(実CRTのH位置/V位置つまみ)
-    pub off_us: f32,
-    pub off_ms: f32,
     /// 時間ベースで管面を決める(false なら window の割合をそのまま使う)
     pub time_based: bool,
 }
@@ -76,50 +71,28 @@ pub struct Params {
 impl Params {
     /// 管面が映す時間窓を、ラインとフレームに対する割合で返す。
     ///
-    /// 割合を直接持つ旧方式では、モードが変わっても絵の大きさが変わらない。
-    /// 実際のCRTは偏向の傾きが固定で、掃引時間がそのまま管面上の幅になるので、
-    /// fHが低いモードほど絵が広がる(X68000の15kHzが管面いっぱいに広がり、
-    /// 31kHzが中央に寄って見えるのはこれ)。ここでは掃引時間[µs]を割合へ
-    /// 換算する。割合 = 時間 x fH なので、fH さえ分かれば計算できる。
+    /// 3モードディスプレイの偏向は「1HSYNC周期でブラウン管の左右をちょうど掃引する」
+    /// ように周波数ごとに速度が切り替わる。よって管面の横幅は 1/fH そのもので、
+    /// 縦は 1VSYNC周期。ここで返す割合は「その周期のどこからどこまでが管面に
+    /// 出るか」で、モニタ固有かつモードに依らない。
     ///
-    /// fVは実測値が当てにならない(24kHzモードで 0.053Hz と報告された)ため、
-    /// 縦は vtotal / fH からフレーム時間を出す。
+    /// pll_divide を変えても絵が動かないのが要点。サンプル k の位置は
+    /// (hs_offset + k)/htotal で、htotal = pll_divide、k も pll_divide に比例して
+    /// 増えるので時間としては同じ場所を指す。ただし hs_offset はサンプル単位
+    /// なので、pll_divide を変えたら同じ比で動かす必要がある(Viewer側で行う)。
     pub fn effective_window(&self) -> [f32; 4] {
-        if !self.time_based || self.fh_hz == 0 || self.htotal == 0 || self.vtotal == 0 {
+        if !self.time_based || self.htotal == 0 || self.vtotal == 0 {
             return self.window;
         }
-        let fh_khz = self.fh_hz as f32 / 1000.0;
-        if fh_khz <= 1.0 {
-            return self.window;
-        }
-        let line_us = 1000.0 / fh_khz;
-        let frame_ms = self.vtotal as f32 / fh_khz;
-        let sh = (self.span_us / line_us).clamp(0.05, 8.0);
-        let (ht, vt) = (self.htotal as f32, self.vtotal as f32);
-        // 縦の掃引。横に連動させると、絵は縦横同率で拡縮するので形が保たれる。
-        //   絵が管面の横を占める割合 = act_w / (sh * htotal)
-        //   絵が管面の縦を占める割合 = act_h / (sv * vtotal)
-        // この2つを等しくすると sv が決まる。
-        let sv = if self.link_v && self.act_w > 0 && self.act_h > 0 {
-            (sh * ht * self.act_h as f32 / (self.act_w as f32 * vt)
-             / self.v_trim.max(0.05)).clamp(0.05, 8.0)
-        } else {
-            (self.span_ms / frame_ms).clamp(0.05, 8.0)
-        };
-        // 管面の中心は有効映像の中心に合わせる(実機のH位置/V位置つまみに相当)。
-        // インターレースでは有効行数が vtotal を超えることがあるので1フィールド分に直す。
-        let va = if self.vactive > self.vtotal { self.vactive / 2 } else { self.vactive };
-        let ch = if self.act_w > 0 {
-            (self.hs_offset as f32 + self.act_x as f32 + self.act_w as f32 * 0.5) / ht
-        } else {
-            0.5
-        } + self.off_us / line_us;
-        let cv = if self.act_h > 0 {
-            (self.vbp as f32 + self.act_y as f32 + self.act_h as f32 * 0.5) / vt
-        } else {
-            (self.vbp as f32 + va as f32 * 0.5) / vt
-        } + self.off_ms / frame_ms;
-        [ch - sh * 0.5, ch + sh * 0.5, cv - sv * 0.5, cv + sv * 0.5]
+        // 管面は「1周期のうち h_size の割合」を映す。位置は周期の中心からのずれ。
+        // pll_divide を変えても htotal と k が同じ比で動くので絵は動かない
+        // (hs_offset もサンプル単位なので、pll_divide に追従させる必要がある。
+        //  それはViewer側で送るときに行う)。
+        let hs = self.h_size.clamp(0.05, 4.0);
+        let vs = self.v_size.clamp(0.05, 4.0);
+        let ch = 0.5 + self.h_pos;
+        let cv = 0.5 + self.v_pos;
+        [ch - hs * 0.5, ch + hs * 0.5, cv - vs * 0.5, cv + vs * 0.5]
     }
 }
 
@@ -128,18 +101,10 @@ impl Default for Params {
         Self {
             rotate: 0, tube: 0.0, filter: FILTER_SHARP,
             htotal: 0, hs_offset: 0, vtotal: 0, vbp: 0,
-            // 旧方式(割合)の既定。time_based=false のときだけ使う
             window: [0.22, 0.94, 0.07, 0.98],
             fh_hz: 0, hactive: 0, vactive: 0,
-            // 15kHzの有効映像(実測52.7µs)が収まる幅にしておく。これより狭いと
-            // 15kHzで左右が切れる(割合ベースの0.72では 0.842 が入らなかった)。
-            span_us: 58.0,
-            span_ms: 17.6,
-            link_v: true,
-            v_trim: 1.0,
+            h_size: 1.0, h_pos: 0.0, v_size: 1.0, v_pos: 0.0,
             act_x: 0, act_y: 0, act_w: 0, act_h: 0,
-            off_us: 0.0,
-            off_ms: 0.0,
             time_based: true,
         }
     }
