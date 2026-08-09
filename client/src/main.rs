@@ -816,11 +816,20 @@ impl ViewerApp {
         };
         row(ui, "vbp", &mut self.tune_vbp, 0, 400,
             protocol::CFG_KEY_VBP, &mut send);
-        // 上限は pll_div の半分。これを超えるとキャプチャ窓がラインの後半から
-        // 始まり、有効映像を取り逃がす(等号だと1画素も取り込めない)
-        let hs_max = (self.tune_pll_divide / 2).max(1);
-        row(ui, "hs_offset", &mut self.tune_hs_offset, 0, hs_max,
+        // 入力欄の範囲は固定にする。DragValue は範囲外の値を黙って書き換えて
+        // 保持するので、上限を pll_div から動的に決めると、読み戻しや pll_div の
+        // 変更のたびに hs_offset が勝手に動き、それが送信されてしまった
+        // (実機で hs_offset が 160→607 に化けた)。
+        // 実際の上限(pll_div/2)は gateware 側で守られるので、ここでは警告に留める。
+        row(ui, "hs_offset", &mut self.tune_hs_offset, 0, 2304,
             protocol::CFG_KEY_HS_OFFSET, &mut send);
+        let hs_max = (self.tune_pll_divide / 2).max(1);
+        if self.tune_hs_offset >= hs_max {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 170, 60),
+                format!("hs_offset は {hs_max} 未満に(ボード側で頭打ちになります)"),
+            );
+        }
         // 下限は「ピクセルクロック12MHz」から決まる。TVP7002のPLLは12〜165MHzしか
         // 保証されておらず(データシート)、下回るとクランプが効かなくなって画面の
         // 下ほど色がずれる。実測でも 12.02MHz は正常、11.25MHz から崩れ始め、
@@ -1014,6 +1023,8 @@ impl ViewerApp {
             {
                 self.tune_synced = false;
                 self.tune_get_at = None;
+                // 未確認の送信が残っていると読み戻しがその分だけ塞がれるので消す
+                self.tune_pending.clear();
                 self.shared.config_state.lock().unwrap().clear();
             }
         });
