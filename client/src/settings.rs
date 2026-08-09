@@ -44,6 +44,13 @@ pub struct Settings {
     pub tune_video_bw: u8,
     /// 表示時の縦倍率。ドットが正方形でないモードの縦つぶれを直す
     pub vscale: f32,
+    /// 画面回転 0/1/2/3 = 時計回りに 0/90/180/270 度(縦画面のゲーム用)
+    pub rotate: u32,
+    /// 表示する切り出し範囲[画素]。w か h が 0 なら切り出さない(全体を表示)
+    pub crop_x: u32,
+    pub crop_y: u32,
+    pub crop_w: u32,
+    pub crop_h: u32,
     /// 前回のウィンドウ内寸。次回起動時に復元する
     pub window_w: f32,
     pub window_h: f32,
@@ -70,6 +77,11 @@ impl Default for Settings {
             tune_field_src: 0,
             tune_video_bw: 15,
             vscale: 1.0,
+            rotate: 0,
+            crop_x: 0,
+            crop_y: 0,
+            crop_w: 0,
+            crop_h: 0,
             window_w: 1160.0,
             window_h: 820.0,
         }
@@ -122,6 +134,15 @@ impl Settings {
                 "tune_field_swap" => s.tune_field_swap = v == "true",
                 "tune_field_src" => { if let Ok(x) = v.parse() { s.tune_field_src = x } }
                 "tune_video_bw" => { if let Ok(x) = v.parse() { s.tune_video_bw = x } }
+                "rotate" => {
+                    if let Ok(x) = v.parse::<u32>() {
+                        s.rotate = if x < 4 { x } else { 0 };
+                    }
+                }
+                "crop_x" => { if let Ok(x) = v.parse() { s.crop_x = x } }
+                "crop_y" => { if let Ok(x) = v.parse() { s.crop_y = x } }
+                "crop_w" => { if let Ok(x) = v.parse() { s.crop_w = x } }
+                "crop_h" => { if let Ok(x) = v.parse() { s.crop_h = x } }
                 "vscale" => {
                     if let Ok(x) = v.parse::<f32>() {
                         s.vscale = x.clamp(0.25, 4.0);
@@ -175,6 +196,11 @@ impl Settings {
              tune_field_swap = {}\n\
              tune_field_src = {}\n\
              tune_video_bw = {}\n\
+             rotate = {}\n\
+             crop_x = {}\n\
+             crop_y = {}\n\
+             crop_w = {}\n\
+             crop_h = {}\n\
              vscale = {:.3}\n\
              window_w = {:.0}\n\
              window_h = {:.0}\n",
@@ -195,6 +221,11 @@ impl Settings {
             self.tune_field_swap,
             self.tune_field_src,
             self.tune_video_bw,
+            self.rotate,
+            self.crop_x,
+            self.crop_y,
+            self.crop_w,
+            self.crop_h,
             self.vscale,
             self.window_w,
             self.window_h,

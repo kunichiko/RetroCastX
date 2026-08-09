@@ -33,6 +33,7 @@ fn main() -> eframe::Result {
     let mut headless_secs: Option<u64> = None;
     let mut no_vsync = false;
     let mut fullscreen_mode = false;
+    let mut rotate: u32 = u32::MAX;   // 未指定なら設定ファイルの値を使う
     let mut target_mac: Option<[u8; 6]> = None;
     let mut decay = 0.8f32;
     // 保存済み設定を読み、CLI引数があればそれで上書きする(その回だけ有効)
@@ -55,6 +56,14 @@ fn main() -> eframe::Result {
             "--no-vsync" => no_vsync = true,
             // 低遅延フルスクリーン(専用presentスレッド+Immediate、ソース駆動present)
             "--fullscreen" => fullscreen_mode = true,
+            // 画面回転(縦画面のゲーム用)。0/90/180/270 度、時計回り
+            "--rotate" => {
+                let v: u32 = args.next().expect("--rotate needs 0|90|180|270").parse().unwrap();
+                rotate = match v {
+                    0 => 0, 90 => 1, 180 => 2, 270 => 3,
+                    _ => panic!("--rotate は 0/90/180/270 のいずれか"),
+                };
+            }
             // 欠損ライン減衰率(1.0=前フレーム保持のまま, 0.8=毎フレーム80%へ暗転して消える)
             "--decay" => {
                 decay = args.next().expect("--decay needs a value (e.g. 0.8)").parse().unwrap()
@@ -91,7 +100,9 @@ fn main() -> eframe::Result {
         return run_headless(port, subscribe_to, target_mac, secs, decay, audio);
     }
     if fullscreen_mode {
-        fullscreen::run(port, subscribe_to, target_mac, decay, audio); // 戻らない
+        let rot = if rotate == u32::MAX { cfg.rotate } else { rotate };
+        fullscreen::run(port, subscribe_to, target_mac, decay, audio, rot, cfg.vscale,
+                        [cfg.crop_x, cfg.crop_y, cfg.crop_w, cfg.crop_h]); // 戻らない
     }
 
     let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
@@ -364,6 +375,10 @@ struct ViewerApp {
     integer_scale: bool,
     /// 表示時の縦倍率(ドットが正方形でないモードの縦つぶれを直す)
     vscale: f32,
+    /// 画面回転 0/1/2/3 = 時計回りに 0/90/180/270 度
+    rotate: u32,
+    /// 表示する切り出し範囲[画素]。w か h が 0 なら全体を表示
+    crop: [u32; 4],
     rx_error: Option<String>,
     subscribe_to: Option<String>,
     no_vsync: bool,
@@ -425,6 +440,8 @@ impl ViewerApp {
             seen_gen: 0,
             integer_scale: cfg.integer_scale,
             vscale: cfg.vscale,
+            rotate: cfg.rotate,
+            crop: [cfg.crop_x, cfg.crop_y, cfg.crop_w, cfg.crop_h],
             rx_error,
             subscribe_to,
             no_vsync,
@@ -476,6 +493,11 @@ impl ViewerApp {
             audio_device: self.audio_device_sel.clone(),
             integer_scale: self.integer_scale,
             vscale: self.vscale,
+            rotate: self.rotate,
+            crop_x: self.crop[0],
+            crop_y: self.crop[1],
+            crop_w: self.crop[2],
+            crop_h: self.crop[3],
             window_w: self.window_size.x,
             window_h: self.window_size.y,
             backdrop: self.backdrop.label().to_string(),
@@ -1150,6 +1172,47 @@ impl eframe::App for ViewerApp {
             ui.separator();
 
             ui.horizontal(|ui| {
+                // 取り込みバッファにはブランキング由来の黒が入る。回転すると
+                // それが上下の余白として目立つので、有効範囲だけを出せるようにする。
+                // 実測値を毎フレーム使うと絵の内容で揺れるため、押した時点の値を
+                // 固定して使う。
+                ui.monospace("切り出し");
+                let st2 = self.shared.stats.lock().unwrap().clone();
+                if ui.button("有効範囲から").clicked() && st2.active_w > 0 {
+                    self.crop = [st2.active_x as u32, st2.active_y as u32,
+                                 st2.active_w as u32, st2.active_h as u32];
+                    self.mark_settings_dirty();
+                    self.want_fit = true;
+                }
+                if ui.button("全体").clicked() {
+                    self.crop = [0, 0, 0, 0];
+                    self.mark_settings_dirty();
+                    self.want_fit = true;
+                }
+                if self.crop[2] > 0 {
+                    ui.monospace(format!("{}x{}+{}+{}", self.crop[2], self.crop[3],
+                                         self.crop[0], self.crop[1]));
+                }
+            });
+            ui.horizontal(|ui| {
+                // 縦画面のゲーム(ドラゴンスピリット等)向け
+                ui.monospace("回転");
+                let mut rot = self.rotate;
+                egui::ComboBox::from_id_salt("rotate")
+                    .width(72.0)
+                    .selected_text(["0°", "90°", "180°", "270°"][rot as usize])
+                    .show_ui(ui, |ui| {
+                        for (i, t) in ["0°", "90°", "180°", "270°"].iter().enumerate() {
+                            ui.selectable_value(&mut rot, i as u32, *t);
+                        }
+                    });
+                if rot != self.rotate {
+                    self.rotate = rot;
+                    self.mark_settings_dirty();
+                    self.want_fit = true;
+                }
+            });
+            ui.horizontal(|ui| {
                 ui.monospace("縦倍率");
                 if ui
                     .add(egui::DragValue::new(&mut self.vscale).speed(0.01).range(0.25..=4.0))
@@ -1232,7 +1295,29 @@ impl eframe::App for ViewerApp {
                 // 縦倍率を掛けた見かけの大きさで画面に収める。X68000の
                 // 15kHz 512x256 のようにドットが正方形でないモードは、等倍だと
                 // 縦につぶれて見える。
-                let disp = egui::vec2(tex_size.x, tex_size.y * self.vscale);
+                // 縦倍率をかけた見かけの大きさ。90/270度回転では画面に占める
+                // 向きが入れ替わるので、幅と高さを入れ替えて収める。
+                // 切り出し範囲(未設定なら全体)。取り込みバッファにはブランキング
+                // 由来の黒が含まれるので、回転すると余白として目立つ。
+                let (cx, cy, cw, ch) = (self.crop[0] as f32, self.crop[1] as f32,
+                                        self.crop[2] as f32, self.crop[3] as f32);
+                let use_crop = cw > 0.0 && ch > 0.0
+                    && cx + cw <= tex_size.x && cy + ch <= tex_size.y;
+                let (src_w, src_h) = if use_crop { (cw, ch) } else { (tex_size.x, tex_size.y) };
+                let uv = if use_crop {
+                    egui::Rect::from_min_max(
+                        egui::pos2(cx / tex_size.x, cy / tex_size.y),
+                        egui::pos2((cx + cw) / tex_size.x, (cy + ch) / tex_size.y),
+                    )
+                } else {
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))
+                };
+                let scaled = egui::vec2(src_w, src_h * self.vscale);
+                let disp = if self.rotate % 2 == 1 {
+                    egui::vec2(scaled.y, scaled.x)
+                } else {
+                    scaled
+                };
                 // ウィンドウを画にぴったり合わせるのに使う(余白 = 内寸 - この領域)
                 self.last_avail = avail;
                 self.last_tex = disp;
@@ -1249,7 +1334,18 @@ impl eframe::App for ViewerApp {
                 let scale = if self.integer_scale && fit >= 1.0 { fit.floor() } else { fit };
                 let size = disp * scale;
                 let resp = ui.centered_and_justified(|ui| {
-                    ui.add(egui::Image::new((tex.id(), size)))
+                    let (rect, r) = ui.allocate_exact_size(size, egui::Sense::hover());
+                    // 回転前の大きさで、割り当てた矩形の中心に描く。egui は
+                    // Image::rotate が中心まわりに回すので、これで収まる。
+                    let inner = egui::Rect::from_center_size(rect.center(), scaled * scale);
+                    let img = egui::Image::new((tex.id(), scaled * scale)).uv(uv);
+                    if self.rotate == 0 {
+                        img.paint_at(ui, inner);
+                    } else {
+                        let a = std::f32::consts::FRAC_PI_2 * self.rotate as f32;
+                        img.rotate(a, egui::vec2(0.5, 0.5)).paint_at(ui, inner);
+                    }
+                    r
                 });
                 // キャプチャ範囲の境界に枠線。画の内容に埋もれないよう、外周の
                 // すぐ外側(1px外)に引く
