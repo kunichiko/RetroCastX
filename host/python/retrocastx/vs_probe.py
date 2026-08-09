@@ -28,6 +28,56 @@ from .receiver import FrameAssembler
 
 KEY_VS_X = 0x0020
 KEY_FID = 0x0021
+KEY_SYNC_CTL = 0x0022      # TVPレジスタ0x0E(同期制御)
+KEY_MEAS_VTOTAL = 0x0023   # 実測vtotal(VSYNC間のライン数)
+
+
+def sweep_sync(get, setv, sub, mode):
+    """TVPの同期制御(0x0E)を振って、VSOUTに半ライン位相が残る設定を探す。
+
+    24kHz 1024x848 の実測では、生信号はフィールドごとにVSYNCが来ている(オシロで
+    VSYNCトリガごとにHSYNCが半ラインずれる)のに、TVPのVSOUTは931ラインに1パルスしか
+    出さず、水平位相も完全固定だった。VSOUTを再生成ではなく素通しにできる設定が
+    あれば、vtotal が半分(約465)になり、位相が2値を交互に取るはずである。
+
+    判定は次の2つ:
+      meas_vtotal が約半分になる  → 2本目のVSYNCが見えるようになった
+      vs_x が2値を交互に取る      → 半ライン位相が残っている
+    """
+    base_vt = mode.vtotal
+    print(f"\n同期制御(0x0E)を振る。いまの vtotal={base_vt}")
+    print("期待: 2本目のVSYNCが見えるようになれば vtotal が約半分になる")
+    print("  0x0E  vtotal  vs_x(数回読み)")
+    hits = []
+    for v in range(0, 256):
+        if get(KEY_SYNC_CTL) is None:
+            print("  key 0x22 に応答なし。焼き込みを確認してください")
+            return
+        # 設定して落ち着くのを待つ
+        setv(KEY_SYNC_CTL, v)
+        time.sleep(0.35)
+        sub()
+        vt = get(KEY_MEAS_VTOTAL)
+        xs = {get(KEY_VS_X) for _ in range(4)}
+        xs.discard(None)
+        mark = ""
+        if vt and 0.4 * base_vt < vt < 0.6 * base_vt:
+            mark += " ← vtotalが半分"
+        if len(xs) >= 2:
+            mark += " ← 位相が複数"
+        if mark:
+            hits.append((v, vt, sorted(xs), mark))
+        if v % 16 == 0 or mark:
+            print(f"  0x{v:02X}  {vt}  {sorted(xs)}{mark}")
+    print()
+    if hits:
+        print("見つかった設定:")
+        for v, vt, xs, mark in hits:
+            print(f"  0x{v:02X}  vtotal={vt}  vs_x={xs}{mark}")
+    else:
+        print("どの値でも半ライン位相は現れませんでした。")
+        print("  → TVPのVSOUTからは取り出せない。生のHSYNC/VSYNCをFPGAへ入れる必要がある")
+    setv(KEY_SYNC_CTL, 0x52)
 
 
 def main():
@@ -35,6 +85,9 @@ def main():
     ap.add_argument("--board", required=True)
     ap.add_argument("--port", type=int, default=proto.DEFAULT_PORT)
     ap.add_argument("--samples", type=int, default=400)
+    ap.add_argument("--sweep-sync", action="store_true",
+                    help="TVPの同期制御(0x0E)を振って、VSOUTに半ライン位相が"
+                         "残る設定を探す")
     args = ap.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -82,6 +135,16 @@ def main():
     print(f"MODE {m.hactive}x{m.vactive}  htotal={m.htotal} vtotal={m.vtotal}  "
           f"fH={m.hfreq_mhz_x1000/1e6:.3f}kHz  fV={m.vfreq_mhz_x1000/1e6:.3f}Hz")
     half = m.htotal // 2
+
+    def setv(key, value):
+        nonlocal seq
+        sock.sendto(proto.pack_config(seq, proto.CFG_TARGET_BOARD,
+                                      proto.CFG_OP_SET, key, value), dst)
+        seq = (seq + 1) & 0xFFFF
+
+    if args.sweep_sync:
+        sweep_sync(get, setv, sub, m)
+        return
 
     vals = Counter()
     fids = Counter()

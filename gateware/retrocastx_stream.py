@@ -299,6 +299,7 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_gain_g     = Signal(8, reset=33)                # key 0x1D (reg 09h)
         self.cfg_gain_r     = Signal(8, reset=39)                # key 0x1E (reg 0Ah)
         self.cfg_phase      = Signal(5, reset=16)                # key 0x1F (reg 04h)
+        self.cfg_sync_ctl   = Signal(8, reset=0x52)              # key 0x22 (reg 0Eh)
         self.cfg_f2_row     = Signal(13, reset=0)                # key 0x14
         self.cfg_field_swap = Signal()                           # key 0x15
         audio_mask = Signal(3, reset=0b111)      # key 0x0001: 音声ソース有効マスク
@@ -378,6 +379,9 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x1F),
                         self.cfg_phase.eq(rx.data[:5]),
                     ),
+                    If((cfg_target == 0) & (cfg_key == 0x22),
+                        self.cfg_sync_ctl.eq(rx.data[:8]),
+                    ),
                     If((cfg_target == 0) & (cfg_key == 0x18),
                         self.cfg_fine_clamp.eq(rx.data[:8]),
                     ),
@@ -426,6 +430,8 @@ class RetroCastXStreamer(LiteXModule):
                 cfg_reply_val.eq(self.cfg_field_swap),
             ).Elif(cfg_key == 0x16,
                 cfg_reply_val.eq(self.cfg_field_src),
+            ).Elif(cfg_key == 0x22,
+                cfg_reply_val.eq(self.cfg_sync_ctl),
             ).Elif(cfg_key == 0x1F,
                 cfg_reply_val.eq(self.cfg_phase),
             ).Elif(cfg_key == 0x17,
@@ -451,7 +457,9 @@ class RetroCastXStreamer(LiteXModule):
         # ための生データ(位相が0付近と中央付近で交互になるか、FIDOUTが交互に
         # なるかを見る)。書き込みは無視される読み取り専用。
         if cap_mode:
-            self.comb += If(cfg_key == 0x20,
+            self.comb += If(cfg_key == 0x23,
+                cfg_reply_val.eq(capture.meas_vtotal),
+            ).Elif(cfg_key == 0x20,
                 cfg_reply_val.eq(capture.stat_vs_x),
             ).Elif(cfg_key == 0x21,
                 cfg_reply_val.eq(capture.stat_fid),
@@ -717,13 +725,21 @@ class RetroCastXStreamer(LiteXModule):
             span_lo = Signal(16)
             span_hi = Signal(16)
             span_n = Signal(16)
-            self.comb += [
-                span_lo.eq(Cat(C(0, 1), capture.line_first)),        # entry*2
+            # 組合せで作るとFIFO先頭から加算・比較・muxを経てFSMのレジスタ入力まで
+            # 伸び、sysが45MHzを割った(実測 48.1 → 42.4MHz)。レジスタに落とす。
+            # FIFO先頭はラインが送出待ちの間ずっと安定しているので、1クロック遅れても
+            # 送出開始時には正しい値になっている。
+            self.sync += [
+                # ライン内の絶対位置にする。hs_offset を足しておけば、受信側は
+                # offset_px をそのままライン内の位置として使える(hs_offset が
+                # 描画位置に影響しなくなる = ドットクロック再生と描画の分離)。
+                span_lo.eq(Cat(C(0, 1), capture.line_first) + self.cfg_hs_offset),
                 # line_last は内包。全黒の行では line_first > line_last になるので
                 # その場合は空(送るピクセル0)にする。行自体は送る(落とすと受信側が
                 # 「黒い行」と「届かなかった行」を区別できない)。
                 If(capture.line_last >= capture.line_first,
-                    span_hi.eq(Cat(C(0, 1), capture.line_last) + 2),
+                    span_hi.eq(Cat(C(0, 1), capture.line_last) + 2
+                               + self.cfg_hs_offset),
                 ).Else(
                     span_hi.eq(span_lo),
                 ),
@@ -792,13 +808,19 @@ class RetroCastXStreamer(LiteXModule):
 
         # 次断片のパラメータ(組合せ)。frag_off/frag_cnt から積算で出すので
         # 乗算は要らない
+        # こちらもレジスタに落とす。frag_off/frag_cnt が変わるのは断片境界だけで、
+        # 次の境界までに何十サイクルもあるので1クロック遅れは問題にならない。
         nx_off = Signal(16)
         nx_cnt = Signal(16)
         nx_rem = Signal(16)
-        self.comb += [
+        self.sync += [
             nx_off.eq(frag_off + frag_cnt),
-            nx_rem.eq(px_end - nx_off),
-            If(nx_rem > FRAG_PX, nx_cnt.eq(FRAG_PX)).Else(nx_cnt.eq(nx_rem)),
+            nx_rem.eq(px_end - (frag_off + frag_cnt)),
+            If(px_end - (frag_off + frag_cnt) > FRAG_PX,
+                nx_cnt.eq(FRAG_PX),
+            ).Else(
+                nx_cnt.eq(px_end - (frag_off + frag_cnt)),
+            ),
         ]
 
         self.fsm = fsm = FSM(reset_state="IDLE")
@@ -1075,6 +1097,7 @@ class RetroCastXStream(SoCMini):
                 self.status.cfg_pll_divide.eq(pll_use),
                 self.status.cfg_video_bw.eq(self.streamer.cfg_video_bw),
                 self.status.cfg_phase.eq(self.streamer.cfg_phase),
+                self.status.cfg_sync_ctl.eq(self.streamer.cfg_sync_ctl),
                 self.status.cfg_fine_clamp.eq(self.streamer.cfg_fine_clamp),
                 self.status.cfg_pll_ctl.eq(self.streamer.cfg_pll_ctl),
                 self.status.cfg_clamp_start.eq(self.streamer.cfg_clamp_start),

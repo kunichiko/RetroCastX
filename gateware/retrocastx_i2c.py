@@ -196,6 +196,14 @@ class StatusDisplay(Module):
         # 実際の最適点はケーブル遅延やTVP内部の遅延で変わるので実測で決める。
         # ずれていると全画素が一様にぼける(白が灰色に見える)ため、鮮鋭度に直結する。
         self.cfg_phase = Signal(5, reset=16)
+        # 同期制御(レジスタ0x0E)。既定0x52。
+        #
+        # TVPのVSOUTがインターレース入力の半ライン位相を潰してしまう問題の切り分け用。
+        # 実測(24kHz 1024x848): 生信号はフィールドごとにVSYNCが来ている(オシロで
+        # VSYNCトリガごとにHSYNCが半ラインずれる)のに、VSOUTは931ラインに1パルスしか
+        # 出ず、VSYNCの水平位相は300回読んで完全固定だった。VSOUTを再生成ではなく
+        # 素通しにできる設定があれば位相が残るはずなので、実行時に振って探す。
+        self.cfg_sync_ctl = Signal(8, reset=0x52)
         # ファインクランプ制御(レジスタ0x2A)。既定0x07。
         #   bit7 CM Offset(チャンネル間の分離改善) / bit[4:3] Fine swsel(時定数)
         #   bit1 Fine GB / bit0 Fine R
@@ -339,6 +347,9 @@ class StatusDisplay(Module):
         if 0x06 in WR_REG:
             self.comb += If(step == WR_REG.index(0x06),
                             wval_b.eq(self.cfg_clamp_width))
+        if 0x0E in WR_REG:
+            self.comb += If(step == WR_REG.index(0x0E),
+                            wval_b.eq(self.cfg_sync_ctl))
         if 0x04 in WR_REG:
             self.comb += If(step == WR_REG.index(0x04),
                             wval_b.eq(Cat(C(0, 3), self.cfg_phase)))

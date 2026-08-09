@@ -1054,7 +1054,27 @@ module App:
     sodimm.io_b4 ~ tvp.hsout     # pin133 (B4)
     sodimm.io_c3 ~ tvp.vsout     # pin135 (C3)
     sodimm.io_e3 ~ tvp.fidout    # pin137 (E3)
-    # pin129(D3)は予備(クロック非対応のためDATACLKには不適)
+
+    # --- 生の同期をFPGAへも渡す(TVPを経由しない経路) ---
+    #
+    # TVPのVSOUTはインターレース入力の半ライン位相を保たない。実測(24kHz
+    # 1024x848): オシロで生信号を見るとVSYNCトリガごとにHSYNCが半ラインずれる
+    # (=フィールドごとにVSYNCが来ている)のに、VSOUTは931ラインに1パルスしか
+    # 出ず、VSYNCの水平位相は300回読んで完全固定だった。同期制御レジスタ(0x0E)を
+    # 256通り振っても位相は現れなかった。TVPのFIDOUTも常に0でインターレースを
+    # 検出していない。
+    #
+    # 半ライン位相が読めれば、インターレースの判定と第2フィールドの位置決めが
+    # 「測定」で決まり、il/f2_row/swap/field_src といった設定が不要になる。
+    # あわせて、TVPのPLLを通さない真のHSYNC周期や同期の極性/パルス幅も測れる。
+    #
+    # バッファ出力は2つの入力を駆動できるので、既存の SN74LVC2G17 の出力から
+    # 分岐するだけでよい(新規部品なし・配線2本)。VSYNC側はRC遅延後の信号だが、
+    # 遅延は約150nsで半ライン(24kHzで20µs)の判定には影響しない。
+    # 置き場所は同じP3端子(pin129〜157)に揃える。F2はクロック対応ボールなので
+    # 生HSYNCを置いておく(将来HSYNCをクロックとして使う余地を残す)。
+    sodimm.io_f2 ~ buf_sync.out_a   # pin155 (F2, クロック対応) 生HSYNC
+    sodimm.io_e1 ~ buf_sync.out_b   # pin153 (E1) 生VSYNC(RC遅延後)
 
     # --- 音声入力(3系統: DSUB15音声 / LINE入力 / S/PDIF光) ---
     # クロック系: 12.288MHz XO(=256fs@48kHz)を両ADCのSCKIとFPGA(F1=PCLKC6_1)へ。

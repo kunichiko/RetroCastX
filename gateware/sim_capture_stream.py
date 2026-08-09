@@ -18,7 +18,11 @@ from retrocastx_capture import TvpCapture
 from retrocastx_stream import RetroCastXStreamer, convert_ip
 
 SYS = 1_000_000
-W, H, NF, VOFF = 16, 8, 8, 2
+# H は「半ラインスロット数」。行位置が常に2倍グリッドになったので、有効行 NL 本を
+# 収めるには H = 2*NL が要る(row_bits = log2(H) がスロット番号の幅で、これを
+# 超えると折り返して上書きされる)。
+W, NL, NF, VOFF = 16, 4, 8, 2
+H = 2 * NL
 BOARD_MAC = bytes([0x02, 0x52, 0x43, 0x58, 0x00, 0x01])
 SUBSCRIBER = (convert_ip("192.168.10.3"), proto.DEFAULT_PORT)
 
@@ -83,12 +87,12 @@ def tvp_driver(dut):
         for _ in range(4):
             yield
         first = VOFF - 1
-        for L in range(first + H + 1):
+        for L in range(first + NL + 1):
             yield p.hs.eq(0); yield
             yield p.hs.eq(1); yield
             yield
             row_eff = L - first
-            if 0 <= row_eff < H:
+            if 0 <= row_eff < NL:
                 for xp in range(W):
                     yield p.r.eq((xp << 3) & 0xFF)
                     yield p.g.eq((row_eff << 3) & 0xFF)
@@ -146,12 +150,17 @@ def main():
               for j in range(pkt.count_px)]   # RGB555 little-endian
         for j, v in enumerate(px):
             x = pkt.offset_px + j
-            exp = expect_pix(x, pkt.line)
+            # pkt.line は半ライン単位のスロット。中身は「何行目を流したか」で
+            # 符号化してあるので、スロットを2で割って行番号に戻す
+            exp = expect_pix(x, pkt.line // 2)
             assert v == exp, (
                 f"row{pkt.line} x{x}: got={v:#06x} exp={exp:#06x} "
                 f"(off={pkt.offset_px} cnt={pkt.count_px})")
             checked += 1
-    assert set(rows_seen) == set(range(H)), f"全行が揃っていない: {rows_seen}"
+    # プログレッシブなのでスロットは1つ飛び(0,2,4,...)。空くスロットは受信側が
+    # 「次のラインまでの間隔」ぶん太らせて埋める
+    want = set(range(0, H, 2))
+    assert set(rows_seen) == want, f"全行が揃っていない: {rows_seen} (期待 {sorted(want)})"
     # 重複ライン検出: (frame,row) は一意でなければならない。sticky な送出要求で
     # FIFOが空になった直後に「空ヘッドの残留値」を再送すると、ここで重複が出る
     # (実機では受信側のframe番号が N↔N+1 を往復し、見かけfpsが5倍になった)。

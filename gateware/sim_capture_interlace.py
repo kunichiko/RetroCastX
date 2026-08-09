@@ -1,24 +1,21 @@
 #!/usr/bin/env python3
-"""インターレース(ウィーブ)の検証(実機不要)。
+"""行位置が「VSYNCから何半ライン後か」で決まることを検証(実機不要)。
 
-X68000の 24kHz 1024x848 は VSYNC がフレームに1回しか来ず、その1周期の中に
-「縦半分の解像度で画面全体を描いたフィールド」が2枚並ぶ。そのまま送ると同じ絵が
-2回出る(実機実測: vtotal 931 に対し絵は 466行周期で繰り返した)。
+インターレースの原理そのもので、第2フィールドのVSYNCは半ライン分ずれた位置に来る。
+そのフィールドのラインは第1フィールドのラインの物理的に間へ落ちるので、位置を
+半ライン単位で決めれば織り込みは設定無しで勝手に成立する。以前は il/f2_row/
+swap/field_src の4つで教えていたが、どれも「行番号で並べる」実装の都合から生まれた
+もので、信号自体には無かった情報である。
 
-ここでは vtotal=16 の小フレームで、前半8行=第1フィールド、後半8行=第2フィールド
-とし、各フィールドの有効4行が
+確認すること:
+  - VSYNCの位相が交互(ライン先頭/ライン中央)なら、スロットが偶数/奇数に分かれる
+  - 位相が一定(プログレッシブ)なら、スロットは1つ飛びに並ぶ
+    (空くスロットは受信側が「次のラインまでの間隔」ぶん太らせて埋める)
 
-    フィールド1の行 0,1,2,3 → 出力行 0,2,4,6
-    フィールド2の行 0,1,2,3 → 出力行 1,3,5,7
-
-に織り込まれることを確認する。あわせて画素の中身も、その行に流した値と一致する
-ことを見る(行番号だけ合っていて中身が入れ替わる取り違えを検出するため)。
-
-15kHz 512x512 はこれとは別方式で、VSYNCがフィールドごとに来る(vtotal 260 /
-fV 61.6Hz)。こちらは標準どおり「VSYNCがラインの境界に来るか中央に来るか」で
-極性が決まるので、方式2(cfg_interlace=2)として別に検証する。
-
-cfg_interlace=0 のときは従来どおり(織り込まない)ことも確認する。
+なお実機のTVP7002はVSOUTの半ライン位相を保たない(24kHz 1024x848 で実測:
+生信号はオシロでVSYNCトリガごとにHSYNCが半ラインずれるのに、VSOUTは931ラインに
+1パルスしか出さず位相も完全固定。同期制御レジスタ0x0Eを256通り振っても現れず)。
+そのため生のHSYNC/VSYNCをFPGAへ直接入れる配線を追加した。
 """
 import os
 import sys
@@ -230,50 +227,32 @@ def run_mode2(swap=0, nframes=5):
 
 
 def main():
-    print("=== cfg_interlace=1 (ウィーブ) ===")
-    mid = run(interlace=True)
-    assert len(mid) >= 2, f"検証可能なフレームが足りない: {mid}"
-    for frame, lines in mid:
-        rows = [r for r, _ in lines]
-        print(f"  frame {frame}: rows {rows}")
-        assert rows == [0, 2, 4, 6, 1, 3, 5, 7], (
-            f"ウィーブ後の行番号が不正: {rows} "
-            f"(期待 第1フィールド 0,2,4,6 → 第2フィールド 1,3,5,7)")
-        # 中身の照合: 出力行 n の中身は tag = (n//2) または 8+(n//2)
-        for row, px in lines:
-            want = (row >> 1) + (8 if row & 1 else 0)
-            assert tag_of(px) == want, (
-                f"行 {row} の中身が不正: tag={tag_of(px)} 期待={want}")
-    print(f"  [OK] {len(mid)}フレーム: 2枚のフィールドが元の行番号に織り込まれ、"
-          f"中身も一致")
-
-    print("\n=== cfg_interlace=2 (フィールドごとにVSYNC) ===")
+    print("=== VSYNCの位相が交互 → スロットが偶数/奇数に分かれる ===")
     for swap in (0, 1):
         mid = run_mode2(swap=swap)
         assert len(mid) >= 2, f"検証可能なフレームが足りない: {mid}"
         rows_seen = [[r for r, _ in lines] for _, lines in mid]
         print(f"  swap={swap}: {rows_seen[:3]}")
-        # VSYNCの位相が交互なので、フレームごとに偶数行/奇数行が交互に出る
         evens = [rs for rs in rows_seen if all(r % 2 == 0 for r in rs)]
         odds = [rs for rs in rows_seen if all(r % 2 == 1 for r in rs)]
         assert evens and odds, (
-            f"位相からフィールド極性を判別できていない(偶数行だけ/奇数行だけの"
-            f"フレームが交互に出るはず): {rows_seen}")
+            f"位相からフィールドを分けられていない(偶数スロットだけ/奇数スロット"
+            f"だけのフレームが交互に出るはず): {rows_seen}")
         for rs in evens:
-            assert rs == [2 * k for k in range(len(rs))], f"偶フィールドの行が不正: {rs}"
+            assert rs == [2 * k for k in range(len(rs))], f"偶フィールドが不正: {rs}"
         for rs in odds:
-            assert rs == [2 * k + 1 for k in range(len(rs))], f"奇フィールドの行が不正: {rs}"
-    print("  [OK] VSYNCの水平位相からフィールド極性を判別し、偶数行/奇数行へ振り分け")
+            assert rs == [2 * k + 1 for k in range(len(rs))], f"奇フィールドが不正: {rs}"
+    print("  [OK] VSYNCの半ライン位相だけでフィールドが分かれる(設定は使っていない)")
 
-    print("\n=== cfg_interlace=0 (従来どおり) ===")
+    print("\n=== 位相が一定(プログレッシブ) → スロットは1つ飛び ===")
     mid = run(interlace=False)
     assert len(mid) >= 2, f"検証可能なフレームが足りない: {mid}"
     for frame, lines in mid:
         rows = [r for r, _ in lines]
-        print(f"  frame {frame}: rows {rows}")
-        assert rows == list(range(VACT)), \
-            f"非インターレース時の行番号が不正: {rows} (期待 0..{VACT-1})"
-    print(f"  [OK] 織り込みを無効にすると従来と同じ 0..{VACT-1} が出る")
+        print(f"  frame {frame}: slots {rows}")
+        assert rows == [2 * k for k in range(VACT)], \
+            f"スロットが1つ飛びになっていない: {rows}"
+    print(f"  [OK] スロット 0,2,..,{2 * (VACT - 1)} に並ぶ")
 
     print("\nALL OK")
 

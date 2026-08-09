@@ -871,9 +871,15 @@ impl ViewerApp {
             tube: self.tube_aspect,
             filter: self.filter,
             htotal: m.as_ref().map_or(0, |m| m.htotal as u32),
-            vtotal: m.as_ref().map_or(0, |m| m.vtotal as u32),
-            hs_offset: self.tune_hs_offset.max(0) as u32,
-            vbp: self.tune_vbp.max(0) as u32,
+            // 行位置は半ライン単位のスロットなので、縦は2倍の目盛りで数える。
+            // スロット r はライン r/2 に相当し、垂直位置は (vbp + r/2)/vtotal。
+            // 2*vtotal と 2*vbp を渡せば r = 垂直位置*2vtotal - 2vbp で一致する。
+            vtotal: m.as_ref().map_or(0, |m| m.vtotal as u32 * 2),
+            // offset_px はライン内の絶対位置で来るので、ここでずらす必要はない。
+            // pll_divide を変えても絵が動かないのはこのため(hs_offset は取り込み
+            // 窓の設定であって、描画位置とは無関係になった)
+            hs_offset: 0,
+            vbp: self.tune_vbp.max(0) as u32 * 2,
             window: self.window,
             fh_hz: m.as_ref().map_or(0, |m| (m.hfreq_mhz_x1000 / 1000) as u32),
             hactive: m.as_ref().map_or(0, |m| m.hactive as u32),

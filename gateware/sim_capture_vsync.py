@@ -12,7 +12,11 @@ sys.path.insert(0, os.path.dirname(__file__))
 from migen import *
 from retrocastx_capture import TvpCapture
 
-W, H = 8, 4
+# H は「半ラインスロット数」。行位置が常に2倍グリッドになったので、有効行 NL 本を
+# 収めるには H = 2*NL が要る
+W, NL = 8, 4
+H = 2 * NL
+SLOTS = [2 * k for k in range(NL)]      # プログレッシブは1つ飛びに並ぶ
 VTOTAL, VMIN, VOFF = 16, 14, 2
 
 
@@ -67,6 +71,8 @@ def run(vs_row_at_sync=0, drop_vsync=True, nframes=3):
             yield cap.line_ack.eq(0); yield
 
     def tb():
+        # 有効行数は「フィールド内の行数」。スロットはその2倍になる
+        yield cap.cfg_vactive.eq(NL)
         for _ in range(5):
             yield
         # --- フレーム0: 位相を合わせるための最初のVSYNC ---
@@ -119,10 +125,10 @@ def run(vs_row_at_sync=0, drop_vsync=True, nframes=3):
             # VSYNCを取りこぼして再取得した直後は、境界の1行が重複し得る(再同期の
             # 過渡)。受信側はその行を上書きするだけで害はないので、順序と網羅のみ見る。
             assert rs == sorted(rs), f"frame {f} の row列が非単調: {rs}"
-            assert sorted(set(rs)) == list(range(H)), \
+            assert sorted(set(rs)) == SLOTS, \
                 f"frame {f} の row列が 0..{H-1} を網羅していない: {rs}"
         else:
-            assert rs == list(range(H)), \
+            assert rs == SLOTS, \
                 f"frame {f} の row列が不正: {rs}(期待 0..{H-1})"
     fs = [f for f, _ in mid]
     diffs = [b - a for a, b in zip(fs, fs[1:])]
