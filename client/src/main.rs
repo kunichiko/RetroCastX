@@ -259,6 +259,20 @@ fn signal_is_valid(m: &protocol::Mode) -> bool {
 }
 
 /// キャプチャ範囲の外側に塗る色。取り込んだ絵が黒いと画枠が分からないため。
+/// インターレースの織り込み方を自動判定している最中の状態
+struct WeaveAuto {
+    /// 試す (f2_row, swap) の並び
+    cands: Vec<(i32, bool)>,
+    idx: usize,
+    /// 現在の候補を送った時刻。None ならまだ送っていない
+    started: Option<std::time::Instant>,
+    sum: f64,
+    n: u32,
+    /// 取り込んだ最後の測定番号(同じ値を二重に足さないため)
+    last_seen: u64,
+    results: Vec<(f64, i32, bool)>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Backdrop {
     Black,
@@ -327,6 +341,8 @@ struct ViewerApp {
     tune_pending: std::collections::HashMap<u16, (u32, std::time::Instant)>,
     /// 次に現在値を問い合わせる時刻。全キーが揃うまで繰り返す
     tune_get_at: Option<std::time::Instant>,
+    /// インターレースの織り込み方を自動判定している最中の状態
+    weave_auto: Option<WeaveAuto>,
     texture: Option<egui::TextureHandle>,
     seen_gen: u64,
     integer_scale: bool,
@@ -378,6 +394,7 @@ impl ViewerApp {
             tune_field_swap: cfg.tune_field_swap,
             tune_pending: Default::default(),
             tune_get_at: None,
+            weave_auto: None,
             texture: None,
             seen_gen: 0,
             integer_scale: cfg.integer_scale,
@@ -566,6 +583,102 @@ impl ViewerApp {
 impl ViewerApp {
     /// 画枠パラメータをボードへ即時反映するUI。モードごとに最適値が違い、
     /// ビルドし直していては追い込めないのでCONFIGパケットで実行時に送る。
+    /// 織り込み方の自動判定を開始する。
+    ///
+    /// f2_row を1増やすのと swap を反転するのはフィールドの相対位置に対して
+    /// 打ち消し合うので、4通りのうち (half,swap=1) と (half+1,swap=0) は同じ
+    /// 配置になる。したがって試すべきは3通りで足りる。
+    /// f2_row は half の代わりに0(=vtotal/2を自動で使う)を送る。モードが
+    /// 変わっても追従させるため。
+    fn weave_auto_start(&mut self, vtotal: u16) {
+        let half = (vtotal / 2) as i32;
+        self.weave_auto = Some(WeaveAuto {
+            cands: vec![(0, false), (0, true), (half + 1, true)],
+            idx: 0,
+            started: None,
+            sum: 0.0,
+            n: 0,
+            last_seen: 0,
+            results: Vec::new(),
+        });
+        // 判定の前に織り込みを有効にする。無効のままでは絵が上下2枚に割れていて
+        // 比較にならない
+        if !self.tune_interlace {
+            self.tune_interlace = true;
+            self.push_cfg(protocol::CFG_KEY_INTERLACE, 1);
+        }
+    }
+
+    /// CONFIGを1件送る(送信済みとして pending に記録する)
+    fn push_cfg(&mut self, key: u16, value: u32) {
+        self.tune_pending
+            .insert(key, (value, std::time::Instant::now()));
+        self.shared.config_queue.lock().unwrap().push((key, value));
+    }
+
+    /// 自動判定を1フレーム分進める。候補ごとに「落ち着き待ち」→「測定」と進む。
+    fn weave_auto_step(&mut self) {
+        let Some(a) = self.weave_auto.as_mut() else { return };
+        let now = std::time::Instant::now();
+        let Some(started) = a.started else {
+            // この候補を送って計測開始
+            let (f2, sw) = a.cands[a.idx];
+            a.started = Some(now);
+            a.sum = 0.0;
+            a.n = 0;
+            a.last_seen = 0;
+            let (f2u, swu) = (f2 as u32, sw as u32);
+            self.push_cfg(protocol::CFG_KEY_F2_ROW, f2u);
+            self.push_cfg(protocol::CFG_KEY_FIELD_SWAP, swu);
+            return;
+        };
+        let el = now.duration_since(started);
+        // 設定が効くまで待ってから測る。1つの候補に約2.2秒かける
+        if el >= std::time::Duration::from_millis(900) {
+            let st = self.shared.stats.lock().unwrap().clone();
+            let a = self.weave_auto.as_mut().unwrap();
+            if st.weave_n != a.last_seen && st.weave_err > 0.0 {
+                a.last_seen = st.weave_n;
+                a.sum += st.weave_err as f64;
+                a.n += 1;
+            }
+        }
+        let a = self.weave_auto.as_mut().unwrap();
+        if el < std::time::Duration::from_millis(2200) {
+            return;
+        }
+        let (f2, sw) = a.cands[a.idx];
+        if a.n > 0 {
+            a.results.push((a.sum / a.n as f64, f2, sw));
+        }
+        a.idx += 1;
+        a.started = None;
+        if a.idx < a.cands.len() {
+            return;
+        }
+        // 全候補おわり: 最良を適用する
+        let mut res = std::mem::take(&mut a.results);
+        self.weave_auto = None;
+        if res.is_empty() {
+            eprintln!("weave auto: 測定できませんでした");
+            return;
+        }
+        res.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+        for (e, f2, sw) in &res {
+            eprintln!("weave auto: f2_row={f2} swap={} ずれ {e:.3}", *sw as u8);
+        }
+        let (best, f2, sw) = res[0];
+        let ratio = res[res.len() - 1].0 / best.max(1e-6);
+        eprintln!(
+            "weave auto: 採用 f2_row={f2} swap={} (最大との比 {ratio:.2}倍)",
+            sw as u8
+        );
+        self.tune_f2_row = f2;
+        self.tune_field_swap = sw;
+        self.push_cfg(protocol::CFG_KEY_F2_ROW, f2 as u32);
+        self.push_cfg(protocol::CFG_KEY_FIELD_SWAP, sw as u32);
+    }
+
     /// 実行時に調整できるキーの一覧。読み戻しと表示の同期に使う
     const TUNE_KEYS: [u16; 6] = [
         protocol::CFG_KEY_VBP,
@@ -622,6 +735,8 @@ impl ViewerApp {
 
     fn tune_ui(&mut self, ui: &mut egui::Ui) {
         self.sync_tune_from_board();
+        self.weave_auto_step();
+        let vtotal = self.shared.mode.lock().unwrap().as_ref().map(|m| m.vtotal);
         let mut send: Vec<(u16, u32)> = Vec::new();
         let mut row = |ui: &mut egui::Ui, label: &str, val: &mut i32,
                        lo: i32, hi: i32, key: u16, send: &mut Vec<(u16, u32)>| {
@@ -720,6 +835,14 @@ impl ViewerApp {
                 if ui.checkbox(&mut self.tune_field_swap, "swap").changed() {
                     send.push((protocol::CFG_KEY_FIELD_SWAP,
                                self.tune_field_swap as u32));
+                }
+                if self.weave_auto.is_some() {
+                    let a = self.weave_auto.as_ref().unwrap();
+                    ui.monospace(format!("auto {}/{}", a.idx + 1, a.cands.len()));
+                } else if ui.button("auto").clicked() {
+                    if let Some(vt) = vtotal {
+                        self.weave_auto_start(vt);
+                    }
                 }
                 ui.monospace("f2row");
                 // 半ライン分のずれで1行ぶん食い違うことがあるので手で詰められる。
