@@ -355,6 +355,58 @@ def cmd_weave(board: Board, args):
         print(f"{args.out} に保存")
 
 
+def _runs(mask):
+    out = []
+    start = None
+    for i, v in enumerate(mask):
+        if v and start is None:
+            start = i
+        elif not v and start is not None:
+            out.append((start, i))
+            start = None
+    if start is not None:
+        out.append((start, len(mask)))
+    return out
+
+
+def cmd_crosstalk(board: Board, args):
+    """白ベタ領域の先頭が暗くなる量をチャンネル別に測る。
+
+    暗→白の境目に入った直後、しばらく本来のレベルより低いままになることがある。
+    原因はチャンネル間のクロストークで、TVPのCMオフセット(レジスタ2Ah bit7)や、
+    基板側の配線長・GNDの引き回しで変わる。配線を直した前後の比較に使う。
+
+    領域の末尾を100%として、先頭側(4〜18サンプル)と後半(26〜62サンプル)の
+    平均を出す。差が大きいほど症状が重い。
+    """
+    imgs = board.frames(args.frames, timeout=30)
+    if not imgs:
+        print("フレームを受信できません")
+        return
+    a = np.mean([i.astype(np.float32) for i in imgs], axis=0)
+    h, w, _ = a.shape
+    show_mode(board)
+    print(f"{len(imgs)}枚平均  白ベタ領域の先頭の落ち込み(領域末尾=100%)")
+    for ci, nm in ((0, "R"), (1, "G"), (2, "B")):
+        prof = []
+        for r in range(h):
+            mk = (a[r, :, 0] > 70) & (a[r, :, 1] > 70) & (a[r, :, 2] > 70)
+            for s, e in _runs(mk):
+                # 十分長い白ベタで、直前が暗いところだけ使う
+                if e - s < 70 or s < 8 or a[r, s - 6:s - 1, :].max() > 40:
+                    continue
+                seg = a[r, s - 4:s + 66, ci]
+                if len(seg) == 70:
+                    prof.append(seg / max(a[r, e - 20:e, ci].mean(), 1e-6) * 100)
+        if len(prof) < 10:
+            print(f"  {nm}: 該当領域 {len(prof)} — 少なすぎ(絵に大きな白ベタが要る)")
+            continue
+        p = np.mean(prof, axis=0)
+        head, tail = p[8:22].mean(), p[30:66].mean()
+        print(f"  {nm}: {len(prof):3d}本  先頭 {head:5.1f}%  後半 {tail:5.1f}%  "
+              f"差 {tail - head:+4.1f}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--board", required=True, help="ボードのIP")
@@ -364,6 +416,7 @@ def main():
                     help="設定変更後にPLLが落ち着くのを待つ秒数")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("probe", help="今の映像を測る(外接矩形が飽和していないか等)")
+    sub.add_parser("crosstalk", help="白ベタ先頭の落ち込みをチャンネル別に測る(配線改善の前後比較)")
     dp = sub.add_parser("dump", help="フレームをPNG保存し縦の繰り返し周期を測る")
     dp.add_argument("--out", default="frame.png")
     wv = sub.add_parser("weave", help="インターレースのフィールド割当を実測で決める")
@@ -378,6 +431,8 @@ def main():
     board.drain(1.0)
     if args.cmd == "probe":
         cmd_probe(board, args)
+    elif args.cmd == "crosstalk":
+        cmd_crosstalk(board, args)
     elif args.cmd == "dump":
         cmd_dump(board, args)
     elif args.cmd == "weave":
