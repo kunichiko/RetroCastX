@@ -58,6 +58,9 @@ pub struct Settings {
     pub crop_y: u32,
     pub crop_w: u32,
     pub crop_h: u32,
+    /// 管面が映す時間窓 [h0,h1,v0,v1](ラインとフレームに対する割合)。
+    /// 実際のCRTのH位置/H幅・V位置/V幅つまみに相当し、モニタ固有の値。
+    pub window: [f32; 4],
     /// モードごとの設定。キーは "fH[100Hz単位]_vtotal_htotal"。
     /// 同じ31kHzでも 768x512 と 256x256 は同期信号が同一なので、htotal
     /// (= pll_divide)まで含めないと区別できない。pll_divide を合わせた時点で
@@ -91,6 +94,7 @@ impl Default for Settings {
             tune_video_bw: 15,
             vscale: 1.0,
             rotate: 0,
+            window: [0.22, 0.94, 0.07, 0.98],
             modes: BTreeMap::new(),
             tube_aspect: 0.0,
             filter: 2,
@@ -163,6 +167,10 @@ impl Settings {
                                        [nums[0], nums[1], nums[2], nums[3], nums[4]]);
                     }
                 }
+                "window" => {
+                    let v: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    if v.len() == 4 { s.window = [v[0], v[1], v[2], v[3]] }
+                }
                 "tube_aspect" => {
                     if let Ok(x) = v.parse::<f32>() {
                         s.tube_aspect = if (0.0..=10.0).contains(&x) { x } else { 0.0 };
@@ -227,6 +235,7 @@ impl Settings {
              tune_field_src = {}\n\
              tune_video_bw = {}\n\
              rotate = {}\n\
+             window = {:.4},{:.4},{:.4},{:.4}\n\
              tube_aspect = {:.4}\n\
              filter = {}\n\
              crop_x = {}\n\
@@ -254,6 +263,10 @@ impl Settings {
             self.tune_field_src,
             self.tune_video_bw,
             self.rotate,
+            self.window[0],
+            self.window[1],
+            self.window[2],
+            self.window[3],
             self.tube_aspect,
             self.filter,
             self.crop_x,

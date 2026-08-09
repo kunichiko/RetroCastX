@@ -303,6 +303,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut buf = vec![0u8; 65536];
     let mut sub_seq: u16 = 0;
     let mut last_subscribe: Option<Instant> = None;
+    let mut last_geom: Option<Instant> = None;
     let mut last_report = Instant::now();
     let mut bytes_since = 0u64;
     let mut frames_since = 0u32;
@@ -340,6 +341,24 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                     }
                 } else {
                     q.clear();
+                }
+            }
+        }
+
+        // 画枠パラメータ(vbp/hs_offset/pll_divide)は表示の幾何に必要なので、
+        // UIの有無に関わらず受信側で持っておく。フルスクリーンにはUIが無い。
+        {
+            let due = last_geom.map_or(true, |t: Instant| t.elapsed() >= Duration::from_secs(2));
+            if due {
+                last_geom = Some(Instant::now());
+                let st = shared.config_state.lock().unwrap();
+                let want: Vec<u16> = [proto::CFG_KEY_VBP, proto::CFG_KEY_HS_OFFSET]
+                    .into_iter()
+                    .filter(|k| !st.contains_key(k))
+                    .collect();
+                drop(st);
+                if !want.is_empty() {
+                    shared.config_get_queue.lock().unwrap().extend(want);
                 }
             }
         }

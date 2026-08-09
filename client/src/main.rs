@@ -104,9 +104,10 @@ fn main() -> eframe::Result {
         let rot = if rotate == u32::MAX { cfg.rotate } else { rotate };
         let p = render::Params {
             rotate: rot,
-            crop: [cfg.crop_x, cfg.crop_y, cfg.crop_w, cfg.crop_h],
             tube: cfg.tube_aspect,
             filter: cfg.filter,
+            window: cfg.window,
+            ..Default::default()
         };
         fullscreen::run(port, subscribe_to, target_mac, decay, audio, p); // 戻らない
     }
@@ -391,6 +392,8 @@ struct ViewerApp {
     tube_aspect: f32,
     /// 補間 0=ニアレスト 1=バイリニア 2=sharp-bilinear
     filter: u32,
+    /// 管面が映す時間窓 [h0,h1,v0,v1]。CRTのH位置/H幅・V位置/V幅に相当
+    window: [f32; 4],
     /// モードごとの切り出し・回転。キーは fH_vtotal_htotal
     modes: std::collections::BTreeMap<String, [u32; 5]>,
     /// いま適用しているモードのキー(変化したら保存・復元する)
@@ -466,6 +469,7 @@ impl ViewerApp {
             crop: [cfg.crop_x, cfg.crop_y, cfg.crop_w, cfg.crop_h],
             tube_aspect: cfg.tube_aspect,
             filter: cfg.filter,
+            window: cfg.window,
             modes: cfg.modes.clone(),
             mode_key: String::new(),
             rx_error,
@@ -526,6 +530,7 @@ impl ViewerApp {
             rotate: self.rotate,
             tube_aspect: self.tube_aspect,
             filter: self.filter,
+            window: self.window,
             modes: self.modes.clone(),
             crop_x: self.crop[0],
             crop_y: self.crop[1],
@@ -776,6 +781,22 @@ impl ViewerApp {
         self.push_cfg(protocol::CFG_KEY_F2_ROW, f2 as u32);
         self.push_cfg(protocol::CFG_KEY_FIELD_SWAP, sw as u32);
         self.push_cfg(protocol::CFG_KEY_FIELD_SRC, src as u32);
+    }
+
+    /// いまの表示パラメータ。幾何は MODE(htotal/vtotal)と画枠設定
+    /// (hs_offset/vbp)から決まる。映像の内容には依存しない。
+    fn render_params(&self) -> render::Params {
+        let m = self.shared.mode.lock().unwrap().clone();
+        render::Params {
+            rotate: self.rotate,
+            tube: self.tube_aspect,
+            filter: self.filter,
+            htotal: m.as_ref().map_or(0, |m| m.htotal as u32),
+            vtotal: m.as_ref().map_or(0, |m| m.vtotal as u32),
+            hs_offset: self.tune_hs_offset.max(0) as u32,
+            vbp: self.tune_vbp.max(0) as u32,
+            window: self.window,
+        }
     }
 
     /// 実行時に調整できるキーの一覧。読み戻しと表示の同期に使う
@@ -1244,27 +1265,37 @@ impl eframe::App for ViewerApp {
             drop(boards);
             ui.separator();
 
+            // 管面が映す「ラインの中の時間窓」。実際のCRTのH位置/H幅つまみに相当し、
+            // モニタ固有の値。映像の内容にもモードにも依存しないので、一度合わせれば
+            // どのモードでもそのまま使える。
             ui.horizontal(|ui| {
-                // 取り込みバッファにはブランキング由来の黒が入る。回転すると
-                // それが上下の余白として目立つので、有効範囲だけを出せるようにする。
-                // 実測値を毎フレーム使うと絵の内容で揺れるため、押した時点の値を
-                // 固定して使う。
-                ui.monospace("切り出し");
-                let st2 = self.shared.stats.lock().unwrap().clone();
-                if ui.button("有効範囲から").clicked() && st2.active_w > 0 {
-                    self.crop = [st2.active_x as u32, st2.active_y as u32,
-                                 st2.active_w as u32, st2.active_h as u32];
+                ui.monospace("H位置");
+                let mut c = (self.window[0] + self.window[1]) * 0.5;
+                let mut w = self.window[1] - self.window[0];
+                let a = ui.add(egui::DragValue::new(&mut c).speed(0.002).range(0.0..=1.0)
+                               .fixed_decimals(3));
+                ui.monospace("H幅");
+                let b = ui.add(egui::DragValue::new(&mut w).speed(0.002).range(0.05..=1.0)
+                               .fixed_decimals(3));
+                if a.changed() || b.changed() {
+                    self.window[0] = (c - w * 0.5).clamp(-0.5, 1.5);
+                    self.window[1] = self.window[0] + w;
                     self.mark_settings_dirty();
-                    self.want_fit = true;
                 }
-                if ui.button("全体").clicked() {
-                    self.crop = [0, 0, 0, 0];
+            });
+            ui.horizontal(|ui| {
+                ui.monospace("V位置");
+                let mut c = (self.window[2] + self.window[3]) * 0.5;
+                let mut h = self.window[3] - self.window[2];
+                let a = ui.add(egui::DragValue::new(&mut c).speed(0.002).range(0.0..=1.0)
+                               .fixed_decimals(3));
+                ui.monospace("V幅");
+                let b = ui.add(egui::DragValue::new(&mut h).speed(0.002).range(0.05..=1.0)
+                               .fixed_decimals(3));
+                if a.changed() || b.changed() {
+                    self.window[2] = (c - h * 0.5).clamp(-0.5, 1.5);
+                    self.window[3] = self.window[2] + h;
                     self.mark_settings_dirty();
-                    self.want_fit = true;
-                }
-                if self.crop[2] > 0 {
-                    ui.monospace(format!("{}x{}+{}+{}", self.crop[2], self.crop[3],
-                                         self.crop[0], self.crop[1]));
                 }
             });
             ui.horizontal(|ui| {
@@ -1423,12 +1454,7 @@ impl eframe::App for ViewerApp {
                     ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
                         rect,
                         render::Callback {
-                            params: render::Params {
-                                rotate: self.rotate,
-                                crop: self.crop,
-                                tube: self.tube_aspect,
-                                filter: self.filter,
-                            },
+                            params: self.render_params(),
                             dst: (rect.width() * ppp, rect.height() * ppp),
                         },
                     ));

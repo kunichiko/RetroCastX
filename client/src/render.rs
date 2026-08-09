@@ -25,48 +25,71 @@ pub const FILTER_SHARP: u32 = 2;
 pub struct Params {
     /// 回転 0/1/2/3 = 時計回りに 0/90/180/270 度
     pub rotate: u32,
-    /// 切り出し範囲[画素] x,y,w,h。w/h が 0 なら全体
-    pub crop: [u32; 4],
-    /// 管面の縦横比 (幅/高さ)。0 なら切り出した絵の比をそのまま使う
+    /// 管面の縦横比 (幅/高さ)。0 なら表示する時間窓の比をそのまま使う
     pub tube: f32,
     pub filter: u32,
+    /// 1ライン当たりのサンプル数(= pll_divide)。0 なら幾何計算をやめて全体表示
+    pub htotal: u32,
+    /// バッファ先頭サンプルが、HSYNCから何サンプル後か
+    pub hs_offset: u32,
+    /// 1フレーム当たりのライン数
+    pub vtotal: u32,
+    /// バッファ先頭行が、VSYNCから何行後か
+    pub vbp: u32,
+    /// 管面が映す時間窓。ラインとフレームに対する割合 [h0, h1, v0, v1]
+    /// 実際のCRTのH位置/H幅・V位置/V幅つまみに相当する。モニタ固有の値で、
+    /// 映像の内容にもモードにも依存しない。
+    pub window: [f32; 4],
 }
 
 impl Default for Params {
     fn default() -> Self {
-        Self { rotate: 0, crop: [0; 4], tube: 0.0, filter: FILTER_SHARP }
+        Self {
+            rotate: 0, tube: 0.0, filter: FILTER_SHARP,
+            htotal: 0, hs_offset: 0, vtotal: 0, vbp: 0,
+            // X68000の各モードを実測して得た値(31kHz/24kHz で概ね一致した)
+            window: [0.22, 0.94, 0.07, 0.98],
+        }
     }
 }
 
 /// シェーダへ渡す値。16バイト境界に合わせて4つのvec4にまとめる。
+///
+/// 幾何は時間で決まる。バッファのサンプルkはラインの (hs_offset + k)/htotal の
+/// 位置にあり、これは映像の内容に一切依存しない。管面はラインの中の時間窓を
+/// 映すので、その窓とこの対応から、どのサンプルが画面のどこに来るかが決まる。
 fn uniforms(p: &Params, tex_w: u32, tex_h: u32, dst_w: f32, dst_h: f32) -> [u8; 64] {
     let (tw, th) = (tex_w.max(1) as f32, tex_h.max(1) as f32);
-    // 切り出し(範囲外の指定は無視して全体にする)
-    let ok = p.crop[2] > 0
-        && p.crop[3] > 0
-        && p.crop[0] + p.crop[2] <= tex_w
-        && p.crop[1] + p.crop[3] <= tex_h;
-    let (cx, cy, cw, ch) = if ok {
-        (p.crop[0] as f32, p.crop[1] as f32, p.crop[2] as f32, p.crop[3] as f32)
+    // htotal/vtotal が無い(MODE未受信など)ときはバッファ全体をそのまま出す
+    let geom = p.htotal > 0 && p.vtotal > 0;
+    let (ht, vt) = (p.htotal.max(1) as f32, p.vtotal.max(1) as f32);
+    let (h0, h1, v0, v1) = if geom {
+        (p.window[0], p.window[1], p.window[2], p.window[3])
     } else {
-        (0.0, 0.0, tw, th)
+        // 幾何が使えないときは、バッファ全体がちょうど窓になるようにする
+        (0.0, 1.0, 0.0, 1.0)
     };
-    // 管面の縦横比。0 なら切り出した絵の比をそのまま使う(引き伸ばさない)
-    let aspect = if p.tube > 0.0 { p.tube } else { cw / ch.max(1.0) };
-    // 画面に占める向き。90/270度では幅と高さが入れ替わる
+    let (hoff, voff) = if geom { (p.hs_offset as f32, p.vbp as f32) } else { (0.0, 0.0) };
+    let (span_x, span_y) = if geom {
+        ((h1 - h0) * ht, (v1 - v0) * vt)
+    } else {
+        (tw, th)
+    };
+    // 管面の縦横比。0 なら時間窓の比(= サンプル数の比)をそのまま使う
+    let aspect = if p.tube > 0.0 { p.tube } else { span_x / span_y.max(1.0) };
     let (fw, fh) = if p.rotate % 2 == 1 { (1.0, aspect) } else { (aspect, 1.0) };
     let sc = (dst_w / fw).min(dst_h / fh);
     let (draw_w, draw_h) = (fw * sc, fh * sc);
     let (kx, ky) = (dst_w / draw_w.max(1e-6), dst_h / draw_h.max(1e-6));
-    // sharp-bilinear 用: テクスチャ1テクセルが出力何画素に拡大されるか
+    // sharp-bilinear 用: 1サンプルが出力何画素に拡大されるか
     let (su, sv) = if p.rotate % 2 == 1 {
-        (draw_h / cw, draw_w / ch)
+        (draw_h / span_x.max(1e-6), draw_w / span_y.max(1e-6))
     } else {
-        (draw_w / cw, draw_h / ch)
+        (draw_w / span_x.max(1e-6), draw_h / span_y.max(1e-6))
     };
     let vals: [f32; 16] = [
         kx, ky, p.rotate as f32, p.filter as f32,
-        cx / tw, cy / th, cw / tw, ch / th,
+        h0 * ht - hoff, (h1 - h0) * ht, v0 * vt - voff, (v1 - v0) * vt,
         su.max(1e-6), sv.max(1e-6), tw, th,
         0.0, 0.0, 0.0, 0.0,
     ];
@@ -82,8 +105,8 @@ pub const SHADER: &str = r#"
 @group(0) @binding(1) var samp: sampler;
 
 // a: kx, ky, rotate, filter
-// b: 切り出し(UV) x, y, w, h
-// c: 1テクセルあたりの出力画素数 u, v / テクスチャ寸法 w, h
+// b: 管面の左端に来るサンプル番号 x, その幅[サンプル] y, 同 上端の行 z, 高さ w
+// c: 1サンプルあたりの出力画素数 u, v / テクスチャ寸法 w, h
 struct U { a: vec4<f32>, b: vec4<f32>, c: vec4<f32>, d: vec4<f32> };
 @group(0) @binding(2) var<uniform> u: U;
 
@@ -117,7 +140,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     }
 
     let tex = u.c.zw;
-    let uv0 = u.b.xy + q * u.b.zw;   // テクスチャ全体でのUV
+    // 管面の座標 → バッファ内のサンプル座標(時間で決まる。内容に依存しない)
+    let texel0 = vec2<f32>(u.b.x + q.x * u.b.y, u.b.z + q.y * u.b.w);
+    // 取り込み窓の外は情報が無いので黒
+    if (texel0.x < 0.0 || texel0.x > tex.x || texel0.y < 0.0 || texel0.y > tex.y) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    let uv0 = texel0 / tex;
     let mode = u.a.w;
 
     if (mode < 0.5) {

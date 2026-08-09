@@ -208,7 +208,23 @@ fn render_thread(
                 // 画面と画の縦横比から letterbox 係数を決める。回転する場合は
                 // 画面に占める向きが入れ替わるので、幅と高さを入れ替えて考える。
                 {
-                    gpu.blit.write_uniforms(&gpu.queue, &gpu.uniform, &params, w, h,
+                    // 幾何は MODE と画枠設定から毎フレーム作り直す。UIが無いので
+                    // 受信スレッドが集めた値(config_state)を使う。
+                    let mut p = params;
+                    if let Some(m) = shared.mode.lock().unwrap().as_ref() {
+                        p.htotal = m.htotal as u32;
+                        p.vtotal = m.vtotal as u32;
+                    }
+                    {
+                        let st = shared.config_state.lock().unwrap();
+                        if let Some(v) = st.get(&crate::protocol::CFG_KEY_HS_OFFSET) {
+                            p.hs_offset = *v;
+                        }
+                        if let Some(v) = st.get(&crate::protocol::CFG_KEY_VBP) {
+                            p.vbp = *v;
+                        }
+                    }
+                    gpu.blit.write_uniforms(&gpu.queue, &gpu.uniform, &p, w, h,
                                             gpu.config.width.max(1) as f32,
                                             gpu.config.height.max(1) as f32);
                 }
