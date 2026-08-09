@@ -320,6 +320,8 @@ struct ViewerApp {
     tune_interlace: bool,
     /// 第2フィールドが始まる row(0=vtotal/2)
     tune_f2_row: i32,
+    /// フィールドの偶奇を入れ替える
+    tune_field_swap: bool,
     texture: Option<egui::TextureHandle>,
     seen_gen: u64,
     integer_scale: bool,
@@ -368,6 +370,7 @@ impl ViewerApp {
             tune_snap8: cfg.tune_snap8,
             tune_interlace: cfg.tune_interlace,
             tune_f2_row: cfg.tune_f2_row,
+            tune_field_swap: cfg.tune_field_swap,
             texture: None,
             seen_gen: 0,
             integer_scale: cfg.integer_scale,
@@ -430,6 +433,7 @@ impl ViewerApp {
             tune_snap8: self.tune_snap8,
             tune_interlace: self.tune_interlace,
             tune_f2_row: self.tune_f2_row,
+            tune_field_swap: self.tune_field_swap,
         }
         .save();
     }
@@ -648,6 +652,13 @@ impl ViewerApp {
                 send.push((protocol::CFG_KEY_F2_ROW, 0));
             }
             if self.tune_interlace {
+                // どちらのフィールドが偶数ラインを描いているかは信号から判別
+                // できない。取り違えると1行ずつ食い違い、斜め線や円がギザギザ
+                // に見えるので、見ながら切り替えられるようにしておく。
+                if ui.checkbox(&mut self.tune_field_swap, "swap").changed() {
+                    send.push((protocol::CFG_KEY_FIELD_SWAP,
+                               self.tune_field_swap as u32));
+                }
                 ui.monospace("f2row");
                 // 半ライン分のずれで1行ぶん食い違うことがあるので手で詰められる。
                 // 0 = vtotal/2 を自動で使う

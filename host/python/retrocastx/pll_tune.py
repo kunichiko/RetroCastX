@@ -268,6 +268,93 @@ def cmd_dump(board: Board, args):
         print("  %4d: " % i + " ".join("%4.0f" % v for v in prof[i:i + 16 * 8:16]))
 
 
+def set_reliable(board: Board, key: int, value: int, tries: int = 5) -> bool:
+    """CONFIGは単発だと落ちることがあるので、応答で確認できるまで再送する。"""
+    for _ in range(tries):
+        board.set_cfg(key, value)
+        end = time.monotonic() + 0.5
+        while time.monotonic() < end:
+            try:
+                d, _ = board.sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            try:
+                t, p = proto.parse(d)
+            except ValueError:
+                continue
+            if t == proto.TYPE_CONFIG and getattr(p, "key", None) == key \
+                    and p.value == value:
+                return True
+    return False
+
+
+def weave_error(y: np.ndarray, agree: float = 8.0, active: float = 20.0) -> float:
+    """織り込みのずれ具合。小さいほど正しい。
+
+    同一フィールドの上下(y-1, y+1)がよく一致している画素だけを見て、その間に
+    挟まれた行(=別フィールド)が中間値からどれだけ外れるかを測る。上下が一致
+    している場所は縦方向に滑らかなので、正しく織り込めていれば間の行も中間値
+    付近に来るはず。フィールドの割当を間違えると絵の別の位置が入るので外れる。
+
+    単純な「隣接行の差÷1行飛ばしの差」も試したが、黒地に細い線という絵では
+    ノイズに埋もれて4通りの差が1%も出ず判別できなかった。上下が一致する場所に
+    限ると差が1.7倍つく(実測)。絵の内容には依存しない。
+    """
+    up, dn, mid = y[:-2], y[2:], y[1:-1]
+    m = (np.abs(up - dn) < agree) & (np.maximum(up, dn) > active)
+    if m.sum() < 500:
+        return float("nan")
+    return float(np.abs(mid[m] - (up[m] + dn[m]) / 2).mean())
+
+
+def cmd_weave(board: Board, args):
+    """f2_row と field_swap の4通りを実測して、櫛が最小の組み合わせを選ぶ。
+
+    vtotalが奇数なので2枚のフィールドの行数は1違う。どちらが長いかも、どちらが
+    偶数ラインを描いているかも信号からは決まらないので、4通り試すしかない。
+    """
+    set_reliable(board, proto.CFG_KEY_INTERLACE, 1)
+    board.drain(1.0)
+    m = board.asm.mode
+    if not m or not m.vtotal:
+        print("MODEが取れません")
+        return
+    half = m.vtotal // 2
+    print(f"vtotal={m.vtotal} → f2_row の候補 {half} / {half + 1}")
+    # f2_row を1増やすのと swap を反転するのは、フィールドの相対位置に対しては
+    # 打ち消し合う(実測でも (465,1) と (466,0) は同値だった)。両方振るのは、
+    # 相対位置として -929 / -931 / -933 行の3通りを確かめるため。
+    results = []
+    for f2 in (half, half + 1):
+        for sw in (0, 1):
+            ok1 = set_reliable(board, proto.CFG_KEY_F2_ROW, f2)
+            ok2 = set_reliable(board, proto.CFG_KEY_FIELD_SWAP, sw)
+            board.drain(args.settle)
+            imgs = board.frames(max(args.frames, 12), timeout=12)
+            if not imgs or not (ok1 and ok2):
+                print(f"  f2_row={f2} swap={sw}: 測定できず")
+                continue
+            y = np.mean([luma(i) for i in imgs], axis=0)
+            c = weave_error(y)
+            results.append((c, f2, sw))
+            print(f"  f2_row={f2} swap={sw}: ずれ {c:.3f}")
+    if not results:
+        return
+    results.sort()
+    c, f2, sw = results[0]
+    print(f"\n最良: f2_row={f2} swap={sw} (ずれ {c:.3f})")
+    if len(results) > 1:
+        print(f"  最大との比: {results[-1][0] / c:.2f}倍"
+              " (1.3倍以上あれば判別できている)")
+    set_reliable(board, proto.CFG_KEY_F2_ROW, f2)
+    set_reliable(board, proto.CFG_KEY_FIELD_SWAP, sw)
+    board.drain(1.0)
+    imgs = board.frames(args.frames)
+    if imgs and args.out:
+        _png(args.out, imgs[-1])
+        print(f"{args.out} に保存")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--board", required=True, help="ボードのIP")
@@ -279,6 +366,8 @@ def main():
     sub.add_parser("probe", help="今の映像を測る(外接矩形が飽和していないか等)")
     dp = sub.add_parser("dump", help="フレームをPNG保存し縦の繰り返し周期を測る")
     dp.add_argument("--out", default="frame.png")
+    wv = sub.add_parser("weave", help="インターレースのフィールド割当を実測で決める")
+    wv.add_argument("--out", default="weave.png")
     sw = sub.add_parser("sweep", help="pll_divideを振って鋭さが最大の点を探す")
     sw.add_argument("--center", type=int, required=True, help="探索の中心")
     sw.add_argument("--span", type=int, default=12, help="中心から±いくつ振るか")
@@ -291,6 +380,8 @@ def main():
         cmd_probe(board, args)
     elif args.cmd == "dump":
         cmd_dump(board, args)
+    elif args.cmd == "weave":
+        cmd_weave(board, args)
     else:
         cmd_sweep(board, args)
 

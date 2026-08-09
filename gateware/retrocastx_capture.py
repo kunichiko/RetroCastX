@@ -115,6 +115,10 @@ class TvpCapture(Module):
         # 0 なら cfg_vtotal/2 を使う。半ライン分ずれるモードのために手で微調整できる。
         self.cfg_interlace     = Signal(reset=int(interlace))
         self.cfg_f2_row        = Signal(13, reset=0)
+        # フィールドの偶奇を入れ替える。どちらのフィールドが偶数ラインを描いて
+        # いるかは信号からは分からないので、実機で見て決められるようにする。
+        # 取り違えると1行ずつ食い違い、斜め線や円がギザギザに見える。
+        self.cfg_field_swap    = Signal()
         # 受信側へ報告する行数。インターレースでは織り込み後なので2倍になる。
         self.out_vactive       = Signal(max=2 * height + 1)
 
@@ -221,11 +225,13 @@ class TvpCapture(Module):
         row_eff = Signal(13)
         row_ok  = Signal()
         field_r = Signal()
+        fpar    = Signal()           # 出力行の偶奇(=最下位ビット)
+        self.comb += fpar.eq(in_f2 ^ self.cfg_field_swap)
         self.sync.pix += [
             row_ok.eq((frow >= self.cfg_vs_offset) & (fe < self.cfg_vactive)),
-            field_r.eq(in_f2),
+            field_r.eq(fpar),
             If(self.cfg_interlace,
-                row_eff.eq(Cat(in_f2, fe)),    # = fe*2 + in_f2
+                row_eff.eq(Cat(fpar, fe)),    # = fe*2 + fpar
             ).Else(
                 row_eff.eq(fe),
             ),

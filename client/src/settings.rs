@@ -36,6 +36,8 @@ pub struct Settings {
     pub tune_interlace: bool,
     /// 第2フィールドが始まる row(0=vtotal/2)
     pub tune_f2_row: i32,
+    /// フィールドの偶奇を入れ替える
+    pub tune_field_swap: bool,
 }
 
 impl Default for Settings {
@@ -55,6 +57,7 @@ impl Default for Settings {
             tune_snap8: true,
             tune_interlace: false,
             tune_f2_row: 0,
+            tune_field_swap: false,
         }
     }
 }
@@ -95,6 +98,7 @@ impl Settings {
                 "tune_snap8" => s.tune_snap8 = v == "true",
                 "tune_interlace" => s.tune_interlace = v == "true",
                 "tune_f2_row" => { if let Ok(x) = v.parse() { s.tune_f2_row = x } }
+                "tune_field_swap" => s.tune_field_swap = v == "true",
                 "audio_source" => {
                     s.audio_source = if v == "off" { None } else { v.parse().ok() };
                 }
@@ -129,7 +133,8 @@ impl Settings {
              tune_target_w = {}\n\
              tune_snap8 = {}\n\
              tune_interlace = {}\n\
-             tune_f2_row = {}\n",
+             tune_f2_row = {}\n\
+             tune_field_swap = {}\n",
             self.volume,
             self.muted,
             self.audio_source.map(|v| v.to_string()).unwrap_or_else(|| "off".into()),
@@ -144,6 +149,7 @@ impl Settings {
             self.tune_snap8,
             self.tune_interlace,
             self.tune_f2_row,
+            self.tune_field_swap,
         );
         // 書けなくても致命的ではないので黙って諦める(次回は既定値で起動する)
         if let Ok(mut f) = std::fs::File::create(&path) {

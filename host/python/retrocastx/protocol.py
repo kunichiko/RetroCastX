@@ -37,6 +37,7 @@ CFG_KEY_HS_OFFSET = 0x0011      # 水平バックポーチ[DATACLK]
 CFG_KEY_PLL_DIVIDE = 0x0012     # H-PLL帰還分周比=1ライン当たりDATACLK数
 CFG_KEY_INTERLACE = 0x0013      # インターレース(ウィーブ)
 CFG_KEY_F2_ROW = 0x0014         # 第2フィールドが始まる row(0=vtotal/2)
+CFG_KEY_FIELD_SWAP = 0x0015     # フィールドの偶奇を入れ替える
 
 # アプリ→ボードのパケット(SUBSCRIBE/CONFIG)の宛先MACワイルドカード。
 # 同一LANの全ボードが反応するため、複数ボード環境では実MACを指名すること

@@ -282,6 +282,7 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_pll_divide = Signal(12, reset=cfg_pll_divide)  # key 0x12
         self.cfg_interlace  = Signal(reset=cfg_interlace)        # key 0x13
         self.cfg_f2_row     = Signal(13, reset=0)                # key 0x14
+        self.cfg_field_swap = Signal()                           # key 0x15
         audio_mask = Signal(3, reset=0b111)      # key 0x0001: 音声ソース有効マスク
         argus_reg = Signal(32)                   # target=1(ArgusX)の仮レジスタ
                                                  # (実機step4でI2C書き込みに置換)
@@ -347,6 +348,9 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x14),
                         self.cfg_f2_row.eq(rx.data[:13]),
                     ),
+                    If((cfg_target == 0) & (cfg_key == 0x15),
+                        self.cfg_field_swap.eq(rx.data[0]),
+                    ),
                     If(cfg_target == 1,
                         argus_reg.eq(rx.data),
                     ),
@@ -370,6 +374,8 @@ class RetroCastXStreamer(LiteXModule):
                 cfg_reply_val.eq(self.cfg_interlace),
             ).Elif(cfg_key == 0x14,
                 cfg_reply_val.eq(self.cfg_f2_row),
+            ).Elif(cfg_key == 0x15,
+                cfg_reply_val.eq(self.cfg_field_swap),
             ),
         ]
 
@@ -887,6 +893,7 @@ class RetroCastXStream(SoCMini):
                 self.capture.cfg_hs_offset.eq(self.streamer.cfg_hs_offset),
                 self.capture.cfg_interlace.eq(self.streamer.cfg_interlace),
                 self.capture.cfg_f2_row.eq(self.streamer.cfg_f2_row),
+                self.capture.cfg_field_swap.eq(self.streamer.cfg_field_swap),
                 self.status.cfg_pll_divide.eq(self.streamer.cfg_pll_divide),
                 self.capture.cfg_clear_from.eq(
                     (self.streamer.cfg_pll_divide - self.streamer.cfg_hs_offset)[1:]),
