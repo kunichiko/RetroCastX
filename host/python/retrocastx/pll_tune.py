@@ -218,6 +218,56 @@ def cmd_sweep(board: Board, args):
     print("この値をボードに設定した(電源を切ると既定値に戻る)")
 
 
+def _png(path: str, rgb: np.ndarray):
+    """PILに依存せずRGB888のndarrayをPNGで書く。"""
+    import struct, zlib
+    h, w, _ = rgb.shape
+    raw = b"".join(b"\x00" + rgb[y].tobytes() for y in range(h))
+
+    def chunk(tag, data):
+        c = tag + data
+        return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c))
+
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+        f.write(chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)))
+        f.write(chunk(b"IDAT", zlib.compress(raw, 6)))
+        f.write(chunk(b"IEND", b""))
+
+
+def cmd_dump(board: Board, args):
+    """フレームを保存し、縦方向の構造(繰り返し周期)を測る。
+
+    「測定したvtotal」と「絵が実際に繰り返す周期」が食い違っていないかを見る。
+    食い違っていれば、VSYNCを1つおきにしか受理できていない=インターレース。
+    """
+    imgs = board.frames(args.frames)
+    board.drain(3.0)
+    show_mode(board)
+    if not imgs:
+        print("フレームを受信できません")
+        return
+    img = imgs[-1]
+    _png(args.out, img)
+    print(f"{args.out} に保存 ({img.shape[1]}x{img.shape[0]})")
+
+    y = luma(img)
+    prof = y.mean(axis=1)
+    lit = np.flatnonzero(prof > 0.5)
+    if len(lit):
+        print(f"内容のある行: {lit[0]} .. {lit[-1]}")
+    # 自己相関で縦の繰り返し周期を探す。絵が1枚だけなら山は出ない
+    d = prof - prof.mean()
+    ac = np.correlate(d, d, mode="full")[len(d) - 1:]
+    ac = ac / (ac[0] if ac[0] else 1.0)
+    lo = 32
+    k = int(np.argmax(ac[lo:len(ac) // 1])) + lo
+    print(f"縦方向の自己相関ピーク: 周期 {k} 行 (相関 {ac[k]:.3f})")
+    print("行平均輝度(16行ごと):")
+    for i in range(0, len(prof), 16 * 8):
+        print("  %4d: " % i + " ".join("%4.0f" % v for v in prof[i:i + 16 * 8:16]))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--board", required=True, help="ボードのIP")
@@ -227,6 +277,8 @@ def main():
                     help="設定変更後にPLLが落ち着くのを待つ秒数")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("probe", help="今の映像を測る(外接矩形が飽和していないか等)")
+    dp = sub.add_parser("dump", help="フレームをPNG保存し縦の繰り返し周期を測る")
+    dp.add_argument("--out", default="frame.png")
     sw = sub.add_parser("sweep", help="pll_divideを振って鋭さが最大の点を探す")
     sw.add_argument("--center", type=int, required=True, help="探索の中心")
     sw.add_argument("--span", type=int, default=12, help="中心から±いくつ振るか")
@@ -237,6 +289,8 @@ def main():
     board.drain(1.0)
     if args.cmd == "probe":
         cmd_probe(board, args)
+    elif args.cmd == "dump":
+        cmd_dump(board, args)
     else:
         cmd_sweep(board, args)
 

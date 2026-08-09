@@ -224,6 +224,10 @@ pub fn pack_config(
 pub const CFG_KEY_VBP: u16 = 0x0010;
 pub const CFG_KEY_HS_OFFSET: u16 = 0x0011;
 pub const CFG_KEY_PLL_DIVIDE: u16 = 0x0012;
+/// インターレース(ウィーブ)。1回のVSYNCにフィールドが2枚入る信号を織り直す
+pub const CFG_KEY_INTERLACE: u16 = 0x0013;
+/// 第2フィールドが始まる row。0 なら vtotal/2 を使う
+pub const CFG_KEY_F2_ROW: u16 = 0x0014;
 
 /// SUBSCRIBE(16B): 共通ヘッダ8B + 宛先MAC 6B + 予約2B。
 /// mac で宛先ボードを指名する(WILDCARD_MAC で全ボード)。

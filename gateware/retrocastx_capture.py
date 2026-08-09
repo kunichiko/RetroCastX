@@ -39,7 +39,11 @@ class TvpCapture(Module):
                  hs_active_low=True, vs_active_low=True,
                  hs_offset=0, vs_offset=0, vs_min_rows=0, vtotal=0,
                  vs_row_at_sync=0, hs_total=0, sys_clk_freq=45e6, measure=True,
-                 auto_vtotal=False, vbp=43):
+                 auto_vtotal=False, vbp=43, interlace=False):
+        # interlace: 1回のVSYNCの中にフィールドが2枚入る信号を、元の行数に織り直す。
+        #   X68000の 24kHz 1024x848 は VSYNC がフレームに1回(vtotal 931行)しか来ず、
+        #   その中に縦半分の解像度で画面全体を描いたフィールドが2枚並ぶ。そのまま
+        #   送ると同じ絵が2回出る(実測: 466行周期で繰り返した)。
         # auto_vtotal: 実測vtotalに追従してフレーム境界と垂直位置を自動設定する。
         # vbp: 窓の先頭をVSYNCの何行後にするか(垂直バックポーチ相当)。
         # measure: 実測タイミング(周波数カウンタ)を作るか。34.8MHzで回る32bitカウンタが
@@ -107,6 +111,12 @@ class TvpCapture(Module):
         # 送出する行数。vtotalが小さいモードで512行送ると空きが出るので、
         # min(height, vtotal - vbp) を自動で入れる。
         self.cfg_vactive       = Signal(max=height + 1, reset=height)
+        # インターレース(ウィーブ)。cfg_f2_row は第2フィールドが始まる row。
+        # 0 なら cfg_vtotal/2 を使う。半ライン分ずれるモードのために手で微調整できる。
+        self.cfg_interlace     = Signal(reset=int(interlace))
+        self.cfg_f2_row        = Signal(13, reset=0)
+        # 受信側へ報告する行数。インターレースでは織り込み後なので2倍になる。
+        self.out_vactive       = Signal(max=2 * height + 1)
 
         # --- 実測タイミング(sysドメイン)。MODEパケットで報告する ---
         # ビルド時の仮定値ではなく実信号から測る。1秒窓のカウントなので単位はHz。
@@ -185,11 +195,40 @@ class TvpCapture(Module):
         self.comb += pix555.eq(rgb888_to_555(r, g, b))
 
         # 有効行 row_eff = row - vs_offset(アクティブ行の0起点index)
+        #
+        # インターレース時は row をフィールド内行に直し、2倍して極性を足す
+        # (= 元の行番号に織り戻す)。極性はVSYNCの位相ではなく「rowが折り返し点
+        # f2_row を超えたか」で決める。この信号はVSYNCがフィールドごとに来ない
+        # (フレームに1回だけ)ので、位相からは極性を判定できない。
+        # cfg_interlace=0 のときは in_f2=0 / frow=row となり、従来と同じ式になる。
+        f2_row = Signal(13)
+        in_f2  = Signal()
+        frow   = Signal(13)          # フィールド内行
+        fe     = Signal(13)          # フィールド内の有効行index
+        self.comb += [
+            f2_row.eq(Mux(self.cfg_f2_row != 0, self.cfg_f2_row,
+                          self.cfg_vtotal[1:])),        # 既定は vtotal/2
+            in_f2.eq(self.cfg_interlace & (row >= f2_row)),
+            frow.eq(row - Mux(in_f2, f2_row, 0)),
+            fe.eq(frow - self.cfg_vs_offset),
+        ]
+        # row_ok / row_eff はレジスタに落とす。これらは画素書込のイネーブル
+        # (wr.we)まで届くので、組合せのままだと減算2段+比較がBRAMの書込端子
+        # 直前まで伸びる。実際 sys が 53.6→42.5MHz まで落ちて要求45MHzを割った。
+        # row は hs_edge でしか変わらず、画素が始まるのは hs_offset(数百クロック)
+        # 後なので、1クロック遅れても取りこぼさない。hs_edge 時点の値は「いま
+        # 終わったライン」のもので、push の判定に使う値として正しい。
         row_eff = Signal(13)
         row_ok  = Signal()
-        self.comb += [
-            row_eff.eq(row - self.cfg_vs_offset),
-            row_ok.eq((row >= self.cfg_vs_offset) & (row_eff < self.cfg_vactive)),
+        field_r = Signal()
+        self.sync.pix += [
+            row_ok.eq((frow >= self.cfg_vs_offset) & (fe < self.cfg_vactive)),
+            field_r.eq(in_f2),
+            If(self.cfg_interlace,
+                row_eff.eq(Cat(in_f2, fe)),    # = fe*2 + in_f2
+            ).Else(
+                row_eff.eq(fe),
+            ),
         ]
         xpix   = Signal(16)                       # 有効ピクセルx(= x - hs_offset)
         active = Signal()
@@ -243,7 +282,8 @@ class TvpCapture(Module):
             meta.sink.face.eq(face),
             meta.sink.row.eq(row_eff[:row_bits]),
             meta.sink.frame.eq(frame),
-            meta.sink.field.eq(field),
+            # インターレース時は実際のフィールド極性を載せる(非対応時は従来の交互)
+            meta.sink.field.eq(Mux(self.cfg_interlace, field_r, field)),
             # hs_edge時点の cur_ts は「今終わったライン」の先頭値(更新はクロック端で
             # 起きるため)。push するのもそのラインなので一致する。
             meta.sink.ts.eq(cur_ts),
@@ -391,7 +431,11 @@ class TvpCapture(Module):
             # レジスタのまま毎サイクル更新すれば、1クロック遅れるだけで即座に反映され、
             # pix側は短いレジスタ出力を見るだけで済む。
             vstart = Signal(13)
-            self.comb += vstart.eq(self.cfg_vtotal - self.cfg_vbp)
+            fstart = Signal(13)      # インターレース時のフィールドあたり有効行数
+            self.comb += [
+                vstart.eq(self.cfg_vtotal - self.cfg_vbp),
+                fstart.eq(self.cfg_vtotal[1:] - self.cfg_vbp),
+            ]
             self.sync += [
                 # VSYNC位相ゲートは vtotal の 3/4(モードに依らず妥当な比率)
                 self.cfg_vs_min_rows.eq(self.cfg_vtotal -
@@ -399,12 +443,30 @@ class TvpCapture(Module):
                 # 窓の先頭 = VSYNCの vbp 行後
                 self.cfg_vs_row_at_sync.eq(vstart),
                 # 送出行数 = min(height, vtotal - vbp)
-                If(vstart < height,
+                # インターレース時は「1フィールドあたり」の行数なので、上限は
+                # フィールドの行数(vtotal/2)と height/2 の小さい方になる。
+                If(self.cfg_interlace,
+                    # 非インターレースの vtotal-vbp と同じ考え方をフィールドに
+                    # 適用する。vtotal/2 のままだとフィールドのブランキングまで
+                    # 送ってしまい、下端に次フレームの切れ端が帯になって出る。
+                    If(fstart < (height >> 1),
+                        self.cfg_vactive.eq(fstart),
+                    ).Else(
+                        self.cfg_vactive.eq(height >> 1),
+                    ),
+                ).Elif(vstart < height,
                     self.cfg_vactive.eq(vstart),
                 ).Else(
                     self.cfg_vactive.eq(height),
                 ),
             ]
+
+        # 報告用の行数。ウィーブ後はフィールド内行数の2倍になる。
+        self.comb += If(self.cfg_interlace,
+            self.out_vactive.eq(Cat(0, self.cfg_vactive)),   # = vactive*2
+        ).Else(
+            self.out_vactive.eq(self.cfg_vactive),
+        )
 
         # ================= sys ドメイン =================
         self.comb += [

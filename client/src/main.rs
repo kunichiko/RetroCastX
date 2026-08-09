@@ -316,6 +316,10 @@ struct ViewerApp {
     tune_target_w: i32,
     /// 推奨値を8の倍数に丸める(X68000のhtotalは8ドット単位)
     tune_snap8: bool,
+    /// インターレース(ウィーブ)を有効にする
+    tune_interlace: bool,
+    /// 第2フィールドが始まる row(0=vtotal/2)
+    tune_f2_row: i32,
     texture: Option<egui::TextureHandle>,
     seen_gen: u64,
     integer_scale: bool,
@@ -362,6 +366,8 @@ impl ViewerApp {
             tune_pll_divide: cfg.tune_pll_divide,
             tune_target_w: cfg.tune_target_w,
             tune_snap8: cfg.tune_snap8,
+            tune_interlace: cfg.tune_interlace,
+            tune_f2_row: cfg.tune_f2_row,
             texture: None,
             seen_gen: 0,
             integer_scale: cfg.integer_scale,
@@ -422,6 +428,8 @@ impl ViewerApp {
             tune_pll_divide: self.tune_pll_divide,
             tune_target_w: self.tune_target_w,
             tune_snap8: self.tune_snap8,
+            tune_interlace: self.tune_interlace,
+            tune_f2_row: self.tune_f2_row,
         }
         .save();
     }
@@ -625,6 +633,28 @@ impl ViewerApp {
                         .max(0.0) as i32;
                     send.push((protocol::CFG_KEY_PLL_DIVIDE, self.tune_pll_divide as u32));
                     send.push((protocol::CFG_KEY_HS_OFFSET, self.tune_hs_offset as u32));
+                }
+            }
+        });
+        // インターレース(ウィーブ)。X68000の 24kHz 1024x848 のように、VSYNCが
+        // フレームに1回しか来ずその中にフィールドが2枚入る信号で使う。
+        // 見分け方: 同じfHのままvtotalが約2倍かつ奇数になり、fVが半分になる。
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut self.tune_interlace, "interlace").changed() {
+                send.push((protocol::CFG_KEY_INTERLACE, self.tune_interlace as u32));
+                // 折り返し点は既定(vtotal/2)に戻す。モードを変えると前のモードの
+                // 値が残って絵が割れるため。
+                self.tune_f2_row = 0;
+                send.push((protocol::CFG_KEY_F2_ROW, 0));
+            }
+            if self.tune_interlace {
+                ui.monospace("f2row");
+                // 半ライン分のずれで1行ぶん食い違うことがあるので手で詰められる。
+                // 0 = vtotal/2 を自動で使う
+                if ui.add(egui::DragValue::new(&mut self.tune_f2_row).range(0..=4095))
+                    .changed()
+                {
+                    send.push((protocol::CFG_KEY_F2_ROW, self.tune_f2_row as u32));
                 }
             }
         });

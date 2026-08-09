@@ -32,6 +32,10 @@ pub struct Settings {
     pub tune_target_w: i32,
     /// 推奨値を8の倍数に丸める
     pub tune_snap8: bool,
+    /// インターレース(ウィーブ)
+    pub tune_interlace: bool,
+    /// 第2フィールドが始まる row(0=vtotal/2)
+    pub tune_f2_row: i32,
 }
 
 impl Default for Settings {
@@ -49,6 +53,8 @@ impl Default for Settings {
             tune_pll_divide: 1104,
             tune_target_w: 768,
             tune_snap8: true,
+            tune_interlace: false,
+            tune_f2_row: 0,
         }
     }
 }
@@ -87,6 +93,8 @@ impl Settings {
                 "tune_pll_divide" => { if let Ok(x) = v.parse() { s.tune_pll_divide = x } }
                 "tune_target_w" => { if let Ok(x) = v.parse() { s.tune_target_w = x } }
                 "tune_snap8" => s.tune_snap8 = v == "true",
+                "tune_interlace" => s.tune_interlace = v == "true",
+                "tune_f2_row" => { if let Ok(x) = v.parse() { s.tune_f2_row = x } }
                 "audio_source" => {
                     s.audio_source = if v == "off" { None } else { v.parse().ok() };
                 }
@@ -119,7 +127,9 @@ impl Settings {
              tune_hs_offset = {}\n\
              tune_pll_divide = {}\n\
              tune_target_w = {}\n\
-             tune_snap8 = {}\n",
+             tune_snap8 = {}\n\
+             tune_interlace = {}\n\
+             tune_f2_row = {}\n",
             self.volume,
             self.muted,
             self.audio_source.map(|v| v.to_string()).unwrap_or_else(|| "off".into()),
@@ -132,6 +142,8 @@ impl Settings {
             self.tune_pll_divide,
             self.tune_target_w,
             self.tune_snap8,
+            self.tune_interlace,
+            self.tune_f2_row,
         );
         // 書けなくても致命的ではないので黙って諦める(次回は既定値で起動する)
         if let Ok(mut f) = std::fs::File::create(&path) {

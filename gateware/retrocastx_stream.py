@@ -125,7 +125,8 @@ class RetroCastXStreamer(LiteXModule):
                  mtu_payload=1472, interlace=False,
                  audio_sources=None, audio_nsamples=240,
                  mac_address=MAC_ADDRESS, capture=None,
-                 cfg_vbp=43, cfg_hs_offset=152, cfg_pll_divide=1104):
+                 cfg_vbp=43, cfg_hs_offset=152, cfg_pll_divide=1104,
+                 cfg_interlace=0):
         # capture: TvpCapture(sysドメインI/F) を渡すと、テストパターンの代わりに
         #   実キャプチャライン(line_valid/line_row/line_frame/rd_*)を源にする。
         #   None の場合は従来どおり自走テストパターン。
@@ -202,7 +203,7 @@ class RetroCastXStreamer(LiteXModule):
             self.comb += [
                 mode_htotal.eq(capture.meas_htotal),
                 mode_vtotal.eq(capture.meas_vtotal),
-                mode_vactive.eq(capture.cfg_vactive),
+                mode_vactive.eq(capture.out_vactive),
                 mode_dotclk.eq(capture.meas_dotclk),
                 mode_hfreq.eq(capture.meas_hfreq * 1000),
                 mode_vfreq.eq(capture.meas_vfreq),   # 既にmHz(8秒積算で0.125Hz分解能)
@@ -279,6 +280,8 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_vbp        = Signal(13, reset=cfg_vbp)         # key 0x10
         self.cfg_hs_offset  = Signal(13, reset=cfg_hs_offset)   # key 0x11
         self.cfg_pll_divide = Signal(12, reset=cfg_pll_divide)  # key 0x12
+        self.cfg_interlace  = Signal(reset=cfg_interlace)        # key 0x13
+        self.cfg_f2_row     = Signal(13, reset=0)                # key 0x14
         audio_mask = Signal(3, reset=0b111)      # key 0x0001: 音声ソース有効マスク
         argus_reg = Signal(32)                   # target=1(ArgusX)の仮レジスタ
                                                  # (実機step4でI2C書き込みに置換)
@@ -338,6 +341,12 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x12),
                         self.cfg_pll_divide.eq(rx.data[:12]),
                     ),
+                    If((cfg_target == 0) & (cfg_key == 0x13),
+                        self.cfg_interlace.eq(rx.data[0]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x14),
+                        self.cfg_f2_row.eq(rx.data[:13]),
+                    ),
                     If(cfg_target == 1,
                         argus_reg.eq(rx.data),
                     ),
@@ -357,6 +366,10 @@ class RetroCastXStreamer(LiteXModule):
                 cfg_reply_val.eq(self.cfg_hs_offset),
             ).Elif(cfg_key == 0x12,
                 cfg_reply_val.eq(self.cfg_pll_divide),
+            ).Elif(cfg_key == 0x13,
+                cfg_reply_val.eq(self.cfg_interlace),
+            ).Elif(cfg_key == 0x14,
+                cfg_reply_val.eq(self.cfg_f2_row),
             ),
         ]
 
@@ -744,7 +757,8 @@ class RetroCastXStream(SoCMini):
     def __init__(self, revision="7.0", sys_clk_freq=int(45e6), capture=True,
                  green_input=3, red_input=3, blue_input=3,
                  pll_divide=1104, hs_offset=152, vs_row_at_sync=525,
-                 measure=True, mclk_out=True, auto_vtotal=True, vbp=43):
+                 measure=True, mclk_out=True, auto_vtotal=True, vbp=43,
+                 interlace_cap=False):
         from litex_boards.platforms import colorlight_i5
         from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
         from liteeth.core import LiteEthUDPIPCore
@@ -840,13 +854,14 @@ class RetroCastXStream(SoCMini):
             # hs_offset: 水平バックポーチ[DATACLK]。pll_divide を変えるとサンプルレートが
             #   変わるので、この値も同じ比率で見直す必要がある。RGB入力を1段レジスタで
             #   受けるようにした分データが1サイクル遅れるので、151→152 に補正している。
-            self.capture = TvpCapture(cap_pads, width=1024, height=512,
+            self.capture = TvpCapture(cap_pads, width=1024, height=1024,
                                       hs_active_low=True, vs_active_low=True,
                                       vtotal=568, vs_min_rows=497,
                                       vs_row_at_sync=vs_row_at_sync,
                                       # 実測vtotalに追従(モードが変わると
                                       # ラップ点が合わず絵が縦に繰り返すため)
                                       auto_vtotal=auto_vtotal, vbp=vbp,
+                                      interlace=interlace_cap,
                                       hs_offset=hs_offset, vs_offset=0,
                                       hs_total=pll_divide or 1650,
                                       sys_clk_freq=sys_clk_freq,
@@ -855,12 +870,13 @@ class RetroCastXStream(SoCMini):
 
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
         self.streamer = RetroCastXStreamer(
-            udp_port, sys_clk_freq, width=1024, height=512, fps=60.0,
+            udp_port, sys_clk_freq, width=1024, height=1024, fps=60.0,
             audio_sources=[(self.i2s.sources[0], 48000),
                            (self.i2s.sources[1], 48000),
                            (self.spdif.source, self.spdif.rate_hz)],
             capture=capture_obj,
-            cfg_vbp=vbp, cfg_hs_offset=hs_offset, cfg_pll_divide=pll_divide)
+            cfg_vbp=vbp, cfg_hs_offset=hs_offset, cfg_pll_divide=pll_divide,
+            cfg_interlace=int(interlace_cap))
 
         if capture:
             # CONFIGで書き換わる画枠パラメータをキャプチャ/TVPへ配る。
@@ -869,6 +885,8 @@ class RetroCastXStream(SoCMini):
             self.comb += [
                 self.capture.cfg_vbp.eq(self.streamer.cfg_vbp),
                 self.capture.cfg_hs_offset.eq(self.streamer.cfg_hs_offset),
+                self.capture.cfg_interlace.eq(self.streamer.cfg_interlace),
+                self.capture.cfg_f2_row.eq(self.streamer.cfg_f2_row),
                 self.status.cfg_pll_divide.eq(self.streamer.cfg_pll_divide),
                 self.capture.cfg_clear_from.eq(
                     (self.streamer.cfg_pll_divide - self.streamer.cfg_hs_offset)[1:]),
@@ -910,6 +928,9 @@ def main():
                     help="実測タイミング(周波数カウンタ)を作らない。ノイズ切り分け用")
     ap.add_argument("--no-auto-vtotal", action="store_true",
                     help="実測vtotalへの自動追従を切る(固定値で動かす)")
+    ap.add_argument("--interlace", action="store_true",
+                    help="起動時からウィーブを有効にする(実行時にCONFIG key 0x13でも切替可)。"
+                         "1回のVSYNCにフィールドが2枚入る信号(X68000 24kHz 1024x848 等)向け")
     ap.add_argument("--vbp", type=int, default=43,
                     help="キャプチャ窓の先頭をVSYNCの何行後にするか(垂直バックポーチ)")
     ap.add_argument("--no-mclk-out", action="store_true",
@@ -925,7 +946,7 @@ def main():
                            measure=not args.no_measure,
                            mclk_out=not args.no_mclk_out,
                            auto_vtotal=not args.no_auto_vtotal,
-                           vbp=args.vbp)
+                           vbp=args.vbp, interlace_cap=args.interlace)
     builder = Builder(soc, output_dir="build/colorlight_i5", compile_software=False)
     builder.build(run=args.build, seed=args.seed)
 
