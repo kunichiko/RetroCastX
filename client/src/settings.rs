@@ -43,6 +43,8 @@ pub struct Settings {
     pub tune_field_src: u8,
     /// TVPのアナログ映像帯域。0=最大 / 15=最小
     pub tune_video_bw: u8,
+    /// サンプリング位相 0..31。ドット周期の1/32刻み
+    pub tune_phase: u8,
     /// 表示時の縦倍率。ドットが正方形でないモードの縦つぶれを直す
     pub vscale: f32,
     /// 画面回転 0/1/2/3 = 時計回りに 0/90/180/270 度(縦画面のゲーム用)
@@ -65,8 +67,9 @@ pub struct Settings {
     /// 同じ31kHzでも 768x512 と 256x256 は同期信号が同一なので、htotal
     /// (= pll_divide)まで含めないと区別できない。pll_divide を合わせた時点で
     /// モードが確定するので、それ以降は自動で復元される。
-    /// 値は crop_x,crop_y,crop_w,crop_h,rotate
-    pub modes: BTreeMap<String, [u32; 5]>,
+    /// 値は crop_x,crop_y,crop_w,crop_h,rotate,phase
+    /// (古い設定ファイルは phase を持たないので、その場合は既定16を入れる)
+    pub modes: BTreeMap<String, [u32; 6]>,
     /// 前回のウィンドウ内寸。次回起動時に復元する
     pub window_w: f32,
     pub window_h: f32,
@@ -92,6 +95,7 @@ impl Default for Settings {
             tune_field_swap: false,
             tune_field_src: 0,
             tune_video_bw: 15,
+            tune_phase: 16,
             vscale: 1.0,
             rotate: 0,
             window: [0.22, 0.94, 0.07, 0.98],
@@ -154,6 +158,7 @@ impl Settings {
                 "tune_field_swap" => s.tune_field_swap = v == "true",
                 "tune_field_src" => { if let Ok(x) = v.parse() { s.tune_field_src = x } }
                 "tune_video_bw" => { if let Ok(x) = v.parse() { s.tune_video_bw = x } }
+                "tune_phase" => { if let Ok(x) = v.parse::<u8>() { s.tune_phase = x.min(31) } }
                 "rotate" => {
                     if let Ok(x) = v.parse::<u32>() {
                         s.rotate = if x < 4 { x } else { 0 };
@@ -162,9 +167,10 @@ impl Settings {
                 k if k.starts_with("mode.") => {
                     let nums: Vec<u32> =
                         v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
-                    if nums.len() == 5 {
+                    if nums.len() >= 5 {
+                        let ph = if nums.len() >= 6 { nums[5].min(31) } else { 16 };
                         s.modes.insert(k[5..].to_string(),
-                                       [nums[0], nums[1], nums[2], nums[3], nums[4]]);
+                                       [nums[0], nums[1], nums[2], nums[3], nums[4], ph]);
                     }
                 }
                 "window" => {
@@ -234,6 +240,7 @@ impl Settings {
              tune_field_swap = {}\n\
              tune_field_src = {}\n\
              tune_video_bw = {}\n\
+             tune_phase = {}\n\
              rotate = {}\n\
              window = {:.4},{:.4},{:.4},{:.4}\n\
              tube_aspect = {:.4}\n\
@@ -262,6 +269,7 @@ impl Settings {
             self.tune_field_swap,
             self.tune_field_src,
             self.tune_video_bw,
+            self.tune_phase,
             self.rotate,
             self.window[0],
             self.window[1],
@@ -280,7 +288,8 @@ impl Settings {
         let mut body = body;
         for (k, v) in &self.modes {
             body.push_str(&format!(
-                "mode.{k} = {},{},{},{},{}\n", v[0], v[1], v[2], v[3], v[4]));
+                "mode.{k} = {},{},{},{},{},{}\n",
+                v[0], v[1], v[2], v[3], v[4], v[5]));
         }
         // 書けなくても致命的ではないので黙って諦める(次回は既定値で起動する)
         if let Ok(mut f) = std::fs::File::create(&path) {

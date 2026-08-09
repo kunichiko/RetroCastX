@@ -359,6 +359,7 @@ struct ViewerApp {
     tune_field_src: u8,
     /// TVPのアナログ映像帯域。0=最大 / 15=最小(約95MHz)
     tune_video_bw: u8,
+    tune_phase: u8,
     /// 送信したがまだボードの応答で確認できていない値(key → (値, 送信時刻))。
     /// 応答が返るまでは自分の値を優先し、押した瞬間に元へ戻って見えるのを防ぐ。
     tune_pending: std::collections::HashMap<u16, (u32, std::time::Instant)>,
@@ -395,7 +396,7 @@ struct ViewerApp {
     /// 管面が映す時間窓 [h0,h1,v0,v1]。CRTのH位置/H幅・V位置/V幅に相当
     window: [f32; 4],
     /// モードごとの切り出し・回転。キーは fH_vtotal_htotal
-    modes: std::collections::BTreeMap<String, [u32; 5]>,
+    modes: std::collections::BTreeMap<String, [u32; 6]>,
     /// いま適用しているモードのキー(変化したら保存・復元する)
     mode_key: String,
     rx_error: Option<String>,
@@ -451,6 +452,7 @@ impl ViewerApp {
             tune_field_swap: cfg.tune_field_swap,
             tune_field_src: cfg.tune_field_src,
             tune_video_bw: cfg.tune_video_bw,
+            tune_phase: cfg.tune_phase,
             tune_pending: Default::default(),
             tune_get_at: None,
             tune_synced: false,
@@ -511,7 +513,7 @@ impl ViewerApp {
         if !self.mode_key.is_empty() {
             let k = self.mode_key.clone();
             self.modes.insert(k, [self.crop[0], self.crop[1], self.crop[2],
-                                  self.crop[3], self.rotate]);
+                                  self.crop[3], self.rotate, self.tune_phase as u32]);
         }
         let due = self
             .settings_dirty
@@ -550,6 +552,7 @@ impl ViewerApp {
             tune_field_swap: self.tune_field_swap,
             tune_field_src: self.tune_field_src,
             tune_video_bw: self.tune_video_bw,
+            tune_phase: self.tune_phase,
         }
         .save();
     }
@@ -800,7 +803,7 @@ impl ViewerApp {
     }
 
     /// 実行時に調整できるキーの一覧。読み戻しと表示の同期に使う
-    const TUNE_KEYS: [u16; 8] = [
+    const TUNE_KEYS: [u16; 9] = [
         protocol::CFG_KEY_VBP,
         protocol::CFG_KEY_HS_OFFSET,
         protocol::CFG_KEY_PLL_DIVIDE,
@@ -809,6 +812,7 @@ impl ViewerApp {
         protocol::CFG_KEY_FIELD_SWAP,
         protocol::CFG_KEY_FIELD_SRC,
         protocol::CFG_KEY_VIDEO_BW,
+        protocol::CFG_KEY_PHASE,
     ];
 
     /// ボードの現在値を表示へ反映する。
@@ -839,12 +843,18 @@ impl ViewerApp {
         if !self.mode_key.is_empty() {
             let old = self.mode_key.clone();
             self.modes.insert(old, [self.crop[0], self.crop[1], self.crop[2],
-                                    self.crop[3], self.rotate]);
+                                    self.crop[3], self.rotate, self.tune_phase as u32]);
         }
         match self.modes.get(&key) {
             Some(v) => {
                 self.crop = [v[0], v[1], v[2], v[3]];
                 self.rotate = v[4].min(3);
+                // 位相はモードごとに最適値が違うので、復元したらボードへ送り直す
+                let ph = (v[5].min(31)) as u8;
+                if ph != self.tune_phase {
+                    self.tune_phase = ph;
+                    self.send_cfg(protocol::CFG_KEY_PHASE, ph as u32);
+                }
             }
             None => {
                 self.crop = [0; 4];
@@ -854,6 +864,13 @@ impl ViewerApp {
         self.mode_key = key;
         self.mark_settings_dirty();
         self.want_fit = true;
+    }
+
+    /// CONFIGを1つ送る。UIの外(モード追従など)から使う
+    fn send_cfg(&mut self, key: u16, val: u32) {
+        self.tune_pending.insert(key, (val, std::time::Instant::now()));
+        self.shared.config_queue.lock().unwrap().push((key, val));
+        self.mark_settings_dirty();
     }
 
     fn sync_tune_from_board(&mut self) {
@@ -898,6 +915,7 @@ impl ViewerApp {
                 protocol::CFG_KEY_FIELD_SWAP => self.tune_field_swap = val != 0,
                 protocol::CFG_KEY_FIELD_SRC => self.tune_field_src = val as u8,
                 protocol::CFG_KEY_VIDEO_BW => self.tune_video_bw = val as u8,
+                protocol::CFG_KEY_PHASE => self.tune_phase = (val as u8).min(31),
                 _ => {}
             }
         }
@@ -1153,6 +1171,26 @@ impl ViewerApp {
             }
             ui.monospace(if self.tune_video_bw == 0 { "最大" } else if self.tune_video_bw == 15 { "最小≈95MHz" } else { "" });
         });
+        // サンプリング位相。1ドット周期の1/32刻みで、ADCがドットのどこを掴むか。
+        // 実測で鮮鋭度が位相だけで2.5倍変わった(最良22 / 既定16は-12% / 最悪4は-60%)。
+        // 最適値はモードごとに違うので、モード別設定として保存している。
+        ui.horizontal(|ui| {
+            ui.monospace("位相");
+            let mut ph = self.tune_phase as i32;
+            if ui.add(egui::DragValue::new(&mut ph).range(0..=31)).changed() {
+                self.tune_phase = ph as u8;
+                send.push((protocol::CFG_KEY_PHASE, ph as u32));
+            }
+            if ui.button("-").clicked() {
+                self.tune_phase = (self.tune_phase + 31) % 32;
+                send.push((protocol::CFG_KEY_PHASE, self.tune_phase as u32));
+            }
+            if ui.button("+").clicked() {
+                self.tune_phase = (self.tune_phase + 1) % 32;
+                send.push((protocol::CFG_KEY_PHASE, self.tune_phase as u32));
+            }
+            ui.monospace(format!("{:.0}度", self.tune_phase as f32 * 360.0 / 32.0));
+        });
         ui.horizontal(|ui| {
             if ui.button("読む").on_hover_text(
                 "ボードの現在値を取り込んで表示を合わせる").clicked()
@@ -1168,6 +1206,7 @@ impl ViewerApp {
             send.push((protocol::CFG_KEY_VBP, self.tune_vbp as u32));
             send.push((protocol::CFG_KEY_HS_OFFSET, self.tune_hs_offset as u32));
             send.push((protocol::CFG_KEY_PLL_DIVIDE, self.tune_pll_divide as u32));
+            send.push((protocol::CFG_KEY_PHASE, self.tune_phase as u32));
         }
         if !send.is_empty() {
             let now = std::time::Instant::now();

@@ -407,6 +407,150 @@ def cmd_crosstalk(board: Board, args):
               f"差 {tail - head:+4.1f}")
 
 
+# ---------------------------------------------------------------- autotune
+#
+# 「近傍で鋭さが最大の点」を探す sweep は有理倍に騙される。実機で
+# pll_divide=1104 が 31kHz 512x512 の ちょうど1.5倍 だったとき、1.5倍は位相
+# ロックする有理比なので本物の局所ピークとして観測され、正解(736)は探索範囲の
+# 外にあった。1ドットが1.5サンプルに広がると2ドットに1回サンプル点が境目へ落ち、
+# 白1ドットの隣が黒なら混ざってグレーになる(「白がグレーに見える」の原因)。
+#
+# 代わりにスペクトルの占有率を使う。1ドット=1サンプルなら水平のスペクトルは
+# Nyquistまで埋まり、k倍に過剰サンプルすると上の (1-1/k) が空になる。よって
+#     1:1の pll_divide ≒ (いまの pll_divide) x (帯域占有率)
+# で1回の測定から倍率が分かる。ただし不足側では折り返しが帯域を埋めて占有率が
+# 1に張り付くので、**必ず意図的に過剰サンプルしてから割る**。実測:
+#     設定2112 → 占有率0.664 → 推定1402   (真値1408, 誤差0.4%)
+#     設定1056 → 占有率0.958 → 推定1012   (不足側なので当たらない)
+#
+# 最後に8の倍数で±3%だけ局所探索して詰める。X68000のhtotalは常に8の倍数で、
+# ±3%の中に1.5倍のような有理比は入らないので、ここでは鋭さ最大が使える。
+#
+# 有効幅からドット数を逆算する手は使えない。キャプチャバッファが1024サンプル
+# しかないので、pll_divideを上げると1ラインが入り切らず途中で切れる(実測で
+# 設定2112のとき有効幅が752と縮んで見えた)。
+
+
+def _active(board: Board, frames: int, th: float = 40.0):
+    """有効映像を切り出した輝度。端4サンプルは外接矩形のぶれで落とす。"""
+    imgs = board.frames(frames, timeout=20)
+    if not imgs:
+        return None
+    y = np.mean([luma(i.astype(np.float32)) for i in imgs], axis=0)
+    cols = np.flatnonzero(y.max(axis=0) > th)
+    rows = np.flatnonzero(y.max(axis=1) > th)
+    if len(cols) < 64 or len(rows) < 32:
+        return None
+    return y[int(rows[0]):int(rows[-1]) + 1, int(cols[0]) + 4:int(cols[-1]) - 3]
+
+
+def occupancy(c: np.ndarray) -> float:
+    """水平スペクトルのうちエネルギーの99%が収まる帯域の割合(0..1)。
+
+    1ドット=1サンプルなら1に近づき、k倍に過剰サンプルすると 1/k に近づく。
+    行ごとにDCを抜いてから窓を掛ける(左右の端の段差が偽の高域になるのを防ぐ)。
+    """
+    c = c - c.mean(axis=1, keepdims=True)
+    w = np.hanning(c.shape[1])[None, :]
+    P = (np.abs(np.fft.rfft(c * w, axis=1)) ** 2).mean(axis=0)[1:]
+    if P.sum() <= 0:
+        return 1.0
+    return float(np.searchsorted(np.cumsum(P) / P.sum(), 0.99) + 1) / len(P)
+
+
+def hsharp(c: np.ndarray) -> float:
+    return float(np.sum(np.diff(c, axis=1) ** 2)) / 1e6
+
+
+PLL_MIN, PLL_MAX = 200, 2304
+
+
+def cmd_autotune(board: Board, args):
+    board.drain(2.0)
+    show_mode(board)
+    m = board.asm.mode
+    est = m.htotal if (m and m.htotal) else args.start
+    print(f"\n開始 pll_divide = {est}")
+    set_reliable(board, proto.CFG_KEY_PHASE, args.phase)
+
+    # --- 1. 上限まで過剰サンプルして、スペクトル占有率から倍率を割り出す
+    #
+    # 反復して詰めようとすると、過剰サンプルが足りない測定を混ぜてしまって
+    # 外す(実機で 1504 の測定を採って 1254 と推定し、正解1408を探索範囲から
+    # 外した)。上限固定の1回測定にすると再現性は ±0.5% で、真値に対して
+    # -3% の系統的なバイアスだけが残る。これは局所探索の幅で吸収する。
+    set_reliable(board, proto.CFG_KEY_PLL_DIVIDE, PLL_MAX)
+    board.drain(args.settle)
+    c = _active(board, max(8, args.frames))
+    if c is None:
+        print(f"過剰サンプル {PLL_MAX} で映像を検出できません")
+        return
+    occ = occupancy(c)
+    est = int(round(PLL_MAX * occ))
+    print(f"\n過剰サンプル {PLL_MAX} → 帯域占有率 {occ:.3f} → 推定 {est}")
+    if occ > 0.9:
+        print("  ※占有率が高すぎます。過剰サンプルになっていないので推定は信用できません")
+    if not PLL_MIN <= est <= PLL_MAX:
+        print(f"推定値 {est} が範囲外です。中止します")
+        return
+
+    # --- 2. 8の倍数で局所探索して詰める
+    # 推定のバイアス(-3%程度)とばらつきを覆う幅にする。±7%の中に1.5倍のような
+    # 有理比は入らないので、この範囲では鋭さ最大が正しく効く。
+    lo = max(PLL_MIN, int(est * 0.93 / 8) * 8)
+    hi = min(PLL_MAX, int(est * 1.07 / 8) * 8)
+    print(f"\n局所探索 {lo}..{hi} (8刻み)")
+    res = []
+    for pll in range(lo, hi + 1, 8):
+        set_reliable(board, proto.CFG_KEY_PLL_DIVIDE, pll)
+        board.drain(max(0.8, args.settle * 0.6))
+        c = _active(board, args.frames)
+        if c is None:
+            continue
+        res.append((pll, hsharp(c)))
+        print(f"  {pll:5d}  {res[-1][1]:8.2f}M")
+    if not res:
+        print("局所探索で映像を検出できませんでした")
+        return
+    best_pll, best_sh = max(res, key=lambda r: r[1])
+    med = float(np.median([r[1] for r in res]))
+    print(f"\npll_divide = {best_pll}  ({best_sh:.2f}M, 中央値比 {best_sh / med:.3f})")
+    if best_sh / med < 1.05:
+        print("  ※突出が弱いです。文字など細かい模様が出ている画面で測り直してください")
+    set_reliable(board, proto.CFG_KEY_PLL_DIVIDE, best_pll)
+    board.drain(args.settle)
+
+    # --- 3. 位相。1:1にしてから測る
+    print("\n位相を振る")
+    ph = []
+    for v in range(0, 32, 2):
+        set_reliable(board, proto.CFG_KEY_PHASE, v)
+        board.drain(max(0.8, args.settle * 0.6))
+        c = _active(board, args.frames)
+        if c is not None:
+            ph.append((v, hsharp(c)))
+            print(f"  位相 {v:2d}  {ph[-1][1]:8.2f}M")
+    if not ph:
+        print("位相の測定に失敗しました")
+        return
+    coarse = max(ph, key=lambda r: r[1])[0]
+    fine = []
+    for v in range(coarse - 2, coarse + 3):
+        v %= 32
+        set_reliable(board, proto.CFG_KEY_PHASE, v)
+        board.drain(max(0.8, args.settle * 0.6))
+        c = _active(board, args.frames)
+        if c is not None:
+            fine.append((v, hsharp(c)))
+    best_ph, best_phs = max(fine or ph, key=lambda r: r[1])
+    worst = min(ph, key=lambda r: r[1])
+    set_reliable(board, proto.CFG_KEY_PHASE, best_ph)
+    print(f"\n決定: pll_divide = {best_pll}  位相 = {best_ph} ({best_phs:.2f}M)")
+    print(f"  参考: 最悪の位相 {worst[0]} は {worst[1]:.2f}M "
+          f"({worst[1] / best_phs * 100:.0f}%)")
+    print("ボードへ設定しました。hs_offset はhtotalが変わると合わせ直しが必要です")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--board", required=True, help="ボードのIP")
@@ -421,9 +565,15 @@ def main():
     dp.add_argument("--out", default="frame.png")
     wv = sub.add_parser("weave", help="インターレースのフィールド割当を実測で決める")
     wv.add_argument("--out", default="weave.png")
-    sw = sub.add_parser("sweep", help="pll_divideを振って鋭さが最大の点を探す")
+    sw = sub.add_parser("sweep", help="pll_divideを振って鋭さが最大の点を探す"
+                                      "(近傍のみ。有理倍に騙されるので autotune を推奨)")
     sw.add_argument("--center", type=int, required=True, help="探索の中心")
     sw.add_argument("--span", type=int, default=12, help="中心から±いくつ振るか")
+    at = sub.add_parser("autotune", help="1ドット=1サンプルになる pll_divide と位相を実測で決める")
+    at.add_argument("--start", type=int, default=1104,
+                    help="MODEが取れないときの開始 pll_divide")
+    at.add_argument("--phase", type=int, default=16,
+                    help="pll探索中に使う位相(最後に最適値へ振り直す)")
     args = ap.parse_args()
 
     board = Board(args.board, args.port)
@@ -437,6 +587,8 @@ def main():
         cmd_dump(board, args)
     elif args.cmd == "weave":
         cmd_weave(board, args)
+    elif args.cmd == "autotune":
+        cmd_autotune(board, args)
     else:
         cmd_sweep(board, args)
 
