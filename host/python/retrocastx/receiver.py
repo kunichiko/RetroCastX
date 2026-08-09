@@ -68,11 +68,17 @@ class FrameAssembler:
             return completed  # SUBSCRIBE等はフレーム再構成に関与しない
         if ptype == proto.TYPE_MODE:
             self._track_seq(pkt.seq)
-            if self.mode is None or pkt.mode_id != self.mode.mode_id:
-                self.mode = pkt
+            # バッファの作り直しは寸法が変わったときだけ。ただし mode 自体は毎回
+            # 差し替える。MODEは htotal/dotclk などの実測値を毎秒運んでくるので、
+            # mode_id が同じだからと更新を飛ばすと、pll_divide を変えても古い値を
+            # 見続けることになる(実際これで「設定が反映されない」と誤判定した)。
+            if (self.fb is None or self.mode is None
+                    or pkt.hactive != self.mode.hactive
+                    or pkt.vactive != self.mode.vactive):
                 self.fb = np.zeros((pkt.vactive, pkt.hactive, 3), dtype=np.uint8)
                 self.cur_frame = None
                 self.px_filled = 0
+            self.mode = pkt
             return completed
         # LINE
         self._track_seq(pkt.seq)
