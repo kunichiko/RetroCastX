@@ -152,7 +152,8 @@ impl Gpu {
         config.present_mode = mode;
         config.desired_maximum_frame_latency = 3;
         surface.configure(&device, &config);
-        eprintln!("fullscreen: present mode {mode:?}, {}x{}", config.width, config.height);
+        eprintln!("fullscreen: present mode {mode:?}, {}x{}, surface {:?}",
+                  config.width, config.height, config.format);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("blit"),
@@ -255,7 +256,13 @@ fn render_thread(
                         mip_level_count: 1,
                         sample_count: 1,
                         dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        // 映像データはsRGB符号化済みなので、テクスチャもsRGBで
+                        // 作る。Rgba8Unorm(リニア扱い)にすると、サンプル時に
+                        // 復号されないまま出力段でリニア→sRGBに符号化され、
+                        // 二重にかかって中間調が持ち上がる(全体が明るく見える)。
+                        // 通常モードのeguiは ColorImage をsRGBとして扱うので、
+                        // こちらを合わせないと見え方が食い違う。
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
                         usage: wgpu::TextureUsages::TEXTURE_BINDING
                             | wgpu::TextureUsages::COPY_DST,
                         view_formats: &[],
