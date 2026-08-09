@@ -280,7 +280,8 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_vbp        = Signal(13, reset=cfg_vbp)         # key 0x10
         self.cfg_hs_offset  = Signal(13, reset=cfg_hs_offset)   # key 0x11
         self.cfg_pll_divide = Signal(12, reset=cfg_pll_divide)  # key 0x12
-        self.cfg_interlace  = Signal(reset=cfg_interlace)        # key 0x13
+        self.cfg_interlace  = Signal(2, reset=cfg_interlace)     # key 0x13
+        self.cfg_field_src  = Signal()                           # key 0x16
         self.cfg_f2_row     = Signal(13, reset=0)                # key 0x14
         self.cfg_field_swap = Signal()                           # key 0x15
         audio_mask = Signal(3, reset=0b111)      # key 0x0001: 音声ソース有効マスク
@@ -343,13 +344,16 @@ class RetroCastXStreamer(LiteXModule):
                         self.cfg_pll_divide.eq(rx.data[:12]),
                     ),
                     If((cfg_target == 0) & (cfg_key == 0x13),
-                        self.cfg_interlace.eq(rx.data[0]),
+                        self.cfg_interlace.eq(rx.data[:2]),
                     ),
                     If((cfg_target == 0) & (cfg_key == 0x14),
                         self.cfg_f2_row.eq(rx.data[:13]),
                     ),
                     If((cfg_target == 0) & (cfg_key == 0x15),
                         self.cfg_field_swap.eq(rx.data[0]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x16),
+                        self.cfg_field_src.eq(rx.data[0]),
                     ),
                     If(cfg_target == 1,
                         argus_reg.eq(rx.data),
@@ -376,8 +380,20 @@ class RetroCastXStreamer(LiteXModule):
                 cfg_reply_val.eq(self.cfg_f2_row),
             ).Elif(cfg_key == 0x15,
                 cfg_reply_val.eq(self.cfg_field_swap),
+            ).Elif(cfg_key == 0x16,
+                cfg_reply_val.eq(self.cfg_field_src),
             ),
         ]
+
+        # 診断用の読み出し。フィールド極性をどちらから取るべきかを実機で判断する
+        # ための生データ(位相が0付近と中央付近で交互になるか、FIDOUTが交互に
+        # なるかを見る)。書き込みは無視される読み取り専用。
+        if cap_mode:
+            self.comb += If(cfg_key == 0x20,
+                cfg_reply_val.eq(capture.stat_vs_x),
+            ).Elif(cfg_key == 0x21,
+                cfg_reply_val.eq(capture.stat_fid),
+            )
 
         # --- 送出要求(sticky; RXセットとFSMクリアの同時発生はセット優先) ---
         ann_pending  = Signal()
@@ -764,7 +780,7 @@ class RetroCastXStream(SoCMini):
                  green_input=3, red_input=3, blue_input=3,
                  pll_divide=1104, hs_offset=152, vs_row_at_sync=525,
                  measure=True, mclk_out=True, auto_vtotal=True, vbp=43,
-                 interlace_cap=False):
+                 interlace_cap=0):
         from litex_boards.platforms import colorlight_i5
         from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
         from liteeth.core import LiteEthUDPIPCore
@@ -908,6 +924,8 @@ class RetroCastXStream(SoCMini):
                 self.capture.cfg_hs_offset.eq(hs_use),
                 self.capture.cfg_interlace.eq(self.streamer.cfg_interlace),
                 self.capture.cfg_f2_row.eq(self.streamer.cfg_f2_row),
+                self.capture.cfg_field_src.eq(self.streamer.cfg_field_src),
+                self.capture.cfg_hs_total.eq(self.streamer.cfg_pll_divide),
                 self.capture.cfg_field_swap.eq(self.streamer.cfg_field_swap),
                 self.status.cfg_pll_divide.eq(self.streamer.cfg_pll_divide),
                 self.capture.cfg_clear_from.eq(
@@ -950,9 +968,10 @@ def main():
                     help="実測タイミング(周波数カウンタ)を作らない。ノイズ切り分け用")
     ap.add_argument("--no-auto-vtotal", action="store_true",
                     help="実測vtotalへの自動追従を切る(固定値で動かす)")
-    ap.add_argument("--interlace", action="store_true",
-                    help="起動時からウィーブを有効にする(実行時にCONFIG key 0x13でも切替可)。"
-                         "1回のVSYNCにフィールドが2枚入る信号(X68000 24kHz 1024x848 等)向け")
+    ap.add_argument("--interlace", type=int, default=0, choices=(0, 1, 2),
+                    help="起動時のウィーブ方式(実行時にCONFIG key 0x13でも切替可)。"
+                         "1=1回のVSYNCにフィールドが2枚(X68000 24kHz 1024x848)、"
+                         "2=フィールドごとにVSYNC(15kHz 512x512。標準的なインターレース)")
     ap.add_argument("--vbp", type=int, default=43,
                     help="キャプチャ窓の先頭をVSYNCの何行後にするか(垂直バックポーチ)")
     ap.add_argument("--no-mclk-out", action="store_true",

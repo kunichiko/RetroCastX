@@ -262,7 +262,8 @@ fn signal_is_valid(m: &protocol::Mode) -> bool {
 /// インターレースの織り込み方を自動判定している最中の状態
 struct WeaveAuto {
     /// 試す (f2_row, swap) の並び
-    cands: Vec<(i32, bool)>,
+    /// (方式, f2_row, swap, 極性の取得元)
+    cands: Vec<(u8, i32, bool, u8)>,
     idx: usize,
     /// 現在の候補を送った時刻。None ならまだ送っていない
     started: Option<std::time::Instant>,
@@ -270,7 +271,7 @@ struct WeaveAuto {
     n: u32,
     /// 取り込んだ最後の測定番号(同じ値を二重に足さないため)
     last_seen: u64,
-    results: Vec<(f64, i32, bool)>,
+    results: Vec<(f64, (u8, i32, bool, u8))>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -330,12 +331,14 @@ struct ViewerApp {
     tune_target_w: i32,
     /// 推奨値を8の倍数に丸める(X68000のhtotalは8ドット単位)
     tune_snap8: bool,
-    /// インターレース(ウィーブ)を有効にする
-    tune_interlace: bool,
+    /// インターレース方式。0=なし / 1=1VSYNCに2フィールド / 2=フィールド毎VSYNC
+    tune_interlace: u8,
     /// 第2フィールドが始まる row(0=vtotal/2)
     tune_f2_row: i32,
     /// フィールドの偶奇を入れ替える
     tune_field_swap: bool,
+    /// 方式2の極性の取得元。0=位相 / 1=FIDOUT
+    tune_field_src: u8,
     /// 送信したがまだボードの応答で確認できていない値(key → (値, 送信時刻))。
     /// 応答が返るまでは自分の値を優先し、押した瞬間に元へ戻って見えるのを防ぐ。
     tune_pending: std::collections::HashMap<u16, (u32, std::time::Instant)>,
@@ -401,6 +404,7 @@ impl ViewerApp {
             tune_interlace: cfg.tune_interlace,
             tune_f2_row: cfg.tune_f2_row,
             tune_field_swap: cfg.tune_field_swap,
+            tune_field_src: cfg.tune_field_src,
             tune_pending: Default::default(),
             tune_get_at: None,
             weave_auto: None,
@@ -474,6 +478,7 @@ impl ViewerApp {
             tune_interlace: self.tune_interlace,
             tune_f2_row: self.tune_f2_row,
             tune_field_swap: self.tune_field_swap,
+            tune_field_src: self.tune_field_src,
         }
         .save();
     }
@@ -608,8 +613,20 @@ impl ViewerApp {
     /// 変わっても追従させるため。
     fn weave_auto_start(&mut self, vtotal: u16) {
         let half = (vtotal / 2) as i32;
+        // (方式, f2_row, swap, 極性の取得元)
+        // 方式1: f2_row を1増やすのと swap の反転は打ち消し合うので3通りで足りる。
+        // 方式2: 折り返し点は無く、極性の取得元(位相/FIDOUT)と swap の4通り。
+        let cands = vec![
+            (1u8, 0, false, 0u8),
+            (1, 0, true, 0),
+            (1, half + 1, true, 0),
+            (2, 0, false, 0),
+            (2, 0, true, 0),
+            (2, 0, false, 1),
+            (2, 0, true, 1),
+        ];
         self.weave_auto = Some(WeaveAuto {
-            cands: vec![(0, false), (0, true), (half + 1, true)],
+            cands,
             idx: 0,
             started: None,
             sum: 0.0,
@@ -617,12 +634,6 @@ impl ViewerApp {
             last_seen: 0,
             results: Vec::new(),
         });
-        // 判定の前に織り込みを有効にする。無効のままでは絵が上下2枚に割れていて
-        // 比較にならない
-        if !self.tune_interlace {
-            self.tune_interlace = true;
-            self.push_cfg(protocol::CFG_KEY_INTERLACE, 1);
-        }
     }
 
     /// CONFIGを1件送る(送信済みとして pending に記録する)
@@ -638,14 +649,15 @@ impl ViewerApp {
         let now = std::time::Instant::now();
         let Some(started) = a.started else {
             // この候補を送って計測開始
-            let (f2, sw) = a.cands[a.idx];
+            let (il, f2, sw, src) = a.cands[a.idx];
             a.started = Some(now);
             a.sum = 0.0;
             a.n = 0;
             a.last_seen = 0;
-            let (f2u, swu) = (f2 as u32, sw as u32);
-            self.push_cfg(protocol::CFG_KEY_F2_ROW, f2u);
-            self.push_cfg(protocol::CFG_KEY_FIELD_SWAP, swu);
+            self.push_cfg(protocol::CFG_KEY_INTERLACE, il as u32);
+            self.push_cfg(protocol::CFG_KEY_F2_ROW, f2 as u32);
+            self.push_cfg(protocol::CFG_KEY_FIELD_SWAP, sw as u32);
+            self.push_cfg(protocol::CFG_KEY_FIELD_SRC, src as u32);
             return;
         };
         let el = now.duration_since(started);
@@ -663,9 +675,9 @@ impl ViewerApp {
         if el < std::time::Duration::from_millis(2200) {
             return;
         }
-        let (f2, sw) = a.cands[a.idx];
+        let c = a.cands[a.idx];
         if a.n > 0 {
-            a.results.push((a.sum / a.n as f64, f2, sw));
+            a.results.push((a.sum / a.n as f64, c));
         }
         a.idx += 1;
         a.started = None;
@@ -680,29 +692,35 @@ impl ViewerApp {
             return;
         }
         res.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
-        for (e, f2, sw) in &res {
-            eprintln!("weave auto: f2_row={f2} swap={} ずれ {e:.3}", *sw as u8);
+        for (e, (il, f2, sw, src)) in &res {
+            eprintln!(
+                "weave auto: 方式{il} f2_row={f2} swap={} 極性={} ずれ {e:.3}",
+                *sw as u8,
+                if *src == 1 { "FID" } else { "位相" }
+            );
         }
-        let (best, f2, sw) = res[0];
+        let (best, (il, f2, sw, src)) = res[0];
         let ratio = res[res.len() - 1].0 / best.max(1e-6);
-        eprintln!(
-            "weave auto: 採用 f2_row={f2} swap={} (最大との比 {ratio:.2}倍)",
-            sw as u8
-        );
+        eprintln!("weave auto: 採用 方式{il} (最大との比 {ratio:.2}倍)");
+        self.tune_interlace = il;
         self.tune_f2_row = f2;
         self.tune_field_swap = sw;
+        self.tune_field_src = src;
+        self.push_cfg(protocol::CFG_KEY_INTERLACE, il as u32);
         self.push_cfg(protocol::CFG_KEY_F2_ROW, f2 as u32);
         self.push_cfg(protocol::CFG_KEY_FIELD_SWAP, sw as u32);
+        self.push_cfg(protocol::CFG_KEY_FIELD_SRC, src as u32);
     }
 
     /// 実行時に調整できるキーの一覧。読み戻しと表示の同期に使う
-    const TUNE_KEYS: [u16; 6] = [
+    const TUNE_KEYS: [u16; 7] = [
         protocol::CFG_KEY_VBP,
         protocol::CFG_KEY_HS_OFFSET,
         protocol::CFG_KEY_PLL_DIVIDE,
         protocol::CFG_KEY_INTERLACE,
         protocol::CFG_KEY_F2_ROW,
         protocol::CFG_KEY_FIELD_SWAP,
+        protocol::CFG_KEY_FIELD_SRC,
     ];
 
     /// ボードの現在値を表示へ反映する。
@@ -742,8 +760,9 @@ impl ViewerApp {
                 protocol::CFG_KEY_HS_OFFSET => self.tune_hs_offset = val as i32,
                 protocol::CFG_KEY_PLL_DIVIDE => self.tune_pll_divide = val as i32,
                 protocol::CFG_KEY_F2_ROW => self.tune_f2_row = val as i32,
-                protocol::CFG_KEY_INTERLACE => self.tune_interlace = val != 0,
+                protocol::CFG_KEY_INTERLACE => self.tune_interlace = val as u8,
                 protocol::CFG_KEY_FIELD_SWAP => self.tune_field_swap = val != 0,
+                protocol::CFG_KEY_FIELD_SRC => self.tune_field_src = val as u8,
                 _ => {}
             }
         }
@@ -844,14 +863,31 @@ impl ViewerApp {
         // フレームに1回しか来ずその中にフィールドが2枚入る信号で使う。
         // 見分け方: 同じfHのままvtotalが約2倍かつ奇数になり、fVが半分になる。
         ui.horizontal(|ui| {
-            if ui.checkbox(&mut self.tune_interlace, "interlace").changed() {
-                send.push((protocol::CFG_KEY_INTERLACE, self.tune_interlace as u32));
+            // 0=なし / 1=1つのVSYNCにフィールドが2枚(24kHz 1024x848) /
+            // 2=フィールドごとにVSYNC(15kHz 512x512。標準的なインターレース)
+            let mut il = self.tune_interlace;
+            ui.monospace("il");
+            egui::ComboBox::from_id_salt("interlace")
+                .width(96.0)
+                .selected_text(match il {
+                    1 => "1VS/2枚",
+                    2 => "VS/枚",
+                    _ => "なし",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut il, 0, "なし");
+                    ui.selectable_value(&mut il, 1, "1VS/2枚");
+                    ui.selectable_value(&mut il, 2, "VS/枚");
+                });
+            if il != self.tune_interlace {
+                self.tune_interlace = il;
+                send.push((protocol::CFG_KEY_INTERLACE, il as u32));
                 // 折り返し点は既定(vtotal/2)に戻す。モードを変えると前のモードの
                 // 値が残って絵が割れるため。
                 self.tune_f2_row = 0;
                 send.push((protocol::CFG_KEY_F2_ROW, 0));
             }
-            if self.tune_interlace {
+            if self.tune_interlace != 0 {
                 // どちらのフィールドが偶数ラインを描いているかは信号から判別
                 // できない。取り違えると1行ずつ食い違い、斜め線や円がギザギザ
                 // に見えるので、見ながら切り替えられるようにしておく。
@@ -866,6 +902,23 @@ impl ViewerApp {
                     if let Some(vt) = vtotal {
                         self.weave_auto_start(vt);
                     }
+                }
+                if self.tune_interlace == 2 {
+                    // 方式2の極性の取得元。位相判定とFIDOUTのどちらが正しく出るかは
+                    // 実機で確かめる
+                    let mut src = self.tune_field_src;
+                    egui::ComboBox::from_id_salt("field_src")
+                        .width(72.0)
+                        .selected_text(if src == 1 { "FID" } else { "位相" })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut src, 0, "位相");
+                            ui.selectable_value(&mut src, 1, "FID");
+                        });
+                    if src != self.tune_field_src {
+                        self.tune_field_src = src;
+                        send.push((protocol::CFG_KEY_FIELD_SRC, src as u32));
+                    }
+                    return;
                 }
                 ui.monospace("f2row");
                 // 半ライン分のずれで1行ぶん食い違うことがあるので手で詰められる。

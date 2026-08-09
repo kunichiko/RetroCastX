@@ -113,12 +113,22 @@ class TvpCapture(Module):
         self.cfg_vactive       = Signal(max=height + 1, reset=height)
         # インターレース(ウィーブ)。cfg_f2_row は第2フィールドが始まる row。
         # 0 なら cfg_vtotal/2 を使う。半ライン分ずれるモードのために手で微調整できる。
-        self.cfg_interlace     = Signal(reset=int(interlace))
+        # 0=なし / 1=1つのVSYNCに2フィールド(24kHz 1024x848) /
+        # 2=フィールドごとにVSYNC(15kHz 512x512。標準的なインターレース)
+        self.cfg_interlace     = Signal(2, reset=int(interlace))
         self.cfg_f2_row        = Signal(13, reset=0)
         # フィールドの偶奇を入れ替える。どちらのフィールドが偶数ラインを描いて
         # いるかは信号からは分からないので、実機で見て決められるようにする。
         # 取り違えると1行ずつ食い違い、斜め線や円がギザギザに見える。
         self.cfg_field_swap    = Signal()
+        # 方式2でフィールド極性をどこから取るか。0=VSYNCの水平位相 / 1=TVPのFIDOUT。
+        # どちらが正しく出るかは実機で確かめられるよう選べるようにしてある。
+        self.cfg_field_src     = Signal()
+        # 1ライン当たりのDATACLK数(=H-PLL分周比)。位相判定のしきい値に使う
+        self.cfg_hs_total      = Signal(13, reset=hs_total or 0)
+        # 診断用(sysで観測): VSYNCエッジ時の行内カウンタと、そのときのFIDOUT
+        self.stat_vs_x         = Signal(16)
+        self.stat_fid          = Signal()
         # 受信側へ報告する行数。インターレースでは織り込み後なので2倍になる。
         self.out_vactive       = Signal(max=2 * height + 1)
 
@@ -205,6 +215,29 @@ class TvpCapture(Module):
         # f2_row を超えたか」で決める。この信号はVSYNCがフィールドごとに来ない
         # (フレームに1回だけ)ので、位相からは極性を判定できない。
         # cfg_interlace=0 のときは in_f2=0 / frow=row となり、従来と同じ式になる。
+        # --- インターレースのフィールド極性 ---
+        # 方式1は row が折り返し点を超えたかで決まる(VSYNCが1回しか来ないので
+        # 位相は使えない)。方式2はVSYNCがフィールドごとに来るので、標準どおり
+        # 「VSYNCがラインの境界に来るか中央に来るか」で判別できる。TVP7002の
+        # FIDOUTも同じ判定をしているはずなので、どちらを使うか選べるようにする。
+        fid_in = Signal()
+        if hasattr(pads, "fid"):
+            fid0 = Signal()
+            self.sync.pix += [fid0.eq(pads.fid), fid_in.eq(fid0)]
+        vs_x   = Signal(16)          # VSYNCエッジ時の行内カウンタ(=位相)
+        fid_vs = Signal()            # そのときのFIDOUT
+        ph     = Signal()            # 位相から見たフィールド極性
+        fld    = Signal()            # 方式2のフィールド極性(VSYNCごとに更新)
+        q = Signal(13)
+        self.comb += [
+            q.eq(self.cfg_hs_total[2:]),          # hs_total/4
+            ph.eq((x > q) & (x < (self.cfg_hs_total - q))),   # ラインの中央付近か
+        ]
+        self.sync.pix += If(vs_edge_raw,
+            vs_x.eq(x), fid_vs.eq(fid_in),
+            fld.eq(Mux(self.cfg_field_src, fid_in, ph)),
+        )
+
         f2_row = Signal(13)
         in_f2  = Signal()
         frow   = Signal(13)          # フィールド内行
@@ -212,7 +245,7 @@ class TvpCapture(Module):
         self.comb += [
             f2_row.eq(Mux(self.cfg_f2_row != 0, self.cfg_f2_row,
                           self.cfg_vtotal[1:])),        # 既定は vtotal/2
-            in_f2.eq(self.cfg_interlace & (row >= f2_row)),
+            in_f2.eq((self.cfg_interlace == 1) & (row >= f2_row)),
             frow.eq(row - Mux(in_f2, f2_row, 0)),
             fe.eq(frow - self.cfg_vs_offset),
         ]
@@ -226,11 +259,15 @@ class TvpCapture(Module):
         row_ok  = Signal()
         field_r = Signal()
         fpar    = Signal()           # 出力行の偶奇(=最下位ビット)
-        self.comb += fpar.eq(in_f2 ^ self.cfg_field_swap)
+        il_on   = Signal()
+        self.comb += [
+            il_on.eq(self.cfg_interlace != 0),
+            fpar.eq(Mux(self.cfg_interlace == 2, fld, in_f2) ^ self.cfg_field_swap),
+        ]
         self.sync.pix += [
             row_ok.eq((frow >= self.cfg_vs_offset) & (fe < self.cfg_vactive)),
             field_r.eq(fpar),
-            If(self.cfg_interlace,
+            If(il_on,
                 row_eff.eq(Cat(fpar, fe)),    # = fe*2 + fpar
             ).Else(
                 row_eff.eq(fe),
@@ -304,7 +341,7 @@ class TvpCapture(Module):
             meta.sink.row.eq(row_eff[:row_bits]),
             meta.sink.frame.eq(frame),
             # インターレース時は実際のフィールド極性を載せる(非対応時は従来の交互)
-            meta.sink.field.eq(Mux(self.cfg_interlace, field_r, field)),
+            meta.sink.field.eq(Mux(il_on, field_r, field)),
             # hs_edge時点の cur_ts は「今終わったライン」の先頭値(更新はクロック端で
             # 起きるため)。push するのもそのラインなので一致する。
             meta.sink.ts.eq(cur_ts),
@@ -466,12 +503,21 @@ class TvpCapture(Module):
                 # 送出行数 = min(height, vtotal - vbp)
                 # インターレース時は「1フィールドあたり」の行数なので、上限は
                 # フィールドの行数(vtotal/2)と height/2 の小さい方になる。
-                If(self.cfg_interlace,
+                If(self.cfg_interlace == 1,
                     # 非インターレースの vtotal-vbp と同じ考え方をフィールドに
                     # 適用する。vtotal/2 のままだとフィールドのブランキングまで
                     # 送ってしまい、下端に次フレームの切れ端が帯になって出る。
                     If(fstart < (height >> 1),
                         self.cfg_vactive.eq(fstart),
+                    ).Else(
+                        self.cfg_vactive.eq(height >> 1),
+                    ),
+                ).Elif(self.cfg_interlace == 2,
+                    # 方式2は1つのVSYNCが1フィールドなので行数の考え方は
+                    # 非インターレースと同じ。ただし織り込むと2倍になるので
+                    # 上限は height の半分
+                    If(vstart < (height >> 1),
+                        self.cfg_vactive.eq(vstart),
                     ).Else(
                         self.cfg_vactive.eq(height >> 1),
                     ),
@@ -483,7 +529,7 @@ class TvpCapture(Module):
             ]
 
         # 報告用の行数。ウィーブ後はフィールド内行数の2倍になる。
-        self.comb += If(self.cfg_interlace,
+        self.comb += If(il_on,
             self.out_vactive.eq(Cat(0, self.cfg_vactive)),   # = vactive*2
         ).Else(
             self.out_vactive.eq(self.cfg_vactive),
@@ -504,3 +550,5 @@ class TvpCapture(Module):
         # 診断CDC
         self.specials += MultiReg(frame, self.cap_frame, "sys")
         self.specials += MultiReg(drops, self.cap_drops, "sys")
+        self.specials += MultiReg(vs_x, self.stat_vs_x, "sys")
+        self.specials += MultiReg(fid_vs, self.stat_fid, "sys")

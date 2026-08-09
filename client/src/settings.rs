@@ -32,12 +32,14 @@ pub struct Settings {
     pub tune_target_w: i32,
     /// 推奨値を8の倍数に丸める
     pub tune_snap8: bool,
-    /// インターレース(ウィーブ)
-    pub tune_interlace: bool,
+    /// インターレース方式。0=なし / 1=1VSYNCに2フィールド / 2=フィールド毎VSYNC
+    pub tune_interlace: u8,
     /// 第2フィールドが始まる row(0=vtotal/2)
     pub tune_f2_row: i32,
     /// フィールドの偶奇を入れ替える
     pub tune_field_swap: bool,
+    /// 方式2の極性の取得元。0=位相 / 1=FIDOUT
+    pub tune_field_src: u8,
     /// 前回のウィンドウ内寸。次回起動時に復元する
     pub window_w: f32,
     pub window_h: f32,
@@ -58,9 +60,10 @@ impl Default for Settings {
             tune_pll_divide: 1104,
             tune_target_w: 768,
             tune_snap8: true,
-            tune_interlace: false,
+            tune_interlace: 0,
             tune_f2_row: 0,
             tune_field_swap: false,
+            tune_field_src: 0,
             window_w: 1160.0,
             window_h: 820.0,
         }
@@ -101,9 +104,17 @@ impl Settings {
                 "tune_pll_divide" => { if let Ok(x) = v.parse() { s.tune_pll_divide = x } }
                 "tune_target_w" => { if let Ok(x) = v.parse() { s.tune_target_w = x } }
                 "tune_snap8" => s.tune_snap8 = v == "true",
-                "tune_interlace" => s.tune_interlace = v == "true",
+                "tune_interlace" => {
+                    // 以前は真偽値だった。古い設定ファイルも読めるようにする
+                    s.tune_interlace = match v {
+                        "true" => 1,
+                        "false" => 0,
+                        _ => v.parse().unwrap_or(0),
+                    };
+                }
                 "tune_f2_row" => { if let Ok(x) = v.parse() { s.tune_f2_row = x } }
                 "tune_field_swap" => s.tune_field_swap = v == "true",
+                "tune_field_src" => { if let Ok(x) = v.parse() { s.tune_field_src = x } }
                 "window_w" => {
                     if let Ok(x) = v.parse::<f32>() {
                         s.window_w = x.clamp(480.0, 8192.0);
@@ -150,6 +161,7 @@ impl Settings {
              tune_interlace = {}\n\
              tune_f2_row = {}\n\
              tune_field_swap = {}\n\
+             tune_field_src = {}\n\
              window_w = {:.0}\n\
              window_h = {:.0}\n",
             self.volume,
@@ -167,6 +179,7 @@ impl Settings {
             self.tune_interlace,
             self.tune_f2_row,
             self.tune_field_swap,
+            self.tune_field_src,
             self.window_w,
             self.window_h,
         );

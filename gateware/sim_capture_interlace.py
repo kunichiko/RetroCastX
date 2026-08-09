@@ -14,6 +14,10 @@ X68000の 24kHz 1024x848 は VSYNC がフレームに1回しか来ず、その1�
 に織り込まれることを確認する。あわせて画素の中身も、その行に流した値と一致する
 ことを見る(行番号だけ合っていて中身が入れ替わる取り違えを検出するため)。
 
+15kHz 512x512 はこれとは別方式で、VSYNCがフィールドごとに来る(vtotal 260 /
+fV 61.6Hz)。こちらは標準どおり「VSYNCがラインの境界に来るか中央に来るか」で
+極性が決まるので、方式2(cfg_interlace=2)として別に検証する。
+
 cfg_interlace=0 のときは従来どおり(織り込まない)ことも確認する。
 """
 import os
@@ -143,6 +147,88 @@ def tag_of(px):
     return (px[2] >> 5) & 0x1F
 
 
+LINE_CYCLES = 12          # 方式2の検証で使う1ラインの長さ[pixクロック]
+VT2 = 8                   # 方式2の1フィールドあたり行数
+
+
+def run_mode2(swap=0, nframes=5):
+    """方式2: VSYNCがフィールドごとに来る。極性はVSYNCの水平位相で決まる。
+
+    片方のフィールドはVSYNCがラインの先頭付近、もう片方は中央付近に来る。
+    これが実際のインターレース信号の作りで、受信側はこの位相差でフィールドを
+    識別する(TVP7002のFIDOUTも同じ判定をしている)。
+    """
+    dut = Wrap()
+    p = dut.pads
+    cap = dut.cap
+    got = []
+
+    def hline(tag=None, vs_at=None):
+        """1本のライン。vs_at を与えると行内のその位置でVSYNCを立てる。"""
+        yield p.hs.eq(0); yield
+        yield p.hs.eq(1); yield
+        for i in range(LINE_CYCLES - 2):
+            if vs_at is not None and i == vs_at:
+                yield p.vs.eq(0)
+            if vs_at is not None and i == vs_at + 1:
+                yield p.vs.eq(1)
+            if tag is not None and i < W:
+                yield p.r.eq((i << 3) & 0xFF)
+                yield p.g.eq((tag << 3) & 0xFF)
+                yield p.b.eq(0)
+            else:
+                yield p.r.eq(0); yield p.g.eq(0)
+            yield
+
+    def drain():
+        while (yield cap.line_valid):
+            row = (yield cap.line_row)
+            frame = (yield cap.line_frame)
+            face = (yield cap.line_face)
+            px = []
+            for word in range(W // 2):
+                yield cap.rd_face.eq(face)
+                yield cap.rd_word.eq(word)
+                yield
+                yield
+                px.append((yield cap.rd_data))
+            got.append((row, frame, px))
+            yield cap.line_ack.eq(1); yield
+            yield cap.line_ack.eq(0); yield
+
+    def tb():
+        yield cap.cfg_interlace.eq(2)
+        yield cap.cfg_field_swap.eq(swap)
+        yield cap.cfg_field_src.eq(0)        # 位相から判定
+        yield cap.cfg_hs_total.eq(LINE_CYCLES)
+        yield cap.cfg_vtotal.eq(VT2)
+        yield cap.cfg_vs_min_rows.eq(VT2 - 2)
+        yield cap.cfg_vs_row_at_sync.eq(0)
+        yield cap.cfg_vactive.eq(VACT)
+        for _ in range(5):
+            yield
+        for f in range(nframes):
+            # 偶数フィールドはVSYNCをラインの先頭付近、奇数は中央付近に置く
+            vs_at = 0 if f % 2 == 0 else LINE_CYCLES // 2
+            for r in range(VT2):
+                tag = r if r < VACT else None
+                yield from hline(tag, vs_at if r == 0 else None)
+                yield from drain()
+        for _ in range(20):
+            yield
+        yield from drain()
+
+    run_simulation(dut, tb(), clocks={"sys": 10, "pix": 10}, vcd_name=None)
+
+    groups = []
+    for row, frame, px in got:
+        if groups and groups[-1][0] == frame:
+            groups[-1][1].append((row, px))
+        else:
+            groups.append((frame, [(row, px)]))
+    return groups[2:-1]
+
+
 def main():
     print("=== cfg_interlace=1 (ウィーブ) ===")
     mid = run(interlace=True)
@@ -160,6 +246,24 @@ def main():
                 f"行 {row} の中身が不正: tag={tag_of(px)} 期待={want}")
     print(f"  [OK] {len(mid)}フレーム: 2枚のフィールドが元の行番号に織り込まれ、"
           f"中身も一致")
+
+    print("\n=== cfg_interlace=2 (フィールドごとにVSYNC) ===")
+    for swap in (0, 1):
+        mid = run_mode2(swap=swap)
+        assert len(mid) >= 2, f"検証可能なフレームが足りない: {mid}"
+        rows_seen = [[r for r, _ in lines] for _, lines in mid]
+        print(f"  swap={swap}: {rows_seen[:3]}")
+        # VSYNCの位相が交互なので、フレームごとに偶数行/奇数行が交互に出る
+        evens = [rs for rs in rows_seen if all(r % 2 == 0 for r in rs)]
+        odds = [rs for rs in rows_seen if all(r % 2 == 1 for r in rs)]
+        assert evens and odds, (
+            f"位相からフィールド極性を判別できていない(偶数行だけ/奇数行だけの"
+            f"フレームが交互に出るはず): {rows_seen}")
+        for rs in evens:
+            assert rs == [2 * k for k in range(len(rs))], f"偶フィールドの行が不正: {rs}"
+        for rs in odds:
+            assert rs == [2 * k + 1 for k in range(len(rs))], f"奇フィールドの行が不正: {rs}"
+    print("  [OK] VSYNCの水平位相からフィールド極性を判別し、偶数行/奇数行へ振り分け")
 
     print("\n=== cfg_interlace=0 (従来どおり) ===")
     mid = run(interlace=False)
