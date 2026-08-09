@@ -30,6 +30,60 @@ KEY_VS_X = 0x0020
 KEY_FID = 0x0021
 KEY_SYNC_CTL = 0x0022      # TVPレジスタ0x0E(同期制御)
 KEY_MEAS_VTOTAL = 0x0023   # 実測vtotal(VSYNC間のライン数)
+KEY_VS_X_RAW = 0x0024      # 生VSYNCの水平位相(生HSYNC基準)
+KEY_HS_LEN_RAW = 0x0025    # 生HSYNCの周期[pixクロック]
+
+
+def raw_probe(get, sub, mode, samples):
+    """生同期(TVPを通らない経路)の半ライン位相を測る。
+
+    TVPのVSOUTは半ライン位相を保たないが、生のHSYNC/VSYNCを直接見れば第2フィールドの
+    VSYNCが半ラインずれて来るのが分かるはず。位相が「0付近」と「周期の半分付近」を
+    交互に取れば、それだけで行位置の偶奇が決まり il/f2_row/swap/field_src が不要になる。
+
+    生HSYNCの周期も出す。これはTVPのPLLを通らない実測値なので、位相の妥当性の
+    確認(周期の半分がどこかを知る)と、将来 pll_divide の決定にも使える。
+    """
+    print("\n生同期(F2=HSYNC / E1=VSYNC)の測定")
+    hs_len = Counter()
+    vs_xr = Counter()
+    last = 0.0
+    for i in range(samples):
+        if time.monotonic() - last > 1.5:
+            sub()
+            last = time.monotonic()
+        h = get(KEY_HS_LEN_RAW)
+        if h is not None:
+            hs_len[h] += 1
+        v = get(KEY_VS_X_RAW)
+        if v is not None:
+            vs_xr[v] += 1
+    if not hs_len or not vs_xr:
+        print("読めません(key 0x24/0x25 を持つファームか確認してください)")
+        return
+    hl = hs_len.most_common(1)[0][0]
+    print(f"生HSYNCの周期: {dict(hs_len.most_common(4))}  → 代表値 {hl}")
+    if hl < 16:
+        print("  ※周期が短すぎます。配線/極性を確認してください")
+        return
+    print(f"  TVP経由の htotal = {mode.htotal}(pll_divideで決まる値)")
+    print(f"\n生VSYNCの水平位相({sum(vs_xr.values())}回読み, 半周期={hl // 2}):")
+    for v, n in vs_xr.most_common(6):
+        print(f"  {v:6d} ({v / hl:5.2f}ライン)  {n:4d}回 "
+              f"{n / sum(vs_xr.values()) * 100:5.1f}%")
+    top = vs_xr.most_common(2)
+    print()
+    if len(top) >= 2 and top[1][1] >= sum(vs_xr.values()) * 0.2:
+        d = abs(top[0][0] - top[1][0])
+        print(f"2つの位相が交互に出ています(差 {d} = {d / hl:.2f}ライン)")
+        if abs(d - hl / 2) < hl * 0.15:
+            print("  → 差がほぼ半ライン。**生同期から半ライン位相が読める**")
+            print("     これで行位置の偶奇が決まり、il/f2_row/swap は不要になる")
+        else:
+            print("  → 差が半ラインではない。ジッタか別の要因")
+    else:
+        print("位相は1つの値に固定されています")
+        print("  → 生同期でも半ライン位相が見えない。配線/極性/RC遅延を確認する")
 
 
 def sweep_sync(get, setv, sub, mode):
@@ -85,6 +139,8 @@ def main():
     ap.add_argument("--board", required=True)
     ap.add_argument("--port", type=int, default=proto.DEFAULT_PORT)
     ap.add_argument("--samples", type=int, default=400)
+    ap.add_argument("--raw", action="store_true",
+                    help="生同期(F2/E1)の位相を測る。半ライン位相が交互に出るか")
     ap.add_argument("--sweep-sync", action="store_true",
                     help="TVPの同期制御(0x0E)を振って、VSOUTに半ライン位相が"
                          "残る設定を探す")
@@ -142,6 +198,9 @@ def main():
                                       proto.CFG_OP_SET, key, value), dst)
         seq = (seq + 1) & 0xFFFF
 
+    if args.raw:
+        raw_probe(get, sub, m, args.samples)
+        return
     if args.sweep_sync:
         sweep_sync(get, setv, sub, m)
         return

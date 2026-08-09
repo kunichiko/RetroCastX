@@ -93,7 +93,8 @@ def run(interlace: bool, nframes=4):
             yield cap.line_ack.eq(0); yield
 
     def tb():
-        yield cap.cfg_interlace.eq(1 if interlace else 0)
+        # TVPの検出ビット相当。1 ならフレームを折り返して偶奇へ振り分ける
+        yield cap.cfg_il_detect.eq(1 if interlace else 0)
         yield cap.cfg_f2_row.eq(F2_ROW if interlace else 0)
         yield cap.cfg_vactive.eq(VACT)
         for _ in range(5):
@@ -227,24 +228,28 @@ def run_mode2(swap=0, nframes=5):
 
 
 def main():
-    print("=== VSYNCの位相が交互 → スロットが偶数/奇数に分かれる ===")
-    for swap in (0, 1):
-        mid = run_mode2(swap=swap)
-        assert len(mid) >= 2, f"検証可能なフレームが足りない: {mid}"
-        rows_seen = [[r for r, _ in lines] for _, lines in mid]
-        print(f"  swap={swap}: {rows_seen[:3]}")
-        evens = [rs for rs in rows_seen if all(r % 2 == 0 for r in rs)]
-        odds = [rs for rs in rows_seen if all(r % 2 == 1 for r in rs)]
-        assert evens and odds, (
-            f"位相からフィールドを分けられていない(偶数スロットだけ/奇数スロット"
-            f"だけのフレームが交互に出るはず): {rows_seen}")
-        for rs in evens:
-            assert rs == [2 * k for k in range(len(rs))], f"偶フィールドが不正: {rs}"
-        for rs in odds:
-            assert rs == [2 * k + 1 for k in range(len(rs))], f"奇フィールドが不正: {rs}"
-    print("  [OK] VSYNCの半ライン位相だけでフィールドが分かれる(設定は使っていない)")
+    print("=== インターレース検出 → フレームを折り返して偶奇へ振り分ける ===")
+    # TVPはインターレース入力でも Lines per Frame をフレーム全体で報告し、VSOUTも
+    # フレームに1回しか出さない(データシート Table 16: 480i60Hz も 480p60Hz も
+    # lines per frame = 525)。よって row は両フィールドを通して数える。折り返し点で
+    # 前半/後半に分け、後半を1スロット下へ置けば織り込みになる。
+    mid = run(interlace=True)
+    assert len(mid) >= 2, f"検証可能なフレームが足りない: {mid}"
+    for frame, lines in mid:
+        rows = [r for r, _ in lines]
+        print(f"  frame {frame}: slots {rows}")
+        assert rows == [0, 2, 4, 6, 1, 3, 5, 7], (
+            f"織り込まれていない: {rows} "
+            f"(期待 第1フィールド 0,2,4,6 → 第2フィールド 1,3,5,7)")
+        # 中身の照合。スロット n の中身は tag = (n//2) または 8+(n//2)
+        for row, px in lines:
+            want = (row >> 1) + (8 if row & 1 else 0)
+            assert tag_of(px) == want, (
+                f"スロット {row} の中身が不正: tag={tag_of(px)} 期待={want}")
+    print(f"  [OK] {len(mid)}フレーム: 2枚のフィールドが交互のスロットへ入り、"
+          f"中身も一致")
 
-    print("\n=== 位相が一定(プログレッシブ) → スロットは1つ飛び ===")
+    print("\n=== 検出が無い(プログレッシブ) → スロットは1つ飛び ===")
     mid = run(interlace=False)
     assert len(mid) >= 2, f"検証可能なフレームが足りない: {mid}"
     for frame, lines in mid:

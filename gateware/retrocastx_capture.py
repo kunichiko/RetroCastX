@@ -131,8 +131,13 @@ class TvpCapture(Module):
         # 方式2でフィールド極性をどこから取るか。0=VSYNCの水平位相 / 1=TVPのFIDOUT。
         # どちらが正しく出るかは実機で確かめられるよう選べるようにしてある。
         self.cfg_field_src     = Signal()
-        # 1: VSYNCの半ライン位相を行位置に反映する(既定)。0: 無視する
-        self.cfg_half_line     = Signal(reset=1)
+        # TVPが検出したインターレース(レジスタ38h bit5 P/I detect の反転)。
+        # データシート: "Progressive/interlaced video detection status. Not dependent
+        # on the H-PLL being locked. 0 = Interlaced video detected"。
+        # 1 なら折り返し+スロット偶奇の振り分けを自動で行う。
+        self.cfg_il_detect     = Signal()
+        # 1 で生同期の位相を使わない(切り分け用)。既定0=生同期があれば使う。
+        self.cfg_no_raw_phase  = Signal()
         # 1ライン当たりのDATACLK数(=H-PLL分周比)。位相判定のしきい値に使う
         self.cfg_hs_total      = Signal(13, reset=hs_total or 0)
         # 診断用(sysで観測): VSYNCエッジ時の行内カウンタと、そのときのFIDOUT
@@ -236,6 +241,56 @@ class TvpCapture(Module):
         if hasattr(pads, "fid"):
             fid0 = Signal()
             self.sync.pix += [fid0.eq(pads.fid), fid_in.eq(fid0)]
+        # --- 生同期(TVPを通らない経路)の半ライン位相を測る ---
+        #
+        # TVPのVSOUTはインターレース入力の半ライン位相を保たない。生のHSYNC/VSYNCを
+        # 直接見れば、第2フィールドのVSYNCが半ラインずれて来るのが分かる。位相が
+        # 分かれば行位置の偶奇が決まり、il/f2_row/swap/field_src が不要になる。
+        #
+        # ここではまず測定だけを入れる(位置決めにはまだ使わない)。実機で位相が
+        # 交互に出ることを確認してから繋ぐ。極性やRC遅延の影響で期待どおりに
+        # ならない可能性があるので、先に切り分けられるようにしておく。
+        self.stat_vs_x_raw = Signal(16)     # 生VSYNCエッジ時の生ライン内カウンタ
+        self.stat_hs_len_raw = Signal(16)   # 生HSYNCの周期[pixクロック]
+        ph_raw = Signal()                   # 生同期から見た半ライン位相
+        raw_ok = Signal()                   # 生同期が使える状態か
+        if hasattr(pads, "hs_raw") and hasattr(pads, "vs_raw"):
+            hr0 = Signal(); hr = Signal(); hr_p = Signal()
+            vr0 = Signal(); vr = Signal(); vr_p = Signal()
+            self.sync.pix += [hr0.eq(pads.hs_raw), hr.eq(hr0), hr_p.eq(hr),
+                              vr0.eq(pads.vs_raw), vr.eq(vr0), vr_p.eq(vr)]
+            # 極性は不明なので両エッジで測り、周期が妥当な方を採る…のは複雑なので
+            # まずアクティブローと仮定する(TVP経由と同じ想定)。ずれていたら
+            # 位相が周期の端に張り付くので実機で判別できる。
+            hr_edge = Signal(); vr_edge = Signal()
+            self.comb += [hr_edge.eq(hr_p & ~hr), vr_edge.eq(vr_p & ~vr)]
+            xr = Signal(16)                 # 生HSYNCからの行内カウンタ
+            hs_len_r = Signal(16)
+            vs_xr = Signal(16)
+            self.sync.pix += [
+                If(xr != 0xFFFF, xr.eq(xr + 1)),
+                If(hr_edge, xr.eq(0), hs_len_r.eq(xr)),
+                If(vr_edge, vs_xr.eq(xr)),
+            ]
+            self.specials += MultiReg(vs_xr, self.stat_vs_x_raw, "sys")
+            self.specials += MultiReg(hs_len_r, self.stat_hs_len_raw, "sys")
+
+            # 半ライン位相のビット。VSYNCがラインの中央付近に来たフィールドは
+            # 半ライン分あとから始まるので、そのラインは1スロット下へ落ちる。
+            # どちらが先かは物理で決まるので swap の設定は要らない。
+            #
+            # 実測(24kHz 1024x848): 位相は 9 と 561 を 45:55 で交互に取り、差は
+            # 552 = 生HSYNC周期1103 のちょうど半分だった。判定はライン周期の
+            # 1/4〜3/4 を「中央付近」とする(TVP経由の判定と同じ考え方)。
+            q_r = Signal(16)
+            self.comb += q_r.eq(hs_len_r[2:])       # 周期/4
+            self.sync.pix += If(vr_edge,
+                ph_raw.eq((xr > q_r) & (xr < (hs_len_r - q_r))),
+                # 生同期が生きているか。周期が妥当な範囲にあるかで見る。
+                # 配線が無い/浮いている場合は周期が0か飽和値になる
+                raw_ok.eq((hs_len_r > 64) & (hs_len_r < 0xF000)),
+            )
+
         vs_x   = Signal(16)          # VSYNCエッジ時の行内カウンタ(=位相)
         fid_vs = Signal()            # そのときのFIDOUT
         ph     = Signal()            # 位相から見たフィールド極性
@@ -253,19 +308,53 @@ class TvpCapture(Module):
         # 位相から決まるフィールド極性。VSYNCがラインの中央付近に来たフィールドは
         # 半ライン分あとから始まるので、そのラインは1スロット下へ落ちる。
         # どちらが先かは物理で決まるので swap の設定は要らない。
-        fld_pos = Signal()
-        self.comb += fld_pos.eq(Mux(self.cfg_field_src, fid_vs, fld))
-
         f2_row = Signal(13)
         in_f2  = Signal()
+        fld_pos = Signal()
         frow   = Signal(13)          # フィールド内行
         fe     = Signal(13)          # フィールド内の有効行index
+        # インターレースの扱い。
+        #
+        # TVPはインターレース入力でも Lines per Frame をフレーム全体(両フィールド
+        # 合計)で報告し、VSOUTもフレームに1回しか出さない(データシート Table 16:
+        # 480i60Hz も 480p60Hz も lines per frame = 525)。したがって row は両
+        # フィールドを通して数える。折り返し点 vtotal/2 で前半/後半に分け、後半を
+        # 1スロット下へ置けば織り込みになる。vtotal が奇数(X68000 24kHz 1024x848
+        # では931)なので、この半端が半ラインに相当する。
+        #
+        # 判定はTVPの検出ビット(38h bit5)を使う。cfg_interlace は手動での上書き。
+        il_det = Signal()
         self.comb += [
+            il_det.eq(self.cfg_il_detect | (self.cfg_interlace != 0)),
             f2_row.eq(Mux(self.cfg_f2_row != 0, self.cfg_f2_row,
                           self.cfg_vtotal[1:])),        # 既定は vtotal/2
-            in_f2.eq((self.cfg_interlace == 1) & (row >= f2_row)),
+            in_f2.eq(il_det & (row >= f2_row)),
             frow.eq(row - Mux(in_f2, f2_row, 0)),
             fe.eq(frow - self.cfg_vs_offset),
+            # スロットの偶奇。
+            #
+            # どちらのフィールドが半ライン下かは物理で決まるので設定は要らない。
+            #
+            # 垂直位置はVSYNCからの経過時間で決まり、そのフィールドの最初のラインは
+            # 「VSYNCの次のHSYNC」から始まる。位相を p(直前のHSYNCから何サンプル後に
+            # VSYNCが来たか)とすると、次のHSYNCまでは (htotal - p) サンプル。
+            # つまり p が大きいフィールドほど早く始まり、上に来る。
+            #
+            # 実測(24kHz 1024x848, htotal 1104):
+            #   p = 9   → 次のHSYNCは1095サンプル後 → 遅い → 下(スロット +1)
+            #   p = 561 → 次のHSYNCは 543サンプル後 → 早い → 上(スロット +0)
+            #
+            # ph_raw は「pがライン中央付近」なので、下になるのは ~ph_raw の側。
+            # 当初 ph_raw をそのまま使って実機で織り込みが逆になった。
+            #
+            # 生同期が無い場合だけ「TVPのフレームの後半が第2フィールド」と推測する。
+            # これはVSOUTが2本のVSYNCのどちらで出るかに依存するので当たらないことが
+            # あり、実機では逆になった。その場合の逃げ道として swap を残す。
+            If(raw_ok & ~self.cfg_no_raw_phase,
+                fld_pos.eq(~ph_raw),
+            ).Else(
+                fld_pos.eq(in_f2 ^ self.cfg_field_swap),
+            ),
         ]
         # row_ok / row_eff はレジスタに落とす。これらは画素書込のイネーブル
         # (wr.we)まで届くので、組合せのままだと減算2段+比較がBRAMの書込端子
@@ -298,7 +387,9 @@ class TvpCapture(Module):
             row_ok.eq((frow >= self.cfg_vs_offset) & (fe < self.cfg_vactive)),
             ph_r.eq(fld_pos),
             field_r.eq(fld_pos),
-            row_eff.eq(Cat(fld_pos & self.cfg_half_line, fe)),   # = fe*2 + 位相
+            # = fe*2 + 位相。cfg_half_line は位相の「取得元」を選ぶ信号なので、
+            # ここで偶奇の適用をゲートしてはいけない
+            row_eff.eq(Cat(fld_pos, fe)),
         ]
 
         xpix   = Signal(16)                       # 有効ピクセルx(= x - hs_offset)

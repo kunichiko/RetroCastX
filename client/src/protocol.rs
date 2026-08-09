@@ -29,6 +29,8 @@ pub fn bytes_per_px(pixfmt: u8) -> Option<usize> {
 pub struct Mode {
     pub mode_id: u8,
     pub pixfmt: u8,
+    /// bit0 = MFLAG_INTERLACE。織り込み済みかどうかで1VSYNC周期あたりの
+    /// スロット数が変わる(織り込み時は1ラインが1スロット、そうでなければ2スロット)
     pub mflags: u16,
     pub hactive: u16,
     pub htotal: u16,

@@ -152,7 +152,14 @@ class RetroCastXStreamer(LiteXModule):
         hfreq_mhz = int(dotclk / htotal * 1000)
         vfreq_mhz = int(fps * 1000)
         mode_id, pixfmt = 1, 1             # RGB555 固定
-        mflags = 1 if interlace else 0
+        # MODE の mflags。bit0 = MFLAG_INTERLACE。
+        #
+        # 実行時に変わる。織り込むと1VSYNC周期あたりのスロット数が半分になる
+        # (プログレッシブは1ラインが2スロット、インターレースは折り返して
+        #  2フィールドが交互に入るので1ラインが1スロット)。受信側はこの差を
+        # 知らないと縦が2倍に引き伸ばされる。
+        mflags = Signal(16, reset=1 if interlace else 0)
+        self.stat_interlaced = Signal()
 
         lines_per_unit = height // 2 if interlace else height  # 伝送単位あたりの行数
         unit_ticks = htotal * (vtotal // 2 if interlace else vtotal)  # ts歩進/伝送単位
@@ -300,6 +307,8 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_gain_r     = Signal(8, reset=39)                # key 0x1E (reg 0Ah)
         self.cfg_phase      = Signal(5, reset=16)                # key 0x1F (reg 04h)
         self.cfg_sync_ctl   = Signal(8, reset=0x52)              # key 0x22 (reg 0Eh)
+        # TVPのステータス 38h(bit5=P/I detect)。上位から供給される読み出し専用
+        self.stat_lpf_hi    = Signal(8)
         self.cfg_f2_row     = Signal(13, reset=0)                # key 0x14
         self.cfg_field_swap = Signal()                           # key 0x15
         audio_mask = Signal(3, reset=0b111)      # key 0x0001: 音声ソース有効マスク
@@ -457,7 +466,13 @@ class RetroCastXStreamer(LiteXModule):
         # ための生データ(位相が0付近と中央付近で交互になるか、FIDOUTが交互に
         # なるかを見る)。書き込みは無視される読み取り専用。
         if cap_mode:
-            self.comb += If(cfg_key == 0x23,
+            self.comb += If(cfg_key == 0x26,
+                cfg_reply_val.eq(self.stat_lpf_hi),      # 38h(bit5=P/I detect)
+            ).Elif(cfg_key == 0x24,
+                cfg_reply_val.eq(capture.stat_vs_x_raw),
+            ).Elif(cfg_key == 0x25,
+                cfg_reply_val.eq(capture.stat_hs_len_raw),
+            ).Elif(cfg_key == 0x23,
                 cfg_reply_val.eq(capture.meas_vtotal),
             ).Elif(cfg_key == 0x20,
                 cfg_reply_val.eq(capture.stat_vs_x),
@@ -622,7 +637,7 @@ class RetroCastXStreamer(LiteXModule):
                                     for i in range(n_ann_words) if i != 1}),
             _T_MODE: Case(word_idx, {
                 0: hdr.eq(0x52 | (1 << 16)),                       # type=MODE
-                2: hdr.eq(mode_id | (pixfmt << 8) | (mflags << 16)),
+                2: hdr.eq(Cat(C(mode_id, 8), C(pixfmt, 8), mflags)),
                 3: hdr.eq(Cat(C(width, 16), mode_htotal)),
                 4: hdr.eq(Cat(mode_vactive, mode_vtotal)),
                 5: hdr.eq(mode_dotclk),
@@ -651,6 +666,7 @@ class RetroCastXStreamer(LiteXModule):
                 3: hdr.eq(aud_rate),
                 4: hdr.eq(aud_ts[asrc]),
             })
+        self.comb += mflags.eq(Cat(self.stat_interlaced, C(0, 15)))
         line_pixdata = capture.rd_data if cap_mode else Cat(pix0.pix, pix1.pix)
         self.comb += [
             line_flags.eq(Cat(frag_last, field)),
@@ -883,6 +899,14 @@ _capture_io = [
         Subsignal("hs",  Pins("B4")),                            # HSOUT
         Subsignal("vs",  Pins("C3")),                            # VSOUT
         Subsignal("fid", Pins("E3")),                            # FIDOUT(未使用)
+        # TVPを通さない生の同期。TVPのVSOUTはインターレース入力の半ライン位相を
+        # 保たない(24kHz 1024x848 で実測: 生信号はオシロでVSYNCトリガごとにHSYNCが
+        # 半ラインずれるのに、VSOUTは931ラインに1パルスしか出さず位相も完全固定。
+        # 同期制御レジスタ0x0Eを256通り振っても現れなかった)。半ライン位相が読めれば
+        # インターレースの判定と第2フィールドの位置決めが測定で決まる。
+        # 既存の SN74LVC2G17 の出力から分岐しているので新規部品は無い。
+        Subsignal("hs_raw", Pins("F2")),                          # P3 pin155 生HSYNC
+        Subsignal("vs_raw", Pins("E1")),                          # P3 pin153 生VSYNC(RC遅延後)
         IOStandard("LVCMOS33")),
 ]
 
@@ -1090,6 +1114,12 @@ class RetroCastXStream(SoCMini):
                 self.capture.cfg_vbp.eq(self.streamer.cfg_vbp),
                 self.capture.cfg_hs_offset.eq(hs_use),
                 self.capture.cfg_interlace.eq(self.streamer.cfg_interlace),
+                # TVPが検出したインターレース(38h bit5 P/I detect は 0=インターレース)
+                self.capture.cfg_il_detect.eq(~self.status.lpf_hi[5]),
+                self.streamer.stat_lpf_hi.eq(self.status.lpf_hi),
+                # 38h bit5 は 0=インターレース。手動上書き(cfg_interlace)も反映する
+                self.streamer.stat_interlaced.eq(
+                    ~self.status.lpf_hi[5] | (self.streamer.cfg_interlace != 0)),
                 self.capture.cfg_f2_row.eq(self.streamer.cfg_f2_row),
                 self.capture.cfg_field_src.eq(self.streamer.cfg_field_src),
                 self.capture.cfg_hs_total.eq(pll_use),

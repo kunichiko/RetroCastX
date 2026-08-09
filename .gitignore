@@ -36,3 +36,7 @@ gateware/bitstreams/
 
 # 実機から録音した確認用WAV(生成物)
 *.wav
+
+# メーカー配布のデータシート(再配布可否が不明なのでコミットしない)。
+# docs/datasheets/README.md に入手元だけを残す
+docs/datasheets/*.pdf

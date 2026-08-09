@@ -853,6 +853,11 @@ impl ViewerApp {
         let m = self.shared.mode.lock().unwrap().clone();
         // 実測した有効映像の外接矩形。MODEの hactive は送出フレームの幅(常に1024)で
         // 有効映像の幅ではないため、管面の中心と縦の連動にはこの実測値を使う
+        // 1ラインが何スロットを占めるか(MODEの mflags bit0 = インターレース)
+        let slot_k: u32 = match m.as_ref() {
+            Some(m) if m.mflags & 0x0001 != 0 => 1,
+            _ => 2,
+        };
         let act = {
             let st = self.shared.stats.lock().unwrap();
             // span_* は「明るい画素が1つでもある行/列」の外接矩形。active_* は
@@ -871,15 +876,18 @@ impl ViewerApp {
             tube: self.tube_aspect,
             filter: self.filter,
             htotal: m.as_ref().map_or(0, |m| m.htotal as u32),
-            // 行位置は半ライン単位のスロットなので、縦は2倍の目盛りで数える。
-            // スロット r はライン r/2 に相当し、垂直位置は (vbp + r/2)/vtotal。
-            // 2*vtotal と 2*vbp を渡せば r = 垂直位置*2vtotal - 2vbp で一致する。
-            vtotal: m.as_ref().map_or(0, |m| m.vtotal as u32 * 2),
+            // 行位置は半ライン単位のスロット。1VSYNC周期に何スロット入るかは
+            // 織り込みの有無で変わる:
+            //   プログレッシブ  1ラインが2スロット      → 2*vtotal
+            //   インターレース  折り返して2フィールドが  → vtotal
+            //                   交互に入るので1ラインが1スロット
+            // これを間違えると縦が2倍に引き伸ばされる(実機で絵が上半分に収まった)。
+            vtotal: m.as_ref().map_or(0, |m| m.vtotal as u32 * slot_k),
             // offset_px はライン内の絶対位置で来るので、ここでずらす必要はない。
             // pll_divide を変えても絵が動かないのはこのため(hs_offset は取り込み
             // 窓の設定であって、描画位置とは無関係になった)
             hs_offset: 0,
-            vbp: self.tune_vbp.max(0) as u32 * 2,
+            vbp: self.tune_vbp.max(0) as u32 * slot_k,
             window: self.window,
             fh_hz: m.as_ref().map_or(0, |m| (m.hfreq_mhz_x1000 / 1000) as u32),
             hactive: m.as_ref().map_or(0, |m| m.hactive as u32),
