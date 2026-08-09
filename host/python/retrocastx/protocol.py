@@ -31,6 +31,10 @@ CFG_OP_GET = 1
 CFG_FLAG_REPLY = 0x01
 CFG_KEY_AUDIO_ENABLE = 0x0001   # board: bit0=RGB音声, bit1=LINE, bit2=S/PDIF
 CFG_KEY_ARGUSX_INPUT = 0x0001   # ArgusX: 映像入力選択
+# 画枠パラメータ(board)。gateware/retrocastx_stream.py と client/src/protocol.rs と対応
+CFG_KEY_VBP = 0x0010            # キャプチャ窓の先頭をVSYNCの何行後にするか
+CFG_KEY_HS_OFFSET = 0x0011      # 水平バックポーチ[DATACLK]
+CFG_KEY_PLL_DIVIDE = 0x0012     # H-PLL帰還分周比=1ライン当たりDATACLK数
 
 # アプリ→ボードのパケット(SUBSCRIBE/CONFIG)の宛先MACワイルドカード。
 # 同一LANの全ボードが反応するため、複数ボード環境では実MACを指名すること

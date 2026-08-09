@@ -591,12 +591,16 @@ impl ViewerApp {
                 if ui.button(format!("→ pll {want}")).clicked() {
                     let old = self.tune_pll_divide.max(1);
                     self.tune_pll_divide = want.clamp(200, 4095);
-                    // hs_offsetはサンプル単位なので、サンプルレート(pll_div)が変わると
-                    // 同じサンプル数でも指す時間位置が変わり画が横にずれる。同じ比率で
-                    // 換算して位置を保つ。
-                    self.tune_hs_offset = ((self.tune_hs_offset as f64)
-                        * (self.tune_pll_divide as f64) / (old as f64))
-                        .round() as i32;
+                    // pll_divに比例するのはHSYNCからの絶対位置、つまり
+                    // (画の左端x + hs_offset)。xを動かさずに幅だけ変えるには、
+                    // この和を比例させてからxを引き戻す。hs_offset単体を比例させる
+                    // のでは足りない(hs_offsetが小さいほど補正不足になる)。
+                    let x = st.active_x as f64;
+                    self.tune_hs_offset = (((x + self.tune_hs_offset as f64)
+                        * self.tune_pll_divide as f64 / old as f64)
+                        - x)
+                        .round()
+                        .max(0.0) as i32;
                     send.push((protocol::CFG_KEY_PLL_DIVIDE, self.tune_pll_divide as u32));
                     send.push((protocol::CFG_KEY_HS_OFFSET, self.tune_hs_offset as u32));
                 }

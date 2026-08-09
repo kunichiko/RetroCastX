@@ -81,7 +81,12 @@ impl ActiveBox {
             return;
         }
         const TH: u8 = 24; // RGB555の3LSB相当。点状ノイズを拾わない程度
-        const MIN_PX: u16 = 4; // 行/列を「内容あり」とみなす最小画素数
+        // 「内容あり」とみなす条件は画素数の比で決める。以前は行・列とも一律4画素
+        // だったが、512行のうち4行(0.8%)ではノイズを内容と誤認し、同じ絵で外接矩形が
+        // 634→917 まで跳ねた。比を0.05〜0.5のどこに取っても結果が変わらないことを
+        // 実測で確認している(host/python/retrocastx/pll_tune.py probe)。
+        let col_min = (height / 5).max(4) as u16;   // 列: 全行の20%
+        let row_min = (width / 20).max(4) as u16;   // 行: 全幅の5%
         self.col.clear();
         self.col.resize(width, 0);
         let (mut top, mut bot) = (u16::MAX, 0u16);
@@ -94,7 +99,7 @@ impl ActiveBox {
                     self.col[x] = self.col[x].saturating_add(1);
                 }
             }
-            if n >= MIN_PX {
+            if n >= row_min {
                 if top == u16::MAX {
                     top = y as u16;
                 }
@@ -104,8 +109,8 @@ impl ActiveBox {
         if top == u16::MAX {
             return; // 内容なし(真っ暗)。直前の値を保持する
         }
-        let left = self.col.iter().position(|&c| c >= MIN_PX);
-        let right = self.col.iter().rposition(|&c| c >= MIN_PX);
+        let left = self.col.iter().position(|&c| c >= col_min);
+        let right = self.col.iter().rposition(|&c| c >= col_min);
         if let (Some(l), Some(r)) = (left, right) {
             self.x = l as u16;
             self.w = (r - l + 1) as u16;
