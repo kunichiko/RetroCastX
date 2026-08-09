@@ -287,6 +287,9 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_pll_ctl    = Signal(8, reset=0xA8)              # key 0x19 (reg 03h)
         self.cfg_clamp_start= Signal(8, reset=0x32)              # key 0x1A (reg 05h)
         self.cfg_clamp_width= Signal(8, reset=0x20)              # key 0x1B (reg 06h)
+        self.cfg_gain_b     = Signal(8, reset=35)                # key 0x1C (reg 08h)
+        self.cfg_gain_g     = Signal(8, reset=33)                # key 0x1D (reg 09h)
+        self.cfg_gain_r     = Signal(8, reset=39)                # key 0x1E (reg 0Ah)
         self.cfg_f2_row     = Signal(13, reset=0)                # key 0x14
         self.cfg_field_swap = Signal()                           # key 0x15
         audio_mask = Signal(3, reset=0b111)      # key 0x0001: 音声ソース有効マスク
@@ -375,6 +378,15 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x1B),
                         self.cfg_clamp_width.eq(rx.data[:8]),
                     ),
+                    If((cfg_target == 0) & (cfg_key == 0x1C),
+                        self.cfg_gain_b.eq(rx.data[:8]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x1D),
+                        self.cfg_gain_g.eq(rx.data[:8]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x1E),
+                        self.cfg_gain_r.eq(rx.data[:8]),
+                    ),
                     If(cfg_target == 1,
                         argus_reg.eq(rx.data),
                     ),
@@ -412,6 +424,12 @@ class RetroCastXStreamer(LiteXModule):
                 cfg_reply_val.eq(self.cfg_clamp_start),
             ).Elif(cfg_key == 0x1B,
                 cfg_reply_val.eq(self.cfg_clamp_width),
+            ).Elif(cfg_key == 0x1C,
+                cfg_reply_val.eq(self.cfg_gain_b),
+            ).Elif(cfg_key == 0x1D,
+                cfg_reply_val.eq(self.cfg_gain_g),
+            ).Elif(cfg_key == 0x1E,
+                cfg_reply_val.eq(self.cfg_gain_r),
             ),
         ]
 
@@ -984,6 +1002,9 @@ class RetroCastXStream(SoCMini):
                 self.status.cfg_pll_ctl.eq(self.streamer.cfg_pll_ctl),
                 self.status.cfg_clamp_start.eq(self.streamer.cfg_clamp_start),
                 self.status.cfg_clamp_width.eq(self.streamer.cfg_clamp_width),
+                self.status.cfg_gain_b.eq(self.streamer.cfg_gain_b),
+                self.status.cfg_gain_g.eq(self.streamer.cfg_gain_g),
+                self.status.cfg_gain_r.eq(self.streamer.cfg_gain_r),
                 self.capture.cfg_clear_from.eq((pll_use - hs_use)[1:]),
             ]
 

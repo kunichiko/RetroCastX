@@ -44,6 +44,9 @@ CFG_KEY_FINE_CLAMP = 0x0018     # TVPのファインクランプ制御(レジス
 CFG_KEY_PLL_CTL = 0x0019        # TVPのPLL設定(レジスタ0x03 VCOレンジ+チャージポンプ)
 CFG_KEY_CLAMP_START = 0x001A    # TVPのクランプ開始位置(レジスタ0x05)
 CFG_KEY_CLAMP_WIDTH = 0x001B    # TVPのクランプ幅(レジスタ0x06)
+CFG_KEY_GAIN_B = 0x001C         # 細ゲイン Blue (レジスタ0x08) Gain=1+N/256
+CFG_KEY_GAIN_G = 0x001D         # 細ゲイン Green(レジスタ0x09)
+CFG_KEY_GAIN_R = 0x001E         # 細ゲイン Red  (レジスタ0x0A)
 
 # アプリ→ボードのパケット(SUBSCRIBE/CONFIG)の宛先MACワイルドカード。
 # 同一LANの全ボードが反応するため、複数ボード環境では実MACを指名すること

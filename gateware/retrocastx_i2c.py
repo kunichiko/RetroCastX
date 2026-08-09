@@ -207,6 +207,20 @@ class StatusDisplay(Module):
         self.cfg_pll_ctl = Signal(8, reset=0xA8)
         self.cfg_clamp_start = Signal(8, reset=0x32)
         self.cfg_clamp_width = Signal(8, reset=0x20)
+        # 細ゲイン(08h=Blue / 09h=Green / 0Ah=Red)。Gain = 1 + N/256。
+        # 既定0だと白がフルスケールに届かない。X68000で実測すると白が210/255
+        # (82%)しかなく、階調とSNRを2割損していた。粗ゲインは既定で1.2倍あり、
+        # データシートも "For a normal PC graphics input, the fine gain is used
+        # mostly" としているので、ここで補う。
+        # 値は実測で決めた(白の90%点と飽和画素数を見ながら振った):
+        #   (54,51,58) 白251.5 飽和5626 / (45,42,49) 白244.5 飽和608
+        #   (35,33,39) 白237.0 飽和0    ← 採用
+        # 飽和は不可逆で、ノイズの山か信号の山かを区別できない。3%明るくするために
+        # 階調を失うのは割に合わないので、飽和ゼロの点を選んだ。
+        # チャンネル別なのでホワイトバランスも合う(Rが2%低かった分を補正)。
+        self.cfg_gain_b = Signal(8, reset=35)
+        self.cfg_gain_g = Signal(8, reset=33)
+        self.cfg_gain_r = Signal(8, reset=39)
 
         TVP_W = (tvp_addr << 1) & 0xFE       # 0xB8
         TVP_R = TVP_W | 1                    # 0xB9
@@ -279,8 +293,10 @@ class StatusDisplay(Module):
         #                     雑音がそのまま折り返して絵に乗る。最小設定でも50MHz以上
         #                     なので折り返しは残るが、それより上の雑音は減らせる。
         #                     実行時に振って効果を測れるようCONFIGから変えられる。
-        WR_REG = [0x19, 0x0E, 0x17, 0x18, 0x31, 0x10, 0x3F, 0x2A, 0x03, 0x05, 0x06]
-        WR_VAL = [MUX1, 0x52, 0x02, 0x01, 0x18, 0x58, 0x0F, 0x87, 0xA8, 0x32, 0x20]
+        WR_REG = [0x19, 0x0E, 0x17, 0x18, 0x31, 0x10, 0x3F, 0x2A, 0x03, 0x05, 0x06,
+                  0x08, 0x09, 0x0A]
+        WR_VAL = [MUX1, 0x52, 0x02, 0x01, 0x18, 0x58, 0x0F, 0x87, 0xA8, 0x32, 0x20,
+                  35, 33, 39]
         if pll_divide:
             # 0x01=PLL divide[11:4], 0x02=[7:4]にPLL divide[3:0]。データシート指定どおり
             # MSBs(0x01)を先に書く。
@@ -318,6 +334,10 @@ class StatusDisplay(Module):
         if 0x06 in WR_REG:
             self.comb += If(step == WR_REG.index(0x06),
                             wval_b.eq(self.cfg_clamp_width))
+        for _reg, _sig in ((0x08, "cfg_gain_b"), (0x09, "cfg_gain_g"), (0x0A, "cfg_gain_r")):
+            if _reg in WR_REG:
+                self.comb += If(step == WR_REG.index(_reg),
+                                wval_b.eq(getattr(self, _sig)))
 
         # FORMAT
         fi = Signal(5)   # 0..20 (NFMT=21)
