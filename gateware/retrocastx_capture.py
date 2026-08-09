@@ -260,8 +260,23 @@ class TvpCapture(Module):
         self.comb += clr_busy.eq((self.cfg_clear_from != 0) &
                                  (x < self.cfg_hs_offset) &
                                  (clr_adr < entries))
-        self.sync.pix += If(hs_edge, clr_adr.eq(self.cfg_clear_from)) \
-                         .Elif(clr_busy, clr_adr.eq(clr_adr + 1))
+        # クリアはライン先頭のバックポーチ中しか進められないので、1ライン当たり
+        # hs_offset エントリしか消せない。毎ライン先頭に戻していたため、窓が
+        # ラインより大幅に広いモード(15kHz 512x512: 1ライン544クロックに対し窓
+        # 1024画素)ではクリアが先頭付近しか届かず、右側にリングバッファの古い
+        # 内容が残った。ラインをまたいで進め、末端まで行ったら先頭へ戻す。
+        # 消した所には二度と画素が書かれないので、一巡すれば黒のまま安定する。
+        self.sync.pix += [
+            If(clr_busy,
+                If(clr_adr >= entries - 1,
+                    clr_adr.eq(self.cfg_clear_from),
+                ).Else(
+                    clr_adr.eq(clr_adr + 1),
+                ),
+            ),
+            # cfg_clear_from が動いた(モードや設定の変更)ときは範囲内へ引き戻す
+            If(clr_adr < self.cfg_clear_from, clr_adr.eq(self.cfg_clear_from)),
+        ]
         self.comb += If(clr_busy,
             wr.adr.eq(Cat(clr_adr[:entry_bits], face)), wr.dat_w.eq(0), wr.we.eq(1),
         ).Else(

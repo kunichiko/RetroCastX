@@ -778,7 +778,10 @@ impl ViewerApp {
         };
         row(ui, "vbp", &mut self.tune_vbp, 0, 400,
             protocol::CFG_KEY_VBP, &mut send);
-        row(ui, "hs_offset", &mut self.tune_hs_offset, 0, 2000,
+        // 上限は pll_div の半分。これを超えるとキャプチャ窓がラインの後半から
+        // 始まり、有効映像を取り逃がす(等号だと1画素も取り込めない)
+        let hs_max = (self.tune_pll_divide / 2).max(1);
+        row(ui, "hs_offset", &mut self.tune_hs_offset, 0, hs_max,
             protocol::CFG_KEY_HS_OFFSET, &mut send);
         row(ui, "pll_div", &mut self.tune_pll_divide, 200, 4095,
             protocol::CFG_KEY_PLL_DIVIDE, &mut send);
@@ -823,11 +826,15 @@ impl ViewerApp {
                     // この和を比例させてからxを引き戻す。hs_offset単体を比例させる
                     // のでは足りない(hs_offsetが小さいほど補正不足になる)。
                     let x = st.active_x as f64;
+                    // hs_offset が pll_div に近付くとキャプチャ窓がライン終端から
+                    // 始まり、1画素も取り込めなくなる(実際に hs_offset=pll_div=1560
+                    // になって映像が壊れた)。窓の先頭は必ずラインの手前側に置く。
+                    let limit = (self.tune_pll_divide / 2).max(1);
                     self.tune_hs_offset = (((x + self.tune_hs_offset as f64)
                         * self.tune_pll_divide as f64 / old as f64)
                         - x)
                         .round()
-                        .max(0.0) as i32;
+                        .clamp(0.0, limit as f64) as i32;
                     send.push((protocol::CFG_KEY_PLL_DIVIDE, self.tune_pll_divide as u32));
                     send.push((protocol::CFG_KEY_HS_OFFSET, self.tune_hs_offset as u32));
                 }

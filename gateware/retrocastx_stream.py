@@ -888,15 +888,30 @@ class RetroCastXStream(SoCMini):
             # CONFIGで書き換わる画枠パラメータをキャプチャ/TVPへ配る。
             # 末尾クリアの開始entryは (1ラインのサンプル数 - 水平オフセット)/2。
             # pll_divide や hs_offset を変えると必要範囲も変わるので実行時に算出する。
+            # hs_offset は必ずラインの前半に収める。これを超えるとキャプチャ窓が
+            # ライン終端より後ろから始まり、x >= hs_offset が一度も成立せずライン
+            # が1本も出なくなる(映像が止まる)。CONFIGはツールや他のクライアント
+            # からも送れるので、UI側の制限だけでなくここでも止める。
+            # 末尾クリアの開始entry (pll_divide - hs_offset)/2 の桁借りも防げる。
+            hs_lim = Signal(13)
+            hs_use = Signal(13)
+            self.comb += [
+                hs_lim.eq(self.streamer.cfg_pll_divide[1:]),   # pll_divide / 2
+                If(self.streamer.cfg_hs_offset < hs_lim,
+                    hs_use.eq(self.streamer.cfg_hs_offset),
+                ).Else(
+                    hs_use.eq(hs_lim),
+                ),
+            ]
             self.comb += [
                 self.capture.cfg_vbp.eq(self.streamer.cfg_vbp),
-                self.capture.cfg_hs_offset.eq(self.streamer.cfg_hs_offset),
+                self.capture.cfg_hs_offset.eq(hs_use),
                 self.capture.cfg_interlace.eq(self.streamer.cfg_interlace),
                 self.capture.cfg_f2_row.eq(self.streamer.cfg_f2_row),
                 self.capture.cfg_field_swap.eq(self.streamer.cfg_field_swap),
                 self.status.cfg_pll_divide.eq(self.streamer.cfg_pll_divide),
                 self.capture.cfg_clear_from.eq(
-                    (self.streamer.cfg_pll_divide - self.streamer.cfg_hs_offset)[1:]),
+                    (self.streamer.cfg_pll_divide - hs_use)[1:]),
             ]
 
 
