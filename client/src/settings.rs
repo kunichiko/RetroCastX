@@ -40,6 +40,8 @@ pub struct Settings {
     pub tune_field_swap: bool,
     /// 方式2の極性の取得元。0=位相 / 1=FIDOUT
     pub tune_field_src: u8,
+    /// 表示時の縦倍率。ドットが正方形でないモードの縦つぶれを直す
+    pub vscale: f32,
     /// 前回のウィンドウ内寸。次回起動時に復元する
     pub window_w: f32,
     pub window_h: f32,
@@ -64,6 +66,7 @@ impl Default for Settings {
             tune_f2_row: 0,
             tune_field_swap: false,
             tune_field_src: 0,
+            vscale: 1.0,
             window_w: 1160.0,
             window_h: 820.0,
         }
@@ -115,6 +118,11 @@ impl Settings {
                 "tune_f2_row" => { if let Ok(x) = v.parse() { s.tune_f2_row = x } }
                 "tune_field_swap" => s.tune_field_swap = v == "true",
                 "tune_field_src" => { if let Ok(x) = v.parse() { s.tune_field_src = x } }
+                "vscale" => {
+                    if let Ok(x) = v.parse::<f32>() {
+                        s.vscale = x.clamp(0.25, 4.0);
+                    }
+                }
                 "window_w" => {
                     if let Ok(x) = v.parse::<f32>() {
                         s.window_w = x.clamp(480.0, 8192.0);
@@ -162,6 +170,7 @@ impl Settings {
              tune_f2_row = {}\n\
              tune_field_swap = {}\n\
              tune_field_src = {}\n\
+             vscale = {:.3}\n\
              window_w = {:.0}\n\
              window_h = {:.0}\n",
             self.volume,
@@ -180,6 +189,7 @@ impl Settings {
             self.tune_f2_row,
             self.tune_field_swap,
             self.tune_field_src,
+            self.vscale,
             self.window_w,
             self.window_h,
         );

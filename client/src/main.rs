@@ -358,6 +358,8 @@ struct ViewerApp {
     texture: Option<egui::TextureHandle>,
     seen_gen: u64,
     integer_scale: bool,
+    /// 表示時の縦倍率(ドットが正方形でないモードの縦つぶれを直す)
+    vscale: f32,
     rx_error: Option<String>,
     subscribe_to: Option<String>,
     no_vsync: bool,
@@ -416,6 +418,7 @@ impl ViewerApp {
             texture: None,
             seen_gen: 0,
             integer_scale: cfg.integer_scale,
+            vscale: cfg.vscale,
             rx_error,
             subscribe_to,
             no_vsync,
@@ -466,6 +469,7 @@ impl ViewerApp {
             audio_source: self.audio_source,
             audio_device: self.audio_device_sel.clone(),
             integer_scale: self.integer_scale,
+            vscale: self.vscale,
             window_w: self.window_size.x,
             window_h: self.window_size.y,
             backdrop: self.backdrop.label().to_string(),
@@ -1031,7 +1035,30 @@ impl eframe::App for ViewerApp {
             drop(boards);
             ui.separator();
 
-            if ui.button("画に合わせる (1:1)").clicked() {
+            ui.horizontal(|ui| {
+                ui.monospace("縦倍率");
+                if ui
+                    .add(egui::DragValue::new(&mut self.vscale).speed(0.01).range(0.25..=4.0))
+                    .changed()
+                {
+                    self.mark_settings_dirty();
+                }
+                // 実測した有効映像の縦横比が4:3になる倍率にする。CRTCHKのように
+                // 画面いっぱいの絵で押すこと(外接矩形は内容の大きさなので)。
+                let st = self.shared.stats.lock().unwrap().clone();
+                if st.active_w > 0 && st.active_h > 0 && ui.button("4:3").clicked() {
+                    self.vscale =
+                        (3.0 * st.active_w as f32 / (4.0 * st.active_h as f32)).clamp(0.25, 4.0);
+                    self.mark_settings_dirty();
+                    self.want_fit = true;
+                }
+                if ui.button("1.0").clicked() {
+                    self.vscale = 1.0;
+                    self.mark_settings_dirty();
+                    self.want_fit = true;
+                }
+            });
+            if ui.button("画に合わせる").clicked() {
                 self.want_fit = true;
             }
             if ui.checkbox(&mut self.integer_scale, "integer scaling").changed() {
@@ -1088,10 +1115,14 @@ impl eframe::App for ViewerApp {
                 }
                 let tex_size = tex.size_vec2();
                 let avail = ui.available_size();
+                // 縦倍率を掛けた見かけの大きさで画面に収める。X68000の
+                // 15kHz 512x256 のようにドットが正方形でないモードは、等倍だと
+                // 縦につぶれて見える。
+                let disp = egui::vec2(tex_size.x, tex_size.y * self.vscale);
                 // ウィンドウを画にぴったり合わせるのに使う(余白 = 内寸 - この領域)
                 self.last_avail = avail;
-                self.last_tex = tex_size;
-                let fit = (avail.x / tex_size.x).min(avail.y / tex_size.y);
+                self.last_tex = disp;
+                let fit = (avail.x / disp.x).min(avail.y / disp.y);
                 // 起動直後に画が入り切らない場合だけ、一度だけ等倍に合わせる。
                 // 縮小されるとラインが間引かれて欠けたように見えるため。
                 // 以後はユーザーの操作したサイズを尊重する(一度きり)。
@@ -1102,7 +1133,7 @@ impl eframe::App for ViewerApp {
                     }
                 }
                 let scale = if self.integer_scale && fit >= 1.0 { fit.floor() } else { fit };
-                let size = tex_size * scale;
+                let size = disp * scale;
                 let resp = ui.centered_and_justified(|ui| {
                     ui.add(egui::Image::new((tex.id(), size)))
                 });
