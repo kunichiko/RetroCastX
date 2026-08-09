@@ -233,6 +233,8 @@ pub const CFG_KEY_F2_ROW: u16 = 0x0014;
 pub const CFG_KEY_FIELD_SWAP: u16 = 0x0015;
 /// 方式2のフィールド極性の取得元。0=VSYNCの水平位相 / 1=TVP7002のFIDOUT
 pub const CFG_KEY_FIELD_SRC: u16 = 0x0016;
+/// TVP7002のアナログ映像帯域(レジスタ0x3F)。0=最大(既定) 〜 15=最小(約95MHz)
+pub const CFG_KEY_VIDEO_BW: u16 = 0x0017;
 
 /// SUBSCRIBE(16B): 共通ヘッダ8B + 宛先MAC 6B + 予約2B。
 /// mac で宛先ボードを指名する(WILDCARD_MAC で全ボード)。

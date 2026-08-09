@@ -282,6 +282,7 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_pll_divide = Signal(12, reset=cfg_pll_divide)  # key 0x12
         self.cfg_interlace  = Signal(2, reset=cfg_interlace)     # key 0x13
         self.cfg_field_src  = Signal()                           # key 0x16
+        self.cfg_video_bw   = Signal(4)                          # key 0x17
         self.cfg_f2_row     = Signal(13, reset=0)                # key 0x14
         self.cfg_field_swap = Signal()                           # key 0x15
         audio_mask = Signal(3, reset=0b111)      # key 0x0001: 音声ソース有効マスク
@@ -355,6 +356,9 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x16),
                         self.cfg_field_src.eq(rx.data[0]),
                     ),
+                    If((cfg_target == 0) & (cfg_key == 0x17),
+                        self.cfg_video_bw.eq(rx.data[:4]),
+                    ),
                     If(cfg_target == 1,
                         argus_reg.eq(rx.data),
                     ),
@@ -382,6 +386,8 @@ class RetroCastXStreamer(LiteXModule):
                 cfg_reply_val.eq(self.cfg_field_swap),
             ).Elif(cfg_key == 0x16,
                 cfg_reply_val.eq(self.cfg_field_src),
+            ).Elif(cfg_key == 0x17,
+                cfg_reply_val.eq(self.cfg_video_bw),
             ),
         ]
 
@@ -949,6 +955,7 @@ class RetroCastXStream(SoCMini):
                 self.capture.cfg_hs_total.eq(pll_use),
                 self.capture.cfg_field_swap.eq(self.streamer.cfg_field_swap),
                 self.status.cfg_pll_divide.eq(pll_use),
+                self.status.cfg_video_bw.eq(self.streamer.cfg_video_bw),
                 self.capture.cfg_clear_from.eq((pll_use - hs_use)[1:]),
             ]
 

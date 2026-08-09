@@ -187,6 +187,8 @@ class StatusDisplay(Module):
         # 次の周で自動的にTVPへ書き込まれる(別途トリガは不要)。
         # pll_divide=0 でビルドした場合は 0x01/0x02 を書かないので効かない。
         self.cfg_pll_divide = Signal(12, reset=pll_divide)
+        # アナログ映像帯域(レジスタ0x3F)。0=最大 〜 15=最小
+        self.cfg_video_bw = Signal(4)
 
         TVP_W = (tvp_addr << 1) & 0xFE       # 0xB8
         TVP_R = TVP_W | 1                    # 0xB9
@@ -253,8 +255,14 @@ class StatusDisplay(Module):
         # 0x19: SOGは_3固定、R/G/B は引数で選択(全て既定3 → 0xAA)。
         MUX1 = ((2 << 6) | ((red_input - 1) << 4) |
                 ((green_input - 1) << 2) | (blue_input - 1))
-        WR_REG = [0x19, 0x0E, 0x17, 0x18, 0x31, 0x10]
-        WR_VAL = [MUX1, 0x52, 0x02, 0x01, 0x18, 0x58]
+        #          0x3F<-video_bw(アナログ映像帯域。0=最大(既定) 〜 15=最小 約95MHz)
+        #                     TVPのアナログ帯域は350〜500MHzある一方、こちらの
+        #                     サンプリングは8〜44MHzしかないので、ナイキストより上の
+        #                     雑音がそのまま折り返して絵に乗る。最小設定でも50MHz以上
+        #                     なので折り返しは残るが、それより上の雑音は減らせる。
+        #                     実行時に振って効果を測れるようCONFIGから変えられる。
+        WR_REG = [0x19, 0x0E, 0x17, 0x18, 0x31, 0x10, 0x3F]
+        WR_VAL = [MUX1, 0x52, 0x02, 0x01, 0x18, 0x58, 0x00]
         if pll_divide:
             # 0x01=PLL divide[11:4], 0x02=[7:4]にPLL divide[3:0]。データシート指定どおり
             # MSBs(0x01)を先に書く。
@@ -277,6 +285,9 @@ class StatusDisplay(Module):
         if 0x02 in WR_REG:
             self.comb += If(step == WR_REG.index(0x02),
                             wval_b.eq(Cat(C(0, 4), self.cfg_pll_divide[0:4])))
+        if 0x3F in WR_REG:
+            self.comb += If(step == WR_REG.index(0x3F),
+                            wval_b.eq(self.cfg_video_bw))
 
         # FORMAT
         fi = Signal(5)   # 0..20 (NFMT=21)
