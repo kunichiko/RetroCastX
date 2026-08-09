@@ -198,6 +198,12 @@ pub struct Shared {
     /// UI→ボードへ送るCONFIG要求(key, value)。受信スレッドが取り出して送信する。
     /// ソケットは受信スレッドが持っているので、UIから直接は送れない。
     pub config_queue: Mutex<Vec<(u16, u32)>>,
+    /// ボードから返ってきた現在値(key→value)。UIはこれで自分の表示を実体に
+    /// 合わせる。読み戻さないと、チェックボックスの表示とボードの状態が食い違い、
+    /// 「チェックが外れているのに効いている」状態になる。
+    pub config_state: Mutex<HashMap<u16, u32>>,
+    /// UI→ボードへの現在値問い合わせ(key)。応答は config_state に入る。
+    pub config_get_queue: Mutex<Vec<u16>>,
 }
 
 #[derive(Clone, Default)]
@@ -285,6 +291,23 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             }
         }
 
+        // UIからの現在値問い合わせ(GET)。起動直後にボードの実体へ表示を合わせる
+        {
+            let mut q = shared.config_get_queue.lock().unwrap();
+            if !q.is_empty() {
+                if let Some(dest) = &cfg.subscribe_to {
+                    let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
+                    for key in q.drain(..) {
+                        let pkt = proto::pack_config(sub_seq, 0, 1, key, 0, &mac);
+                        let _ = sock.send_to(&pkt, (dest.as_str(), cfg.port));
+                        sub_seq = sub_seq.wrapping_add(1);
+                    }
+                } else {
+                    q.clear();
+                }
+            }
+        }
+
         // UIからの音声切替要求(デバイス/source)を反映する
         if let Some(req) = shared.audio_request.lock().unwrap().take() {
             audio_dev = req.device.clone();
@@ -311,9 +334,13 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 proto::CFG_KEY_VBP => "vbp",
                 proto::CFG_KEY_HS_OFFSET => "hs_offset",
                 proto::CFG_KEY_PLL_DIVIDE => "pll_divide",
+                proto::CFG_KEY_INTERLACE => "interlace",
+                proto::CFG_KEY_F2_ROW => "f2_row",
+                proto::CFG_KEY_FIELD_SWAP => "field_swap",
                 _ => "key",
             };
             eprintln!("config reply: {name}(0x{key:04x}) = {val}");
+            shared.config_state.lock().unwrap().insert(key, val);
         }
 
         // モード変化を端末にログする(モード表を作る調査用)。ボードが毎秒送る

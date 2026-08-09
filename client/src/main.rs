@@ -322,6 +322,11 @@ struct ViewerApp {
     tune_f2_row: i32,
     /// フィールドの偶奇を入れ替える
     tune_field_swap: bool,
+    /// 送信したがまだボードの応答で確認できていない値(key → (値, 送信時刻))。
+    /// 応答が返るまでは自分の値を優先し、押した瞬間に元へ戻って見えるのを防ぐ。
+    tune_pending: std::collections::HashMap<u16, (u32, std::time::Instant)>,
+    /// 次に現在値を問い合わせる時刻。全キーが揃うまで繰り返す
+    tune_get_at: Option<std::time::Instant>,
     texture: Option<egui::TextureHandle>,
     seen_gen: u64,
     integer_scale: bool,
@@ -371,6 +376,8 @@ impl ViewerApp {
             tune_interlace: cfg.tune_interlace,
             tune_f2_row: cfg.tune_f2_row,
             tune_field_swap: cfg.tune_field_swap,
+            tune_pending: Default::default(),
+            tune_get_at: None,
             texture: None,
             seen_gen: 0,
             integer_scale: cfg.integer_scale,
@@ -559,7 +566,62 @@ impl ViewerApp {
 impl ViewerApp {
     /// 画枠パラメータをボードへ即時反映するUI。モードごとに最適値が違い、
     /// ビルドし直していては追い込めないのでCONFIGパケットで実行時に送る。
+    /// 実行時に調整できるキーの一覧。読み戻しと表示の同期に使う
+    const TUNE_KEYS: [u16; 6] = [
+        protocol::CFG_KEY_VBP,
+        protocol::CFG_KEY_HS_OFFSET,
+        protocol::CFG_KEY_PLL_DIVIDE,
+        protocol::CFG_KEY_INTERLACE,
+        protocol::CFG_KEY_F2_ROW,
+        protocol::CFG_KEY_FIELD_SWAP,
+    ];
+
+    /// ボードの現在値を表示へ反映する。
+    ///
+    /// 読み戻さないと表示と実体が食い違う。実際、ボード側で swap が有効なのに
+    /// チェックボックスは外れたまま、という状態が起きた(設定はボードの電源で
+    /// 消え、Viewerの保存値とは別々に動くため)。送信パケットが落ちたときも
+    /// ずれるので、応答で確認できた値を正としてUIを合わせる。
+    fn sync_tune_from_board(&mut self) {
+        let now = std::time::Instant::now();
+        let state = self.shared.config_state.lock().unwrap().clone();
+        // 未取得のキーがあるうちは定期的に問い合わせる
+        if Self::TUNE_KEYS.iter().any(|k| !state.contains_key(k))
+            && self.tune_get_at.map_or(true, |t| now >= t)
+        {
+            self.tune_get_at = Some(now + std::time::Duration::from_secs(2));
+            self.shared
+                .config_get_queue
+                .lock()
+                .unwrap()
+                .extend(Self::TUNE_KEYS);
+        }
+        for (key, val) in state {
+            // 送信直後は応答が返るまで自分の値を優先する。応答が一致したら解除、
+            // 一定時間返らなければ諦めてボードの値に合わせる(送信が落ちた場合)
+            if let Some((want, at)) = self.tune_pending.get(&key) {
+                if *want == val {
+                    self.tune_pending.remove(&key);
+                } else if at.elapsed() < std::time::Duration::from_millis(1500) {
+                    continue;
+                } else {
+                    self.tune_pending.remove(&key);
+                }
+            }
+            match key {
+                protocol::CFG_KEY_VBP => self.tune_vbp = val as i32,
+                protocol::CFG_KEY_HS_OFFSET => self.tune_hs_offset = val as i32,
+                protocol::CFG_KEY_PLL_DIVIDE => self.tune_pll_divide = val as i32,
+                protocol::CFG_KEY_F2_ROW => self.tune_f2_row = val as i32,
+                protocol::CFG_KEY_INTERLACE => self.tune_interlace = val != 0,
+                protocol::CFG_KEY_FIELD_SWAP => self.tune_field_swap = val != 0,
+                _ => {}
+            }
+        }
+    }
+
     fn tune_ui(&mut self, ui: &mut egui::Ui) {
+        self.sync_tune_from_board();
         let mut send: Vec<(u16, u32)> = Vec::new();
         let mut row = |ui: &mut egui::Ui, label: &str, val: &mut i32,
                        lo: i32, hi: i32, key: u16, send: &mut Vec<(u16, u32)>| {
@@ -675,6 +737,10 @@ impl ViewerApp {
             send.push((protocol::CFG_KEY_PLL_DIVIDE, self.tune_pll_divide as u32));
         }
         if !send.is_empty() {
+            let now = std::time::Instant::now();
+            for (k, v) in &send {
+                self.tune_pending.insert(*k, (*v, now));
+            }
             self.shared.config_queue.lock().unwrap().extend(send);
             self.mark_settings_dirty();
         }
