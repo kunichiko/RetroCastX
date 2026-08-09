@@ -40,6 +40,8 @@ pub struct Settings {
     pub tune_field_swap: bool,
     /// 方式2の極性の取得元。0=位相 / 1=FIDOUT
     pub tune_field_src: u8,
+    /// TVPのアナログ映像帯域。0=最大 / 15=最小
+    pub tune_video_bw: u8,
     /// 表示時の縦倍率。ドットが正方形でないモードの縦つぶれを直す
     pub vscale: f32,
     /// 前回のウィンドウ内寸。次回起動時に復元する
@@ -66,6 +68,7 @@ impl Default for Settings {
             tune_f2_row: 0,
             tune_field_swap: false,
             tune_field_src: 0,
+            tune_video_bw: 15,
             vscale: 1.0,
             window_w: 1160.0,
             window_h: 820.0,
@@ -118,6 +121,7 @@ impl Settings {
                 "tune_f2_row" => { if let Ok(x) = v.parse() { s.tune_f2_row = x } }
                 "tune_field_swap" => s.tune_field_swap = v == "true",
                 "tune_field_src" => { if let Ok(x) = v.parse() { s.tune_field_src = x } }
+                "tune_video_bw" => { if let Ok(x) = v.parse() { s.tune_video_bw = x } }
                 "vscale" => {
                     if let Ok(x) = v.parse::<f32>() {
                         s.vscale = x.clamp(0.25, 4.0);
@@ -170,6 +174,7 @@ impl Settings {
              tune_f2_row = {}\n\
              tune_field_swap = {}\n\
              tune_field_src = {}\n\
+             tune_video_bw = {}\n\
              vscale = {:.3}\n\
              window_w = {:.0}\n\
              window_h = {:.0}\n",
@@ -189,6 +194,7 @@ impl Settings {
             self.tune_f2_row,
             self.tune_field_swap,
             self.tune_field_src,
+            self.tune_video_bw,
             self.vscale,
             self.window_w,
             self.window_h,

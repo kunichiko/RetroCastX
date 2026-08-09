@@ -339,6 +339,8 @@ struct ViewerApp {
     tune_field_swap: bool,
     /// 方式2の極性の取得元。0=位相 / 1=FIDOUT
     tune_field_src: u8,
+    /// TVPのアナログ映像帯域。0=最大 / 15=最小(約95MHz)
+    tune_video_bw: u8,
     /// 送信したがまだボードの応答で確認できていない値(key → (値, 送信時刻))。
     /// 応答が返るまでは自分の値を優先し、押した瞬間に元へ戻って見えるのを防ぐ。
     tune_pending: std::collections::HashMap<u16, (u32, std::time::Instant)>,
@@ -409,6 +411,7 @@ impl ViewerApp {
             tune_f2_row: cfg.tune_f2_row,
             tune_field_swap: cfg.tune_field_swap,
             tune_field_src: cfg.tune_field_src,
+            tune_video_bw: cfg.tune_video_bw,
             tune_pending: Default::default(),
             tune_get_at: None,
             tune_synced: false,
@@ -486,6 +489,7 @@ impl ViewerApp {
             tune_f2_row: self.tune_f2_row,
             tune_field_swap: self.tune_field_swap,
             tune_field_src: self.tune_field_src,
+            tune_video_bw: self.tune_video_bw,
         }
         .save();
     }
@@ -720,7 +724,7 @@ impl ViewerApp {
     }
 
     /// 実行時に調整できるキーの一覧。読み戻しと表示の同期に使う
-    const TUNE_KEYS: [u16; 7] = [
+    const TUNE_KEYS: [u16; 8] = [
         protocol::CFG_KEY_VBP,
         protocol::CFG_KEY_HS_OFFSET,
         protocol::CFG_KEY_PLL_DIVIDE,
@@ -728,6 +732,7 @@ impl ViewerApp {
         protocol::CFG_KEY_F2_ROW,
         protocol::CFG_KEY_FIELD_SWAP,
         protocol::CFG_KEY_FIELD_SRC,
+        protocol::CFG_KEY_VIDEO_BW,
     ];
 
     /// ボードの現在値を表示へ反映する。
@@ -777,6 +782,7 @@ impl ViewerApp {
                 protocol::CFG_KEY_INTERLACE => self.tune_interlace = val as u8,
                 protocol::CFG_KEY_FIELD_SWAP => self.tune_field_swap = val != 0,
                 protocol::CFG_KEY_FIELD_SRC => self.tune_field_src = val as u8,
+                protocol::CFG_KEY_VIDEO_BW => self.tune_video_bw = val as u8,
                 _ => {}
             }
         }
@@ -1018,6 +1024,18 @@ impl ViewerApp {
                     send.push((protocol::CFG_KEY_F2_ROW, self.tune_f2_row as u32));
                 }
             }
+        });
+        // TVPのアナログ映像帯域。折り返しの元になる高周波を削る。
+        // 15(最小=約95MHz)で、エッジ後の残留エコーが消える(実測 +2.55→+0.01)。
+        // 立ち上がりは変わらず最細部が6%落ちるだけなので既定を15にしている。
+        ui.horizontal(|ui| {
+            ui.monospace("帯域制限");
+            let mut bw = self.tune_video_bw as i32;
+            if ui.add(egui::DragValue::new(&mut bw).range(0..=15)).changed() {
+                self.tune_video_bw = bw as u8;
+                send.push((protocol::CFG_KEY_VIDEO_BW, bw as u32));
+            }
+            ui.monospace(if self.tune_video_bw == 0 { "最大" } else if self.tune_video_bw == 15 { "最小≈95MHz" } else { "" });
         });
         ui.horizontal(|ui| {
             if ui.button("読む").on_hover_text(
