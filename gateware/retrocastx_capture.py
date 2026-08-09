@@ -118,6 +118,15 @@ class TvpCapture(Module):
         # 送出する行数。vtotalが小さいモードで512行送ると空きが出るので、
         # min(height, vtotal - vbp) を自動で入れる。
         self.cfg_vactive       = Signal(max=height + 1, reset=height)
+        # 窓の長さ(折り返す前の row で数えた行数)。
+        #
+        # VSYNCで row には vtotal - vbp が入り、そこから増えて vtotal で0に戻るので、
+        # VSYNC直後の vbp 本は row が大きい。折り返しを入れるとこの row が f2_row を
+        # 超えて「第2フィールド」と判定され frow が小さくなり、窓の外なのに範囲内と
+        # 見なされる(実機で帰線期間の行が画面下部に現れた)。折り返しはスロット番号を
+        # 決めるためだけに使い、窓の判定は折り返す前の row で行う。
+        # 既定は制限なし。auto_vtotal が vtotal - vbp を入れる。
+        self.cfg_win_rows      = Signal(13, reset=2 ** 13 - 1)
         # インターレース(ウィーブ)。cfg_f2_row は第2フィールドが始まる row。
         # 0 なら cfg_vtotal/2 を使う。半ライン分ずれるモードのために手で微調整できる。
         # 0=なし / 1=1つのVSYNCに2フィールド(24kHz 1024x848) /
@@ -384,7 +393,12 @@ class TvpCapture(Module):
         # cfg_half_line=0 にすると位相を無視する(位相判定が誤る信号に当たった
         # ときの逃げ道。既定は1)。
         self.sync.pix += [
-            row_ok.eq((frow >= self.cfg_vs_offset) & (fe < self.cfg_vactive)),
+            # 窓の内か。フィールドあたりの行数(cfg_vactive)と、折り返す前の row で
+            # 数えた窓の長さ(cfg_win_rows)の両方で判定する。後者が無いと、VSYNC直後の
+            # 帰線期間の行が折り返しで「第2フィールド」と誤判定されて画面下部に出る。
+            row_ok.eq((frow >= self.cfg_vs_offset)
+                      & (fe < self.cfg_vactive)
+                      & (row < self.cfg_win_rows)),
             ph_r.eq(fld_pos),
             field_r.eq(fld_pos),
             # = fe*2 + 位相。cfg_half_line は位相の「取得元」を選ぶ信号なので、
@@ -668,6 +682,8 @@ class TvpCapture(Module):
                                         (self.cfg_vtotal >> 3)),
                 # 窓の先頭 = VSYNCの vbp 行後
                 self.cfg_vs_row_at_sync.eq(vs_row),
+                # 窓の長さ(折り返す前の row で数えた行数)= vtotal - vbp
+                self.cfg_win_rows.eq(vstart),
                 # 送出行数(フィールド内の有効行数) = min(height/2, vtotal - vbp)。
                 #
                 # 行位置は常に半ライン単位のスロットなので、スロットは最大で
