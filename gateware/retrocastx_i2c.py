@@ -187,8 +187,19 @@ class StatusDisplay(Module):
         # 次の周で自動的にTVPへ書き込まれる(別途トリガは不要)。
         # pll_divide=0 でビルドした場合は 0x01/0x02 を書かないので効かない。
         self.cfg_pll_divide = Signal(12, reset=pll_divide)
-        # アナログ映像帯域(レジスタ0x3F)。0=最大 〜 15=最小
-        self.cfg_video_bw = Signal(4)
+        # アナログ映像帯域(レジスタ0x3F)。0=最大 〜 15=最小(約95MHz)。
+        # 既定を最小にしている。実測でエッジ後の残留エコーが +2.55 → +0.01 と
+        # 完全に消え、立ち上がり(2サンプル)は変わらず最細部が6%落ちるだけだった。
+        self.cfg_video_bw = Signal(4, reset=0xF)
+        # ファインクランプ制御(レジスタ0x2A)。既定0x07。
+        #   bit7 CM Offset(チャンネル間の分離改善) / bit[4:3] Fine swsel(時定数)
+        #   bit1 Fine GB / bit0 Fine R
+        # 既定は時定数が最長。G/Bだけ明部の先頭20サンプルが2〜3%低く出る現象の
+        # 切り分け用に実行時から変えられるようにする。
+        # 既定を 0x87 にしている(CM Offset 有効)。実測で白ベタ先頭の落ち込みが
+        # B +2.0% → +0.3%、G +2.6% → +2.2% と改善した。時定数(bit[4:3])は
+        # 効果が無く、原因はチャンネル間のクロストークだった。
+        self.cfg_fine_clamp = Signal(8, reset=0x87)
 
         TVP_W = (tvp_addr << 1) & 0xFE       # 0xB8
         TVP_R = TVP_W | 1                    # 0xB9
@@ -261,8 +272,8 @@ class StatusDisplay(Module):
         #                     雑音がそのまま折り返して絵に乗る。最小設定でも50MHz以上
         #                     なので折り返しは残るが、それより上の雑音は減らせる。
         #                     実行時に振って効果を測れるようCONFIGから変えられる。
-        WR_REG = [0x19, 0x0E, 0x17, 0x18, 0x31, 0x10, 0x3F]
-        WR_VAL = [MUX1, 0x52, 0x02, 0x01, 0x18, 0x58, 0x00]
+        WR_REG = [0x19, 0x0E, 0x17, 0x18, 0x31, 0x10, 0x3F, 0x2A]
+        WR_VAL = [MUX1, 0x52, 0x02, 0x01, 0x18, 0x58, 0x0F, 0x87]
         if pll_divide:
             # 0x01=PLL divide[11:4], 0x02=[7:4]にPLL divide[3:0]。データシート指定どおり
             # MSBs(0x01)を先に書く。
@@ -288,6 +299,9 @@ class StatusDisplay(Module):
         if 0x3F in WR_REG:
             self.comb += If(step == WR_REG.index(0x3F),
                             wval_b.eq(self.cfg_video_bw))
+        if 0x2A in WR_REG:
+            self.comb += If(step == WR_REG.index(0x2A),
+                            wval_b.eq(self.cfg_fine_clamp))
 
         # FORMAT
         fi = Signal(5)   # 0..20 (NFMT=21)

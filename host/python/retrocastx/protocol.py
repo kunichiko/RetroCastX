@@ -40,6 +40,7 @@ CFG_KEY_F2_ROW = 0x0014         # 第2フィールドが始まる row(0=vtotal/2
 CFG_KEY_FIELD_SWAP = 0x0015     # フィールドの偶奇を入れ替える
 CFG_KEY_FIELD_SRC = 0x0016      # 方式2の極性の取得元 0=位相 1=FIDOUT
 CFG_KEY_VIDEO_BW = 0x0017       # TVPのアナログ映像帯域 0=最大 〜 15=最小
+CFG_KEY_FINE_CLAMP = 0x0018     # TVPのファインクランプ制御(レジスタ0x2A)
 
 # アプリ→ボードのパケット(SUBSCRIBE/CONFIG)の宛先MACワイルドカード。
 # 同一LANの全ボードが反応するため、複数ボード環境では実MACを指名すること
