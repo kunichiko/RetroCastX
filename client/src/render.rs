@@ -37,9 +37,90 @@ pub struct Params {
     /// バッファ先頭行が、VSYNCから何行後か
     pub vbp: u32,
     /// 管面が映す時間窓。ラインとフレームに対する割合 [h0, h1, v0, v1]
-    /// 実際のCRTのH位置/H幅・V位置/V幅つまみに相当する。モニタ固有の値で、
-    /// 映像の内容にもモードにも依存しない。
+    /// time_based=false のときだけ使う(旧方式)。
     pub window: [f32; 4],
+    /// 水平同期周波数[Hz]。0 なら時間ベースの計算をやめる
+    pub fh_hz: u32,
+    /// 有効映像のサンプル数/ライン数。管面の中心を決めるのに使う
+    pub hactive: u32,
+    pub vactive: u32,
+    /// 管面の掃引時間(横)。実際のCRTは偏向の傾きが固定なので、管面上の幅は
+    /// 「掃引にかかった時間」で決まる。fHが低いモードほど絵が広がる。
+    pub span_us: f32,
+    /// 管面の掃引時間(縦)。link_v=true なら横から算出するので使わない
+    pub span_ms: f32,
+    /// 縦の掃引を横に連動させ、絵の形を保ったまま拡縮する。
+    ///
+    /// 偏向の傾きを縦横とも固定にすると縦横比が崩れる。横のサイズは 1/fH に
+    /// 比例するが、X68000はどのモードも fV が53〜61Hzで1フレームの時間がほぼ
+    /// 一定なので、縦のサイズは変わらない。実測で 24kHz が横51%・縦95%になり
+    /// 縦長に潰れた。実機のモニタは縦横を両方モード別に補正しているので、
+    /// 「15kHzは管面いっぱい / 31kHzは中央に寄る」を再現するにはこちらが要る。
+    pub link_v: bool,
+    /// 縦の大きさの微調整(link_v のときの倍率)
+    pub v_trim: f32,
+    /// 実測した有効映像の外接矩形[サンプル/ライン]。管面の中心と、縦の連動に使う。
+    /// MODEの hactive は送出フレームの幅(常に1024)で有効映像の幅ではないため、
+    /// 実測値が要る。0 のときは中心を0.5とみなす
+    pub act_x: u32,
+    pub act_y: u32,
+    pub act_w: u32,
+    pub act_h: u32,
+    /// 管面の位置合わせ(実CRTのH位置/V位置つまみ)
+    pub off_us: f32,
+    pub off_ms: f32,
+    /// 時間ベースで管面を決める(false なら window の割合をそのまま使う)
+    pub time_based: bool,
+}
+
+impl Params {
+    /// 管面が映す時間窓を、ラインとフレームに対する割合で返す。
+    ///
+    /// 割合を直接持つ旧方式では、モードが変わっても絵の大きさが変わらない。
+    /// 実際のCRTは偏向の傾きが固定で、掃引時間がそのまま管面上の幅になるので、
+    /// fHが低いモードほど絵が広がる(X68000の15kHzが管面いっぱいに広がり、
+    /// 31kHzが中央に寄って見えるのはこれ)。ここでは掃引時間[µs]を割合へ
+    /// 換算する。割合 = 時間 x fH なので、fH さえ分かれば計算できる。
+    ///
+    /// fVは実測値が当てにならない(24kHzモードで 0.053Hz と報告された)ため、
+    /// 縦は vtotal / fH からフレーム時間を出す。
+    pub fn effective_window(&self) -> [f32; 4] {
+        if !self.time_based || self.fh_hz == 0 || self.htotal == 0 || self.vtotal == 0 {
+            return self.window;
+        }
+        let fh_khz = self.fh_hz as f32 / 1000.0;
+        if fh_khz <= 1.0 {
+            return self.window;
+        }
+        let line_us = 1000.0 / fh_khz;
+        let frame_ms = self.vtotal as f32 / fh_khz;
+        let sh = (self.span_us / line_us).clamp(0.05, 8.0);
+        let (ht, vt) = (self.htotal as f32, self.vtotal as f32);
+        // 縦の掃引。横に連動させると、絵は縦横同率で拡縮するので形が保たれる。
+        //   絵が管面の横を占める割合 = act_w / (sh * htotal)
+        //   絵が管面の縦を占める割合 = act_h / (sv * vtotal)
+        // この2つを等しくすると sv が決まる。
+        let sv = if self.link_v && self.act_w > 0 && self.act_h > 0 {
+            (sh * ht * self.act_h as f32 / (self.act_w as f32 * vt)
+             / self.v_trim.max(0.05)).clamp(0.05, 8.0)
+        } else {
+            (self.span_ms / frame_ms).clamp(0.05, 8.0)
+        };
+        // 管面の中心は有効映像の中心に合わせる(実機のH位置/V位置つまみに相当)。
+        // インターレースでは有効行数が vtotal を超えることがあるので1フィールド分に直す。
+        let va = if self.vactive > self.vtotal { self.vactive / 2 } else { self.vactive };
+        let ch = if self.act_w > 0 {
+            (self.hs_offset as f32 + self.act_x as f32 + self.act_w as f32 * 0.5) / ht
+        } else {
+            0.5
+        } + self.off_us / line_us;
+        let cv = if self.act_h > 0 {
+            (self.vbp as f32 + self.act_y as f32 + self.act_h as f32 * 0.5) / vt
+        } else {
+            (self.vbp as f32 + va as f32 * 0.5) / vt
+        } + self.off_ms / frame_ms;
+        [ch - sh * 0.5, ch + sh * 0.5, cv - sv * 0.5, cv + sv * 0.5]
+    }
 }
 
 impl Default for Params {
@@ -47,8 +128,19 @@ impl Default for Params {
         Self {
             rotate: 0, tube: 0.0, filter: FILTER_SHARP,
             htotal: 0, hs_offset: 0, vtotal: 0, vbp: 0,
-            // X68000の各モードを実測して得た値(31kHz/24kHz で概ね一致した)
+            // 旧方式(割合)の既定。time_based=false のときだけ使う
             window: [0.22, 0.94, 0.07, 0.98],
+            fh_hz: 0, hactive: 0, vactive: 0,
+            // 15kHzの有効映像(実測52.7µs)が収まる幅にしておく。これより狭いと
+            // 15kHzで左右が切れる(割合ベースの0.72では 0.842 が入らなかった)。
+            span_us: 58.0,
+            span_ms: 17.6,
+            link_v: true,
+            v_trim: 1.0,
+            act_x: 0, act_y: 0, act_w: 0, act_h: 0,
+            off_us: 0.0,
+            off_ms: 0.0,
+            time_based: true,
         }
     }
 }
@@ -63,8 +155,9 @@ fn uniforms(p: &Params, tex_w: u32, tex_h: u32, dst_w: f32, dst_h: f32) -> [u8; 
     // htotal/vtotal が無い(MODE未受信など)ときはバッファ全体をそのまま出す
     let geom = p.htotal > 0 && p.vtotal > 0;
     let (ht, vt) = (p.htotal.max(1) as f32, p.vtotal.max(1) as f32);
+    let w = p.effective_window();
     let (h0, h1, v0, v1) = if geom {
-        (p.window[0], p.window[1], p.window[2], p.window[3])
+        (w[0], w[1], w[2], w[3])
     } else {
         // 幾何が使えないときは、バッファ全体がちょうど窓になるようにする
         (0.0, 1.0, 0.0, 1.0)
@@ -75,8 +168,15 @@ fn uniforms(p: &Params, tex_w: u32, tex_h: u32, dst_w: f32, dst_h: f32) -> [u8; 
     } else {
         (tw, th)
     };
-    // 管面の縦横比。0 なら時間窓の比(= サンプル数の比)をそのまま使う
-    let aspect = if p.tube > 0.0 { p.tube } else { span_x / span_y.max(1.0) };
+    // 管面の縦横比。管面は物理的な形なので、時間ベースのときは指定が無ければ 4:3
+    // にする(時間窓の比を使うとモードごとに管面の形が変わってしまう)。
+    let aspect = if p.tube > 0.0 {
+        p.tube
+    } else if p.time_based && geom {
+        4.0 / 3.0
+    } else {
+        span_x / span_y.max(1.0)
+    };
     let (fw, fh) = if p.rotate % 2 == 1 { (1.0, aspect) } else { (aspect, 1.0) };
     let sc = (dst_w / fw).min(dst_h / fh);
     let (draw_w, draw_h) = (fw * sc, fh * sc);

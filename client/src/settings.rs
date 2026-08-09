@@ -61,8 +61,31 @@ pub struct Settings {
     pub crop_w: u32,
     pub crop_h: u32,
     /// 管面が映す時間窓 [h0,h1,v0,v1](ラインとフレームに対する割合)。
-    /// 実際のCRTのH位置/H幅・V位置/V幅つまみに相当し、モニタ固有の値。
+    /// tube_time_based=false のときだけ使う(旧方式)。
     pub window: [f32; 4],
+    /// 管面を時間ベースで決める(実CRTと同じ挙動)。
+    /// 実CRTは偏向の傾きが固定なので、掃引時間がそのまま管面上の幅になる。
+    /// fHが低いモードほど絵が広がる(15kHzは管面いっぱい、31kHzは中央に寄る)。
+    pub tube_time_based: bool,
+    /// 管面の掃引時間。15kHzの有効映像(52.7µs)が収まる値にしてある
+    pub tube_span_us: f32,
+    pub tube_span_ms: f32,
+    /// 縦の掃引を横に連動させ、絵の形を保ったまま拡縮する
+    pub tube_link_v: bool,
+    /// 縦の大きさの微調整
+    pub tube_v_trim: f32,
+    /// 周波数帯ごとの管面プリセット。キーは fH[kHz]を丸めた値(15/24/31...)。
+    /// 実機のマルチスキャンモニタは周波数帯ごとに走査速度を切り替えて管面いっぱいに
+    /// 走らせるので、掃引時間を絶対時間で共通にすると15kHzだけ極端に大きくなる。
+    /// 帯域ごとに持てば、同じ帯域内のモードは同じ大きさで表示される。
+    /// 値は span_us, v_trim, off_us, off_ms
+    pub tube_bands: BTreeMap<u32, [f32; 4]>,
+    /// 「絵に合わせる」で掃引時間を決めるときの余裕。1.0で有効映像がちょうど収まる。
+    /// 1未満にすると実機のようにオーバースキャン(周囲が少し切れる)になる
+    pub tube_fit_margin: f32,
+    /// 管面の位置合わせ(実CRTのH位置/V位置つまみ)
+    pub tube_off_us: f32,
+    pub tube_off_ms: f32,
     /// モードごとの設定。キーは "fH[100Hz単位]_vtotal_htotal"。
     /// 同じ31kHzでも 768x512 と 256x256 は同期信号が同一なので、htotal
     /// (= pll_divide)まで含めないと区別できない。pll_divide を合わせた時点で
@@ -99,6 +122,15 @@ impl Default for Settings {
             vscale: 1.0,
             rotate: 0,
             window: [0.22, 0.94, 0.07, 0.98],
+            tube_time_based: true,
+            tube_span_us: 58.0,
+            tube_span_ms: 17.6,
+            tube_link_v: true,
+            tube_v_trim: 1.0,
+            tube_bands: BTreeMap::new(),
+            tube_fit_margin: 1.0,
+            tube_off_us: 0.0,
+            tube_off_ms: 0.0,
             modes: BTreeMap::new(),
             tube_aspect: 0.0,
             filter: 2,
@@ -173,6 +205,35 @@ impl Settings {
                                        [nums[0], nums[1], nums[2], nums[3], nums[4], ph]);
                     }
                 }
+                "tube_time_based" => { s.tube_time_based = v == "true" }
+                "tube_span_us" => {
+                    if let Ok(x) = v.parse::<f32>() { s.tube_span_us = x.clamp(2.0, 400.0) }
+                }
+                "tube_span_ms" => {
+                    if let Ok(x) = v.parse::<f32>() { s.tube_span_ms = x.clamp(1.0, 100.0) }
+                }
+                "tube_link_v" => { s.tube_link_v = v == "true" }
+                "tube_v_trim" => {
+                    if let Ok(x) = v.parse::<f32>() { s.tube_v_trim = x.clamp(0.2, 5.0) }
+                }
+                "tube_fit_margin" => {
+                    if let Ok(x) = v.parse::<f32>() { s.tube_fit_margin = x.clamp(0.5, 1.5) }
+                }
+                k if k.starts_with("band.") => {
+                    if let Ok(khz) = k[5..].parse::<u32>() {
+                        let n: Vec<f32> =
+                            v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                        if n.len() >= 4 {
+                            s.tube_bands.insert(khz, [n[0], n[1], n[2], n[3]]);
+                        }
+                    }
+                }
+                "tube_off_us" => {
+                    if let Ok(x) = v.parse::<f32>() { s.tube_off_us = x.clamp(-100.0, 100.0) }
+                }
+                "tube_off_ms" => {
+                    if let Ok(x) = v.parse::<f32>() { s.tube_off_ms = x.clamp(-50.0, 50.0) }
+                }
                 "window" => {
                     let v: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                     if v.len() == 4 { s.window = [v[0], v[1], v[2], v[3]] }
@@ -241,6 +302,14 @@ impl Settings {
              tune_field_src = {}\n\
              tune_video_bw = {}\n\
              tune_phase = {}\n\
+             tube_time_based = {}\n\
+             tube_span_us = {}\n\
+             tube_span_ms = {}\n\
+             tube_link_v = {}\n\
+             tube_v_trim = {}\n\
+             tube_fit_margin = {}\n\
+             tube_off_us = {}\n\
+             tube_off_ms = {}\n\
              rotate = {}\n\
              window = {:.4},{:.4},{:.4},{:.4}\n\
              tube_aspect = {:.4}\n\
@@ -270,6 +339,14 @@ impl Settings {
             self.tune_field_src,
             self.tune_video_bw,
             self.tune_phase,
+            self.tube_time_based,
+            self.tube_span_us,
+            self.tube_span_ms,
+            self.tube_link_v,
+            self.tube_v_trim,
+            self.tube_fit_margin,
+            self.tube_off_us,
+            self.tube_off_ms,
             self.rotate,
             self.window[0],
             self.window[1],
@@ -286,6 +363,10 @@ impl Settings {
             self.window_h,
         );
         let mut body = body;
+        for (khz, v) in &self.tube_bands {
+            body.push_str(&format!(
+                "band.{khz} = {},{},{},{}\n", v[0], v[1], v[2], v[3]));
+        }
         for (k, v) in &self.modes {
             body.push_str(&format!(
                 "mode.{k} = {},{},{},{},{},{}\n",

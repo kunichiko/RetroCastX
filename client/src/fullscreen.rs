@@ -214,6 +214,17 @@ fn render_thread(
                     if let Some(m) = shared.mode.lock().unwrap().as_ref() {
                         p.htotal = m.htotal as u32;
                         p.vtotal = m.vtotal as u32;
+                        // 管面を時間ベースで決めるのに必要(実CRTと同じ挙動)
+                        p.fh_hz = (m.hfreq_mhz_x1000 / 1000) as u32;
+                        p.hactive = m.hactive as u32;
+                        p.vactive = m.vactive as u32;
+                    }
+                    {
+                        let st = shared.stats.lock().unwrap();
+                        p.act_x = st.active_x as u32;
+                        p.act_y = st.active_y as u32;
+                        p.act_w = st.active_w as u32;
+                        p.act_h = st.active_h as u32;
                     }
                     {
                         let st = shared.config_state.lock().unwrap();

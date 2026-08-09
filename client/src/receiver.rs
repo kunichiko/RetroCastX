@@ -64,6 +64,220 @@ pub struct StatsSnapshot {
     pub weave_err: f32,
     /// weave_err を更新した回数。UIが「新しい測定が来たか」を判定するのに使う
     pub weave_n: u64,
+    /// 水平方向の鋭さ(隣接サンプル差の二乗和を画素数で正規化)。
+    /// 1ドット=1サンプルのとき最大になる。pll_divideの局所探索に使う
+    pub sharp_h: f32,
+    /// 水平スペクトルのうちエネルギーの99%が収まる帯域の割合(0..1)。
+    /// k倍に過剰サンプルすると 1/k に近づくので、意図的に過剰サンプルしてから
+    /// 割れば1:1の pll_divide が1回の測定で出る
+    pub occ_h: f32,
+    /// 上2つを更新した回数。UIが「新しい測定が来たか」を判定するのに使う
+    pub tune_n: u64,
+    /// 明るい画素の外接矩形(しきい値を超える画素が1つでもある行/列)。
+    /// active_* より絵の広がりを正しく拾うので、管面の幾何にはこちらを使う
+    pub span_x: u16,
+    pub span_y: u16,
+    pub span_w: u16,
+    pub span_h: u16,
+}
+
+/// pll_divide と位相を自動で決めるための測定器。
+///
+/// 有効映像の中だけを見て、水平方向の鋭さとスペクトル占有率を出す。
+/// 鋭さは局所探索(1:1の近傍で最大になる)、占有率は倍率の割り出しに使う。
+/// 詳しい原理は host/python/retrocastx/pll_tune.py の autotune のコメント参照。
+#[derive(Default)]
+struct TuneMeter {
+    nth: u32,
+    pub sharp: f32,
+    pub occ: f32,
+    pub n: u64,
+    re: Vec<f32>,
+    im: Vec<f32>,
+    pow: Vec<f32>,
+    /// 測定に使った範囲。管面の幾何にも使う(ActiveBox より絵の広がりを正しく拾う)
+    pub bx: u16,
+    pub by: u16,
+    pub bw: u16,
+    pub bh: u16,
+}
+
+impl TuneMeter {
+    /// その場でビット反転並べ替え + バタフライの radix-2 FFT。
+    /// 依存を増やしたくないので自前。長さは2の冪であること。
+    fn fft(re: &mut [f32], im: &mut [f32]) {
+        let n = re.len();
+        let mut j = 0usize;
+        for i in 1..n {
+            let mut bit = n >> 1;
+            while j & bit != 0 {
+                j ^= bit;
+                bit >>= 1;
+            }
+            j |= bit;
+            if i < j {
+                re.swap(i, j);
+                im.swap(i, j);
+            }
+        }
+        let mut len = 2usize;
+        while len <= n {
+            let ang = -2.0 * std::f32::consts::PI / len as f32;
+            let (wr, wi) = (ang.cos(), ang.sin());
+            let mut i = 0;
+            while i < n {
+                let (mut cr, mut ci) = (1.0f32, 0.0f32);
+                for k in 0..len / 2 {
+                    let (ur, ui) = (re[i + k], im[i + k]);
+                    let (vr, vi) = (
+                        re[i + k + len / 2] * cr - im[i + k + len / 2] * ci,
+                        re[i + k + len / 2] * ci + im[i + k + len / 2] * cr,
+                    );
+                    re[i + k] = ur + vr;
+                    im[i + k] = ui + vi;
+                    re[i + k + len / 2] = ur - vr;
+                    im[i + k + len / 2] = ui - vi;
+                    let nr = cr * wr - ci * wi;
+                    ci = cr * wi + ci * wr;
+                    cr = nr;
+                }
+                i += len;
+            }
+            len <<= 1;
+        }
+    }
+
+    /// 測定に使う範囲を自分で決める。
+    ///
+    /// ActiveBox は「その列の20%以上の行が明るいか」で判定するため、細い線ばかりの
+    /// 画面ではベタ塗りのブロックだけが残る(実機のCRTCHK 15kHz画面で幅125になり、
+    /// 平坦な赤ベタの中だけをFFTしていて占有率が無意味な値になった)。
+    /// こちらは「明るい画素が1つでもあるか」で見る。絵の広がりを取りたいだけなので
+    /// これで十分で、しきい値の取り方に鈍い。
+    fn bounds(rgba: &[u8], width: usize, height: usize) -> Option<(usize, usize, usize, usize)> {
+        const TH: f32 = 40.0;
+        let lum = |row: &[u8], x: usize| -> f32 {
+            let i = x * 4;
+            0.299 * row[i] as f32 + 0.587 * row[i + 1] as f32 + 0.114 * row[i + 2] as f32
+        };
+        let (mut x0, mut x1) = (usize::MAX, 0usize);
+        let (mut y0, mut y1) = (usize::MAX, 0usize);
+        for y in (0..height).step_by(2) {
+            let row = &rgba[y * width * 4..(y + 1) * width * 4];
+            let mut any = false;
+            for x in 0..width {
+                if lum(row, x) > TH {
+                    if x < x0 { x0 = x }
+                    if x > x1 { x1 = x }
+                    any = true;
+                }
+            }
+            if any {
+                if y < y0 { y0 = y }
+                if y > y1 { y1 = y }
+            }
+        }
+        if x0 == usize::MAX || y0 == usize::MAX || x1 <= x0 + 64 || y1 <= y0 + 8 {
+            return None;
+        }
+        Some((x0, y0, x1 - x0 + 1, y1 - y0 + 1))
+    }
+
+    fn feed(&mut self, rgba: &[u8], width: usize, height: usize) {
+        self.nth += 1;
+        if self.nth % 4 != 0 {
+            return;             // 毎フレームやる必要はない(CPUを食うだけ)
+        }
+        let Some((bx, by, bw, bh)) = Self::bounds(rgba, width, height) else {
+            return;
+        };
+        self.bx = bx as u16;
+        self.by = by as u16;
+        self.bw = bw as u16;
+        self.bh = bh as u16;
+        // 端4サンプルは外接矩形のぶれで落とす
+        if bw < 72 || bh < 8 {
+            return;
+        }
+        let (x0, w) = (bx + 4, bw.saturating_sub(8));
+        // FFT用に2の冪へ切り出す(中央寄せ)
+        let mut n = 1usize;
+        while n * 2 <= w {
+            n *= 2;
+        }
+        if n < 64 {
+            return;
+        }
+        let xs = x0 + (w - n) / 2;
+        if self.pow.len() != n {
+            self.pow = vec![0.0; n];
+            self.re = vec![0.0; n];
+            self.im = vec![0.0; n];
+        }
+        self.pow.iter_mut().for_each(|v| *v = 0.0);
+        // Hann窓。左右の端の段差が偽の高域になるのを防ぐ
+        let win: Vec<f32> = (0..n)
+            .map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / n as f32).cos())
+            .collect();
+        let mut sharp = 0.0f64;
+        let mut nsharp = 0u64;
+        let mut nrow = 0u32;
+        for y in (by..by + bh).step_by(2) {
+            let row = &rgba[y * width * 4..(y + 1) * width * 4];
+            let lum = |x: usize| -> f32 {
+                let i = x * 4;
+                0.299 * row[i] as f32 + 0.587 * row[i + 1] as f32 + 0.114 * row[i + 2] as f32
+            };
+            // 鋭さは切り出した範囲そのままで測る
+            let mut prev = lum(x0);
+            for x in x0 + 1..x0 + w {
+                let v = lum(x);
+                let d = (v - prev) as f64;
+                sharp += d * d;
+                prev = v;
+            }
+            nsharp += (w - 1) as u64;
+            // スペクトルは行ごとにDCを抜いてから窓を掛ける
+            let mean: f32 = (0..n).map(|i| lum(xs + i)).sum::<f32>() / n as f32;
+            for i in 0..n {
+                self.re[i] = (lum(xs + i) - mean) * win[i];
+                self.im[i] = 0.0;
+            }
+            let (mut re, mut im) = (std::mem::take(&mut self.re), std::mem::take(&mut self.im));
+            Self::fft(&mut re, &mut im);
+            for i in 1..n / 2 {
+                self.pow[i] += re[i] * re[i] + im[i] * im[i];
+            }
+            self.re = re;
+            self.im = im;
+            nrow += 1;
+        }
+        if nrow == 0 || nsharp == 0 {
+            return;
+        }
+        // 信号帯域の上端を「ノイズ床の何倍か」で決める。
+        //
+        // 累積エネルギーが99%に達する点で測るとノイズに弱い。ノイズは帯域全体に
+        // 平らに乗るので、上の方が全部ノイズでも累積は少しずつ増え続け、上端を
+        // 過大評価する(実機の15kHzモードで倍率を2.3倍も取り違えた)。
+        // 過剰サンプル中は帯域の上端が純粋なノイズなので、そこから床を推定できる。
+        let half = n / 2;
+        let tail = &self.pow[half - half / 10..half];
+        let mut t: Vec<f32> = tail.to_vec();
+        t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let floor = t[t.len() / 2].max(1e-12);
+        // 3点移動平均で平滑してから、床の4倍を超える最も高い周波数を探す
+        let mut edge = 1usize;
+        for i in 2..half - 1 {
+            let sm = (self.pow[i - 1] + self.pow[i] + self.pow[i + 1]) / 3.0;
+            if sm > floor * 4.0 {
+                edge = i;
+            }
+        }
+        self.occ = edge as f32 / (half - 1) as f32;
+        self.sharp = (sharp / nsharp as f64) as f32;
+        self.n += 1;
+    }
 }
 
 /// 有効映像の外接矩形を求める。ノイズを拾わないよう、しきい値を超える画素が
@@ -309,6 +523,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut frames_since = 0u32;
     let mut noise = NoiseMeter::default();
     let mut abox = ActiveBox::default();
+    let mut tune = TuneMeter::default();
     let mut weave = WeaveMeter::default();
     // モード変化ログ用の直近キー
     let mut mode_key: Option<(u16, u16, u16, u16, u32, u32, u32)> = None;
@@ -389,7 +604,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         let (n, addr) = match sock.recv_from(&mut buf) {
             Ok(v) => v,
             Err(_) => {
-                tick_stats(&shared, &asm, &noise, &abox, &weave, &mut last_report, &mut bytes_since, &mut frames_since);
+                tick_stats(&shared, &asm, &noise, &abox, &tune, &weave, &mut last_report, &mut bytes_since, &mut frames_since);
                 continue;
             }
         };
@@ -485,13 +700,14 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             frames_since += 1;
             noise.feed(&frame.rgba);
             abox.feed(&frame.rgba, frame.width, frame.height);
+            tune.feed(&frame.rgba, frame.width, frame.height);
             weave.feed(&frame.rgba, frame.width, frame.height);
             *shared.mode.lock().unwrap() = asm.mode.clone();
             *shared.frame.lock().unwrap() = Some(frame);
             shared.frame_gen.fetch_add(1, Ordering::Release);
             repaint();
         }
-        tick_stats(&shared, &asm, &noise, &abox, &weave, &mut last_report, &mut bytes_since, &mut frames_since);
+        tick_stats(&shared, &asm, &noise, &abox, &tune, &weave, &mut last_report, &mut bytes_since, &mut frames_since);
     }
 }
 
@@ -522,6 +738,7 @@ fn tick_stats(
     asm: &FrameAssembler,
     noise: &NoiseMeter,
     abox: &ActiveBox,
+    tune: &TuneMeter,
     weave: &WeaveMeter,
     last_report: &mut Instant,
     bytes_since: &mut u64,
@@ -546,6 +763,13 @@ fn tick_stats(
         active_y: abox.y,
         weave_err: weave.err,
         weave_n: weave.n,
+        sharp_h: tune.sharp,
+        span_x: tune.bx,
+        span_y: tune.by,
+        span_w: tune.bw,
+        span_h: tune.bh,
+        occ_h: tune.occ,
+        tune_n: tune.n,
         active_w: abox.w,
         active_h: abox.h,
     };

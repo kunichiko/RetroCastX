@@ -107,6 +107,13 @@ fn main() -> eframe::Result {
             tube: cfg.tube_aspect,
             filter: cfg.filter,
             window: cfg.window,
+            time_based: cfg.tube_time_based,
+            span_us: cfg.tube_span_us,
+            span_ms: cfg.tube_span_ms,
+            link_v: cfg.tube_link_v,
+            v_trim: cfg.tube_v_trim,
+            off_us: cfg.tube_off_us,
+            off_ms: cfg.tube_off_ms,
             ..Default::default()
         };
         fullscreen::run(port, subscribe_to, target_mac, decay, audio, p); // 戻らない
@@ -324,6 +331,41 @@ impl Backdrop {
     }
 }
 
+/// pll_divide と位相を自動で決める処理の進行状態。
+///
+/// 原理は host/python/retrocastx/pll_tune.py の autotune と同じ。要点だけ:
+/// 「近傍で鋭さが最大の点」を探す方法は有理倍に騙される(1.5倍は位相ロックする
+/// 有理比なので本物の局所ピークに見える)。そこで、まず上限まで意図的に過剰
+/// サンプルしてスペクトル占有率から倍率を割り出し、そこから8の倍数で±7%だけ
+/// 局所探索して詰める。最後に位相を振る。
+enum AutoPhase {
+    /// 上限まで過剰サンプルして占有率を測る
+    Oversample,
+    /// 8の倍数で局所探索(pll候補, 結果)
+    Sweep { cands: Vec<u32>, i: usize, best: (u32, f32), med: Vec<f32> },
+    /// 位相を粗く振る
+    PhaseCoarse { i: u8, best: (u8, f32), all: Vec<f32> },
+    /// 位相を1刻みで詰める
+    PhaseFine { list: Vec<u8>, i: usize, best: (u8, f32) },
+}
+
+struct AutoTune {
+    phase: AutoPhase,
+    /// この時刻まではボードの反映待ち
+    wait_until: std::time::Instant,
+    /// 待ち開始時点の測定回数。これより進んだ測定だけを採用する
+    base_n: u64,
+    /// 経過表示
+    note: String,
+    /// 最悪の位相(参考表示用)
+    worst: f32,
+    /// 半分にして測り直した回数
+    attempt: u8,
+}
+
+const AUTO_PLL_MIN: u32 = 200;
+const AUTO_PLL_MAX: u32 = 2304;
+
 struct ViewerApp {
     shared: Arc<receiver::Shared>,
     /// 再生中の音声source(UI表示用)
@@ -395,6 +437,20 @@ struct ViewerApp {
     filter: u32,
     /// 管面が映す時間窓 [h0,h1,v0,v1]。CRTのH位置/H幅・V位置/V幅に相当
     window: [f32; 4],
+    tube_time_based: bool,
+    tube_span_us: f32,
+    tube_span_ms: f32,
+    tube_link_v: bool,
+    tube_v_trim: f32,
+    tube_bands: std::collections::BTreeMap<u32, [f32; 4]>,
+    tube_fit_margin: f32,
+    /// いまの周波数帯[kHz]。0 は未確定
+    band_khz: u32,
+    auto: Option<AutoTune>,
+    /// 自動調整の結果表示(完了後に残す)
+    auto_done: Option<String>,
+    tube_off_us: f32,
+    tube_off_ms: f32,
     /// モードごとの切り出し・回転。キーは fH_vtotal_htotal
     modes: std::collections::BTreeMap<String, [u32; 6]>,
     /// いま適用しているモードのキー(変化したら保存・復元する)
@@ -472,6 +528,18 @@ impl ViewerApp {
             tube_aspect: cfg.tube_aspect,
             filter: cfg.filter,
             window: cfg.window,
+            tube_time_based: cfg.tube_time_based,
+            tube_span_us: cfg.tube_span_us,
+            tube_span_ms: cfg.tube_span_ms,
+            tube_link_v: cfg.tube_link_v,
+            tube_v_trim: cfg.tube_v_trim,
+            tube_bands: cfg.tube_bands.clone(),
+            tube_fit_margin: cfg.tube_fit_margin,
+            band_khz: 0,
+            auto: None,
+            auto_done: None,
+            tube_off_us: cfg.tube_off_us,
+            tube_off_ms: cfg.tube_off_ms,
             modes: cfg.modes.clone(),
             mode_key: String::new(),
             rx_error,
@@ -510,6 +578,11 @@ impl ViewerApp {
     }
 
     fn flush_settings(&mut self) {
+        if self.band_khz > 0 {
+            let k = self.band_khz;
+            self.tube_bands.insert(k, [self.tube_span_us, self.tube_v_trim,
+                                       self.tube_off_us, self.tube_off_ms]);
+        }
         if !self.mode_key.is_empty() {
             let k = self.mode_key.clone();
             self.modes.insert(k, [self.crop[0], self.crop[1], self.crop[2],
@@ -533,6 +606,15 @@ impl ViewerApp {
             tube_aspect: self.tube_aspect,
             filter: self.filter,
             window: self.window,
+            tube_time_based: self.tube_time_based,
+            tube_span_us: self.tube_span_us,
+            tube_span_ms: self.tube_span_ms,
+            tube_link_v: self.tube_link_v,
+            tube_v_trim: self.tube_v_trim,
+            tube_bands: self.tube_bands.clone(),
+            tube_fit_margin: self.tube_fit_margin,
+            tube_off_us: self.tube_off_us,
+            tube_off_ms: self.tube_off_ms,
             modes: self.modes.clone(),
             crop_x: self.crop[0],
             crop_y: self.crop[1],
@@ -790,6 +872,21 @@ impl ViewerApp {
     /// (hs_offset/vbp)から決まる。映像の内容には依存しない。
     fn render_params(&self) -> render::Params {
         let m = self.shared.mode.lock().unwrap().clone();
+        // 実測した有効映像の外接矩形。MODEの hactive は送出フレームの幅(常に1024)で
+        // 有効映像の幅ではないため、管面の中心と縦の連動にはこの実測値を使う
+        let act = {
+            let st = self.shared.stats.lock().unwrap();
+            // span_* は「明るい画素が1つでもある行/列」の外接矩形。active_* は
+            // 「20%以上の行が明るい列」なので、細い線ばかりの画面ではベタ塗りの
+            // ブロックだけに縮む(実機で幅125になった)。管面の幾何は絵の広がりを
+            // 知りたいので span_* を使い、無ければ active_* に落とす
+            if st.span_w > 64 {
+                (st.span_x as u32, st.span_y as u32, st.span_w as u32, st.span_h as u32)
+            } else {
+                (st.active_x as u32, st.active_y as u32,
+                 st.active_w as u32, st.active_h as u32)
+            }
+        };
         render::Params {
             rotate: self.rotate,
             tube: self.tube_aspect,
@@ -799,6 +896,17 @@ impl ViewerApp {
             hs_offset: self.tune_hs_offset.max(0) as u32,
             vbp: self.tune_vbp.max(0) as u32,
             window: self.window,
+            fh_hz: m.as_ref().map_or(0, |m| (m.hfreq_mhz_x1000 / 1000) as u32),
+            hactive: m.as_ref().map_or(0, |m| m.hactive as u32),
+            vactive: m.as_ref().map_or(0, |m| m.vactive as u32),
+            time_based: self.tube_time_based,
+            span_us: self.tube_span_us,
+            span_ms: self.tube_span_ms,
+            link_v: self.tube_link_v,
+            v_trim: self.tube_v_trim,
+            act_x: act.0, act_y: act.1, act_w: act.2, act_h: act.3,
+            off_us: self.tube_off_us,
+            off_ms: self.tube_off_ms,
         }
     }
 
@@ -873,6 +981,88 @@ impl ViewerApp {
         self.mark_settings_dirty();
     }
 
+    /// いまの有効映像が何µsか。管面の掃引時間を決める基準になる
+    fn active_us(&self) -> Option<f32> {
+        let aw = {
+            let st = self.shared.stats.lock().unwrap();
+            if st.span_w > 64 { st.span_w as f32 } else { st.active_w as f32 }
+        };
+        let m = self.shared.mode.lock().unwrap().clone()?;
+        let fh_khz = m.hfreq_mhz_x1000 as f32 / 1_000_000.0;
+        if aw <= 0.0 || fh_khz <= 1.0 || m.htotal == 0 {
+            return None;
+        }
+        Some(aw / m.htotal as f32 * (1000.0 / fh_khz))
+    }
+
+    /// fH[kHz] を呼称の帯域へ分類する。
+    ///
+    /// 丸めると 24.698kHz が 25 になって呼称とずれる。マルチスキャンモニタの
+    /// インジケータと同じ 15 / 24 / 31 に寄せる。範囲外は丸めた値をそのまま使う。
+    fn band_of(fh_khz: f32) -> u32 {
+        if fh_khz < 20.0 {
+            15
+        } else if fh_khz < 28.0 {
+            24
+        } else if fh_khz < 40.0 {
+            31
+        } else {
+            fh_khz.round() as u32
+        }
+    }
+
+    /// 周波数帯が変わったら、いまの管面設定を旧帯域へ保存し、新帯域の値を復元する。
+    ///
+    /// 実機のマルチスキャンモニタは周波数帯ごとに走査速度を切り替えて管面いっぱいに
+    /// 走らせる。掃引時間を絶対時間で共通にすると、15kHz(有効52.7µs)に合わせた
+    /// 管面では31kHz(同22.1µs)が42%の大きさになってしまう。帯域ごとに持てば、
+    /// 同じ帯域内のモードは同じ大きさで表示される(31kHzの512x512と768x512は
+    /// 有効時間がどちらも22.1µsで実際に一致する)。
+    fn follow_band(&mut self) {
+        let khz = {
+            let m = self.shared.mode.lock().unwrap().clone();
+            match m {
+                Some(m) if m.hfreq_mhz_x1000 > 1_000_000 => {
+                    Self::band_of(m.hfreq_mhz_x1000 as f32 / 1_000_000.0)
+                }
+                _ => return,
+            }
+        };
+        if khz == self.band_khz {
+            return;
+        }
+        // 未知の帯域は有効映像の実測から掃引時間を決めるので、実測が取れるまで
+        // 確定させない。起動直後は統計がまだ空で、そのまま確定すると前の帯域の
+        // 掃引時間(58µs等)がそのままプリセットとして焼き付いてしまう。
+        if !self.tube_bands.contains_key(&khz) && self.active_us().is_none() {
+            return;
+        }
+        if self.band_khz > 0 {
+            let old = self.band_khz;
+            self.tube_bands.insert(old, [self.tube_span_us, self.tube_v_trim,
+                                         self.tube_off_us, self.tube_off_ms]);
+        }
+        match self.tube_bands.get(&khz).copied() {
+            Some(v) => {
+                self.tube_span_us = v[0];
+                self.tube_v_trim = v[1];
+                self.tube_off_us = v[2];
+                self.tube_off_ms = v[3];
+            }
+            None => {
+                // 未知の帯域は、いまの有効映像がちょうど収まる掃引時間から始める
+                if let Some(us) = self.active_us() {
+                    self.tube_span_us = (us * self.tube_fit_margin).clamp(4.0, 300.0);
+                }
+                self.tube_off_us = 0.0;
+                self.tube_off_ms = 0.0;
+            }
+        }
+        self.band_khz = khz;
+        self.mark_settings_dirty();
+        self.want_fit = true;
+    }
+
     fn sync_tune_from_board(&mut self) {
         // 取り込みは起動時の1回だけにする。毎フレーム反映すると、手で入力した値が
         // send を押す前にボードの値へ戻されてしまう(未送信の変更は pending に
@@ -928,7 +1118,281 @@ impl ViewerApp {
         }
     }
 
+    /// マルチスキャンモニタの周波数インジケータ。いま同期している帯域が点灯する。
+    ///
+    /// 実機のモニタは 15/24/31kHz のどれで同期しているかをLEDで示していた。
+    /// 帯域は管面のプリセットを選ぶ単位でもあるので、いまどれなのかが常に
+    /// 見えている方が分かりやすい。
+    fn band_leds(&self, ui: &mut egui::Ui) {
+        const BANDS: [u32; 3] = [15, 24, 31];
+        ui.horizontal(|ui| {
+            for b in BANDS {
+                let on = self.band_khz == b;
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(52.0, 18.0), egui::Sense::hover());
+                let p = ui.painter();
+                // 消灯時も枠は見えるようにして、何段あるかが分かるようにする
+                let (fill, text) = if on {
+                    (egui::Color32::from_rgb(60, 220, 120), egui::Color32::BLACK)
+                } else {
+                    (egui::Color32::from_rgb(38, 40, 44), egui::Color32::from_gray(110))
+                };
+                p.rect_filled(rect, 3.0, fill);
+                p.rect_stroke(rect, 3.0, egui::Stroke::new(1.0,
+                              egui::Color32::from_gray(70)), egui::StrokeKind::Inside);
+                p.text(rect.center(), egui::Align2::CENTER_CENTER,
+                       format!("{b}kHz"), egui::FontId::monospace(11.0), text);
+            }
+            // 呼称の帯域に当てはまらない周波数(他機種など)はそのまま出す
+            if self.band_khz > 0 && !BANDS.contains(&self.band_khz) {
+                ui.monospace(format!("{}kHz", self.band_khz));
+            }
+            if self.band_khz == 0 {
+                ui.weak("同期なし");
+            }
+        });
+    }
+
+    /// TVPが許す pll_divide の下限(8の倍数に切り上げ)。
+    ///
+    /// TVP7002のピクセルクロックは 12MHz 未満だと動作が保証されない(データシート)。
+    /// 実測でも 11.25MHz から崩れ始め、9.72MHz では白の青/赤比が上下で0.43違った。
+    /// X68000の15kHzモードは本来の htotal が 608(9.72MHz)なので、**1:1で
+    /// サンプリングできない**。下限を満たす最小の整数倍(2倍=1216)を使う。
+    /// 整数倍なら位相ロックするのでドット間の混ざりは起きず、各ドットが2サンプルに
+    /// なるだけで済む。
+    fn pll_min_hw(&self) -> u32 {
+        match self.shared.mode.lock().unwrap().as_ref() {
+            Some(m) if m.hfreq_mhz_x1000 > 0 => {
+                let fh = m.hfreq_mhz_x1000 as f64 / 1000.0;
+                let v = (12.0e6 / fh).ceil() as u32;
+                ((v + 7) / 8 * 8).clamp(AUTO_PLL_MIN, AUTO_PLL_MAX)
+            }
+            _ => AUTO_PLL_MIN,
+        }
+    }
+
+    /// 自動調整を開始する。上限まで過剰サンプルするところから始める
+    fn auto_start(&mut self) {
+        self.send_cfg(protocol::CFG_KEY_PLL_DIVIDE, AUTO_PLL_MAX);
+        self.tune_pll_divide = AUTO_PLL_MAX as i32;
+        self.auto = Some(AutoTune {
+            phase: AutoPhase::Oversample,
+            wait_until: std::time::Instant::now() + std::time::Duration::from_millis(1800),
+            base_n: self.shared.stats.lock().unwrap().tune_n,
+            note: "過剰サンプル中...".into(),
+            worst: 0.0,
+            attempt: 0,
+        });
+    }
+
+    /// 新しい測定が来ていれば (鋭さ, 占有率) を返す。まだなら None
+    fn auto_measure(&self) -> Option<(f32, f32)> {
+        let a = self.auto.as_ref()?;
+        if std::time::Instant::now() < a.wait_until {
+            return None;
+        }
+        let st = self.shared.stats.lock().unwrap();
+        // 待ち終了後の測定を2回以上見てから採る(境界の1枚は前の設定の絵かもしれない)
+        if st.tune_n < a.base_n + 2 || st.sharp_h <= 0.0 {
+            return None;
+        }
+        Some((st.sharp_h, st.occ_h))
+    }
+
+    /// 次の測定点へ進む
+    fn auto_next(&mut self, key: u16, val: u32, note: String, settle_ms: u64) {
+        self.send_cfg(key, val);
+        match key {
+            protocol::CFG_KEY_PLL_DIVIDE => self.tune_pll_divide = val as i32,
+            protocol::CFG_KEY_PHASE => self.tune_phase = val as u8,
+            _ => {}
+        }
+        let base = self.shared.stats.lock().unwrap().tune_n;
+        if let Some(a) = self.auto.as_mut() {
+            a.wait_until = std::time::Instant::now()
+                + std::time::Duration::from_millis(settle_ms);
+            a.base_n = base;
+            a.note = note;
+        }
+    }
+
+    /// 推定値の周りを8の倍数で局所探索する段へ入る
+    fn auto_enter_sweep(&mut self, est: u32, note: String) {
+        let lo = ((est as f32 * 0.93 / 8.0) as u32 * 8).max(self.pll_min_hw());
+        let hi = ((est as f32 * 1.07 / 8.0) as u32 * 8).min(AUTO_PLL_MAX);
+        let cands: Vec<u32> = (lo..=hi).step_by(8).collect();
+        if cands.is_empty() {
+            self.auto = None;
+            return;
+        }
+        let first = cands[0];
+        let n = cands.len();
+        if let Some(a) = self.auto.as_mut() {
+            a.phase = AutoPhase::Sweep { cands, i: 0, best: (first, 0.0), med: Vec::new() };
+        }
+        self.auto_next(protocol::CFG_KEY_PLL_DIVIDE, first,
+                       format!("{note} 局所探索 1/{n}"), 700);
+    }
+
+    fn auto_step(&mut self) {
+        let Some((sharp, occ)) = self.auto_measure() else { return };
+        let phase = match self.auto.as_mut() {
+            Some(a) => std::mem::replace(&mut a.phase, AutoPhase::Oversample),
+            None => return,
+        };
+        match phase {
+            AutoPhase::Oversample => {
+                // 1:1の pll_divide ≒ 過剰サンプル時の pll_divide x 占有率。
+                // 実測では真値に対して -3% の系統バイアスが残るので、局所探索で吸収する
+                let est0 = (AUTO_PLL_MAX as f32 * occ).round() as u32;
+                // TVPの下限を下回る場合は、下限を満たす最小の整数倍にする。
+                // 整数倍なら位相ロックするのでドット間の混ざりは起きない。
+                let pmin = self.pll_min_hw();
+                let mut est = est0;
+                let mut mult = 1u32;
+                while est < pmin && mult < 8 {
+                    mult += 1;
+                    est = est0 * mult;
+                }
+                if occ > 0.9 || !(AUTO_PLL_MIN..=AUTO_PLL_MAX).contains(&est) {
+                    if let Some(a) = self.auto.as_mut() {
+                        a.note = format!("推定できません(占有率 {occ:.2})。\
+                                          細かい模様が出ている画面で試してください");
+                    }
+                    // 元の値へ戻さず、ここで諦める(絵が出ない値に置き去りにしない)
+                    let back = est.clamp(AUTO_PLL_MIN, AUTO_PLL_MAX);
+                    self.send_cfg(protocol::CFG_KEY_PLL_DIVIDE, back);
+                    self.tune_pll_divide = back as i32;
+                    self.auto = None;
+                    return;
+                }
+                let note = if mult > 1 {
+                    format!("推定 {est0}(TVPの下限で{mult}倍= {est})→")
+                } else {
+                    format!("推定 {est} →")
+                };
+                self.auto_enter_sweep(est, note);
+            }
+            AutoPhase::Sweep { cands, i, mut best, mut med } => {
+                if sharp > best.1 {
+                    best = (cands[i], sharp);
+                }
+                med.push(sharp);
+                let next = i + 1;
+                if next < cands.len() {
+                    let pll = cands[next];
+                    let n = cands.len();
+                    if let Some(a) = self.auto.as_mut() {
+                        a.phase = AutoPhase::Sweep { cands, i: next, best, med };
+                    }
+                    self.auto_next(protocol::CFG_KEY_PLL_DIVIDE, pll,
+                                   format!("局所探索 {}/{n}", next + 1), 700);
+                } else {
+                    // 突出度(中央値との比)が低いときは測定が信用できない
+                    med.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    let m = med[med.len() / 2];
+                    let ratio = if m > 0.0 { best.1 / m } else { 0.0 };
+                    if let Some(a) = self.auto.as_mut() {
+                        a.phase = AutoPhase::PhaseCoarse { i: 0, best: (0, 0.0), all: Vec::new() };
+                        a.note = format!("pll_div {} (突出度 {ratio:.2})→位相", best.0);
+                    }
+                    self.send_cfg(protocol::CFG_KEY_PLL_DIVIDE, best.0);
+                    self.tune_pll_divide = best.0 as i32;
+                    self.auto_next(protocol::CFG_KEY_PHASE, 0,
+                                   format!("pll_div {} 突出度 {ratio:.2} → 位相 1/16", best.0),
+                                   900);
+                }
+            }
+            AutoPhase::PhaseCoarse { i, mut best, mut all } => {
+                let cur = i * 2;
+                if sharp > best.1 {
+                    best = (cur, sharp);
+                }
+                all.push(sharp);
+                if i + 1 < 16 {
+                    let nxt = (i + 1) * 2;
+                    if let Some(a) = self.auto.as_mut() {
+                        a.phase = AutoPhase::PhaseCoarse { i: i + 1, best, all };
+                    }
+                    self.auto_next(protocol::CFG_KEY_PHASE, nxt as u32,
+                                   format!("位相 {}/16", i + 2), 600);
+                } else {
+                    let worst = all.iter().cloned().fold(f32::MAX, f32::min);
+                    // 粗い最良点の周辺を1刻みで詰める
+                    let list: Vec<u8> = (0..5)
+                        .map(|k| ((best.0 as i32 + k - 2).rem_euclid(32)) as u8)
+                        .collect();
+                    let first = list[0];
+                    if let Some(a) = self.auto.as_mut() {
+                        a.worst = worst;
+                        a.phase = AutoPhase::PhaseFine { list, i: 0, best };
+                    }
+                    self.auto_next(protocol::CFG_KEY_PHASE, first as u32,
+                                   "位相を詰めています".into(), 600);
+                }
+            }
+            AutoPhase::PhaseFine { list, i, mut best } => {
+                if sharp > best.1 {
+                    best = (list[i], sharp);
+                }
+                let next = i + 1;
+                if next < list.len() {
+                    let ph = list[next];
+                    if let Some(a) = self.auto.as_mut() {
+                        a.phase = AutoPhase::PhaseFine { list, i: next, best };
+                    }
+                    self.auto_next(protocol::CFG_KEY_PHASE, ph as u32,
+                                   "位相を詰めています".into(), 600);
+                } else {
+                    let worst = self.auto.as_ref().map_or(0.0, |a| a.worst);
+                    let rel = if best.1 > 0.0 { worst / best.1 } else { 1.0 };
+                    let attempt = self.auto.as_ref().map_or(0, |a| a.attempt);
+                    let pll = self.tune_pll_divide as u32;
+                    // 位相感度が1:1の指標になる。1ドット=1サンプルなら、位相を半ドット
+                    // 動かせば全サンプルが中央から縁へ移るので鮮鋭度が大きく変わる。
+                    // 変わらないなら「半分のサンプルが既に縁にいる」= 過剰サンプル。
+                    // 実機の15kHzモードで最悪95%(=変わらない)のまま2.3倍の値に
+                    // 着地したので、その場合は半分にして測り直す。
+                    // 半分にできるのは、それがTVPの下限以上のときだけ。下限で
+                    // 過剰サンプルを強いられている帯域(15kHz)では位相感度が弱いのが
+                    // 正常なので、ここで下げてしまうとPLLが範囲外の無効な領域へ入る
+                    // (実機で432まで落ちて絵が壊れた)。
+                    if rel > 0.85 && attempt < 2 && pll / 2 >= self.pll_min_hw() {
+                        if let Some(a) = self.auto.as_mut() {
+                            a.attempt = attempt + 1;
+                        }
+                        self.send_cfg(protocol::CFG_KEY_PHASE, 16);
+                        self.tune_phase = 16;
+                        let half = pll / 2;
+                        self.auto_enter_sweep(
+                            half,
+                            format!("位相感度が弱い({:.0}%)ので {half} で再測定", rel * 100.0));
+                        return;
+                    }
+                    self.send_cfg(protocol::CFG_KEY_PHASE, best.0 as u32);
+                    self.tune_phase = best.0;
+                    self.auto = None;
+                    let at_floor = pll <= self.pll_min_hw() + 8;
+                    let judge = if at_floor {
+                        "TVPの下限(12MHz)。このモードは1:1不可"
+                    } else if rel <= 0.85 {
+                        "1:1"
+                    } else {
+                        "要確認"
+                    };
+                    self.auto_done = Some(format!(
+                        "pll_div {} / 位相 {} で完了({judge}: 最悪の位相は {:.0}%)",
+                        pll, best.0, rel * 100.0));
+                    self.want_fit = true;
+                }
+            }
+        }
+    }
+
     fn tune_ui(&mut self, ui: &mut egui::Ui) {
+        self.auto_step();
+        self.follow_band();
         self.follow_mode();
         self.sync_tune_from_board();
         self.weave_auto_step();
@@ -1002,6 +1466,15 @@ impl ViewerApp {
             "active {}x{} at ({},{})",
             st.active_w, st.active_h, st.active_x, st.active_y
         ));
+        // 1ラインがバッファに入り切っていない状態。過剰サンプルの明確な兆候で、
+        // このとき外接矩形は有効映像の幅ではなくバッファ幅を表すので、そこから
+        // 計算した値は全部おかしくなる(管面の「絵に合わせる」も小さく出る)。
+        if st.span_w > 0 && st.span_w as u32 >= self.frame_size.0.max(1) {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 170, 60),
+                "1ラインがバッファに入り切っていません(過剰サンプル)",
+            );
+        }
         // 測定が信用できるか。有効映像が窓に入り切っていないと外接矩形は
         // 有効映像の幅を表さず、そこから計算した推奨値は正しい方向へ行かない。
         // 実際この状態で押し続けて pll_div が上限まで走り、DATACLKが100MHzを
@@ -1202,6 +1675,35 @@ impl ViewerApp {
                 self.shared.config_state.lock().unwrap().clear();
             }
         });
+        // pll_divide と位相の自動調整。
+        //
+        // 「→ pll」の比例計算は、有効映像の実測が信用できないと上限まで走る
+        // (実機で pll_div が 2304 まで行って絵が崩れた)。こちらは絵の
+        // スペクトルから倍率を割り出すので、いまの値がどれだけ外れていても
+        // 1回で正しい範囲に入る。
+        ui.horizontal(|ui| {
+            if self.auto.is_some() {
+                if ui.button("中止").clicked() {
+                    self.auto = None;
+                    self.auto_done = Some("中止しました".into());
+                }
+                if let Some(a) = self.auto.as_ref() {
+                    ui.monospace(a.note.clone());
+                }
+            } else {
+                if ui.button("自動調整")
+                    .on_hover_text("pll_divide と位相を実測で決める(40秒ほど)。\n\
+                                    文字など細かい模様が出ている画面で実行してください")
+                    .clicked()
+                {
+                    self.auto_done = None;
+                    self.auto_start();
+                }
+                if let Some(d) = self.auto_done.clone() {
+                    ui.monospace(d);
+                }
+            }
+        });
         if ui.button("send all").clicked() {
             send.push((protocol::CFG_KEY_VBP, self.tune_vbp as u32));
             send.push((protocol::CFG_KEY_HS_OFFSET, self.tune_hs_offset as u32));
@@ -1304,39 +1806,128 @@ impl eframe::App for ViewerApp {
             drop(boards);
             ui.separator();
 
-            // 管面が映す「ラインの中の時間窓」。実際のCRTのH位置/H幅つまみに相当し、
-            // モニタ固有の値。映像の内容にもモードにも依存しないので、一度合わせれば
-            // どのモードでもそのまま使える。
+            // 管面(ブラウン管の物理的な表示領域)。
+            //
+            // 実CRTは偏向の傾きが固定なので、掃引にかかった時間がそのまま管面上の
+            // 幅になる。だから同じ512x512でも 15kHz は 31kHz の2.4倍の幅で描かれる
+            // (有効映像の絶対時間が 52.7µs 対 22.1µs)。X68000で15kHzが管面いっぱい
+            // に広がり31kHzが中央に寄って見えるのはこれ。
+            //
+            // 以前は管面を「ラインに対する割合」で持っていたため、どのモードでも
+            // 同じ大きさに描かれ、かつ 15kHz(有効映像が0.842)が管面の0.72に
+            // 入らずに左右が切れていた。掃引時間で持つとどちらも解決する。
             ui.horizontal(|ui| {
-                ui.monospace("H位置");
-                let mut c = (self.window[0] + self.window[1]) * 0.5;
-                let mut w = self.window[1] - self.window[0];
-                let a = ui.add(egui::DragValue::new(&mut c).speed(0.002).range(0.0..=1.0)
-                               .fixed_decimals(3));
-                ui.monospace("H幅");
-                let b = ui.add(egui::DragValue::new(&mut w).speed(0.002).range(0.05..=1.0)
-                               .fixed_decimals(3));
-                if a.changed() || b.changed() {
-                    self.window[0] = (c - w * 0.5).clamp(-0.5, 1.5);
-                    self.window[1] = self.window[0] + w;
+                if ui.checkbox(&mut self.tube_time_based, "時間ベース")
+                    .on_hover_text("実CRTと同じく掃引時間で管面上の幅を決める。\n                                    切ると旧方式(ラインに対する割合)になる")
+                    .changed()
+                {
                     self.mark_settings_dirty();
                 }
-            });
-            ui.horizontal(|ui| {
-                ui.monospace("V位置");
-                let mut c = (self.window[2] + self.window[3]) * 0.5;
-                let mut h = self.window[3] - self.window[2];
-                let a = ui.add(egui::DragValue::new(&mut c).speed(0.002).range(0.0..=1.0)
-                               .fixed_decimals(3));
-                ui.monospace("V幅");
-                let b = ui.add(egui::DragValue::new(&mut h).speed(0.002).range(0.05..=1.0)
-                               .fixed_decimals(3));
-                if a.changed() || b.changed() {
-                    self.window[2] = (c - h * 0.5).clamp(-0.5, 1.5);
-                    self.window[3] = self.window[2] + h;
-                    self.mark_settings_dirty();
+                // いまのモードで有効映像が管面をどれだけ占めるかを出す。
+                // 掃引時間を決めるときの目安になる
+                if let Some(m) = self.shared.mode.lock().unwrap().as_ref() {
+                    let fh_khz = m.hfreq_mhz_x1000 as f32 / 1_000_000.0;
+                    if fh_khz > 1.0 && m.htotal > 0 {
+                        let line_us = 1000.0 / fh_khz;
+                        let act_us = m.hactive as f32 / m.htotal as f32 * line_us;
+                        ui.weak(format!("1ライン {line_us:.1}µs / 有効 {act_us:.1}µs                                          → 管面の{:.0}%", act_us / self.tube_span_us * 100.0));
+                    }
                 }
             });
+            if self.tube_time_based {
+                self.band_leds(ui);
+                ui.horizontal(|ui| {
+                    // 実機のマルチスキャンモニタは周波数帯ごとに走査速度を切り替える。
+                    // 掃引時間を全帯域で共通にすると15kHzに合わせた管面で31kHzが
+                    // 42%の大きさになってしまう(実測で確認した)。
+                    let act = self.active_us();
+                    if ui.add_enabled(act.is_some(), egui::Button::new("絵に合わせる"))
+                        .on_hover_text("いまの有効映像がちょうど管面に収まる掃引時間にする。\n\
+                                        この帯域のプリセットとして覚える")
+                        .clicked()
+                    {
+                        if let Some(us) = act {
+                            self.tube_span_us = (us * self.tube_fit_margin).clamp(4.0, 300.0);
+                            self.mark_settings_dirty();
+                            self.want_fit = true;
+                        }
+                    }
+                    ui.monospace("余裕");
+                    if ui.add(egui::DragValue::new(&mut self.tube_fit_margin)
+                              .speed(0.005).range(0.5..=1.5).fixed_decimals(3))
+                        .on_hover_text("1.0で有効映像がちょうど収まる。\n\
+                                        1未満で実機のようなオーバースキャン(周囲が切れる)")
+                        .changed() { self.mark_settings_dirty(); }
+                });
+                ui.horizontal(|ui| {
+                    ui.monospace("掃引H");
+                    if ui.add(egui::DragValue::new(&mut self.tube_span_us)
+                              .speed(0.2).range(4.0..=300.0).suffix("µs")
+                              .fixed_decimals(1))
+                        .on_hover_text("管面の横幅に相当する時間。\n                                        大きくすると絵が小さくなる(管面が広がる)")
+                        .changed() { self.mark_settings_dirty(); }
+                    ui.monospace("位置H");
+                    if ui.add(egui::DragValue::new(&mut self.tube_off_us)
+                              .speed(0.1).range(-50.0..=50.0).suffix("µs")
+                              .fixed_decimals(1)).changed() { self.mark_settings_dirty(); }
+                });
+                ui.horizontal(|ui| {
+                    // 偏向の傾きを縦横とも固定にすると縦横比が崩れる(横は 1/fH に
+                    // 比例するのに、fVがほぼ一定なので縦は変わらない)。連動させると
+                    // 絵は形を保ったまま拡縮し、「15kHzは管面いっぱい / 31kHzは中央に
+                    // 寄る」になる。
+                    if ui.checkbox(&mut self.tube_link_v, "縦を横に連動")
+                        .on_hover_text("絵の形を保ったまま拡縮する。\n\
+                                        切ると縦も掃引時間で決める(縦横比が崩れる)")
+                        .changed() { self.mark_settings_dirty(); }
+                    if self.tube_link_v {
+                        ui.monospace("縦倍");
+                        if ui.add(egui::DragValue::new(&mut self.tube_v_trim)
+                                  .speed(0.005).range(0.3..=3.0)
+                                  .fixed_decimals(3)).changed() { self.mark_settings_dirty(); }
+                    } else {
+                        ui.monospace("掃引V");
+                        if ui.add(egui::DragValue::new(&mut self.tube_span_ms)
+                                  .speed(0.05).range(2.0..=60.0).suffix("ms")
+                                  .fixed_decimals(2)).changed() { self.mark_settings_dirty(); }
+                    }
+                    ui.monospace("位置V");
+                    if ui.add(egui::DragValue::new(&mut self.tube_off_ms)
+                              .speed(0.02).range(-20.0..=20.0).suffix("ms")
+                              .fixed_decimals(2)).changed() { self.mark_settings_dirty(); }
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.monospace("H位置");
+                    let mut c = (self.window[0] + self.window[1]) * 0.5;
+                    let mut w = self.window[1] - self.window[0];
+                    let a = ui.add(egui::DragValue::new(&mut c).speed(0.002).range(0.0..=1.0)
+                                   .fixed_decimals(3));
+                    ui.monospace("H幅");
+                    let b = ui.add(egui::DragValue::new(&mut w).speed(0.002).range(0.05..=1.0)
+                                   .fixed_decimals(3));
+                    if a.changed() || b.changed() {
+                        self.window[0] = (c - w * 0.5).clamp(-0.5, 1.5);
+                        self.window[1] = self.window[0] + w;
+                        self.mark_settings_dirty();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.monospace("V位置");
+                    let mut c = (self.window[2] + self.window[3]) * 0.5;
+                    let mut h = self.window[3] - self.window[2];
+                    let a = ui.add(egui::DragValue::new(&mut c).speed(0.002).range(0.0..=1.0)
+                                   .fixed_decimals(3));
+                    ui.monospace("V幅");
+                    let b = ui.add(egui::DragValue::new(&mut h).speed(0.002).range(0.05..=1.0)
+                                   .fixed_decimals(3));
+                    if a.changed() || b.changed() {
+                        self.window[2] = (c - h * 0.5).clamp(-0.5, 1.5);
+                        self.window[3] = self.window[2] + h;
+                        self.mark_settings_dirty();
+                    }
+                });
+            }
             ui.horizontal(|ui| {
                 // 縦画面のゲーム(ドラゴンスピリット等)向け
                 ui.monospace("回転");

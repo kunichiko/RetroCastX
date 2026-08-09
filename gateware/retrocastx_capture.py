@@ -488,18 +488,29 @@ class TvpCapture(Module):
             # なり、配置次第でタイミングが悪化した(eth_rxが130→116MHzに落ちた)。
             # レジスタのまま毎サイクル更新すれば、1クロック遅れるだけで即座に反映され、
             # pix側は短いレジスタ出力を見るだけで済む。
-            vstart = Signal(13)
+            vstart = Signal(13)      # 窓の先頭から frame 末尾までの行数
             fstart = Signal(13)      # インターレース時のフィールドあたり有効行数
+            vs_row = Signal(13)      # VSYNC検出時に row へ入れる値
             self.comb += [
                 vstart.eq(self.cfg_vtotal - self.cfg_vbp),
                 fstart.eq(self.cfg_vtotal[1:] - self.cfg_vbp),
+                # row に入れる値は vtotal 未満でなければならない。vbp=0 だと
+                # vtotal - vbp = vtotal になり、ラップ判定(row == vtotal-1)を
+                # 通り越して二度と回らず、フレームが進まなくなって映像が止まる
+                # (実機で vbp=0 にして 0fps になった)。0 は「VSYNCが窓の先頭」
+                # そのものなので 0 に折り返す。
+                If((self.cfg_vbp == 0) | (self.cfg_vbp >= self.cfg_vtotal),
+                    vs_row.eq(0),
+                ).Else(
+                    vs_row.eq(vstart),
+                ),
             ]
             self.sync += [
                 # VSYNC位相ゲートは vtotal の 3/4(モードに依らず妥当な比率)
                 self.cfg_vs_min_rows.eq(self.cfg_vtotal -
                                         (self.cfg_vtotal >> 2)),
                 # 窓の先頭 = VSYNCの vbp 行後
-                self.cfg_vs_row_at_sync.eq(vstart),
+                self.cfg_vs_row_at_sync.eq(vs_row),
                 # 送出行数 = min(height, vtotal - vbp)
                 # インターレース時は「1フィールドあたり」の行数なので、上限は
                 # フィールドの行数(vtotal/2)と height/2 の小さい方になる。
