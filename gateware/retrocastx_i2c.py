@@ -191,6 +191,11 @@ class StatusDisplay(Module):
         # 既定を最小にしている。実測でエッジ後の残留エコーが +2.55 → +0.01 と
         # 完全に消え、立ち上がり(2サンプル)は変わらず最細部が6%落ちるだけだった。
         self.cfg_video_bw = Signal(4, reset=0xF)
+        # サンプリング位相(レジスタ0x04 bit[7:3])。1ドット周期を32分割した何番目で
+        # ADCがサンプルするか。既定16(=180度)は「ドットの中央あたり」を狙った値だが、
+        # 実際の最適点はケーブル遅延やTVP内部の遅延で変わるので実測で決める。
+        # ずれていると全画素が一様にぼける(白が灰色に見える)ため、鮮鋭度に直結する。
+        self.cfg_phase = Signal(5, reset=16)
         # ファインクランプ制御(レジスタ0x2A)。既定0x07。
         #   bit7 CM Offset(チャンネル間の分離改善) / bit[4:3] Fine swsel(時定数)
         #   bit1 Fine GB / bit0 Fine R
@@ -294,9 +299,9 @@ class StatusDisplay(Module):
         #                     なので折り返しは残るが、それより上の雑音は減らせる。
         #                     実行時に振って効果を測れるようCONFIGから変えられる。
         WR_REG = [0x19, 0x0E, 0x17, 0x18, 0x31, 0x10, 0x3F, 0x2A, 0x03, 0x05, 0x06,
-                  0x08, 0x09, 0x0A]
+                  0x08, 0x09, 0x0A, 0x04]
         WR_VAL = [MUX1, 0x52, 0x02, 0x01, 0x18, 0x58, 0x0F, 0x87, 0xA8, 0x32, 0x20,
-                  35, 33, 39]
+                  35, 33, 39, 0x80]
         if pll_divide:
             # 0x01=PLL divide[11:4], 0x02=[7:4]にPLL divide[3:0]。データシート指定どおり
             # MSBs(0x01)を先に書く。
@@ -334,6 +339,9 @@ class StatusDisplay(Module):
         if 0x06 in WR_REG:
             self.comb += If(step == WR_REG.index(0x06),
                             wval_b.eq(self.cfg_clamp_width))
+        if 0x04 in WR_REG:
+            self.comb += If(step == WR_REG.index(0x04),
+                            wval_b.eq(Cat(C(0, 3), self.cfg_phase)))
         for _reg, _sig in ((0x08, "cfg_gain_b"), (0x09, "cfg_gain_g"), (0x0A, "cfg_gain_r")):
             if _reg in WR_REG:
                 self.comb += If(step == WR_REG.index(_reg),

@@ -290,6 +290,7 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_gain_b     = Signal(8, reset=35)                # key 0x1C (reg 08h)
         self.cfg_gain_g     = Signal(8, reset=33)                # key 0x1D (reg 09h)
         self.cfg_gain_r     = Signal(8, reset=39)                # key 0x1E (reg 0Ah)
+        self.cfg_phase      = Signal(5, reset=16)                # key 0x1F (reg 04h)
         self.cfg_f2_row     = Signal(13, reset=0)                # key 0x14
         self.cfg_field_swap = Signal()                           # key 0x15
         audio_mask = Signal(3, reset=0b111)      # key 0x0001: 音声ソース有効マスク
@@ -366,6 +367,9 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x17),
                         self.cfg_video_bw.eq(rx.data[:4]),
                     ),
+                    If((cfg_target == 0) & (cfg_key == 0x1F),
+                        self.cfg_phase.eq(rx.data[:5]),
+                    ),
                     If((cfg_target == 0) & (cfg_key == 0x18),
                         self.cfg_fine_clamp.eq(rx.data[:8]),
                     ),
@@ -414,6 +418,8 @@ class RetroCastXStreamer(LiteXModule):
                 cfg_reply_val.eq(self.cfg_field_swap),
             ).Elif(cfg_key == 0x16,
                 cfg_reply_val.eq(self.cfg_field_src),
+            ).Elif(cfg_key == 0x1F,
+                cfg_reply_val.eq(self.cfg_phase),
             ).Elif(cfg_key == 0x17,
                 cfg_reply_val.eq(self.cfg_video_bw),
             ).Elif(cfg_key == 0x18,
@@ -998,6 +1004,7 @@ class RetroCastXStream(SoCMini):
                 self.capture.cfg_field_swap.eq(self.streamer.cfg_field_swap),
                 self.status.cfg_pll_divide.eq(pll_use),
                 self.status.cfg_video_bw.eq(self.streamer.cfg_video_bw),
+                self.status.cfg_phase.eq(self.streamer.cfg_phase),
                 self.status.cfg_fine_clamp.eq(self.streamer.cfg_fine_clamp),
                 self.status.cfg_pll_ctl.eq(self.streamer.cfg_pll_ctl),
                 self.status.cfg_clamp_start.eq(self.streamer.cfg_clamp_start),

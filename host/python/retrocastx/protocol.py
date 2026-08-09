@@ -47,6 +47,7 @@ CFG_KEY_CLAMP_WIDTH = 0x001B    # TVPのクランプ幅(レジスタ0x06)
 CFG_KEY_GAIN_B = 0x001C         # 細ゲイン Blue (レジスタ0x08) Gain=1+N/256
 CFG_KEY_GAIN_G = 0x001D         # 細ゲイン Green(レジスタ0x09)
 CFG_KEY_GAIN_R = 0x001E         # 細ゲイン Red  (レジスタ0x0A)
+CFG_KEY_PHASE = 0x001F          # サンプリング位相 0..31 (レジスタ0x04 bit[7:3])
 
 # アプリ→ボードのパケット(SUBSCRIBE/CONFIG)の宛先MACワイルドカード。
 # 同一LANの全ボードが反応するため、複数ボード環境では実MACを指名すること
