@@ -213,6 +213,16 @@ fn run_headless(
             s.fps, s.mbps, s.frames, s.packets, s.lost_packets, s.queue_drops,
             s.orphan_lines
         );
+        // 何も来ないときに、どの種別が届いていないかを出す。
+        // ブロードキャストだけ届いてユニキャストが届かない、などが分かる
+        if s.frames == 0 {
+            let k: Vec<String> = ["LINE", "AUDIO", "MODE", "INFO", "CONFIG", "other"]
+                .iter()
+                .zip(shared.kind_counts.iter())
+                .map(|(n, c)| format!("{n}={}", c.load(Ordering::Relaxed)))
+                .collect();
+            println!("   受信種別: {}", k.join(" "));
+        }
     }
     let s = shared.stats.lock().unwrap().clone();
     shared.stop.store(true, Ordering::Relaxed);

@@ -475,6 +475,10 @@ pub struct Shared {
     pub config_state: Mutex<HashMap<u16, u32>>,
     /// UI→ボードへの現在値問い合わせ(key)。応答は config_state に入る。
     pub config_get_queue: Mutex<Vec<u16>>,
+    /// 種別ごとの受信数 [LINE, AUDIO, MODE, INFO, CONFIG, その他]。
+    /// 「何も来ない」ときに、どの種類が届いていないかで原因を絞る。
+    /// ブロードキャストだけ届いてユニキャストが届かない、などが見える。
+    pub kind_counts: [AtomicU64; 6],
     /// 受信スレッドが「キューが満杯」で捨てたパケット数。
     ///
     /// 組立が追いつかない量。lost(OSのUDPバッファ溢れ+ここで捨てた分)の
@@ -735,6 +739,17 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             }
         };
         bytes_since += n as u64;
+        if n >= 3 {
+            let k = match buf[2] {
+                proto::TYPE_LINE => 0,
+                proto::TYPE_AUDIO => 1,
+                proto::TYPE_MODE => 2,
+                proto::TYPE_INFO => 3,
+                proto::TYPE_CONFIG => 4,
+                _ => 5,
+            };
+            shared.kind_counts[k].fetch_add(1, Ordering::Relaxed);
+        }
 
         // CONFIG応答(ボードが受理した現在値)を端末に出す。設定が届いているか、
         // どの値が入ったかを確認できるようにする。
