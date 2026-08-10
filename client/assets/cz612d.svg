@@ -1,0 +1,178 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1013 1057" width="1013" height="1057">
+  <title>SHARP CZ-612D (illustration)</title>
+  <desc>
+    X68000用3モードディスプレイ CZ-612D の正面図イラスト。写真ではなく作図。
+    寸法は実機写真(1200x1200)から採寸した値をそのまま使っている。
+    座標系は「キャビネット左上 = (0,0)」で、写真座標から (100, 43) を引いたもの。
+
+      キャビネット前面   0..1013 x 0..956        (比 1.059)
+      ガラス開口部     105..902 x 127..724      (797 x 598、比 1.3328 = 4:3)
+                       実測は 110..896(787幅、比 1.316)だったが、管面モデルの
+                       4:3 の映像をそのまま入れると1.3%横に伸びるため、開口部を
+                       4:3 に合わせた(高さ598を保ち幅を+10、中心506.5は不変)
+      ふた(押すと開く)  x 150..778, y 824..956  ← 合わせ目はディテールの要。
+                        中間の板は無く、キャビネット面に直接開く。面は塗らず
+                        (塗るとグラデーションが描き直されて浮く)溝の線だけ。
+                        下端はキャビネット下端と一致するので、そこに溝は無い
+      SHARPロゴ        x 173..241(実機は小さい)
+      操作部(LED/SW)   x 790..974
+      スタンド首        y 956..990,  x 256..757  (幅501)
+      スタンド台座      y 990..1057, x 161..852  (幅691)
+
+    写真は斜め上から撮っているため、台座の天面(写真 y 1030..1075)が見えている。
+    正面図では天面は見えないので、その45pxぶんは描かない。台座の高さは前面の
+    垂直面(写真 y 1075..1145 ≒ 67px)を使う。同じ理由で首も前面の高さだけ。
+
+    ガラス開口部は even-odd で「穴」にしてあるので、後ろに映像を置けばそのまま
+    枠として使える。映像を置く矩形は上記のガラス開口部の値と同じ。
+    開口部の上には何も描かない(以前ガラスの映り込みを白い斜めの帯で重ねていたが、
+    映像の上に薄いグレーの模様として乗ってしまうので外した)。
+  </desc>
+
+  <defs>
+    <!-- 成形樹脂の面。上が明るく下が暗い、ごく浅いグラデーション -->
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#4a4a4e"/>
+      <stop offset="0.35" stop-color="#3e3e42"/>
+      <stop offset="1"    stop-color="#2c2c30"/>
+    </linearGradient>
+    <!-- ベゼル(ガラスのまわり)。中央がわずかに沈む -->
+    <linearGradient id="bezel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#3a3a3e"/>
+      <stop offset="0.5"  stop-color="#333337"/>
+      <stop offset="1"    stop-color="#3d3d41"/>
+    </linearGradient>
+    <linearGradient id="standg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#3c3c40"/>
+      <stop offset="1"    stop-color="#26262a"/>
+    </linearGradient>
+    <!-- 開口部の内側の落ち込み(内影) -->
+    <linearGradient id="inner" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"   stop-color="#000" stop-opacity="0.75"/>
+      <stop offset="0.4" stop-color="#000" stop-opacity="0.15"/>
+      <stop offset="1"   stop-color="#000" stop-opacity="0.45"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ================= スタンド =================
+       正面図なので天面は見えない。高さは前面の垂直面ぶんだけ。 -->
+  <g id="stand">
+    <!-- チルト/スイベル機構(首)。キャビネット下端から台座まで -->
+    <path d="M 256 956 L 757 956 L 745 990 L 268 990 Z" fill="#2a2a2e"/>
+    <rect x="286" y="962" width="441" height="22" rx="4" fill="#1b1b1f" opacity="0.75"/>
+    <!-- 台座。前面の垂直面だけを描く。上下で幅は同じ(角だけ少し丸い) -->
+    <rect x="161" y="990" width="691" height="67" rx="10" fill="url(#standg)"/>
+    <!-- 上端の稜線と下端の影 -->
+    <rect x="171" y="990" width="671" height="3" fill="#5c5c62" opacity="0.55"/>
+    <rect x="171" y="1051" width="671" height="3" fill="#000" opacity="0.3"/>
+  </g>
+
+  <!-- ================= キャビネット ================= -->
+  <!-- 外形。ガラス開口部を even-odd で抜く -->
+  <path fill-rule="evenodd" fill="url(#body)"
+        d="M 44 0 L 969 0 Q 1013 0 1013 44 L 1013 912 Q 1013 956 969 956
+           L 44 956 Q 0 956 0 912 L 0 44 Q 0 0 44 0 Z
+           M 129 127 L 878 127 Q 902 127 902 151 L 902 700 Q 902 724 878 724
+           L 129 724 Q 105 724 105 700 L 105 151 Q 105 127 129 127 Z"/>
+
+  <!-- ベゼル: 開口部のまわりを一段沈ませた面。
+       実機は下側の余白が広く、ふたの上端の近くまで下がっている。
+       開口部からの余白は 上32 / 左右50 / 下64。 -->
+  <path fill-rule="evenodd" fill="url(#bezel)"
+        d="M 78 95 L 928 95 Q 952 95 952 119 L 952 764 Q 952 788 928 788
+           L 78 788 Q 54 788 54 764 L 54 119 Q 54 95 78 95 Z
+           M 129 127 L 878 127 Q 902 127 902 151 L 902 700 Q 902 724 878 724
+           L 129 724 Q 105 724 105 700 L 105 151 Q 105 127 129 127 Z"/>
+
+  <!-- 開口部の内側の縁(落ち込み)。ガラスは抜いてあるので縁だけ描く。
+       even-odd なので外周は開口部より必ず大きくすること。小さいと
+       「開口部の内側かつ外周の外側」が1回だけ囲まれて塗られ、開口部に
+       半透明の帯がはみ出す(実際そうなっていた。穴を暗く埋めた合成では
+       見えず、背景が白いブラウザで露見した)。 -->
+  <path fill-rule="evenodd" fill="url(#inner)"
+        d="M 117 115 L 890 115 Q 914 115 914 139 L 914 712 Q 914 736 890 736
+           L 117 736 Q 93 736 93 712 L 93 139 Q 93 115 117 115 Z
+           M 129 127 L 878 127 Q 902 127 902 151 L 902 700 Q 902 724 878 724
+           L 129 724 Q 105 724 105 700 L 105 151 Q 105 127 129 127 Z"/>
+
+  <!-- 上面のハイライト(成形品の稜線) -->
+  <path d="M 44 3 L 969 3 Q 1008 3 1010 40 L 1010 26 Q 1008 6 969 6 L 44 6
+           Q 5 6 3 26 L 3 40 Q 5 3 44 3 Z" fill="#6a6a70" opacity="0.5"/>
+  <rect x="0" y="44" width="4" height="868" fill="#5a5a60" opacity="0.28"/>
+  <rect x="1009" y="44" width="4" height="868" fill="#000" opacity="0.25"/>
+
+  <!-- ================= 前面パネル =================
+       ロゴのある部分は「押すと開くふた」。合わせ目の位置は正面写真と近接写真の
+       両方で一致した(ふた左端 local 150 / 右端 778)。ディテールの要なので線で描く。
+       文字類は実機どおり小さい。近接写真の比から起こしている。 -->
+  <g id="front-panel">
+    <!-- 中間の板は無い。ふたはキャビネット面に直接開く。
+         正面写真の local y=824 / y=940 の線は、パネルの縁ではなく
+         ふた自身の合わせ目だった(近接写真の y=67 / y=233 に対応)。 -->
+    <g id="door">
+      <!-- ふたはキャビネットと同じ成形面なので、面は塗らない。
+           塗ると body グラデーションがふたの矩形内で描き直され、まわりと
+           繋がらずに浮き上がって見える。描くのは合わせ目の溝だけ。 -->
+      <!-- 下端はキャビネットの外形そのものなので溝は無い。左・上・右の3辺だけ描く -->
+      <path d="M 150 956 L 150 827 Q 150 824 153 824 L 775 824 Q 778 824 778 827 L 778 956"
+            fill="none" stroke="#191a1d" stroke-width="2.2"/>
+      <!-- 溝の内側の縁に当たる光(成形品の面取り) -->
+      <path d="M 151.6 956 L 151.6 828 Q 151.6 825.6 154 825.6 L 774 825.6
+               Q 776.4 825.6 776.4 828 L 776.4 956"
+            fill="none" stroke="#5f5f68" stroke-width="0.9" opacity="0.45"/>
+    </g>
+
+    <!-- 左端の押しボタン(ふたの外) -->
+    <rect x="100" y="869" width="34" height="26" rx="4" fill="#26262a"/>
+    <rect x="100" y="869" width="34" height="2" rx="1" fill="#6a6a70" opacity="0.45"/>
+
+    <!-- SHARP ロゴ(実機は小さい。local x 173..241) -->
+    <text x="173" y="872" font-family="Helvetica, Arial, sans-serif" font-size="17"
+          font-weight="bold" letter-spacing="0.4" fill="#e6e6e8">SHARP</text>
+
+    <!-- 型番ラベル。HIGH RESO は白地に黒抜き -->
+    <rect x="173" y="877" width="50" height="12" rx="1.5" fill="#dcdce0"/>
+    <text x="176" y="886" font-family="Helvetica, Arial, sans-serif" font-size="8"
+          font-weight="bold" fill="#26262a">HIGH RESO</text>
+    <text x="227" y="883" font-family="Helvetica, Arial, sans-serif" font-size="7"
+          fill="#b4b4b8">3 MODE AUTO SCAN</text>
+    <text x="227" y="891" font-family="Helvetica, Arial, sans-serif" font-size="7"
+          fill="#b4b4b8">DISPLAY TV CZ-612D</text>
+
+    <!-- 中央の刻印(押－開)。ふたの開け方の表示 -->
+    <text x="490" y="874" font-size="9" fill="#8a8a90">押－開</text>
+
+    <!-- 周波数インジケータと入力表示(ふたの外、右側) -->
+    <g font-family="Helvetica, Arial, sans-serif" font-size="8" fill="#b8b8bc">
+      <text x="790" y="861">31kHz</text>
+      <text x="790" y="881">24kHz</text>
+      <text x="790" y="901">15kHz</text>
+      <text x="836" y="861">コンピュータ</text>
+      <text x="836" y="881">受像</text>
+      <text x="836" y="901">主電源</text>
+    </g>
+    <!-- LED。消灯状態で描く(枠なので状態表示はしない) -->
+    <g id="leds">
+      <circle cx="828" cy="858" r="2.6" fill="#1a1a1e"/>
+      <circle cx="828" cy="878" r="2.6" fill="#1a1a1e"/>
+      <circle cx="828" cy="898" r="2.6" fill="#2e1414"/>
+      <circle cx="882" cy="858" r="2.6" fill="#2e2a14"/>
+      <circle cx="882" cy="878" r="2.6" fill="#2e2a14"/>
+      <circle cx="882" cy="898" r="2.6" fill="#2e1414"/>
+    </g>
+
+    <!-- 主電源。押し込み式で、くぼみの中央に縦長の赤いパーツ -->
+    <g id="power">
+      <text x="893" y="846" font-family="Helvetica, Arial, sans-serif" font-size="8"
+            fill="#b8b8bc">主電源 切－入</text>
+      <!-- くぼみ。赤いパーツ(h46)が中に収まる大きさにする -->
+      <rect x="892" y="852" width="86" height="56" rx="28" fill="#1e1e22"/>
+      <rect x="894" y="854" width="82" height="52" rx="26" fill="#33333a"/>
+      <!-- 中央の赤いパーツ(縦長)。押し込むとON -->
+      <rect x="928" y="857" width="14" height="46" rx="2.5" fill="#b02a26"/>
+      <rect x="928" y="857" width="14" height="4" rx="2" fill="#e06a60" opacity="0.8"/>
+      <rect x="928" y="899" width="14" height="4" rx="2" fill="#000" opacity="0.35"/>
+    </g>
+  </g>
+
+</svg>
