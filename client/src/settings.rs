@@ -4,9 +4,17 @@
 //! 依存を増やさず自前の `key = value` テキストにする。壊れていても既定値で
 //! 起動できるよう、読めない行は黙って無視する。
 //!
-//! 置き場所は `$XDG_CONFIG_HOME/retrocastx/viewer.conf`(未設定なら
-//! `~/.config/retrocastx/viewer.conf`)。起動時にパスを1行表示して、
-//! 「どこかに勝手に作られた忘れられる設定」にならないようにしている。
+//! 置き場所は環境変数を順に見て決める:
+//!
+//! ```text
+//! $XDG_CONFIG_HOME/retrocastx/viewer.conf
+//! $HOME/.config/retrocastx/viewer.conf          Unix
+//! %APPDATA%\retrocastx\viewer.conf              Windows
+//! %USERPROFILE%\AppData\Roaming\retrocastx\...   同(APPDATA未設定時)
+//! ```
+//!
+//! 起動時にパスを1行表示して、「どこかに勝手に作られた忘れられる設定」に
+//! ならないようにしている。
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -127,9 +135,18 @@ impl Default for Settings {
 
 impl Settings {
     pub fn path() -> PathBuf {
+        // Windows では XDG_CONFIG_HOME も HOME も無いことが多い。そのまま
+        // フォールバックすると「.」= カレントディレクトリに作ってしまい、
+        // 起動した場所ごとに設定が散らばる(実機のWindowsで確認)。
+        // APPDATA(= C:\Users\<user>\AppData\Roaming)を先に見る。
         let base = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
+            .or_else(|| {
+                std::env::var_os("USERPROFILE")
+                    .map(|h| PathBuf::from(h).join("AppData").join("Roaming"))
+            })
             .unwrap_or_else(|| PathBuf::from("."));
         base.join("retrocastx").join("viewer.conf")
     }
