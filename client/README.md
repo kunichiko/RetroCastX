@@ -80,8 +80,14 @@ packaging/macos/bundle.sh target/release/retrocastx-viewer 0.1.0 0 /tmp/out
 open "/tmp/out/RetroCast X.app"
 ```
 
+**macOS はアイコンに角丸マスクをかけない。** 丸みも余白も素材側で作る決まりなので、
+`make-icons.sh` は Apple の配置規則(1024の画布に本体824×824、角丸半径185.4、周囲は
+透明)に合わせて `.icns` を作る。全面ベタのまま入れると **Dock で四角いアイコンに
+なる**(Finderは小さく表示するので黒い角に気づけない。実際これで一度作り直した)。
+Windows の `.ico` は逆に全面ベタのまま使う(角丸+余白にすると小さく見える)。
+
 アイコンは `packaging/AppIcon.png`(1024×1024)が master で、そこから
-`packaging/make-icons.sh` が2つを作る。**生成物もコミットしてある**(CIに画像変換
+`packaging/make-icons.sh` が3つを作る。**生成物もコミットしてある**(CIに画像変換
 ツールを入れない方針。作り直したときは一緒にコミットする):
 
     packaging/macos/AppIcon.icns    .app に入る(bundle.sh が拾う)
