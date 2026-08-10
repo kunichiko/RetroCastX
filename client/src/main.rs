@@ -209,8 +209,9 @@ fn run_headless(
             .map(|m| format!("{}x{}", m.hactive, m.vactive))
             .unwrap_or_else(|| "no mode".into());
         println!(
-            "{dims}  {:.1} fps  {:.1} Mbps  frames={} pkts={} lost={} orphan={}",
-            s.fps, s.mbps, s.frames, s.packets, s.lost_packets, s.orphan_lines
+            "{dims}  {:.1} fps  {:.1} Mbps  frames={} pkts={} lost={} qdrop={} orphan={}",
+            s.fps, s.mbps, s.frames, s.packets, s.lost_packets, s.queue_drops,
+            s.orphan_lines
         );
     }
     let s = shared.stats.lock().unwrap().clone();
@@ -1719,7 +1720,16 @@ impl eframe::App for ViewerApp {
                 let s = self.shared.stats.lock().unwrap().clone();
                 ui.monospace(format!("{:.1} fps  {:.1} Mbps", s.fps, s.mbps));
                 ui.monospace(format!("frames {}", s.frames));
+                // lost はOSのUDPバッファ溢れ、qdrop は組立が追いつかず受信スレッドの
+                // キューが満杯で捨てた分。分けて出さないとどちらが詰まっているのか
+                // 判断できない
                 ui.monospace(format!("pkts {}  lost {}", s.packets, s.lost_packets));
+                if s.queue_drops > 0 {
+                    ui.monospace(format!("queue drops {}", s.queue_drops))
+                        .on_hover_text("組立が追いつかず、受信スレッドのキューが\n\
+                                        満杯で捨てた数。ここが増えるなら組立側が、\n\
+                                        lost だけ増えるなら受信側が詰まっています");
+                }
                 ui.monospace(format!("orphan lines {}", s.orphan_lines));
                 // 太らせても埋まらなかった行数。0でないと前フレームの残りが減衰して
                 // 薄い影として見える。プログレッシブでは0になるべき

@@ -48,6 +48,8 @@ pub struct StatsSnapshot {
     pub mbps: f32,
     pub fps: f32,
     pub lost_packets: u64,
+    /// 受信スレッドのキューが満杯で捨てた数。lost の内訳を分ける
+    pub queue_drops: u64,
     pub orphan_lines: u64,
     pub frames: u64,
     /// 暗部でフレーム間に値が変わった画素の割合[%](=点状ノイズの量)
@@ -473,6 +475,12 @@ pub struct Shared {
     pub config_state: Mutex<HashMap<u16, u32>>,
     /// UI→ボードへの現在値問い合わせ(key)。応答は config_state に入る。
     pub config_get_queue: Mutex<Vec<u16>>,
+    /// 受信スレッドが「キューが満杯」で捨てたパケット数。
+    ///
+    /// 組立が追いつかない量。lost(OSのUDPバッファ溢れ+ここで捨てた分)の
+    /// 内訳を分けるために持つ。捨て場所を作ったなら見えるようにしておかないと、
+    /// どちらが詰まっているのか判断できない。
+    pub queue_drops: AtomicU64,
     /// いま実際に SUBSCRIBE / CONFIG を送っている宛先。UI表示用。
     ///
     /// 指定値そのものではない。ユニキャスト指定で何も返ってこない場合は
@@ -534,13 +542,75 @@ pub fn spawn(
     Ok(std::thread::spawn(move || run(cfg, sock, shared, repaint)))
 }
 
+/// 受信専用スレッド。`recv_from` だけを回して、他は一切やらない。
+///
+/// 以前は1本のスレッドで「受信 → パース → 画素書き込み → フレーム完成時の
+/// コピー → 計測4種」を直列にやっていた。その間 recv_from が呼ばれないので、
+/// OSのUDPバッファが溢れて取りこぼす。300Mbps・27000パケット/秒では、
+/// 受信バッファを64MBにしてもフレーム完成のたびに空く時間が効いて、
+/// Windowsの低スペック機で lost が3%残った(確保をやめても変わらなかったので、
+/// 原因はコピー量ではなく「直列にやっていること」そのもの)。
+///
+/// 受信側が何にも待たされなくなるので、コアが2つ以上あれば組立と並列に動く。
+/// キューが満杯なら捨てる。捨てた分は組立側のseq追跡で lost に出るので、
+/// 黙って消えることはない。
+fn rx_thread(
+    sock: UdpSocket,
+    stop: Arc<Shared>,
+    tx: std::sync::mpsc::SyncSender<(Vec<u8>, usize, std::net::IpAddr)>,
+    free_rx: std::sync::mpsc::Receiver<Vec<u8>>,
+) {
+    // バッファは使い回す。1パケットは MTU 以下なので 2048 で足りる
+    let mut spare: Vec<Vec<u8>> = Vec::new();
+    while !stop.stop.load(Ordering::Relaxed) {
+        // 組立側が返してきたバッファを回収
+        while let Ok(b) = free_rx.try_recv() {
+            spare.push(b);
+        }
+        let mut buf = spare.pop().unwrap_or_else(|| vec![0u8; 2048]);
+        match sock.recv_from(&mut buf) {
+            Ok((n, addr)) => {
+                if let Err(e) = tx.try_send((buf, n, addr.ip())) {
+                    // キューが満杯 = 組立側が遅れている。捨てて受信を続ける。
+                    // ここで待つと受信が止まり、OSのバッファを溢れさせてしまう。
+                    stop.queue_drops.fetch_add(1, Ordering::Relaxed);
+                    // 捨てたバッファは戻して使い回す(満杯が続くときに
+                    // 毎パケット確保しないため)
+                    let (b, ..) = match e {
+                        std::sync::mpsc::TrySendError::Full(v) => v,
+                        std::sync::mpsc::TrySendError::Disconnected(v) => v,
+                    };
+                    spare.push(b);
+                }
+            }
+            Err(_) => spare.push(buf), // タイムアウト。バッファは戻す
+        }
+    }
+}
+
 fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
+    // 受信専用スレッドへ渡す。送信(SUBSCRIBE/CONFIG)はこちらのスレッドが
+    // 複製したソケットで行う。同じソケットなので、ボードが覚える送信元は変わらない。
+    let send_sock = match sock.try_clone() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("ソケットを複製できません: {e}");
+            return;
+        }
+    };
+    // 27000パケット/秒に対し8192段 = 約0.3秒ぶん。組立が一瞬詰まっても吸収できる
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize, std::net::IpAddr)>(8192);
+    let (free_tx, free_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    {
+        let shared = shared.clone();
+        std::thread::spawn(move || rx_thread(sock, shared, tx, free_rx));
+    }
+
     // 音声再生器(デバイスが開けなければ再生なしで続行)
     let mut audio_dev: Option<String> = None;
     let mut audio = open_audio(&cfg, &shared, cfg.audio.source, None);
     let mut asm = FrameAssembler::new();
     asm.set_decay(cfg.decay);
-    let mut buf = vec![0u8; 65536];
     let mut sub_seq: u16 = 0;
     let mut last_subscribe: Option<Instant> = None;
     let mut last_geom: Option<Instant> = None;
@@ -585,7 +655,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             let due = last_subscribe.map_or(true, |t| t.elapsed() >= Duration::from_secs(2));
             if due {
                 let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
-                let _ = sock.send_to(
+                let _ = send_sock.send_to(
                     &proto::pack_subscribe(sub_seq, false, &mac),
                     (dest.as_str(), cfg.port),
                 );
@@ -602,7 +672,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                     let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
                     for (key, value) in q.drain(..) {
                         let pkt = proto::pack_config(sub_seq, 0, 0, key, value, &mac);
-                        let _ = sock.send_to(&pkt, (dest.as_str(), cfg.port));
+                        let _ = send_sock.send_to(&pkt, (dest.as_str(), cfg.port));
                         sub_seq = sub_seq.wrapping_add(1);
                     }
                 } else {
@@ -637,7 +707,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                     let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
                     for key in q.drain(..) {
                         let pkt = proto::pack_config(sub_seq, 0, 1, key, 0, &mac);
-                        let _ = sock.send_to(&pkt, (dest.as_str(), cfg.port));
+                        let _ = send_sock.send_to(&pkt, (dest.as_str(), cfg.port));
                         sub_seq = sub_seq.wrapping_add(1);
                     }
                 } else {
@@ -652,7 +722,9 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             audio = open_audio(&cfg, &shared, req.source, audio_dev.as_deref());
         }
 
-        let (n, addr) = match sock.recv_from(&mut buf) {
+        // 受信スレッドから受け取る。ここでパース以降を全部やるが、受信側は
+        // 待たされないので取りこぼしにはつながらない。
+        let (buf, n, src_ip) = match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(v) => {
                 got_any = true;
                 v
@@ -739,9 +811,9 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         if let Ok(Packet::Announce(a)) = proto::parse(&buf[..n]) {
             let mut boards = shared.boards.lock().unwrap();
             boards.insert(
-                addr.ip().to_string(),
+                src_ip.to_string(),
                 BoardInfo {
-                    addr: addr.ip().to_string(),
+                    addr: src_ip.to_string(),
                     name: a.name.clone(),
                     mac: a.mac,
                     fw_version: a.fw_version,
@@ -767,6 +839,11 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             shared.frame_gen.fetch_add(1, Ordering::Release);
             repaint();
         }
+        // 使い終わったバッファを受信スレッドへ返す。返さないと毎パケット
+        // 確保することになり、27000回/秒のアロケーションで元の木阿弥になる。
+        // 受信スレッドが終了していて送れなくても、単に落とすだけで害はない。
+        let _ = free_tx.send(buf);
+
         tick_stats(&shared, &asm, &noise, &abox, &tune, &weave, &mut last_report, &mut bytes_since, &mut frames_since);
     }
 }
@@ -815,6 +892,7 @@ fn tick_stats(
         mbps: (*bytes_since as f32 * 8.0) / secs / 1e6,
         fps: *frames_since as f32 / secs,
         lost_packets: asm.stats.lost_packets,
+        queue_drops: shared.queue_drops.load(Ordering::Relaxed),
         orphan_lines: asm.stats.orphan_lines,
         frames: asm.stats.frames,
         noise_flicker: noise.flicker,
