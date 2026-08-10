@@ -126,7 +126,10 @@ class RetroCastXStreamer(LiteXModule):
                  audio_sources=None, audio_nsamples=240,
                  mac_address=MAC_ADDRESS, capture=None,
                  cfg_vbp=0, cfg_hs_offset=0, cfg_pll_divide=1104,
+                 extra_stats=None,
                  ):
+        # extra_stats: {CONFIGキー: 読み出し専用のSignal}。ストリーマの外側にある
+        # 診断値(いまはARP学習)をCONFIGのGETで読めるようにするための口。
         # capture: TvpCapture(sysドメインI/F) を渡すと、テストパターンの代わりに
         #   実キャプチャライン(line_valid/line_row/line_frame/rd_*)を源にする。
         #   None の場合は従来どおり自走テストパターン。
@@ -480,6 +483,9 @@ class RetroCastXStreamer(LiteXModule):
                 0x34: reply_mux.eq(capture.stat_pop_probe),
                 0x35: reply_mux.eq(capture.cfg_frame_skip),
             })
+        for key, sig in (extra_stats or {}).items():
+            assert key not in reply_cases, f"CONFIG key {key:#x} が重複している"
+            reply_cases[key] = reply_mux.eq(sig)
         self.comb += Case(cfg_key, reply_cases)
         self.sync += cfg_reply_val.eq(Mux(cfg_target == 1, argus_reg, reply_mux))
 
@@ -1012,7 +1018,7 @@ class RetroCastXStream(SoCMini):
                  interlace_cap=0):
         from litex_boards.platforms import colorlight_i5
         from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
-        from liteeth.core import LiteEthUDPIPCore
+        from retrocastx_net import RetroCastXUDPIPCore
 
         platform = colorlight_i5.Platform(board="i5", revision=revision,
                                           toolchain="trellis")
@@ -1027,11 +1033,16 @@ class RetroCastXStream(SoCMini):
             clock_pads = platform.request("eth_clocks", 1),
             pads       = platform.request("eth", 1),
             tx_delay   = 0e-9)
-        self.ethcore = LiteEthUDPIPCore(
+        # LiteEthUDPIPCore ではなく自前のコア。中身は同じ構成(MAC + ARP + IP +
+        # ICMP + UDP)で、受信パケットから相手のMACを学習する層を挟んである。
+        # ARPに応答しない相手(別サブネットのWindows)へ返せるようにするため。
+        # 理由と挟む位置は retrocastx_net.py の冒頭を参照。
+        self.ethcore = RetroCastXUDPIPCore(
             phy         = self.ethphy,
             mac_address = MAC_ADDRESS,
             ip_address  = FPGA_IP,
             clk_freq    = sys_clk_freq,
+            udp_port_nr = UDP_PORT,
             dw          = 32,
             # 幅変換・CRC等をsysドメインで実行(eth_rx/txドメインは8bit@125MHzの軽い経路のみ
             # にする。これ無しだとeth_rxの125MHzタイミングが閉じない: 実測93MHz)
@@ -1135,6 +1146,11 @@ class RetroCastXStream(SoCMini):
             capture_obj = self.capture
 
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
+        # ARP学習の診断(key 0x40..0x45)。実機で「学習できていないのか」
+        # 「学習した表で答えているのか」を切り分けるために読めるようにする。
+        # 0x40 が増えない = 受信から学習できていない、
+        # 0x41 が増えて 0x42 が止まっている = 学習した表だけで解決できている。
+        learner = self.ethcore.arp_learner
         self.streamer = RetroCastXStreamer(
             udp_port, sys_clk_freq, width=2048, height=2048, fps=60.0,
             audio_sources=[(self.i2s.sources[0], 48000),
@@ -1142,6 +1158,14 @@ class RetroCastXStream(SoCMini):
                            (self.spdif.source, self.spdif.rate_hz)],
             capture=capture_obj,
             cfg_vbp=vbp, cfg_hs_offset=hs_offset, cfg_pll_divide=pll_divide,
+            extra_stats={
+                0x40: learner.learn_count,
+                0x41: learner.hit_count,
+                0x42: learner.miss_count,
+                0x43: learner.last_ip,
+                0x44: learner.last_mac[:32],
+                0x45: learner.last_mac[32:],
+            },
             )
 
         if capture:

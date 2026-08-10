@@ -50,6 +50,15 @@ CFG_KEY_GAIN_R = 0x001E         # 細ゲイン Red  (レジスタ0x0A)
 CFG_KEY_PHASE = 0x001F          # サンプリング位相 0..31 (レジスタ0x04 bit[7:3])
 CFG_KEY_FULL_LINE = 0x0030      # 1ラインまるごと送る(非黒範囲の最適化を切る)
 CFG_KEY_FRAME_SKIP = 0x0035     # フレーム間引き 0=毎フレーム / 1=2回に1回 …
+# ARP学習の診断(読み取り専用)。gateware/retrocastx_net.py の ArpLearner。
+# 相手がARP要求に応答しない環境(別サブネットのWindows)で、ボードが宛先MACを
+# 受信パケットから学習できているかを見る
+CFG_KEY_ARP_LEARNS = 0x0040       # 学習した回数
+CFG_KEY_ARP_HITS = 0x0041         # 学習した表で即答した回数
+CFG_KEY_ARP_MISSES = 0x0042       # 本物のARPへ委譲した回数
+CFG_KEY_ARP_LAST_IP = 0x0043      # 最後に学習した相手のIP(ネットワークバイト順の整数)
+CFG_KEY_ARP_LAST_MAC_LO = 0x0044  # 同 MACの下位4バイト
+CFG_KEY_ARP_LAST_MAC_HI = 0x0045  # 同 MACの上位2バイト
 # 生同期(TVPを通らない経路)の実測値。pll_divide に依存しない絶対値
 CFG_KEY_FH_RAW = 0x002A         # 生HSYNC周波数 [Hz]
 CFG_KEY_FV_RAW = 0x002B         # 生VSYNC周波数 [mHz]

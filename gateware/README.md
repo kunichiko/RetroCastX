@@ -7,7 +7,13 @@
 export PATH="$HOME/opt/oss-cad-suite/bin:$PATH"
 .venv/bin/python retrocastx_stream.py --build   # -> build/colorlight_i5/gateware/colorlight_i5.bit
 .venv/bin/python sim_stream.py                  # 実機不要のプロトコル検証(Migenシミュレーション)
+.venv/bin/python sim_arp.py                     # 受信からのARP学習(retrocastx_net.py)の検証
 ```
+
+`retrocastx_net.py` は UDP/IPコアに「受信パケットから相手のMACを学習する層」を足した
+もの(`LiteEthUDPIPCore` の代わり)。ARP要求に応答しない相手 ─ 別サブネットの
+Windows ─ へも返せるようにするため。理由と挟む位置はファイル冒頭と
+[docs/design-notes.md](../docs/design-notes.md) を参照。
 
 step2 の内容(全てハードウェア実装、CPU不介在):
 
