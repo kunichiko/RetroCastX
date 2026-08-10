@@ -89,7 +89,7 @@ impl Default for Settings {
             muted: false,
             audio_source: Some(0),
             audio_device: None,
-            tune_vbp: 43,
+            tune_vbp: 0,
             tune_hs_offset: 152,
             tune_pll_divide: 1104,
             tune_video_bw: 15,

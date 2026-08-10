@@ -125,7 +125,7 @@ class RetroCastXStreamer(LiteXModule):
                  mtu_payload=1472, interlace=False,
                  audio_sources=None, audio_nsamples=240,
                  mac_address=MAC_ADDRESS, capture=None,
-                 cfg_vbp=43, cfg_hs_offset=0, cfg_pll_divide=1104,
+                 cfg_vbp=0, cfg_hs_offset=0, cfg_pll_divide=1104,
                  ):
         # capture: TvpCapture(sysドメインI/F) を渡すと、テストパターンの代わりに
         #   実キャプチャライン(line_valid/line_row/line_frame/rd_*)を源にする。
@@ -1004,7 +1004,7 @@ class RetroCastXStream(SoCMini):
     def __init__(self, revision="7.0", sys_clk_freq=int(45e6), capture=True,
                  green_input=3, red_input=3, blue_input=3,
                  pll_divide=1104, hs_offset=0, vs_row_at_sync=525,
-                 measure=True, mclk_out=True, auto_vtotal=True, vbp=43,
+                 measure=True, mclk_out=True, auto_vtotal=True, vbp=0,
                  interlace_cap=0):
         from litex_boards.platforms import colorlight_i5
         from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
@@ -1094,10 +1094,15 @@ class RetroCastXStream(SoCMini):
             #     実機より上にずれて見えていた)。フレーム途中の偽VSYNCは無視。
             # hs_offset: 水平バックポーチをスキップ(右寄りの内容を中央へ)。実機調整値。
             # vs_offset: 垂直バックポーチ分。VSYNC整列後の残りずれを詰める。
-            # vs_row_at_sync=525: VSYNC時にrowへ入れる値。525なら 525..567 の43行が
-            #   過ぎた所でrowが0(=キャプチャ窓の先頭)になる → 窓はVSYNCの43行後から
-            #   512行。vtotal568のうちブランキング56行、その上側43行という妥当な値で、
-            #   実機で文字枠が画面中央(row256)に来る位置。実測から算出した調整値。
+            # vbp=0(既定): キャプチャ窓はVSYNC直後から始め、vtotal 行すべてを
+            #   取り込む。水平を hs_offset=0 でラインの頭から取り込むのと同じ方針で、
+            #   「どこから取り込むか」を調整項目にしない。垂直位置は管面のV位置で決まる。
+            #   以前は 43(31kHzの vtotal 568 − 有効512 = ブランキング56行の上側)に
+            #   していたが、これは31kHz専用の値で、vbp はモードに追従しないため
+            #   他のモードでは画面上部が切れた。増える43行はブランキング=全黒なので
+            #   count_px=0 の20バイトパケットになり、帯域はほとんど増えない。
+            #   vs_row_at_sync は auto_vtotal が vbp から毎サイクル導くので、
+            #   vbp=0 のときは 0(=VSYNCが窓の先頭)に折り返される。
             # hs_offset: 水平バックポーチ[DATACLK]。pll_divide を変えるとサンプルレートが
             #   変わるので、この値も同じ比率で見直す必要がある。RGB入力を1段レジスタで
             #   受けるようにした分データが1サイクル遅れるので、151→152 に補正している。
@@ -1248,8 +1253,11 @@ def main():
                     help="起動時のウィーブ方式(実行時にCONFIG key 0x13でも切替可)。"
                          "1=1回のVSYNCにフィールドが2枚(X68000 24kHz 1024x848)、"
                          "2=フィールドごとにVSYNC(15kHz 512x512。標準的なインターレース)")
-    ap.add_argument("--vbp", type=int, default=43,
-                    help="キャプチャ窓の先頭をVSYNCの何行後にするか(垂直バックポーチ)")
+    ap.add_argument("--vbp", type=int, default=0,
+                    help="キャプチャ窓の先頭をVSYNCの何行後にするか(垂直バックポーチ)。"
+                         "既定0=VSYNC直後から全行取り込む。水平を hs_offset=0 で"
+                         "ラインの頭から取り込むのと同じ方針で、垂直位置は管面の"
+                         "V位置で決める。0以外にすると上が切れるモードが出る")
     ap.add_argument("--no-mclk-out", action="store_true",
                     help="P3 147のMCLK出力を0固定にする(音声は止まる)。ノイズ切り分け用")
     args = ap.parse_args()

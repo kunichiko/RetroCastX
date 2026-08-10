@@ -44,7 +44,7 @@ class TvpCapture(Module):
                  hs_active_low=True, vs_active_low=True,
                  hs_offset=0, vs_offset=0, vs_min_rows=0, vtotal=0,
                  vs_row_at_sync=0, hs_total=0, sys_clk_freq=45e6, measure=True,
-                 auto_vtotal=False, vbp=43, interlace=False):
+                 auto_vtotal=False, vbp=0, interlace=False):
         # interlace: 1回のVSYNCの中にフィールドが2枚入る信号を、元の行数に織り直す。
         #   X68000の 24kHz 1024x848 は VSYNC がフレームに1回(vtotal 931行)しか来ず、
         #   その中に縦半分の解像度で画面全体を描いたフィールドが2枚並ぶ。そのまま
