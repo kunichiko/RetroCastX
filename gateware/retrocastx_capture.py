@@ -372,12 +372,37 @@ class TvpCapture(Module):
         # では931)なので、この半端が半ラインに相当する。
         #
         # 判定はTVPの検出ビット(38h bit5)を使う。cfg_interlace は手動での上書き。
+        #
+        # ただし折り返しが必要なのは「TVPのvtotalがフレーム全体(2フィールド分)を
+        # 覆っているとき」だけ。同じX68000でもモードによってTVPのVSOUTがフィールド
+        # ごとに来ることがあり、そのときvtotalは1フィールド分なので折り返してはいけない
+        # (実機の15kHz Mode7: TVP vtotal 260 = 生のフィールドライン数 260。別の
+        #  モードでは TVP vtotal 521 = 生 261 の約2倍だった)。
+        # 折り返し点を vtotal/2 に置くと1フィールドを真ん中で割ってしまう。
+        #
+        # 生同期のライン数(pll_divideに依存しない絶対値)との比で判別する。
+        # meas_lines_raw は sys のレジスタなので、pix 側では明示的にCDCして受け、
+        # 判定もレジスタに落とす。組合せで sys から引くと、比較を経て
+        # in_f2 → frow → fe → row_eff まで伸び、eth_rx が要求125MHzを割った
+        # (5シード中4つが 123〜124MHz で失敗)。判定はモード切替時にしか
+        # 変わらないので1クロック遅れは無害。
+        il_frame = Signal()      # TVPのvtotalがフレーム全体を覆っているか
+        raw_lines = Signal(16)
+        self.specials += MultiReg(self.meas_lines_raw[:16], raw_lines, "pix")
+        # 生同期が無い環境(旧基板/SIM)では判別できないので、従来どおり
+        # 「フレーム単位」と仮定して折り返す(24kHz 1024x848 はこれで正しく動いていた)。
+        self.sync.pix += If(raw_lines > 32,
+            il_frame.eq(self.cfg_vtotal > (raw_lines + (raw_lines >> 1))),  # >1.5×生
+        ).Else(
+            il_frame.eq(1),
+        )
         il_det = Signal()
         self.comb += [
             il_det.eq(self.cfg_il_detect | (self.cfg_interlace != 0)),
             f2_row.eq(Mux(self.cfg_f2_row != 0, self.cfg_f2_row,
                           self.cfg_vtotal[1:])),        # 既定は vtotal/2
-            in_f2.eq(il_det & (row >= f2_row)),
+            # 折り返すのはフレーム単位のときだけ
+            in_f2.eq(il_det & il_frame & (row >= f2_row)),
             frow.eq(row - Mux(in_f2, f2_row, 0)),
             fe.eq(frow - self.cfg_vs_offset),
             # スロットの偶奇。
@@ -776,6 +801,11 @@ class TvpCapture(Module):
                     self.cfg_vactive.eq(height >> 1),
                 ),
             ]
+
+        # 受信側へ「1VSYNC周期あたりのスロット数が vtotal 個か 2×vtotal 個か」を伝える。
+        # フレーム単位のインターレース(折り返しあり)のときだけ vtotal 個になる。
+        self.il_slot1 = Signal()
+        self.comb += self.il_slot1.eq(il_det & il_frame)
 
         # 報告用の行数。行位置は常に半ライン単位のスロットなので、フィールド内
         # 行数の2倍になる(プログレッシブでも1つ飛びに並ぶだけで範囲は2倍)。

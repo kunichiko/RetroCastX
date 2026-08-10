@@ -1127,8 +1127,9 @@ class RetroCastXStream(SoCMini):
                 self.streamer.stat_hs_raw.eq(self.capture.stat_hs_probe_raw),
                 self.streamer.stat_hs_tvp.eq(self.capture.stat_hs_probe_tvp),
                 # 38h bit5 は 0=インターレース。手動上書き(cfg_interlace)も反映する
-                self.streamer.stat_interlaced.eq(
-                    ~self.status.lpf_hi[5] | (self.streamer.cfg_interlace != 0)),
+                # mflags bit0 = 「スロットが vtotal 個」(フレーム単位の織り込み)。
+                # フィールド単位のVSYNCでは折り返さないので 2×vtotal 個になる。
+                self.streamer.stat_interlaced.eq(self.capture.il_slot1),
                 self.capture.cfg_f2_row.eq(self.streamer.cfg_f2_row),
                 self.capture.cfg_field_src.eq(self.streamer.cfg_field_src),
                 self.capture.cfg_hs_total.eq(pll_use),
