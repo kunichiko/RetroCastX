@@ -126,7 +126,7 @@ class RetroCastXStreamer(LiteXModule):
                  audio_sources=None, audio_nsamples=240,
                  mac_address=MAC_ADDRESS, capture=None,
                  cfg_vbp=43, cfg_hs_offset=0, cfg_pll_divide=1104,
-                 cfg_interlace=0):
+                 ):
         # capture: TvpCapture(sysドメインI/F) を渡すと、テストパターンの代わりに
         #   実キャプチャライン(line_valid/line_row/line_frame/rd_*)を源にする。
         #   None の場合は従来どおり自走テストパターン。
@@ -295,8 +295,6 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_vbp        = Signal(13, reset=cfg_vbp)         # key 0x10
         self.cfg_hs_offset  = Signal(13, reset=cfg_hs_offset)   # key 0x11
         self.cfg_pll_divide = Signal(12, reset=cfg_pll_divide)  # key 0x12
-        self.cfg_interlace  = Signal(2, reset=cfg_interlace)     # key 0x13
-        self.cfg_field_src  = Signal()                           # key 0x16
         self.cfg_video_bw   = Signal(4, reset=0xF)               # key 0x17
         self.cfg_fine_clamp = Signal(8, reset=0x87)              # key 0x18
         # H-PLL制御(reg 03h)。VCOレンジはピクセルクロックで決まる(データシート
@@ -316,8 +314,6 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_hs_probe_row = Signal(13)
         self.stat_hs_raw    = Signal(16)
         self.stat_hs_tvp    = Signal(16)
-        self.cfg_f2_row     = Signal(13, reset=0)                # key 0x14
-        self.cfg_field_swap = Signal()                           # key 0x15
         audio_mask = Signal(3, reset=0b111)      # key 0x0001: 音声ソース有効マスク
         argus_reg = Signal(32)                   # target=1(ArgusX)の仮レジスタ
                                                  # (実機step4でI2C書き込みに置換)
@@ -377,18 +373,6 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x12),
                         self.cfg_pll_divide.eq(rx.data[:12]),
                     ),
-                    If((cfg_target == 0) & (cfg_key == 0x13),
-                        self.cfg_interlace.eq(rx.data[:2]),
-                    ),
-                    If((cfg_target == 0) & (cfg_key == 0x14),
-                        self.cfg_f2_row.eq(rx.data[:13]),
-                    ),
-                    If((cfg_target == 0) & (cfg_key == 0x15),
-                        self.cfg_field_swap.eq(rx.data[0]),
-                    ),
-                    If((cfg_target == 0) & (cfg_key == 0x16),
-                        self.cfg_field_src.eq(rx.data[0]),
-                    ),
                     If((cfg_target == 0) & (cfg_key == 0x17),
                         self.cfg_video_bw.eq(rx.data[:4]),
                     ),
@@ -444,10 +428,6 @@ class RetroCastXStreamer(LiteXModule):
             0x10: reply_mux.eq(self.cfg_vbp),
             0x11: reply_mux.eq(self.cfg_hs_offset),
             0x12: reply_mux.eq(self.cfg_pll_divide),
-            0x13: reply_mux.eq(self.cfg_interlace),
-            0x14: reply_mux.eq(self.cfg_f2_row),
-            0x15: reply_mux.eq(self.cfg_field_swap),
-            0x16: reply_mux.eq(self.cfg_field_src),
             0x17: reply_mux.eq(self.cfg_video_bw),
             0x18: reply_mux.eq(self.cfg_fine_clamp),
             0x19: reply_mux.eq(self.cfg_pll_ctl),
@@ -1074,7 +1054,7 @@ class RetroCastXStream(SoCMini):
                            (self.spdif.source, self.spdif.rate_hz)],
             capture=capture_obj,
             cfg_vbp=vbp, cfg_hs_offset=hs_offset, cfg_pll_divide=pll_divide,
-            cfg_interlace=int(interlace_cap))
+            )
 
         if capture:
             # CONFIGで書き換わる画枠パラメータをキャプチャ/TVPへ配る。
@@ -1119,21 +1099,17 @@ class RetroCastXStream(SoCMini):
             self.comb += [
                 self.capture.cfg_vbp.eq(self.streamer.cfg_vbp),
                 self.capture.cfg_hs_offset.eq(hs_use),
-                self.capture.cfg_interlace.eq(self.streamer.cfg_interlace),
                 # TVPが検出したインターレース(38h bit5 P/I detect は 0=インターレース)
                 self.capture.cfg_il_detect.eq(~self.status.lpf_hi[5]),
                 self.streamer.stat_lpf_hi.eq(self.status.lpf_hi),
                 self.capture.cfg_hs_probe_row.eq(self.streamer.cfg_hs_probe_row),
                 self.streamer.stat_hs_raw.eq(self.capture.stat_hs_probe_raw),
                 self.streamer.stat_hs_tvp.eq(self.capture.stat_hs_probe_tvp),
-                # 38h bit5 は 0=インターレース。手動上書き(cfg_interlace)も反映する
+                # 38h bit5 は 0=インターレース
                 # mflags bit0 = 「スロットが vtotal 個」(フレーム単位の織り込み)。
                 # フィールド単位のVSYNCでは折り返さないので 2×vtotal 個になる。
                 self.streamer.stat_interlaced.eq(self.capture.il_slot1),
-                self.capture.cfg_f2_row.eq(self.streamer.cfg_f2_row),
-                self.capture.cfg_field_src.eq(self.streamer.cfg_field_src),
                 self.capture.cfg_hs_total.eq(pll_use),
-                self.capture.cfg_field_swap.eq(self.streamer.cfg_field_swap),
                 self.status.cfg_pll_divide.eq(pll_use),
                 self.status.cfg_video_bw.eq(self.streamer.cfg_video_bw),
                 self.status.cfg_phase.eq(self.streamer.cfg_phase),

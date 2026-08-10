@@ -33,14 +33,6 @@ pub struct Settings {
     pub tune_target_w: i32,
     /// 推奨値を8の倍数に丸める
     pub tune_snap8: bool,
-    /// インターレース方式。0=なし / 1=1VSYNCに2フィールド / 2=フィールド毎VSYNC
-    pub tune_interlace: u8,
-    /// 第2フィールドが始まる row(0=vtotal/2)
-    pub tune_f2_row: i32,
-    /// フィールドの偶奇を入れ替える
-    pub tune_field_swap: bool,
-    /// 方式2の極性の取得元。0=位相 / 1=FIDOUT
-    pub tune_field_src: u8,
     /// TVPのアナログ映像帯域。0=最大 / 15=最小
     pub tune_video_bw: u8,
     /// サンプリング位相 0..31。ドット周期の1/32刻み
@@ -112,10 +104,6 @@ impl Default for Settings {
             tune_pll_divide: 1104,
             tune_target_w: 768,
             tune_snap8: true,
-            tune_interlace: 0,
-            tune_f2_row: 0,
-            tune_field_swap: false,
-            tune_field_src: 0,
             tune_video_bw: 15,
             tune_phase: 16,
             vscale: 1.0,
@@ -173,17 +161,10 @@ impl Settings {
                 "tune_pll_divide" => { if let Ok(x) = v.parse() { s.tune_pll_divide = x } }
                 "tune_target_w" => { if let Ok(x) = v.parse() { s.tune_target_w = x } }
                 "tune_snap8" => s.tune_snap8 = v == "true",
-                "tune_interlace" => {
-                    // 以前は真偽値だった。古い設定ファイルも読めるようにする
-                    s.tune_interlace = match v {
-                        "true" => 1,
-                        "false" => 0,
-                        _ => v.parse().unwrap_or(0),
-                    };
-                }
-                "tune_f2_row" => { if let Ok(x) = v.parse() { s.tune_f2_row = x } }
-                "tune_field_swap" => s.tune_field_swap = v == "true",
-                "tune_field_src" => { if let Ok(x) = v.parse() { s.tune_field_src = x } }
+                // インターレースの設定は撤去した(すべて測定から決まる)。
+                // 古い設定ファイルにこれらの行が残っていても読み捨てる
+                "tune_interlace" | "tune_f2_row" | "tune_field_swap"
+                    | "tune_field_src" => {}
                 "tune_video_bw" => { if let Ok(x) = v.parse() { s.tune_video_bw = x } }
                 "tune_phase" => { if let Ok(x) = v.parse::<u8>() { s.tune_phase = x.min(31) } }
                 "rotate" => {
@@ -291,10 +272,6 @@ impl Settings {
              tune_pll_divide = {}\n\
              tune_target_w = {}\n\
              tune_snap8 = {}\n\
-             tune_interlace = {}\n\
-             tune_f2_row = {}\n\
-             tune_field_swap = {}\n\
-             tune_field_src = {}\n\
              tune_video_bw = {}\n\
              tune_phase = {}\n\
              tube_time_based = {}\n\
@@ -322,10 +299,6 @@ impl Settings {
             self.tune_pll_divide,
             self.tune_target_w,
             self.tune_snap8,
-            self.tune_interlace,
-            self.tune_f2_row,
-            self.tune_field_swap,
-            self.tune_field_src,
             self.tune_video_bw,
             self.tune_phase,
             self.tube_time_based,

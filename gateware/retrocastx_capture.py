@@ -127,19 +127,14 @@ class TvpCapture(Module):
         # 決めるためだけに使い、窓の判定は折り返す前の row で行う。
         # 既定は制限なし。auto_vtotal が vtotal - vbp を入れる。
         self.cfg_win_rows      = Signal(13, reset=2 ** 13 - 1)
-        # インターレース(ウィーブ)。cfg_f2_row は第2フィールドが始まる row。
-        # 0 なら cfg_vtotal/2 を使う。半ライン分ずれるモードのために手で微調整できる。
-        # 0=なし / 1=1つのVSYNCに2フィールド(24kHz 1024x848) /
-        # 2=フィールドごとにVSYNC(15kHz 512x512。標準的なインターレース)
-        self.cfg_interlace     = Signal(2, reset=int(interlace))
-        self.cfg_f2_row        = Signal(13, reset=0)
-        # フィールドの偶奇を入れ替える。どちらのフィールドが偶数ラインを描いて
-        # いるかは信号からは分からないので、実機で見て決められるようにする。
-        # 取り違えると1行ずつ食い違い、斜め線や円がギザギザに見える。
-        self.cfg_field_swap    = Signal()
+        # インターレースの扱いは全て測定から決まるので設定は持たない。
+        #   TVPの検出ビット(38h bit5)        インターレースかどうか
+        #   生VSYNCの半ライン位相            どちらのフィールドが下か
+        #   TVP vtotal / 生ライン数の比      フィールド単位かフレーム単位か
+        # 以前は il(方式) / f2_row(折り返し点) / swap(偶奇) / field_src(極性の
+        # 取得元)を人手で設定していたが、どれも信号から測れる量だった。
         # 方式2でフィールド極性をどこから取るか。0=VSYNCの水平位相 / 1=TVPのFIDOUT。
         # どちらが正しく出るかは実機で確かめられるよう選べるようにしてある。
-        self.cfg_field_src     = Signal()
         # TVPが検出したインターレース(レジスタ38h bit5 P/I detect の反転)。
         # データシート: "Progressive/interlaced video detection status. Not dependent
         # on the H-PLL being locked. 0 = Interlaced video detected"。
@@ -269,7 +264,6 @@ class TvpCapture(Module):
         # (= 元の行番号に織り戻す)。極性はVSYNCの位相ではなく「rowが折り返し点
         # f2_row を超えたか」で決める。この信号はVSYNCがフィールドごとに来ない
         # (フレームに1回だけ)ので、位相からは極性を判定できない。
-        # cfg_interlace=0 のときは in_f2=0 / frow=row となり、従来と同じ式になる。
         # --- インターレースのフィールド極性 ---
         # 方式1は row が折り返し点を超えたかで決まる(VSYNCが1回しか来ないので
         # 位相は使えない)。方式2はVSYNCがフィールドごとに来るので、標準どおり
@@ -340,19 +334,10 @@ class TvpCapture(Module):
                 raw_ok.eq((hs_len_r > 64) & (hs_len_r < 0xF000)),
             )
 
+        # 診断用: TVP経由のVSYNC位相とFIDOUT。位置決めには使わない(生同期を使う)
         vs_x   = Signal(16)          # VSYNCエッジ時の行内カウンタ(=位相)
         fid_vs = Signal()            # そのときのFIDOUT
-        ph     = Signal()            # 位相から見たフィールド極性
-        fld    = Signal()            # 方式2のフィールド極性(VSYNCごとに更新)
-        q = Signal(13)
-        self.comb += [
-            q.eq(self.cfg_hs_total[2:]),          # hs_total/4
-            ph.eq((x > q) & (x < (self.cfg_hs_total - q))),   # ラインの中央付近か
-        ]
-        self.sync.pix += If(vs_edge_raw,
-            vs_x.eq(x), fid_vs.eq(fid_in),
-            fld.eq(Mux(self.cfg_field_src, fid_in, ph)),
-        )
+        self.sync.pix += If(vs_edge_raw, vs_x.eq(x), fid_vs.eq(fid_in))
 
         # 位相から決まるフィールド極性。VSYNCがラインの中央付近に来たフィールドは
         # 半ライン分あとから始まるので、そのラインは1スロット下へ落ちる。
@@ -371,7 +356,7 @@ class TvpCapture(Module):
         # 1スロット下へ置けば織り込みになる。vtotal が奇数(X68000 24kHz 1024x848
         # では931)なので、この半端が半ラインに相当する。
         #
-        # 判定はTVPの検出ビット(38h bit5)を使う。cfg_interlace は手動での上書き。
+        # 判定はTVPの検出ビット(38h bit5)を使う。
         #
         # ただし折り返しが必要なのは「TVPのvtotalがフレーム全体(2フィールド分)を
         # 覆っているとき」だけ。同じX68000でもモードによってTVPのVSOUTがフィールド
@@ -398,9 +383,8 @@ class TvpCapture(Module):
         )
         il_det = Signal()
         self.comb += [
-            il_det.eq(self.cfg_il_detect | (self.cfg_interlace != 0)),
-            f2_row.eq(Mux(self.cfg_f2_row != 0, self.cfg_f2_row,
-                          self.cfg_vtotal[1:])),        # 既定は vtotal/2
+            il_det.eq(self.cfg_il_detect),
+            f2_row.eq(self.cfg_vtotal[1:]),             # 折り返し点 = vtotal/2
             # 折り返すのはフレーム単位のときだけ
             in_f2.eq(il_det & il_frame & (row >= f2_row)),
             frow.eq(row - Mux(in_f2, f2_row, 0)),
@@ -433,7 +417,10 @@ class TvpCapture(Module):
             ).Elif(raw_ok & ~self.cfg_no_raw_phase,
                 fld_pos.eq(~ph_raw),
             ).Else(
-                fld_pos.eq(in_f2 ^ self.cfg_field_swap),
+                # 生同期が無い環境(旧基板)向けの推測。TVPのVSOUTが2本のVSYNCの
+                # どちらで出るかに依存するので当たらないことがある。現基板では
+                # 生同期があるのでこの経路は使わない
+                fld_pos.eq(in_f2),
             ),
         ]
         # row_ok / row_eff はレジスタに落とす。これらは画素書込のイネーブル
@@ -446,8 +433,6 @@ class TvpCapture(Module):
         row_ok  = Signal()
         field_r = Signal()
         ph_r    = Signal()           # 半ライン位相(このVSYNC周期のフィールド)
-        il_on   = Signal()
-        self.comb += il_on.eq(self.cfg_interlace != 0)
         # 行位置は「VSYNCから何半ライン後か」で決める。
         #
         # インターレースの原理そのもので、第2フィールドのVSYNCは半ライン分ずれた
@@ -566,7 +551,8 @@ class TvpCapture(Module):
             meta.sink.row.eq(row_eff[:row_bits]),
             meta.sink.frame.eq(frame),
             # インターレース時は実際のフィールド極性を載せる(非対応時は従来の交互)
-            meta.sink.field.eq(Mux(il_on, field_r, field)),
+            # 織り込んでいるときは実際のフィールド極性、そうでなければ従来の交互
+            meta.sink.field.eq(Mux(il_det, field_r, field)),
             # hs_edge時点の cur_ts は「今終わったライン」の先頭値(更新はクロック端で
             # 起きるため)。push するのもそのラインなので一致する。
             meta.sink.ts.eq(cur_ts),
@@ -793,8 +779,8 @@ class TvpCapture(Module):
                 #
                 # 行位置は常に半ライン単位のスロットなので、スロットは最大で
                 # vactive*2 になる。バッファの行数を超えないよう上限は height/2。
-                # 以前は cfg_interlace で分岐していたが、位置決めが位相ベースに
-                # なったので分岐は要らない。
+                # 位置決めが位相ベースになったので、インターレースかどうかで
+                # 分岐する必要は無い。
                 If(vstart < (height >> 1),
                     self.cfg_vactive.eq(vstart),
                 ).Else(

@@ -93,9 +93,10 @@ def run(interlace: bool, nframes=4):
             yield cap.line_ack.eq(0); yield
 
     def tb():
-        # TVPの検出ビット相当。1 ならフレームを折り返して偶奇へ振り分ける
+        # TVPの検出ビット相当。1 ならフレームを折り返して偶奇へ振り分ける。
+        # 折り返し点は常に vtotal/2(F2_ROW = VTOTAL//2 と一致)。手で指定する
+        # 設定は撤去した(信号から測れる量なので)
         yield cap.cfg_il_detect.eq(1 if interlace else 0)
-        yield cap.cfg_f2_row.eq(F2_ROW if interlace else 0)
         yield cap.cfg_vactive.eq(VACT)
         for _ in range(5):
             yield
@@ -195,9 +196,7 @@ def run_mode2(swap=0, nframes=5):
             yield cap.line_ack.eq(0); yield
 
     def tb():
-        yield cap.cfg_interlace.eq(2)
-        yield cap.cfg_field_swap.eq(swap)
-        yield cap.cfg_field_src.eq(0)        # 位相から判定
+        yield cap.cfg_il_detect.eq(1)
         yield cap.cfg_hs_total.eq(LINE_CYCLES)
         yield cap.cfg_vtotal.eq(VT2)
         yield cap.cfg_vs_min_rows.eq(VT2 - 2)

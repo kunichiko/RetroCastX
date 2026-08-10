@@ -90,8 +90,10 @@ impl Params {
         //  それはViewer側で送るときに行う)。
         let hs = self.h_size.clamp(0.05, 4.0);
         let vs = self.v_size.clamp(0.05, 4.0);
-        let ch = 0.5 + self.h_pos;
-        let cv = 0.5 + self.v_pos;
+        // 位置の値は「絵をどちらへ動かすか」を表す。管面の中心を動かすと絵は逆へ
+        // 動くので符号を反転する(スライダーを右へ→絵が右へ、下へ→絵が下へ)。
+        let ch = 0.5 - self.h_pos;
+        let cv = 0.5 - self.v_pos;
         [ch - hs * 0.5, ch + hs * 0.5, cv - vs * 0.5, cv + vs * 0.5]
     }
 }

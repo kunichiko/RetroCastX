@@ -278,22 +278,6 @@ fn signal_is_valid(m: &protocol::Mode) -> bool {
         && m.dotclk_hz > 5_000_000
 }
 
-/// キャプチャ範囲の外側に塗る色。取り込んだ絵が黒いと画枠が分からないため。
-/// インターレースの織り込み方を自動判定している最中の状態
-struct WeaveAuto {
-    /// 試す (f2_row, swap) の並び
-    /// (方式, f2_row, swap, 極性の取得元)
-    cands: Vec<(u8, i32, bool, u8)>,
-    idx: usize,
-    /// 現在の候補を送った時刻。None ならまだ送っていない
-    started: Option<std::time::Instant>,
-    sum: f64,
-    n: u32,
-    /// 取り込んだ最後の測定番号(同じ値を二重に足さないため)
-    last_seen: u64,
-    results: Vec<(f64, (u8, i32, bool, u8))>,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Backdrop {
     Black,
@@ -387,13 +371,9 @@ struct ViewerApp {
     /// 推奨値を8の倍数に丸める(X68000のhtotalは8ドット単位)
     tune_snap8: bool,
     /// インターレース方式。0=なし / 1=1VSYNCに2フィールド / 2=フィールド毎VSYNC
-    tune_interlace: u8,
     /// 第2フィールドが始まる row(0=vtotal/2)
-    tune_f2_row: i32,
     /// フィールドの偶奇を入れ替える
-    tune_field_swap: bool,
     /// 方式2の極性の取得元。0=位相 / 1=FIDOUT
-    tune_field_src: u8,
     /// TVPのアナログ映像帯域。0=最大 / 15=最小(約95MHz)
     tune_video_bw: u8,
     tune_phase: u8,
@@ -405,7 +385,6 @@ struct ViewerApp {
     /// ボードの現在値を取り込み済みか。起動時に1回だけ合わせる
     tune_synced: bool,
     /// インターレースの織り込み方を自動判定している最中の状態
-    weave_auto: Option<WeaveAuto>,
     /// 現在のウィンドウ内寸(保存用)
     window_size: egui::Vec2,
     /// 中央の描画領域と画のサイズ。ウィンドウを等倍に合わせるのに使う
@@ -497,16 +476,11 @@ impl ViewerApp {
             tune_pll_divide: cfg.tune_pll_divide,
             tune_target_w: cfg.tune_target_w,
             tune_snap8: cfg.tune_snap8,
-            tune_interlace: cfg.tune_interlace,
-            tune_f2_row: cfg.tune_f2_row,
-            tune_field_swap: cfg.tune_field_swap,
-            tune_field_src: cfg.tune_field_src,
             tune_video_bw: cfg.tune_video_bw,
             tune_phase: cfg.tune_phase,
             tune_pending: Default::default(),
             tune_get_at: None,
             tune_synced: false,
-            weave_auto: None,
             window_size: egui::vec2(cfg.window_w, cfg.window_h),
             last_avail: egui::Vec2::ZERO,
             last_tex: egui::Vec2::ZERO,
@@ -614,10 +588,6 @@ impl ViewerApp {
             tune_pll_divide: self.tune_pll_divide,
             tune_target_w: self.tune_target_w,
             tune_snap8: self.tune_snap8,
-            tune_interlace: self.tune_interlace,
-            tune_f2_row: self.tune_f2_row,
-            tune_field_swap: self.tune_field_swap,
-            tune_field_src: self.tune_field_src,
             tune_video_bw: self.tune_video_bw,
             tune_phase: self.tune_phase,
         }
@@ -743,118 +713,6 @@ impl ViewerApp {
 }
 
 impl ViewerApp {
-    /// 画枠パラメータをボードへ即時反映するUI。モードごとに最適値が違い、
-    /// ビルドし直していては追い込めないのでCONFIGパケットで実行時に送る。
-    /// 織り込み方の自動判定を開始する。
-    ///
-    /// f2_row を1増やすのと swap を反転するのはフィールドの相対位置に対して
-    /// 打ち消し合うので、4通りのうち (half,swap=1) と (half+1,swap=0) は同じ
-    /// 配置になる。したがって試すべきは3通りで足りる。
-    /// f2_row は half の代わりに0(=vtotal/2を自動で使う)を送る。モードが
-    /// 変わっても追従させるため。
-    fn weave_auto_start(&mut self, vtotal: u16) {
-        let half = (vtotal / 2) as i32;
-        // (方式, f2_row, swap, 極性の取得元)
-        // 方式1: f2_row を1増やすのと swap の反転は打ち消し合うので3通りで足りる。
-        // 方式2: 折り返し点は無く、極性の取得元(位相/FIDOUT)と swap の4通り。
-        let cands = vec![
-            (1u8, 0, false, 0u8),
-            (1, 0, true, 0),
-            (1, half + 1, true, 0),
-            (2, 0, false, 0),
-            (2, 0, true, 0),
-            (2, 0, false, 1),
-            (2, 0, true, 1),
-        ];
-        self.weave_auto = Some(WeaveAuto {
-            cands,
-            idx: 0,
-            started: None,
-            sum: 0.0,
-            n: 0,
-            last_seen: 0,
-            results: Vec::new(),
-        });
-    }
-
-    /// CONFIGを1件送る(送信済みとして pending に記録する)
-    fn push_cfg(&mut self, key: u16, value: u32) {
-        self.tune_pending
-            .insert(key, (value, std::time::Instant::now()));
-        self.shared.config_queue.lock().unwrap().push((key, value));
-    }
-
-    /// 自動判定を1フレーム分進める。候補ごとに「落ち着き待ち」→「測定」と進む。
-    fn weave_auto_step(&mut self) {
-        let Some(a) = self.weave_auto.as_mut() else { return };
-        let now = std::time::Instant::now();
-        let Some(started) = a.started else {
-            // この候補を送って計測開始
-            let (il, f2, sw, src) = a.cands[a.idx];
-            a.started = Some(now);
-            a.sum = 0.0;
-            a.n = 0;
-            a.last_seen = 0;
-            self.push_cfg(protocol::CFG_KEY_INTERLACE, il as u32);
-            self.push_cfg(protocol::CFG_KEY_F2_ROW, f2 as u32);
-            self.push_cfg(protocol::CFG_KEY_FIELD_SWAP, sw as u32);
-            self.push_cfg(protocol::CFG_KEY_FIELD_SRC, src as u32);
-            return;
-        };
-        let el = now.duration_since(started);
-        // 設定が効くまで待ってから測る。1つの候補に約2.2秒かける
-        if el >= std::time::Duration::from_millis(900) {
-            let st = self.shared.stats.lock().unwrap().clone();
-            let a = self.weave_auto.as_mut().unwrap();
-            if st.weave_n != a.last_seen && st.weave_err > 0.0 {
-                a.last_seen = st.weave_n;
-                a.sum += st.weave_err as f64;
-                a.n += 1;
-            }
-        }
-        let a = self.weave_auto.as_mut().unwrap();
-        if el < std::time::Duration::from_millis(2200) {
-            return;
-        }
-        let c = a.cands[a.idx];
-        if a.n > 0 {
-            a.results.push((a.sum / a.n as f64, c));
-        }
-        a.idx += 1;
-        a.started = None;
-        if a.idx < a.cands.len() {
-            return;
-        }
-        // 全候補おわり: 最良を適用する
-        let mut res = std::mem::take(&mut a.results);
-        self.weave_auto = None;
-        if res.is_empty() {
-            eprintln!("weave auto: 測定できませんでした");
-            return;
-        }
-        res.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
-        for (e, (il, f2, sw, src)) in &res {
-            eprintln!(
-                "weave auto: 方式{il} f2_row={f2} swap={} 極性={} ずれ {e:.3}",
-                *sw as u8,
-                if *src == 1 { "FID" } else { "位相" }
-            );
-        }
-        let (best, (il, f2, sw, src)) = res[0];
-        let ratio = res[res.len() - 1].0 / best.max(1e-6);
-        eprintln!("weave auto: 採用 方式{il} (最大との比 {ratio:.2}倍)");
-        self.tune_interlace = il;
-        self.tune_f2_row = f2;
-        self.tune_field_swap = sw;
-        self.tune_field_src = src;
-        self.push_cfg(protocol::CFG_KEY_INTERLACE, il as u32);
-        self.push_cfg(protocol::CFG_KEY_F2_ROW, f2 as u32);
-        self.push_cfg(protocol::CFG_KEY_FIELD_SWAP, sw as u32);
-        self.push_cfg(protocol::CFG_KEY_FIELD_SRC, src as u32);
-    }
-
-    /// いまの表示パラメータ。幾何は MODE(htotal/vtotal)と画枠設定
-    /// (hs_offset/vbp)から決まる。映像の内容には依存しない。
     fn render_params(&self) -> render::Params {
         let m = self.shared.mode.lock().unwrap().clone();
         // 実測した有効映像の外接矩形。MODEの hactive は送出フレームの幅(常に1024)で
@@ -908,22 +766,17 @@ impl ViewerApp {
     }
 
     /// 実行時に調整できるキーの一覧。読み戻しと表示の同期に使う
-    const TUNE_KEYS: [u16; 9] = [
+    const TUNE_KEYS: [u16; 5] = [
         protocol::CFG_KEY_VBP,
         protocol::CFG_KEY_HS_OFFSET,
         protocol::CFG_KEY_PLL_DIVIDE,
-        protocol::CFG_KEY_INTERLACE,
-        protocol::CFG_KEY_F2_ROW,
-        protocol::CFG_KEY_FIELD_SWAP,
-        protocol::CFG_KEY_FIELD_SRC,
         protocol::CFG_KEY_VIDEO_BW,
         protocol::CFG_KEY_PHASE,
     ];
 
     /// ボードの現在値を表示へ反映する。
     ///
-    /// 読み戻さないと表示と実体が食い違う。実際、ボード側で swap が有効なのに
-    /// チェックボックスは外れたまま、という状態が起きた(設定はボードの電源で
+    /// 読み戻さないと表示と実体が食い違う。設定はボードの電源で
     /// 消え、Viewerの保存値とは別々に動くため)。送信パケットが落ちたときも
     /// ずれるので、応答で確認できた値を正としてUIを合わせる。
     /// いまの入力モードのキー。同じ31kHzでも 768x512 と 256x256 は同期信号が
@@ -1163,10 +1016,6 @@ impl ViewerApp {
                 protocol::CFG_KEY_VBP => self.tune_vbp = val as i32,
                 protocol::CFG_KEY_HS_OFFSET => self.tune_hs_offset = val as i32,
                 protocol::CFG_KEY_PLL_DIVIDE => self.tune_pll_divide = val as i32,
-                protocol::CFG_KEY_F2_ROW => self.tune_f2_row = val as i32,
-                protocol::CFG_KEY_INTERLACE => self.tune_interlace = val as u8,
-                protocol::CFG_KEY_FIELD_SWAP => self.tune_field_swap = val != 0,
-                protocol::CFG_KEY_FIELD_SRC => self.tune_field_src = val as u8,
                 protocol::CFG_KEY_VIDEO_BW => self.tune_video_bw = val as u8,
                 protocol::CFG_KEY_PHASE => self.tune_phase = (val as u8).min(31),
                 _ => {}
@@ -1458,8 +1307,6 @@ impl ViewerApp {
         self.follow_band();
         self.follow_mode();
         self.sync_tune_from_board();
-        self.weave_auto_step();
-        let vtotal = self.shared.mode.lock().unwrap().as_ref().map(|m| m.vtotal);
         let mut send: Vec<(u16, u32)> = Vec::new();
         let mut row = |ui: &mut egui::Ui, label: &str, val: &mut i32,
                        lo: i32, hi: i32, key: u16, send: &mut Vec<(u16, u32)>| {
@@ -1624,77 +1471,14 @@ impl ViewerApp {
                 }
             }
         });
-        // インターレース(ウィーブ)。X68000の 24kHz 1024x848 のように、VSYNCが
-        // フレームに1回しか来ずその中にフィールドが2枚入る信号で使う。
-        // 見分け方: 同じfHのままvtotalが約2倍かつ奇数になり、fVが半分になる。
-        ui.horizontal(|ui| {
-            // 0=なし / 1=1つのVSYNCにフィールドが2枚(24kHz 1024x848) /
-            // 2=フィールドごとにVSYNC(15kHz 512x512。標準的なインターレース)
-            let mut il = self.tune_interlace;
-            ui.monospace("il");
-            egui::ComboBox::from_id_salt("interlace")
-                .width(96.0)
-                .selected_text(match il {
-                    1 => "1VS/2枚",
-                    2 => "VS/枚",
-                    _ => "なし",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut il, 0, "なし");
-                    ui.selectable_value(&mut il, 1, "1VS/2枚");
-                    ui.selectable_value(&mut il, 2, "VS/枚");
-                });
-            if il != self.tune_interlace {
-                self.tune_interlace = il;
-                send.push((protocol::CFG_KEY_INTERLACE, il as u32));
-                // 折り返し点は既定(vtotal/2)に戻す。モードを変えると前のモードの
-                // 値が残って絵が割れるため。
-                self.tune_f2_row = 0;
-                send.push((protocol::CFG_KEY_F2_ROW, 0));
-            }
-            if self.tune_interlace != 0 {
-                // どちらのフィールドが偶数ラインを描いているかは信号から判別
-                // できない。取り違えると1行ずつ食い違い、斜め線や円がギザギザ
-                // に見えるので、見ながら切り替えられるようにしておく。
-                if ui.checkbox(&mut self.tune_field_swap, "swap").changed() {
-                    send.push((protocol::CFG_KEY_FIELD_SWAP,
-                               self.tune_field_swap as u32));
-                }
-                if self.weave_auto.is_some() {
-                    let a = self.weave_auto.as_ref().unwrap();
-                    ui.monospace(format!("auto {}/{}", a.idx + 1, a.cands.len()));
-                } else if ui.button("auto").clicked() {
-                    if let Some(vt) = vtotal {
-                        self.weave_auto_start(vt);
-                    }
-                }
-                if self.tune_interlace == 2 {
-                    // 方式2の極性の取得元。位相判定とFIDOUTのどちらが正しく出るかは
-                    // 実機で確かめる
-                    let mut src = self.tune_field_src;
-                    egui::ComboBox::from_id_salt("field_src")
-                        .width(72.0)
-                        .selected_text(if src == 1 { "FID" } else { "位相" })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut src, 0, "位相");
-                            ui.selectable_value(&mut src, 1, "FID");
-                        });
-                    if src != self.tune_field_src {
-                        self.tune_field_src = src;
-                        send.push((protocol::CFG_KEY_FIELD_SRC, src as u32));
-                    }
-                    return;
-                }
-                ui.monospace("f2row");
-                // 半ライン分のずれで1行ぶん食い違うことがあるので手で詰められる。
-                // 0 = vtotal/2 を自動で使う
-                if ui.add(egui::DragValue::new(&mut self.tune_f2_row).range(0..=4095))
-                    .changed()
-                {
-                    send.push((protocol::CFG_KEY_F2_ROW, self.tune_f2_row as u32));
-                }
-            }
-        });
+        // インターレースの設定は撤去した。すべて測定から決まる:
+        //   TVPの検出ビット(38h bit5)      インターレースかどうか
+        //   生VSYNCの半ライン位相          どちらのフィールドが下か
+        //   TVP vtotal / 生ライン数の比    フィールド単位かフレーム単位か
+        // 以前は il(方式) / f2_row(折り返し点) / swap(偶奇) / field_src(極性の
+        // 取得元) / auto(内容から判定)を人手で設定していたが、どれも信号から
+        // 測れる量だった。手動の上書きを残すと誤った値で壊せる経路になる。
+        // 実機でX68000のモード0〜18すべてが無調整で表示されることを確認した。
         // TVPのアナログ映像帯域。折り返しの元になる高周波を削る。
         // 15(最小=約95MHz)で、エッジ後の残留エコーが消える(実測 +2.55→+0.01)。
         // 立ち上がりは変わらず最細部が6%落ちるだけなので既定を15にしている。
@@ -1818,6 +1602,8 @@ impl eframe::App for ViewerApp {
             ui.separator();
 
             ui.strong("Mode");
+            // 周波数インジケータ(実機モニタのLEDに相当)。同期している帯域が点灯する
+            self.band_leds(ui);
             if let Some(m) = self.shared.mode.lock().unwrap().clone() {
                 ui.monospace(format!("{}x{} (id {})", m.hactive, m.vactive, m.mode_id));
                 ui.monospace(format!("pixfmt {}", m.pixfmt));
@@ -1911,30 +1697,48 @@ impl eframe::App for ViewerApp {
                 }
             });
             if self.tube_time_based {
-                self.band_leds(ui);
+                // 実CRTのH幅/H位置/V幅/V位置つまみに相当する。スライダーにして
+                // 「回して合わせる」操作にしている。
+                //
+                // 絵の内容から自動で中央へ寄せる方法は採らない。幾何が内容に依存して
+                // しまい、「幾何は同期信号だけで決まる」という原則が崩れる。実CRTの
+                // H位置もモードごとに一度合わせる固定値であって、絵に追従はしない。
+                // 帯域ごとに保存されるので一度合わせれば以後は再現される。
+                let mut ch = false;
                 ui.horizontal(|ui| {
                     ui.monospace("H幅");
-                    if ui.add(egui::DragValue::new(&mut self.mon[0])
-                              .speed(0.002).range(0.2..=2.0).fixed_decimals(3))
+                    ch |= ui.add(egui::Slider::new(&mut self.mon[0], 0.2..=2.0)
+                                 .fixed_decimals(3).show_value(true))
                         .on_hover_text("1HSYNC周期のうち管面に出る割合。\n\
                                         1.0で帰線期間まで全部見える")
-                        .changed() { self.mark_settings_dirty(); }
+                        .changed();
+                });
+                ui.horizontal(|ui| {
                     ui.monospace("H位置");
-                    if ui.add(egui::DragValue::new(&mut self.mon[1])
-                              .speed(0.002).range(-0.5..=0.5).fixed_decimals(3))
-                        .changed() { self.mark_settings_dirty(); }
+                    ch |= ui.add(egui::Slider::new(&mut self.mon[1], -0.5..=0.5)
+                                 .fixed_decimals(3).show_value(true))
+                        .on_hover_text("右へ動かすと絵が右へ動く。\n\
+                                        信号は左右非対称(バックポーチが長い)なので、\n\
+                                        0だと絵が右に寄る(負の値で左へ戻す)")
+                        .changed();
                 });
                 ui.horizontal(|ui| {
                     ui.monospace("V幅");
-                    if ui.add(egui::DragValue::new(&mut self.mon[2])
-                              .speed(0.002).range(0.2..=2.0).fixed_decimals(3))
+                    ch |= ui.add(egui::Slider::new(&mut self.mon[2], 0.2..=2.0)
+                                 .fixed_decimals(3).show_value(true))
                         .on_hover_text("1VSYNC周期のうち管面に出る割合")
-                        .changed() { self.mark_settings_dirty(); }
-                    ui.monospace("V位置");
-                    if ui.add(egui::DragValue::new(&mut self.mon[3])
-                              .speed(0.002).range(-0.5..=0.5).fixed_decimals(3))
-                        .changed() { self.mark_settings_dirty(); }
+                        .changed();
                 });
+                ui.horizontal(|ui| {
+                    ui.monospace("V位置");
+                    ch |= ui.add(egui::Slider::new(&mut self.mon[3], -0.5..=0.5)
+                                 .fixed_decimals(3).show_value(true))
+                        .on_hover_text("右へ動かすと絵が下へ動く")
+                        .changed();
+                });
+                if ch {
+                    self.mark_settings_dirty();
+                }
                 // 有効映像が管面のどれだけを占めるか。モードごとに違って当然で、
                 // 15kHzはラインの0.842を占めるので大きく、31kHzは0.696なので小さい
                 let (aw, ah) = {
