@@ -428,73 +428,54 @@ class RetroCastXStreamer(LiteXModule):
                 ),
             ),
         ]
-        # 応答値(SET/GETとも現在値を返す)
+        # 応答値(SET/GETとも現在値を返す)。
+        #
+        # キーごとの If/Elif 連鎖で書くと段数ぶんの優先順位マルチプレクサになる。
+        # キーが28個まで増えた時点で cfg_reply_val → hdr → sink.data の経路が伸び、
+        # sys が要求45MHzを割った(シードによって38〜44MHz)。Case にすると
+        # デコード+平坦なマルチプレクサになり、段数に依らない。
+        #
+        # さらに1段レジスタを挟む。応答は次のパケットで送るので1クロック遅れても
+        # 影響しない(cfg_key はパケット受信時にラッチされ、送出まで固定されている)。
         cfg_reply_val = Signal(32)
-        self.comb += [
-            If(cfg_target == 1,
-                cfg_reply_val.eq(argus_reg),
-            ).Elif(cfg_key == 1,
-                cfg_reply_val.eq(audio_mask),
-            ).Elif(cfg_key == 0x10,
-                cfg_reply_val.eq(self.cfg_vbp),
-            ).Elif(cfg_key == 0x11,
-                cfg_reply_val.eq(self.cfg_hs_offset),
-            ).Elif(cfg_key == 0x12,
-                cfg_reply_val.eq(self.cfg_pll_divide),
-            ).Elif(cfg_key == 0x13,
-                cfg_reply_val.eq(self.cfg_interlace),
-            ).Elif(cfg_key == 0x14,
-                cfg_reply_val.eq(self.cfg_f2_row),
-            ).Elif(cfg_key == 0x15,
-                cfg_reply_val.eq(self.cfg_field_swap),
-            ).Elif(cfg_key == 0x16,
-                cfg_reply_val.eq(self.cfg_field_src),
-            ).Elif(cfg_key == 0x22,
-                cfg_reply_val.eq(self.cfg_sync_ctl),
-            ).Elif(cfg_key == 0x1F,
-                cfg_reply_val.eq(self.cfg_phase),
-            ).Elif(cfg_key == 0x17,
-                cfg_reply_val.eq(self.cfg_video_bw),
-            ).Elif(cfg_key == 0x18,
-                cfg_reply_val.eq(self.cfg_fine_clamp),
-            ).Elif(cfg_key == 0x19,
-                cfg_reply_val.eq(self.cfg_pll_ctl),
-            ).Elif(cfg_key == 0x1A,
-                cfg_reply_val.eq(self.cfg_clamp_start),
-            ).Elif(cfg_key == 0x1B,
-                cfg_reply_val.eq(self.cfg_clamp_width),
-            ).Elif(cfg_key == 0x1C,
-                cfg_reply_val.eq(self.cfg_gain_b),
-            ).Elif(cfg_key == 0x1D,
-                cfg_reply_val.eq(self.cfg_gain_g),
-            ).Elif(cfg_key == 0x1E,
-                cfg_reply_val.eq(self.cfg_gain_r),
-            ),
-        ]
-
-        # 診断用の読み出し。フィールド極性をどちらから取るべきかを実機で判断する
-        # ための生データ(位相が0付近と中央付近で交互になるか、FIDOUTが交互に
-        # なるかを見る)。書き込みは無視される読み取り専用。
+        reply_mux = Signal(32)
+        reply_cases = {
+            1:    reply_mux.eq(audio_mask),
+            0x10: reply_mux.eq(self.cfg_vbp),
+            0x11: reply_mux.eq(self.cfg_hs_offset),
+            0x12: reply_mux.eq(self.cfg_pll_divide),
+            0x13: reply_mux.eq(self.cfg_interlace),
+            0x14: reply_mux.eq(self.cfg_f2_row),
+            0x15: reply_mux.eq(self.cfg_field_swap),
+            0x16: reply_mux.eq(self.cfg_field_src),
+            0x17: reply_mux.eq(self.cfg_video_bw),
+            0x18: reply_mux.eq(self.cfg_fine_clamp),
+            0x19: reply_mux.eq(self.cfg_pll_ctl),
+            0x1A: reply_mux.eq(self.cfg_clamp_start),
+            0x1B: reply_mux.eq(self.cfg_clamp_width),
+            0x1C: reply_mux.eq(self.cfg_gain_b),
+            0x1D: reply_mux.eq(self.cfg_gain_g),
+            0x1E: reply_mux.eq(self.cfg_gain_r),
+            0x1F: reply_mux.eq(self.cfg_phase),
+            0x22: reply_mux.eq(self.cfg_sync_ctl),
+        }
+        # 診断用の読み出し(書き込みは無視される読み取り専用)。
+        # フィールド極性をどちらから取るべきか、ラインごとのHSYNC周期が揺れて
+        # いないか等を実機で判断するための生データ。
         if cap_mode:
-            self.comb += If(cfg_key == 0x28,
-                cfg_reply_val.eq(self.stat_hs_raw),
-            ).Elif(cfg_key == 0x29,
-                cfg_reply_val.eq(self.stat_hs_tvp),
-            ).Elif(cfg_key == 0x27,
-                cfg_reply_val.eq(self.cfg_hs_probe_row),
-            ).Elif(cfg_key == 0x26,
-                cfg_reply_val.eq(self.stat_lpf_hi),      # 38h(bit5=P/I detect)
-            ).Elif(cfg_key == 0x24,
-                cfg_reply_val.eq(capture.stat_vs_x_raw),
-            ).Elif(cfg_key == 0x25,
-                cfg_reply_val.eq(capture.stat_hs_len_raw),
-            ).Elif(cfg_key == 0x23,
-                cfg_reply_val.eq(capture.meas_vtotal),
-            ).Elif(cfg_key == 0x20,
-                cfg_reply_val.eq(capture.stat_vs_x),
-            ).Elif(cfg_key == 0x21,
-                cfg_reply_val.eq(capture.stat_fid),
-            )
+            reply_cases.update({
+                0x20: reply_mux.eq(capture.stat_vs_x),
+                0x21: reply_mux.eq(capture.stat_fid),
+                0x23: reply_mux.eq(capture.meas_vtotal),
+                0x24: reply_mux.eq(capture.stat_vs_x_raw),
+                0x25: reply_mux.eq(capture.stat_hs_len_raw),
+                0x26: reply_mux.eq(self.stat_lpf_hi),       # 38h(bit5=P/I detect)
+                0x27: reply_mux.eq(self.cfg_hs_probe_row),
+                0x28: reply_mux.eq(self.stat_hs_raw),
+                0x29: reply_mux.eq(self.stat_hs_tvp),
+            })
+        self.comb += Case(cfg_key, reply_cases)
+        self.sync += cfg_reply_val.eq(Mux(cfg_target == 1, argus_reg, reply_mux))
 
         # --- 送出要求(sticky; RXセットとFSMクリアの同時発生はセット優先) ---
         ann_pending  = Signal()
@@ -682,7 +663,12 @@ class RetroCastXStreamer(LiteXModule):
                 3: hdr.eq(aud_rate),
                 4: hdr.eq(aud_ts[asrc]),
             })
-        self.comb += mflags.eq(Cat(self.stat_interlaced, C(0, 15)))
+        # キャプチャ経路では実行時の検出結果、パターン生成側はビルド時の指定を使う
+        # (パターン側に検出の仕組みは無い)
+        if cap_mode:
+            self.comb += mflags.eq(Cat(self.stat_interlaced, C(0, 15)))
+        else:
+            self.comb += mflags.eq(C(1 if interlace else 0, 16))
         line_pixdata = capture.rd_data if cap_mode else Cat(pix0.pix, pix1.pix)
         self.comb += [
             line_flags.eq(Cat(frag_last, field)),
