@@ -38,6 +38,12 @@ pub struct Settings {
     /// 実際のCRTは「何ドットか」を知らず、偏向で決まった管面いっぱいに描く。
     /// ここを 4/3 にすれば 512x256 でも 768x512 でも同じ形で表示される。
     pub tube_aspect: f32,
+    /// 右の操作パネルを表示するか
+    pub show_panel: bool,
+    /// モニタの枠(ベゼル)の名前。空文字は枠なし
+    pub bezel: String,
+    /// 枠を一時的に隠す(bezel の選択は保つ)
+    pub bezel_off: bool,
     /// 補間 0=ニアレスト 1=バイリニア 2=sharp-bilinear
     pub filter: u32,
     /// 表示する切り出し範囲[画素]。w か h が 0 なら切り出さない(全体を表示)
@@ -105,6 +111,9 @@ impl Default for Settings {
             band_pll: BTreeMap::new(),
             modes: BTreeMap::new(),
             tube_aspect: 0.0,
+            show_panel: true,
+            bezel: String::new(),
+            bezel_off: false,
             filter: 2,
             crop_x: 0,
             crop_y: 0,
@@ -213,6 +222,9 @@ impl Settings {
                         s.tube_aspect = if (0.0..=10.0).contains(&x) { x } else { 0.0 };
                     }
                 }
+                "bezel" => s.bezel = v.to_string(),
+                "show_panel" => s.show_panel = v != "false",
+                "bezel_off" => s.bezel_off = v == "true",
                 "filter" => { if let Ok(x) = v.parse::<u32>() { s.filter = x.min(2) } }
                 "crop_x" => { if let Ok(x) = v.parse() { s.crop_x = x } }
                 "crop_y" => { if let Ok(x) = v.parse() { s.crop_y = x } }
@@ -265,6 +277,9 @@ impl Settings {
              rotate = {}\n\
              window = {:.4},{:.4},{:.4},{:.4}\n\
              tube_aspect = {:.4}\n\
+             bezel = {}\n\
+             show_panel = {}\n\
+             bezel_off = {}\n\
              filter = {}\n\
              crop_x = {}\n\
              crop_y = {}\n\
@@ -291,6 +306,9 @@ impl Settings {
             self.window[2],
             self.window[3],
             self.tube_aspect,
+            self.bezel,
+            self.show_panel,
+            self.bezel_off,
             self.filter,
             self.crop_x,
             self.crop_y,

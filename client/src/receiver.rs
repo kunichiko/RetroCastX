@@ -473,6 +473,11 @@ pub struct Shared {
     pub config_state: Mutex<HashMap<u16, u32>>,
     /// UI→ボードへの現在値問い合わせ(key)。応答は config_state に入る。
     pub config_get_queue: Mutex<Vec<u16>>,
+    /// いま実際に SUBSCRIBE / CONFIG を送っている宛先。UI表示用。
+    ///
+    /// 指定値そのものではない。ユニキャスト指定で何も返ってこない場合は
+    /// ブロードキャストへ切り替えるので、そのときはここが変わる。
+    pub sub_dest: Mutex<String>,
 }
 
 #[derive(Clone, Default)]
@@ -530,10 +535,35 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut weave = WeaveMeter::default();
     // モード変化ログ用の直近キー
     let mut mode_key: Option<(u16, u16, u16, u16, u32, u32, u32)> = None;
+    // 実際の送信先。ユニキャストを指定されても、経路が無い環境では何も返って
+    // こない(Macを再起動して en0 のエイリアスが消えた状態がこれ)。その場合は
+    // ブロードキャストへ落とす。ボードは SUBSCRIBE の送信元へ返すので、
+    // 別サブネットでも同じL2にいれば届く(実測: フル帯域で受信できた)。
+    // 逆にユニキャストへ「上げる」ことはしない。宛先サブネットへの経路が
+    // 必要になり、エイリアス無しでは送れなくなるため。
+    let mut dest = cfg.subscribe_to.clone();
+    let broadcast = "255.255.255.255".to_string();
+    let mut got_any = false;
+    let started = Instant::now();
+    let mut fell_back = false;
+    if let Some(d) = dest.clone() {
+        *shared.sub_dest.lock().unwrap() = d;
+    }
 
     while !shared.stop.load(Ordering::Relaxed) {
         // 購読キープアライブ(ボードは10秒で失効させる)
-        if let Some(dest) = &cfg.subscribe_to {
+        // ユニキャスト指定で3秒間何も来なければブロードキャストへ落とす
+        if !got_any && !fell_back && dest.is_some() && dest.as_deref() != Some(&broadcast)
+            && started.elapsed() >= Duration::from_secs(3)
+        {
+            eprintln!("{} から応答が無いのでブロードキャストで探します",
+                      dest.as_deref().unwrap_or("?"));
+            dest = Some(broadcast.clone());
+            fell_back = true;
+            *shared.sub_dest.lock().unwrap() = broadcast.clone();
+            last_subscribe = None;   // すぐ送り直す
+        }
+        if let Some(dest) = &dest {
             let due = last_subscribe.map_or(true, |t| t.elapsed() >= Duration::from_secs(2));
             if due {
                 let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
@@ -550,7 +580,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         {
             let mut q = shared.config_queue.lock().unwrap();
             if !q.is_empty() {
-                if let Some(dest) = &cfg.subscribe_to {
+                if let Some(dest) = &dest {
                     let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
                     for (key, value) in q.drain(..) {
                         let pkt = proto::pack_config(sub_seq, 0, 0, key, value, &mac);
@@ -585,7 +615,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         {
             let mut q = shared.config_get_queue.lock().unwrap();
             if !q.is_empty() {
-                if let Some(dest) = &cfg.subscribe_to {
+                if let Some(dest) = &dest {
                     let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
                     for key in q.drain(..) {
                         let pkt = proto::pack_config(sub_seq, 0, 1, key, 0, &mac);
@@ -605,7 +635,10 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         }
 
         let (n, addr) = match sock.recv_from(&mut buf) {
-            Ok(v) => v,
+            Ok(v) => {
+                got_any = true;
+                v
+            }
             Err(_) => {
                 tick_stats(&shared, &asm, &noise, &abox, &tune, &weave, &mut last_report, &mut bytes_since, &mut frames_since);
                 continue;

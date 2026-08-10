@@ -7,5 +7,6 @@ edition = "2024"
 cpal = "0.18.1"
 eframe = "0.35.0"
 pollster = "1.0.1"
+resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts"] }
 socket2 = "0.6.5"
 winit = "0.30.13"

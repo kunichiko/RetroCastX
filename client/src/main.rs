@@ -17,6 +17,7 @@
 
 mod assembler;
 mod audio;
+mod bezel;
 mod fullscreen;
 mod profiles;
 mod render;
@@ -367,6 +368,16 @@ struct ViewerApp {
     crop: [u32; 4],
     /// 管面の縦横比(幅/高さ)。0 なら有効映像の比のまま
     tube_aspect: f32,
+    /// 右の操作パネルを表示するか。隠すと映像(と枠)だけになる。
+    /// 隠すと戻すUIが無くなるので、Tabキーで必ず戻せるようにしてある。
+    show_panel: bool,
+    /// モニタの枠(ベゼル)の名前。空文字は枠なし
+    bezel: String,
+    /// 枠を一時的に隠す。プルダウンの選択(bezel)は保ったまま切り替えたいので、
+    /// 「なし」を選ぶのとは別に持つ。B キーで切り替える。
+    bezel_off: bool,
+    /// 枠のテクスチャ。ラスタライズした幅と一緒に持ち、幅が変わったら作り直す
+    bezel_tex: Option<(egui::TextureHandle, u32)>,
     /// 補間 0=ニアレスト 1=バイリニア 2=sharp-bilinear
     filter: u32,
     /// 管面が映す時間窓 [h0,h1,v0,v1]。CRTのH位置/H幅・V位置/V幅に相当
@@ -450,6 +461,10 @@ impl ViewerApp {
             rotate: cfg.rotate,
             crop: [cfg.crop_x, cfg.crop_y, cfg.crop_w, cfg.crop_h],
             tube_aspect: cfg.tube_aspect,
+            show_panel: cfg.show_panel,
+            bezel: cfg.bezel.clone(),
+            bezel_off: cfg.bezel_off,
+            bezel_tex: None,
             filter: cfg.filter,
             window: cfg.window,
             tube_time_based: cfg.tube_time_based,
@@ -490,6 +505,30 @@ impl ViewerApp {
 }
 
 impl ViewerApp {
+    /// いま使う枠。bezel_off なら枠なしとして扱う(選択は保つ)。
+    fn active_bezel(&self) -> Option<&'static bezel::Bezel> {
+        if self.bezel_off {
+            None
+        } else {
+            bezel::by_key(&self.bezel)
+        }
+    }
+
+    /// 管面(GPUで描く映像)を指定した矩形へ描く。
+    ///
+    /// Retina では論理座標と実画素が違う。sharp-bilinear は出力画素数を基準に
+    /// 境目の幅を決めるので、実画素で渡す。
+    fn paint_tube(&self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let ppp = ui.ctx().pixels_per_point();
+        ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
+            rect,
+            render::Callback {
+                params: self.render_params(),
+                dst: (rect.width() * ppp, rect.height() * ppp),
+            },
+        ));
+    }
+
     /// 現在のUI状態を設定として書き出す。スライダー操作中に毎フレーム書くのを
     /// 避けるため、変更を記録して少し待ってから1回だけ保存する。
     fn mark_settings_dirty(&mut self) {
@@ -522,6 +561,9 @@ impl ViewerApp {
             audio_device: self.audio_device_sel.clone(),
             rotate: self.rotate,
             tube_aspect: self.tube_aspect,
+            show_panel: self.show_panel,
+            bezel: self.bezel.clone(),
+            bezel_off: self.bezel_off,
             filter: self.filter,
             window: self.window,
             tube_time_based: self.tube_time_based,
@@ -1575,6 +1617,23 @@ impl eframe::App for ViewerApp {
         // 変更があれば少し待って1回だけ保存する(スライダー操作中の連続書込を避ける)
         self.flush_settings();
 
+        // Tab で操作パネルを出し入れする。隠すと戻すUIが無くなるので、
+        // キーだけは常に効くようにしておく(テキスト入力中は除く)。
+        // トグルでウィンドウサイズは変えない。切り替えた直後の last_avail /
+        // last_tex は「切り替わる前のレイアウト」の値なので、それで合わせると
+        // 毎回ずれ、出し入れを繰り返すとウィンドウが縮み続ける(実際そうなった)。
+        // 大きさを合わせたいときは「画に合わせる」を押す。
+        if root.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
+            self.show_panel = !self.show_panel;
+            self.mark_settings_dirty();
+        }
+        // B で筐体の枠を出し入れする。プルダウンの選択は保つので、機種を選び直さずに
+        // 「枠あり/なし」を見比べられる。
+        if root.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::B)) {
+            self.bezel_off = !self.bezel_off;
+            self.mark_settings_dirty();
+        }
+        if self.show_panel {
         egui::Panel::right(egui::Id::new("info")).show(root, |ui| {
             // 項目が増えて下が操作できなくなるので縦スクロールにする。
             // auto_shrink=false でパネル幅いっぱいを使い、内容が短いときも
@@ -1586,10 +1645,24 @@ impl eframe::App for ViewerApp {
                 if let Some(err) = &self.rx_error {
                     ui.colored_label(egui::Color32::RED, err);
                 }
-                match &self.subscribe_to {
-                    Some(d) => ui.label(format!("SUBSCRIBE → {d}")),
-                    None => ui.label("subscribe: off (listen only)"),
-                };
+                // 指定値ではなく「実際に送っている宛先」を出す。ユニキャスト指定で
+                // 応答が無いとブロードキャストへ落ちるので、ここが変わることがある。
+                {
+                    let dest = self.shared.sub_dest.lock().unwrap().clone();
+                    if dest.is_empty() {
+                        ui.label("subscribe: off (listen only)");
+                    } else if dest == "255.255.255.255" {
+                        ui.label("SUBSCRIBE → ブロードキャスト")
+                            .on_hover_text(
+                                "宛先を指定せずに探しています。ボードは SUBSCRIBE の\n\
+                                 送信元へ映像を返すので、サブネットが違っても\n\
+                                 同じL2セグメントにいれば届きます。\n\
+                                 ブロードキャストになるのはこの2秒ごとの要求だけで、\n\
+                                 映像はユニキャストです");
+                    } else {
+                        ui.label(format!("SUBSCRIBE → {dest}"));
+                    }
+                }
                 ui.separator();
 
                 ui.strong("Mode");
@@ -1827,6 +1900,43 @@ impl eframe::App for ViewerApp {
                     }
                 });
                 ui.horizontal(|ui| {
+                    // モニタの枠。実在モニタのイラストの開口部に管面をはめる。
+                    // 実機のCRTと同じで「管面の形が表示を決める」ので、管面モデルの
+                    // 映像はそのまま開口部に入る。
+                    ui.monospace("枠");
+                    let cur = self.bezel.clone();
+                    let mut sel = cur.clone();
+                    let name = |k: &str| -> String {
+                        if k.is_empty() { "なし".into() }
+                        else { bezel::by_key(k).map_or_else(|| k.to_string(),
+                                                           |b| b.label.to_string()) }
+                    };
+                    egui::ComboBox::from_id_salt("bezel")
+                        .width(150.0)
+                        .selected_text(name(&cur))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut sel, String::new(), "なし");
+                            for b in bezel::BEZELS {
+                                ui.selectable_value(&mut sel, b.key.to_string(), b.label);
+                            }
+                        });
+                    if sel != cur {
+                        self.bezel = sel;
+                        self.bezel_tex = None;   // 幅が同じでも作り直す
+                        self.mark_settings_dirty();
+                        self.want_fit = true;
+                    }
+                    // 選択は保ったまま出し入れする。機種を選び直さずに見比べられる
+                    let mut on = !self.bezel_off;
+                    if ui.checkbox(&mut on, "表示")
+                        .on_hover_text("筐体の枠を出し入れします (B キー)")
+                        .changed()
+                    {
+                        self.bezel_off = !on;
+                        self.mark_settings_dirty();
+                    }
+                });
+                ui.horizontal(|ui| {
                     // 拡大時の補間。sharp-bilinear は非整数倍でもドット幅が不揃いに
                     // ならず、かつ全体がぼやけない。高解像度モニタ向けの既定。
                     ui.monospace("補間");
@@ -1850,8 +1960,18 @@ impl eframe::App for ViewerApp {
                 if ui.button("画に合わせる").clicked() {
                     self.want_fit = true;
                 }
+                ui.separator();
+                if ui.button("パネルを隠す (Tab)")
+                    .on_hover_text("操作パネルを隠して映像だけにします。\n\
+                                    Tab キーで戻せます")
+                    .clicked()
+                {
+                    self.show_panel = false;
+                    self.mark_settings_dirty();
+                }
                 });
         });
+        }   // if self.show_panel
 
         // 管面の外側は黒。実CRTと同じで、掃引が届かない場所には何も出ない。
         // 以前は「capture border(赤い枠)」と「outside(外側の色)」で画枠の位置を
@@ -1861,7 +1981,10 @@ impl eframe::App for ViewerApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(root, |ui| {
-                if self.frame_size.0 == 0 {
+                // 映像が無くても枠は描く。実機のCRTは映像が無くても筐体があるので、
+                // 待機中に枠だけ消えるのは不自然。開口部は黒にして待機表示を中に出す。
+                let has_video = self.frame_size.0 > 0;
+                if !has_video && self.active_bezel().is_none() {
                     ui.centered_and_justified(|ui| {
                         ui.weak("waiting for stream...");
                     });
@@ -1876,39 +1999,105 @@ impl eframe::App for ViewerApp {
                 } else {
                     (tex_size.x, tex_size.y)
                 };
-                let aspect = if self.tube_aspect > 0.0 { self.tube_aspect } else { cw / ch.max(1.0) };
+                let bez = self.active_bezel();
+                // 枠ありなら管面の形は開口部が決める。枠は実在モニタの寸法なので、
+                // tube_aspect(4:3など)ではなく開口部の比に従うのが筋。
+                let aspect = match bez {
+                    Some(b) => b.screen_aspect(),
+                    None if self.tube_aspect > 0.0 => self.tube_aspect,
+                    None => cw / ch.max(1.0),
+                };
                 let disp = if self.rotate % 2 == 1 {
                     egui::vec2(1.0, aspect)
                 } else {
                     egui::vec2(aspect, 1.0)
                 };
-                // ウィンドウを画にぴったり合わせるのに使う(余白 = 内寸 - この領域)
                 self.last_avail = avail;
-                let fit = (avail.x / disp.x).min(avail.y / disp.y);
-                let size = disp * fit;
-                self.last_tex = size;
                 if !self.did_autofit {
                     self.did_autofit = true;
                 }
-                ui.centered_and_justified(|ui| {
-                    let (rect, _r) = ui.allocate_exact_size(size, egui::Sense::hover());
-                    // Retina では論理座標と実画素が違う。sharp-bilinear は出力
-                    // 画素数を基準に境目の幅を決めるので、実画素で渡す。
-                    let ppp = ui.ctx().pixels_per_point();
-                    ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
-                        rect,
-                        render::Callback {
-                            params: self.render_params(),
-                            dst: (rect.width() * ppp, rect.height() * ppp),
-                        },
-                    ));
-                });
+                match bez {
+                    // --- 枠なし: 管面を領域いっぱいに ---
+                    None => {
+                        let fit = (avail.x / disp.x).min(avail.y / disp.y);
+                        let size = disp * fit;
+                        self.last_tex = size;
+                        ui.centered_and_justified(|ui| {
+                            let (rect, _r) =
+                                ui.allocate_exact_size(size, egui::Sense::hover());
+                            self.paint_tube(ui, rect);
+                        });
+                    }
+                    // --- 枠あり: 枠全体を領域に収め、その中の開口部に管面を置く ---
+                    Some(b) => {
+                        let outer = egui::vec2(b.outer_aspect(), 1.0);
+                        let fit = (avail.x / outer.x).min(avail.y / outer.y);
+                        let bsize = outer * fit;
+                        self.last_tex = bsize;
+                        // 枠のテクスチャを必要な幅で用意する。幅が変わったら作り直す
+                        // (拡大されたSVGがぼけないように)。ラスタライズは重いので
+                        // 幅は64px刻みに丸めて、リサイズ中に作り直し続けないようにする。
+                        let ppp = ui.ctx().pixels_per_point();
+                        let want_w = (((bsize.x * ppp) as u32).max(64) + 63) / 64 * 64;
+                        let stale = self
+                            .bezel_tex
+                            .as_ref()
+                            .map_or(true, |(_, w)| *w != want_w);
+                        if stale {
+                            if let Some((rgba, w, h)) = b.rasterize(want_w) {
+                                let img = egui::ColorImage::from_rgba_unmultiplied(
+                                    [w as usize, h as usize], &rgba);
+                                let tex = ui.ctx().load_texture(
+                                    "bezel", img, egui::TextureOptions::LINEAR);
+                                self.bezel_tex = Some((tex, want_w));
+                            }
+                        }
+                        let (rect, _r) = ui.allocate_exact_size(avail, egui::Sense::hover());
+                        // 枠を領域の中央に置く
+                        let brect = egui::Rect::from_center_size(rect.center(), bsize);
+                        // 開口部を枠の座標から実座標へ写す
+                        let sx = bsize.x / b.view.0;
+                        let sy = bsize.y / b.view.1;
+                        let srect = egui::Rect::from_min_size(
+                            brect.min + egui::vec2(b.screen[0] * sx, b.screen[1] * sy),
+                            egui::vec2(b.screen[2] * sx, b.screen[3] * sy),
+                        );
+                        // 管面 → 枠。枠は開口部が抜けているので後から重ねる
+                        if has_video {
+                            self.paint_tube(ui, srect);
+                        } else {
+                            ui.painter().rect_filled(srect, 0.0, egui::Color32::BLACK);
+                        }
+                        if let Some((tex, _)) = self.bezel_tex.as_ref() {
+                            ui.painter().image(
+                                tex.id(), brect,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0),
+                                                         egui::pos2(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                        if !has_video {
+                            ui.painter().text(
+                                srect.center(), egui::Align2::CENTER_CENTER,
+                                "waiting for stream...",
+                                egui::FontId::proportional(14.0),
+                                egui::Color32::from_gray(90));
+                        }
+                    }
+                }
             });
 
         // ウィンドウを画にぴったり合わせる。中央パネルを描いた後に行う
         // (今フレームの描画領域が分かってから計算するため)。
         // 画の外側の余白 = ウィンドウ内寸 - 中央の描画領域。右パネルとフレームの
         // 分がここに入るので、内寸をこれだけ変えれば画がちょうど等倍で収まる。
+        // フルスクリーン中に InnerSize を送ると、要求が部分的にしか効かずレイアウトが
+        // 中途半端な大きさで残る(実機で画が画面中央ではなく左に寄った)。
+        // フルスクリーンでは「画面いっぱいに収める」のが既に正しい状態なので何もしない。
+        let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+        if self.want_fit && is_fullscreen {
+            self.want_fit = false;
+        }
         if self.want_fit && self.last_tex.x > 0.0 && self.last_avail.x > 0.0 {
             self.want_fit = false;
             let chrome = self.window_size - self.last_avail;
