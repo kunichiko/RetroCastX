@@ -15,6 +15,7 @@
 //! ストリームを自分に向ける。sender_sim相手なら --no-subscribe でよい
 //! (sender_simはSUBSCRIBEを無視して--dest宛に送るため)。
 
+mod appicon;
 mod assembler;
 mod audio;
 mod bezel;
@@ -122,9 +123,17 @@ fn main() -> eframe::Result {
         wgpu_options.surface.desired_maximum_frame_latency = Some(1); // 低遅延優先
     }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([cfg.window_w, cfg.window_h])
-            .with_title("RetroCast X"),
+        viewport: {
+            // アイコンは実行時に設定しないとタスクバー/タイトルバーに出ない
+            // (exeへの埋め込みはExplorerのファイル用。appicon.rs 参照)
+            let mut vp = egui::ViewportBuilder::default()
+                .with_inner_size([cfg.window_w, cfg.window_h])
+                .with_title("RetroCast X");
+            if let Some(icon) = appicon::egui_icon() {
+                vp = vp.with_icon(icon);
+            }
+            vp
+        },
         wgpu_options,
         ..Default::default()
     };

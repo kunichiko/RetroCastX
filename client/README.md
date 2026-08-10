@@ -87,8 +87,22 @@ open "/tmp/out/RetroCast X.app"
     packaging/macos/AppIcon.icns    .app に入る(bundle.sh が拾う)
     packaging/windows/AppIcon.ico   exe に埋め込む(build.rs が拾う)
 
-Windows の窓とタスクバーの絵も exe のアイコンで決まる(winit は明示指定が無ければ
-実行ファイルのアイコンを使う)ので、埋め込みだけで両方に効く。
+**exeへの埋め込みだけではタスクバーに出ない。** winit はウィンドウクラスを
+`hIcon: 0` で登録し、`window_icon` が `None` なら明示的にアイコンを外すので、
+
+    Explorer のファイルのアイコン → exe に埋め込んだリソース(build.rs)
+    タイトルバー / タスクバー     → 実行時に設定する(src/appicon.rs)
+    macOS の Dock                → .app の CFBundleIconFile(bundle.sh)
+
+の3つが別経路になる。実行時用に `packaging/AppIcon-256.png` を埋め込んでいる
+(1024pxを毎起動デコードするのは無駄なので256px)。
+
+macOS で Dock が既定アイコンのままなら、**アイコン無しの版を一度起動したときの
+キャッシュ**が残っている:
+
+```sh
+touch "/path/to/RetroCast X.app" && killall Dock
+```
 
 未対応(必要になったら):
 

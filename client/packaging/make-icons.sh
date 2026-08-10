@@ -3,9 +3,10 @@
 #
 #   packaging/make-icons.sh [master.png]     既定: packaging/AppIcon.png
 #
-# 出力(どちらもコミットする。CIには画像変換ツールを入れない方針):
+# 出力(どれもコミットする。CIには画像変換ツールを入れない方針):
 #   packaging/macos/AppIcon.icns    .app に入れる(bundle.sh が拾う)
 #   packaging/windows/AppIcon.ico   exe に埋め込む(build.rs が拾う)
+#   packaging/AppIcon-256.png       実行時に窓/タスクバーへ設定する(src/appicon.rs が埋め込む)
 #
 # macOS 標準の sips / iconutil だけで作る(Homebrew等に依存しない)。
 # .ico は各サイズのPNGを収めた形式にする(Windows Vista以降が扱える)。
@@ -53,6 +54,13 @@ out.write_bytes(header + entries + blobs)
 print(f"{out.name}: {len(sizes)} sizes, {len(header + entries + blobs)} bytes")
 PY
 
+# --- 実行時に窓/タスクバーへ設定する用 ---
+# winit はウィンドウクラスを hIcon=0 で登録し、window_icon が None なら明示的に
+# アイコンを外す。**exeに埋め込んだだけではタスクバーに出ない**ので、実行時に
+# 設定するための小さめのPNGも用意する(1024pxを毎起動デコードするのは無駄)。
+sips -s format png -z 256 256 "${MASTER}" --out "${HERE}/AppIcon-256.png" >/dev/null
+
 echo "できました:"
 echo "  ${HERE}/macos/AppIcon.icns"
 echo "  ${HERE}/windows/AppIcon.ico"
+echo "  ${HERE}/AppIcon-256.png"

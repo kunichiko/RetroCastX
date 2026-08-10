@@ -282,6 +282,10 @@ jobs:
             "$(ls -d ../dist/app/*.app)" "../dist/${ZIP_NAME}"
           echo "zip_name=${ZIP_NAME}" >> "${GITHUB_OUTPUT}"
 
+      # Actionsのアーティファクトはダウンロード時に必ずzipで包まれるので、
+      # ここはzip-in-zipになる。**macOSはそれを受け入れる**: .app を直接置くと
+      # upload-artifact のzipが拡張属性を落として署名とstapleが壊れる。
+      # Release へ添付されるのは中身の zip 1つだけなので、利用者には二重にならない。
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -338,7 +342,7 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ needs.prepare.outputs.app_version }}"
-          $stage = "..\dist\RetroCastXViewer"
+          $stage = "..\dist\RetroCastX"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           # 配布する実行ファイルは製品名にする(開発時の retrocastx-viewer は変えない)
           Copy-Item target\release\retrocastx-viewer.exe "$stage\RetroCastX.exe"
@@ -347,11 +351,14 @@ jobs:
           Compress-Archive -Path "$stage\*" -DestinationPath "..\dist\$zipName" -Force
           "zip_name=$zipName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
+      # Windowsは中身をそのまま置く(二重zipを避ける)。exeとテキストに壊れる
+      # 属性は無いので、アーティファクトを展開すれば即実行できる。
+      # Release へは zip を添付する(下)。
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: retrocastx-viewer-windows-${{ needs.prepare.outputs.app_version }}-${{ needs.prepare.outputs.build_number }}
-          path: dist/${{ steps.package.outputs.zip_name }}
+          path: dist/RetroCastX/*
           retention-days: 14
 
       - name: Upload to GitHub Release

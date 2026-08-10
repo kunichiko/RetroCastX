@@ -64,9 +64,15 @@ impl ApplicationHandler for App {
         let window = Arc::new(
             event_loop
                 .create_window(
-                    Window::default_attributes()
-                        .with_title("RetroCastX (fullscreen)")
-                        .with_fullscreen(Some(Fullscreen::Borderless(monitor))),
+                    {
+                        let attrs = Window::default_attributes()
+                            .with_title("RetroCast X (fullscreen)")
+                            .with_fullscreen(Some(Fullscreen::Borderless(monitor)));
+                        match crate::appicon::winit_icon() {
+                            Some(icon) => attrs.with_window_icon(Some(icon)),
+                            None => attrs,
+                        }
+                    },
                 )
                 .unwrap(),
         );
