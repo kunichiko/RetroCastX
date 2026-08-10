@@ -40,3 +40,6 @@ gateware/bitstreams/
 # メーカー配布のデータシート(再配布可否が不明なのでコミットしない)。
 # docs/datasheets/README.md に入手元だけを残す
 docs/datasheets/*.pdf
+
+# KiCad の編集ロック(そのマシンでの編集中を示す一時ファイル。追跡しない)
+*.lck
