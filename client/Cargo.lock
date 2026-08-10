@@ -2846,6 +2846,7 @@ dependencies = [
  "pollster 1.0.1",
  "resvg",
  "socket2",
+ "windows-sys 0.61.2",
  "winit",
  "winresource",
 ]

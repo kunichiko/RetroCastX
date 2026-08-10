@@ -19,7 +19,7 @@ MASTER="${1:-${HERE}/AppIcon.png}"
 TMP=$(mktemp -d)
 trap 'rm -rf "${TMP}"' EXIT
 
-# --- macOS: .icns ---
+# --- 角丸+余白の絵を作る(3つの出力すべてで共有する) ---
 #
 # **macOS はアイコンに角丸マスクをかけない。** 丸みも余白も素材側で作る決まりで、
 # 全面ベタ(角が不透明)の絵をそのまま入れると Dock で四角いアイコンになる。
@@ -27,10 +27,14 @@ trap 'rm -rf "${TMP}"' EXIT
 #
 # Apple の配置規則(Big Sur以降): 1024の画布に本体 824×824 を中央配置、角丸半径
 # 185.4。ここでは Pillow で本体を丸め、周囲は透明にする。
+#
+# **Windows もこの絵を使う**(見た目を揃えたいという方針)。Windowsのアイコンは
+# 全面ベタが普通なので、他のアプリと並ぶと1割ほど小さく見える。全面ベタに戻したく
+# なったら、下の ico/PNG の生成元を ${MASTER} に変えるだけでよい。
 # Pillow が無ければ止まる(生成物はコミットしてあるので、作り直すときだけ必要):
 #     python3 -m pip install pillow
-MAC_SRC="${TMP}/mac-1024.png"
-python3 - "${MASTER}" "${MAC_SRC}" <<'PY'
+SHAPED="${TMP}/shaped-1024.png"
+python3 - "${MASTER}" "${SHAPED}" <<'PY'
 import sys
 try:
     from PIL import Image, ImageDraw
@@ -49,7 +53,7 @@ art.putalpha(mask.resize((BODY, BODY), Image.LANCZOS))
 canvas = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
 canvas.paste(art, ((CANVAS - BODY) // 2, (CANVAS - BODY) // 2), art)
 canvas.save(out)
-print(f"macOS用: 本体{BODY}px/角丸{RADIUS} を {CANVAS}px の画布へ(周囲は透明)")
+print(f"角丸: 本体{BODY}px/半径{RADIUS} を {CANVAS}px の画布へ(周囲は透明)")
 PY
 
 SET="${TMP}/AppIcon.iconset"
@@ -59,18 +63,15 @@ for spec in "16 16x16" "32 16x16@2x" "32 32x32" "64 32x32@2x" \
             "512 512x512" "1024 512x512@2x"; do
     px=$(echo "${spec}" | cut -d' ' -f1)
     name=$(echo "${spec}" | cut -d' ' -f2)
-    sips -s format png -z "${px}" "${px}" "${MAC_SRC}" --out "${SET}/icon_${name}.png" >/dev/null
+    sips -s format png -z "${px}" "${px}" "${SHAPED}" --out "${SET}/icon_${name}.png" >/dev/null
 done
 iconutil -c icns "${SET}" -o "${HERE}/macos/AppIcon.icns"
 
 # --- Windows: .ico ---
-# こちらは master をそのまま使う(全面ベタ)。Windowsのアイコンは四角が普通で、
-# macOSのような角丸+余白にすると小さく見えてしまう。
-#
-# ICOのディレクトリ構造を自前で書く。各エントリはPNGのまま入れる。
+# ICOのディレクトリ構造を自前で書く。各エントリはPNG(透過あり)のまま入れる。
 # 256px は幅/高さフィールドに 0 を入れる決まり(1バイトで表せないため)。
 for px in 16 24 32 48 64 128 256; do
-    sips -s format png -z "${px}" "${px}" "${MASTER}" --out "${TMP}/${px}.png" >/dev/null
+    sips -s format png -z "${px}" "${px}" "${SHAPED}" --out "${TMP}/${px}.png" >/dev/null
 done
 python3 - "${TMP}" "${HERE}/windows/AppIcon.ico" <<'PY'
 import struct, sys, pathlib
@@ -93,7 +94,7 @@ PY
 # winit はウィンドウクラスを hIcon=0 で登録し、window_icon が None なら明示的に
 # アイコンを外す。**exeに埋め込んだだけではタスクバーに出ない**ので、実行時に
 # 設定するための小さめのPNGも用意する(1024pxを毎起動デコードするのは無駄)。
-sips -s format png -z 256 256 "${MASTER}" --out "${HERE}/AppIcon-256.png" >/dev/null
+sips -s format png -z 256 256 "${SHAPED}" --out "${HERE}/AppIcon-256.png" >/dev/null
 
 echo "できました:"
 echo "  ${HERE}/macos/AppIcon.icns"

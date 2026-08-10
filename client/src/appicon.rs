@@ -49,10 +49,15 @@ mod tests {
     /// 埋め込んだPNGが壊れていない/差し替えで形が変わっていないことを見る。
     /// アイコンが出ないのは実機を起動しないと気づかないので、ここで止める。
     #[test]
-    fn decodes_to_square_rgba() {
+    fn decodes_to_rounded_rgba() {
         let (rgba, w, h) = super::rgba().expect("アイコンPNGをデコードできない");
         assert_eq!((w, h), (256, 256), "packaging/AppIcon-256.png のサイズが違う");
         assert_eq!(rgba.len(), (w * h * 4) as usize);
-        assert!(rgba.chunks(4).all(|p| p[3] == 255), "不透明であること");
+        let at = |x: u32, y: u32| rgba[((y * w + x) * 4 + 3) as usize];
+        // 角丸+余白になっていること。全面ベタの素材を入れてしまうと
+        // macOSのDockで四角く見える(一度やった)ので、ここで止める
+        assert_eq!(at(0, 0), 0, "角が透明でない(全面ベタの素材が入っている)");
+        assert_eq!(at(w - 1, h - 1), 0, "角が透明でない");
+        assert_eq!(at(w / 2, h / 2), 255, "中央が不透明でない");
     }
 }

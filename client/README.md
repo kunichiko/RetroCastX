@@ -84,7 +84,10 @@ open "/tmp/out/RetroCast X.app"
 `make-icons.sh` は Apple の配置規則(1024の画布に本体824×824、角丸半径185.4、周囲は
 透明)に合わせて `.icns` を作る。全面ベタのまま入れると **Dock で四角いアイコンに
 なる**(Finderは小さく表示するので黒い角に気づけない。実際これで一度作り直した)。
-Windows の `.ico` は逆に全面ベタのまま使う(角丸+余白にすると小さく見える)。
+
+**Windows も同じ絵を使う**(見た目を揃える方針)。Windowsのアイコンは全面ベタが
+普通なので、他のアプリと並ぶと1割ほど小さく見える。全面ベタに戻したくなったら
+`make-icons.sh` の ico / PNG の生成元を master に変えるだけでよい。
 
 アイコンは `packaging/AppIcon.png`(1024×1024)が master で、そこから
 `packaging/make-icons.sh` が3つを作る。**生成物もコミットしてある**(CIに画像変換
@@ -92,6 +95,10 @@ Windows の `.ico` は逆に全面ベタのまま使う(角丸+余白にする�
 
     packaging/macos/AppIcon.icns    .app に入る(bundle.sh が拾う)
     packaging/windows/AppIcon.ico   exe に埋め込む(build.rs が拾う)
+
+Windows版はコンソール窓を出さずに起動する(`#![windows_subsystem = "windows"]`)。
+コンソールから起動したときだけ `AttachConsole(ATTACH_PARENT_PROCESS)` で親の
+コンソールへ出力を戻すので、`--headless` の表示は失われない。
 
 **exeへの埋め込みだけではタスクバーに出ない。** winit はウィンドウクラスを
 `hIcon: 0` で登録し、`window_icon` が `None` なら明示的にアイコンを外すので、

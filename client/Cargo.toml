@@ -3,6 +3,11 @@ name = "retrocastx-viewer"
 version = "0.1.0"
 edition = "2024"
 
+[target.'cfg(windows)'.dependencies]
+# コンソール窓を出さずに起動し(windows_subsystem)、コンソールから起動された
+# ときだけ親のコンソールへ出力を戻すため
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+
 [target.'cfg(windows)'.build-dependencies]
 # 実行ファイルへのアイコン埋め込み(build.rs)。Windows以外では取得も不要
 winresource = "0.1"

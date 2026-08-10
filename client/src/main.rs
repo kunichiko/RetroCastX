@@ -15,6 +15,12 @@
 //! ストリームを自分に向ける。sender_sim相手なら --no-subscribe でよい
 //! (sender_simはSUBSCRIBEを無視して--dest宛に送るため)。
 
+// Windows: コンソール窓を出さずに起動する。これが無いと、Explorerから起動しても
+// 先に真っ黒なコンソールが開いてからUIが出る(通常のGUIアプリの見た目にならない)。
+// 代わりにコンソールから起動したときは main の先頭で親のコンソールへ繋ぎ直すので、
+// --headless の出力はこれまでどおり見える。
+#![windows_subsystem = "windows"]
+
 mod appicon;
 mod assembler;
 mod audio;
@@ -31,7 +37,20 @@ use std::sync::Arc;
 
 use eframe::egui;
 
+/// コンソールから起動されたときだけ、その親コンソールへ標準出力を戻す。
+/// Explorer から起動したときは親が無いので何も起きない(コンソールは出ない)。
+/// **最初の出力より前に呼ぶこと** — 標準ハンドルは初回使用時に決まるため。
+#[cfg(windows)]
+fn attach_parent_console() {
+    use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+    unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+}
+
+#[cfg(not(windows))]
+fn attach_parent_console() {}
+
 fn main() -> eframe::Result {
+    attach_parent_console();
     let mut port = protocol::DEFAULT_PORT;
     let mut subscribe_to = Some("255.255.255.255".to_string());
     let mut headless_secs: Option<u64> = None;
