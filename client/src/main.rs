@@ -18,6 +18,7 @@
 mod assembler;
 mod audio;
 mod fullscreen;
+mod profiles;
 mod render;
 mod protocol;
 mod receiver;
@@ -333,6 +334,12 @@ struct ViewerApp {
     tune_pll_divide: i32,
     /// TVPのアナログ映像帯域。0=最大 / 15=最小(約95MHz)
     tune_video_bw: u8,
+    /// 1ラインまるごと送る(非黒範囲の最適化を切る)。
+    /// 全黒行の直後の数行で範囲判定が壊れて行が欠ける不具合の回避策。
+    tune_full_line: bool,
+    /// 映像ソースのプロファイル名(profiles::PROFILES の key)。空文字は「自動」。
+    /// pll_divide を絵の内容ではなく fH とドットクロック候補から決めるのに使う
+    source_profile: String,
     tune_phase: u8,
     /// 送信したがまだボードの応答で確認できていない値(key → (値, 送信時刻))。
     /// 応答が返るまでは自分の値を優先し、押した瞬間に元へ戻って見えるのを防ぐ。
@@ -426,7 +433,9 @@ impl ViewerApp {
             tune_hs_offset: cfg.tune_hs_offset,
             tune_pll_divide: cfg.tune_pll_divide,
             tune_video_bw: cfg.tune_video_bw,
+            tune_full_line: cfg.tune_full_line,
             tune_phase: cfg.tune_phase,
+            source_profile: cfg.source_profile.clone(),
             tune_pending: Default::default(),
             tune_get_at: None,
             tune_synced: false,
@@ -530,7 +539,9 @@ impl ViewerApp {
             tune_hs_offset: self.tune_hs_offset,
             tune_pll_divide: self.tune_pll_divide,
             tune_video_bw: self.tune_video_bw,
+            tune_full_line: self.tune_full_line,
             tune_phase: self.tune_phase,
+            source_profile: self.source_profile.clone(),
         }
         .save();
     }
@@ -707,12 +718,13 @@ impl ViewerApp {
     }
 
     /// 実行時に調整できるキーの一覧。読み戻しと表示の同期に使う
-    const TUNE_KEYS: [u16; 5] = [
+    const TUNE_KEYS: [u16; 6] = [
         protocol::CFG_KEY_VBP,
         protocol::CFG_KEY_HS_OFFSET,
         protocol::CFG_KEY_PLL_DIVIDE,
         protocol::CFG_KEY_VIDEO_BW,
         protocol::CFG_KEY_PHASE,
+        protocol::CFG_KEY_FULL_LINE,
     ];
 
     /// ボードの現在値を表示へ反映する。
@@ -958,6 +970,7 @@ impl ViewerApp {
                 protocol::CFG_KEY_HS_OFFSET => self.tune_hs_offset = val as i32,
                 protocol::CFG_KEY_PLL_DIVIDE => self.tune_pll_divide = val as i32,
                 protocol::CFG_KEY_VIDEO_BW => self.tune_video_bw = val as u8,
+                protocol::CFG_KEY_FULL_LINE => self.tune_full_line = val != 0,
                 protocol::CFG_KEY_PHASE => self.tune_phase = (val as u8).min(31),
                 _ => {}
             }
@@ -1309,6 +1322,102 @@ impl ViewerApp {
                 format!("pll_div は {pll_min} 以上に(12MHz未満はTVPの範囲外)"),
             );
         }
+        // 映像ソースのプロファイルから pll_div を決める。
+        //
+        // レトロPCのドットクロックは水晶を分周した有限個の値しか取らないので、
+        // htotal = f_dot / fH が整数になる f_dot を選べば一意に決まる。fH は
+        // pll_divide に依存しない絶対値で、MODEが持っている。絵の内容を一切
+        // 見ないので、真っ黒な画面でも模様が無くても当たる(スペクトル探索の
+        // 「自動調整」が変な値に着地するのはここが理由)。
+        let fh_hz = self
+            .shared
+            .mode
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|m| m.hfreq_mhz_x1000 as f64 / 1000.0)
+            .unwrap_or(0.0);
+        ui.horizontal(|ui| {
+            ui.monospace("映像ソース");
+            let cur = self.source_profile.clone();
+            let mut sel = cur.clone();
+            let name = |k: &str| -> String {
+                if k.is_empty() {
+                    "自動".into()
+                } else {
+                    profiles::by_key(k).map_or_else(|| k.to_string(), |p| p.label.to_string())
+                }
+            };
+            egui::ComboBox::from_id_salt("srcprof")
+                .width(150.0)
+                .selected_text(name(&cur))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut sel, String::new(), "自動");
+                    for p in profiles::PROFILES {
+                        ui.selectable_value(&mut sel, p.key.to_string(), p.label);
+                    }
+                });
+            if sel != cur {
+                self.source_profile = sel;
+                self.mark_settings_dirty();
+            }
+        });
+        // 選んだプロファイル(空なら全部試す)での答え
+        let pick = if self.source_profile.is_empty() {
+            profiles::best_over_all(fh_hz).map(|(p, c)| (p.label, c))
+        } else {
+            profiles::by_key(&self.source_profile)
+                .and_then(|p| profiles::best(p, fh_hz).map(|c| (p.label, c)))
+        };
+        match pick {
+            Some((label, c)) => {
+                ui.horizontal(|ui| {
+                    let over = if c.oversample > 1 {
+                        format!(" ×{}", c.oversample)
+                    } else {
+                        String::new()
+                    };
+                    ui.monospace(format!(
+                        "→ {} ({:.4}MHz{})",
+                        c.pll_divide,
+                        c.f_dot / 1e6,
+                        over
+                    ));
+                    let same = c.pll_divide == self.tune_pll_divide;
+                    let btn = ui.add_enabled(!same, egui::Button::new("適用"));
+                    if btn
+                        .on_hover_text(format!(
+                            "{label}: fH {:.3}kHz と {} から htotal {}\n\
+                             (整数からのずれ {:.3}カウント)",
+                            fh_hz / 1000.0,
+                            c.label,
+                            c.htotal,
+                            c.residual
+                        ))
+                        .clicked()
+                    {
+                        self.tune_pll_divide = c.pll_divide;
+                        send.push((
+                            protocol::CFG_KEY_PLL_DIVIDE,
+                            self.tune_pll_divide as u32,
+                        ));
+                        self.mark_settings_dirty();
+                    }
+                    if same {
+                        ui.monospace("一致");
+                    }
+                });
+            }
+            None if fh_hz > 0.0 => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 170, 60),
+                    "このプロファイルでは説明できない fH です",
+                );
+            }
+            None => {
+                ui.monospace("MODE 未受信");
+            }
+        }
         // 実測した有効映像の大きさ。pll_div が妥当かの目安として出す。
         //
         // ここには「目標の有効幅から pll_div を比例計算する」UI(target w / ×8 /
@@ -1341,6 +1450,21 @@ impl ViewerApp {
         // TVPのアナログ映像帯域。折り返しの元になる高周波を削る。
         // 15(最小=約95MHz)で、エッジ後の残留エコーが消える(実測 +2.55→+0.01)。
         // 立ち上がりは変わらず最細部が6%落ちるだけなので既定を15にしている。
+        // 1ラインまるごと送る。全黒行が続いた直後の数行で非黒範囲の判定が壊れ、
+        // 内容があるのに count_px=0 で送られて行が欠ける不具合がある。範囲を
+        // 使わなくなるので、これを入れると完全に消える。帯域は htotal 画素ぶんに
+        // 増える(31kHz 1104px で約555Mbps。GbEには収まる)。
+        if ui.checkbox(&mut self.tune_full_line, "全ライン送信(行欠けの回避)")
+            .on_hover_text(
+                "非黒範囲だけを送る最適化を切り、1ラインまるごと送ります。\n\
+                 全黒行の直後で行が欠ける不具合を回避できます。\n\
+                 帯域は増えます(31kHzで約555Mbps)。")
+            .changed()
+        {
+            send.push((protocol::CFG_KEY_FULL_LINE,
+                       if self.tune_full_line { 1 } else { 0 }));
+            self.mark_settings_dirty();
+        }
         ui.horizontal(|ui| {
             ui.monospace("帯域制限");
             let mut bw = self.tune_video_bw as i32;
@@ -1415,6 +1539,8 @@ impl ViewerApp {
             send.push((protocol::CFG_KEY_HS_OFFSET, self.tune_hs_offset as u32));
             send.push((protocol::CFG_KEY_PLL_DIVIDE, self.tune_pll_divide as u32));
             send.push((protocol::CFG_KEY_PHASE, self.tune_phase as u32));
+            send.push((protocol::CFG_KEY_FULL_LINE,
+                       if self.tune_full_line { 1 } else { 0 }));
         }
         if !send.is_empty() {
             let now = std::time::Instant::now();
@@ -1450,274 +1576,281 @@ impl eframe::App for ViewerApp {
         self.flush_settings();
 
         egui::Panel::right(egui::Id::new("info")).show(root, |ui| {
-            ui.heading("RetroCastX");
-            if let Some(err) = &self.rx_error {
-                ui.colored_label(egui::Color32::RED, err);
-            }
-            match &self.subscribe_to {
-                Some(d) => ui.label(format!("SUBSCRIBE → {d}")),
-                None => ui.label("subscribe: off (listen only)"),
-            };
-            ui.separator();
-
-            ui.strong("Mode");
-            // 周波数インジケータ(実機モニタのLEDに相当)。同期している帯域が点灯する
-            self.band_leds(ui);
-            if let Some(m) = self.shared.mode.lock().unwrap().clone() {
-                ui.monospace(format!("{}x{} (id {})", m.hactive, m.vactive, m.mode_id));
-                ui.monospace(format!("pixfmt {}", m.pixfmt));
-                // htotal×vtotal もボードの実測値。モード表を作る調査で必要なので出す
-                ui.monospace(format!("total {}x{}", m.htotal, m.vtotal));
-                ui.monospace(format!("dotclk {:.4} MHz", m.dotclk_hz as f64 / 1e6));
-                ui.monospace(format!("h {:.3} kHz", m.hfreq_mhz_x1000 as f64 / 1e6));
-                ui.monospace(format!("v {:.3} Hz", m.vfreq_mhz_x1000 as f64 / 1e3));
-            } else {
-                ui.weak("no mode yet");
-            }
-            ui.separator();
-
-            ui.strong("Stats");
-            ui.label(if self.no_vsync { "present: no-vsync" } else { "present: vsync (FIFO)" });
-            if !self.pace.summary.is_empty() {
-                ui.monospace(&self.pace.summary);
-            }
-            let s = self.shared.stats.lock().unwrap().clone();
-            ui.monospace(format!("{:.1} fps  {:.1} Mbps", s.fps, s.mbps));
-            ui.monospace(format!("frames {}", s.frames));
-            ui.monospace(format!("pkts {}  lost {}", s.packets, s.lost_packets));
-            ui.monospace(format!("orphan lines {}", s.orphan_lines));
-            // 太らせても埋まらなかった行数。0でないと前フレームの残りが減衰して
-            // 薄い影として見える。プログレッシブでは0になるべき
-            if s.unfilled_rows > 0 {
-                ui.colored_label(
-                    egui::Color32::from_rgb(220, 170, 60),
-                    format!("未充填の行 {}", s.unfilled_rows),
-                );
-            }
-            // 暗部のフレーム間差分=点状ノイズの量。配線やパスコンの効果を数値で見る
-            ui.monospace(format!(
-                "noise {:.1}%  lvl {:.1}",
-                s.noise_flicker, s.noise_level
-            ));
-            ui.separator();
-
-            ui.strong("Audio");
-            self.audio_ui(ui);
-            ui.separator();
-
-            ui.strong("Tune");
-            self.tune_ui(ui);
-            ui.separator();
-
-            ui.strong("Boards");
-            let boards = self.shared.boards.lock().unwrap();
-            if boards.is_empty() {
-                ui.weak("none discovered");
-            }
-            for b in boards.values() {
-                let mac = b.mac.map(|x| format!("{x:02x}")).join(":");
-                ui.monospace(format!("{} {}", b.addr, b.name));
-                ui.weak(format!("  {mac} fw {:04x}", b.fw_version));
-            }
-            drop(boards);
-            ui.separator();
-
-            // 管面(ブラウン管の物理的な表示領域)。
-            //
-            // 管面(ブラウン管の物理的な表示領域)。
-            //
-            // 3モードディスプレイの偏向は「1HSYNC周期でブラウン管の左右をちょうど
-            // 掃引する」ように周波数ごとに速度が切り替わる。だから管面の横幅は
-            // 1/fH そのもので、掃引時間は設定項目ではない。縦も 1VSYNC周期が
-            // 管面の高さになる。
-            //
-            // ここで決めるのは「1周期のうち実際に管面へ出る割合」と「位置」だけ。
-            // 1.0 なら周期全体が見えるので何も切れない。実際のCRTは帰線の間ビームが
-            // 戻っているので 0.85〜0.95 あたりが現実に近い。
-            //
-            // 掃引時間を絶対時間で持つ方式も試したが実機と違った。横のサイズは
-            // 1/fH に比例するのに、X68000はどのモードも fV が53〜61Hzで1フレームの
-            // 時間がほぼ一定なので縦は変わらない。実測で24kHzが横51%・縦95%になり
-            // 縦長に潰れた。
-            ui.horizontal(|ui| {
-                if ui.checkbox(&mut self.tube_time_based, "時間ベース")
-                    .on_hover_text("1HSYNC周期を管面の横幅、1VSYNC周期を高さとする\n\
-                                    (3モードディスプレイの偏向と同じ)。\n\
-                                    切ると旧方式(割合を直接指定)になる")
-                    .changed()
-                {
-                    self.mark_settings_dirty();
+            // 項目が増えて下が操作できなくなるので縦スクロールにする。
+            // auto_shrink=false でパネル幅いっぱいを使い、内容が短いときも
+            // 幅が縮まないようにする。
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                ui.heading("RetroCastX");
+                if let Some(err) = &self.rx_error {
+                    ui.colored_label(egui::Color32::RED, err);
                 }
-                if let Some(m) = self.shared.mode.lock().unwrap().as_ref() {
-                    let fh_khz = m.hfreq_mhz_x1000 as f32 / 1_000_000.0;
-                    if fh_khz > 1.0 {
-                        ui.weak(format!("1ライン {:.1}µs = 管面の横幅", 1000.0 / fh_khz));
-                    }
-                }
-            });
-            if self.tube_time_based {
-                // 実CRTのH幅/H位置/V幅/V位置つまみに相当する。スライダーにして
-                // 「回して合わせる」操作にしている。
-                //
-                // 絵の内容から自動で中央へ寄せる方法は採らない。幾何が内容に依存して
-                // しまい、「幾何は同期信号だけで決まる」という原則が崩れる。実CRTの
-                // H位置もモードごとに一度合わせる固定値であって、絵に追従はしない。
-                // 帯域ごとに保存されるので一度合わせれば以後は再現される。
-                let mut ch = false;
-                ui.horizontal(|ui| {
-                    ui.monospace("H幅");
-                    ch |= ui.add(egui::Slider::new(&mut self.mon[0], 0.2..=2.0)
-                                 .fixed_decimals(3).show_value(true))
-                        .on_hover_text("1HSYNC周期のうち管面に出る割合。\n\
-                                        1.0で帰線期間まで全部見える")
-                        .changed();
-                });
-                ui.horizontal(|ui| {
-                    ui.monospace("H位置");
-                    ch |= ui.add(egui::Slider::new(&mut self.mon[1], -0.5..=0.5)
-                                 .fixed_decimals(3).show_value(true))
-                        .on_hover_text("右へ動かすと絵が右へ動く。\n\
-                                        信号は左右非対称(バックポーチが長い)なので、\n\
-                                        0だと絵が右に寄る(負の値で左へ戻す)")
-                        .changed();
-                });
-                ui.horizontal(|ui| {
-                    ui.monospace("V幅");
-                    ch |= ui.add(egui::Slider::new(&mut self.mon[2], 0.2..=2.0)
-                                 .fixed_decimals(3).show_value(true))
-                        .on_hover_text("1VSYNC周期のうち管面に出る割合")
-                        .changed();
-                });
-                ui.horizontal(|ui| {
-                    ui.monospace("V位置");
-                    ch |= ui.add(egui::Slider::new(&mut self.mon[3], -0.5..=0.5)
-                                 .fixed_decimals(3).show_value(true))
-                        .on_hover_text("右へ動かすと絵が下へ動く")
-                        .changed();
-                });
-                if ch {
-                    self.mark_settings_dirty();
-                }
-                // 有効映像が管面のどれだけを占めるか。モードごとに違って当然で、
-                // 15kHzはラインの0.842を占めるので大きく、31kHzは0.696なので小さい
-                let (aw, ah) = {
-                    let st = self.shared.stats.lock().unwrap();
-                    (st.span_w as f32, st.span_h as f32)
+                match &self.subscribe_to {
+                    Some(d) => ui.label(format!("SUBSCRIBE → {d}")),
+                    None => ui.label("subscribe: off (listen only)"),
                 };
-                if let Some(m) = self.shared.mode.lock().unwrap().as_ref() {
-                    if m.htotal > 0 && m.vtotal > 0 && aw > 0.0 {
-                        let fw = aw / m.htotal as f32 / self.mon[0].max(0.01) * 100.0;
-                        // 縦はスロット目盛り。1ラインが何スロットを占めるかは
-                        // 織り込みの有無で変わる(mflags bit0)
-                        let k = if m.mflags & 0x0001 != 0 { 1.0 } else { 2.0 };
-                        let vt = m.vtotal as f32 * k;
-                        let fh = ah / vt / self.mon[2].max(0.01) * 100.0;
-                        ui.weak(format!("有効映像は管面の {fw:.0}% x {fh:.0}%"));
-                    }
+                ui.separator();
+
+                ui.strong("Mode");
+                // 周波数インジケータ(実機モニタのLEDに相当)。同期している帯域が点灯する
+                self.band_leds(ui);
+                if let Some(m) = self.shared.mode.lock().unwrap().clone() {
+                    ui.monospace(format!("{}x{} (id {})", m.hactive, m.vactive, m.mode_id));
+                    ui.monospace(format!("pixfmt {}", m.pixfmt));
+                    // htotal×vtotal もボードの実測値。モード表を作る調査で必要なので出す
+                    ui.monospace(format!("total {}x{}", m.htotal, m.vtotal));
+                    ui.monospace(format!("dotclk {:.4} MHz", m.dotclk_hz as f64 / 1e6));
+                    ui.monospace(format!("h {:.3} kHz", m.hfreq_mhz_x1000 as f64 / 1e6));
+                    ui.monospace(format!("v {:.3} Hz", m.vfreq_mhz_x1000 as f64 / 1e3));
+                } else {
+                    ui.weak("no mode yet");
                 }
-            } else {
+                ui.separator();
+
+                ui.strong("Stats");
+                ui.label(if self.no_vsync { "present: no-vsync" } else { "present: vsync (FIFO)" });
+                if !self.pace.summary.is_empty() {
+                    ui.monospace(&self.pace.summary);
+                }
+                let s = self.shared.stats.lock().unwrap().clone();
+                ui.monospace(format!("{:.1} fps  {:.1} Mbps", s.fps, s.mbps));
+                ui.monospace(format!("frames {}", s.frames));
+                ui.monospace(format!("pkts {}  lost {}", s.packets, s.lost_packets));
+                ui.monospace(format!("orphan lines {}", s.orphan_lines));
+                // 太らせても埋まらなかった行数。0でないと前フレームの残りが減衰して
+                // 薄い影として見える。プログレッシブでは0になるべき
+                if s.unfilled_rows > 0 {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 170, 60),
+                        format!("未充填の行 {}", s.unfilled_rows),
+                    );
+                }
+                // 暗部のフレーム間差分=点状ノイズの量。配線やパスコンの効果を数値で見る
+                ui.monospace(format!(
+                    "noise {:.1}%  lvl {:.1}",
+                    s.noise_flicker, s.noise_level
+                ));
+                ui.separator();
+
+                ui.strong("Audio");
+                self.audio_ui(ui);
+                ui.separator();
+
+                ui.strong("Tune");
+                self.tune_ui(ui);
+                ui.separator();
+
+                ui.strong("Boards");
+                let boards = self.shared.boards.lock().unwrap();
+                if boards.is_empty() {
+                    ui.weak("none discovered");
+                }
+                for b in boards.values() {
+                    let mac = b.mac.map(|x| format!("{x:02x}")).join(":");
+                    ui.monospace(format!("{} {}", b.addr, b.name));
+                    ui.weak(format!("  {mac} fw {:04x}", b.fw_version));
+                }
+                drop(boards);
+                ui.separator();
+
+                // 管面(ブラウン管の物理的な表示領域)。
+                //
+                // 管面(ブラウン管の物理的な表示領域)。
+                //
+                // 3モードディスプレイの偏向は「1HSYNC周期でブラウン管の左右をちょうど
+                // 掃引する」ように周波数ごとに速度が切り替わる。だから管面の横幅は
+                // 1/fH そのもので、掃引時間は設定項目ではない。縦も 1VSYNC周期が
+                // 管面の高さになる。
+                //
+                // ここで決めるのは「1周期のうち実際に管面へ出る割合」と「位置」だけ。
+                // 1.0 なら周期全体が見えるので何も切れない。実際のCRTは帰線の間ビームが
+                // 戻っているので 0.85〜0.95 あたりが現実に近い。
+                //
+                // 掃引時間を絶対時間で持つ方式も試したが実機と違った。横のサイズは
+                // 1/fH に比例するのに、X68000はどのモードも fV が53〜61Hzで1フレームの
+                // 時間がほぼ一定なので縦は変わらない。実測で24kHzが横51%・縦95%になり
+                // 縦長に潰れた。
                 ui.horizontal(|ui| {
-                    ui.monospace("H位置");
-                    let mut c = (self.window[0] + self.window[1]) * 0.5;
-                    let mut w = self.window[1] - self.window[0];
-                    let a = ui.add(egui::DragValue::new(&mut c).speed(0.002).range(0.0..=1.0)
-                                   .fixed_decimals(3));
-                    ui.monospace("H幅");
-                    let b = ui.add(egui::DragValue::new(&mut w).speed(0.002).range(0.05..=1.0)
-                                   .fixed_decimals(3));
-                    if a.changed() || b.changed() {
-                        self.window[0] = (c - w * 0.5).clamp(-0.5, 1.5);
-                        self.window[1] = self.window[0] + w;
+                    if ui.checkbox(&mut self.tube_time_based, "時間ベース")
+                        .on_hover_text("1HSYNC周期を管面の横幅、1VSYNC周期を高さとする\n\
+                                        (3モードディスプレイの偏向と同じ)。\n\
+                                        切ると旧方式(割合を直接指定)になる")
+                        .changed()
+                    {
                         self.mark_settings_dirty();
                     }
-                });
-                ui.horizontal(|ui| {
-                    ui.monospace("V位置");
-                    let mut c = (self.window[2] + self.window[3]) * 0.5;
-                    let mut h = self.window[3] - self.window[2];
-                    let a = ui.add(egui::DragValue::new(&mut c).speed(0.002).range(0.0..=1.0)
-                                   .fixed_decimals(3));
-                    ui.monospace("V幅");
-                    let b = ui.add(egui::DragValue::new(&mut h).speed(0.002).range(0.05..=1.0)
-                                   .fixed_decimals(3));
-                    if a.changed() || b.changed() {
-                        self.window[2] = (c - h * 0.5).clamp(-0.5, 1.5);
-                        self.window[3] = self.window[2] + h;
-                        self.mark_settings_dirty();
+                    if let Some(m) = self.shared.mode.lock().unwrap().as_ref() {
+                        let fh_khz = m.hfreq_mhz_x1000 as f32 / 1_000_000.0;
+                        if fh_khz > 1.0 {
+                            ui.weak(format!("1ライン {:.1}µs = 管面の横幅", 1000.0 / fh_khz));
+                        }
                     }
                 });
-            }
-            ui.horizontal(|ui| {
-                // 縦画面のゲーム(ドラゴンスピリット等)向け
-                ui.monospace("回転");
-                let mut rot = self.rotate;
-                egui::ComboBox::from_id_salt("rotate")
-                    .width(72.0)
-                    .selected_text(["0°", "90°", "180°", "270°"][rot as usize])
-                    .show_ui(ui, |ui| {
-                        for (i, t) in ["0°", "90°", "180°", "270°"].iter().enumerate() {
-                            ui.selectable_value(&mut rot, i as u32, *t);
+                if self.tube_time_based {
+                    // 実CRTのH幅/H位置/V幅/V位置つまみに相当する。スライダーにして
+                    // 「回して合わせる」操作にしている。
+                    //
+                    // 絵の内容から自動で中央へ寄せる方法は採らない。幾何が内容に依存して
+                    // しまい、「幾何は同期信号だけで決まる」という原則が崩れる。実CRTの
+                    // H位置もモードごとに一度合わせる固定値であって、絵に追従はしない。
+                    // 帯域ごとに保存されるので一度合わせれば以後は再現される。
+                    let mut ch = false;
+                    ui.horizontal(|ui| {
+                        ui.monospace("H幅");
+                        ch |= ui.add(egui::Slider::new(&mut self.mon[0], 0.2..=2.0)
+                                     .fixed_decimals(3).show_value(true))
+                            .on_hover_text("1HSYNC周期のうち管面に出る割合。\n\
+                                            1.0で帰線期間まで全部見える")
+                            .changed();
+                    });
+                    ui.horizontal(|ui| {
+                        ui.monospace("H位置");
+                        ch |= ui.add(egui::Slider::new(&mut self.mon[1], -0.5..=0.5)
+                                     .fixed_decimals(3).show_value(true))
+                            .on_hover_text("右へ動かすと絵が右へ動く。\n\
+                                            信号は左右非対称(バックポーチが長い)なので、\n\
+                                            0だと絵が右に寄る(負の値で左へ戻す)")
+                            .changed();
+                    });
+                    ui.horizontal(|ui| {
+                        ui.monospace("V幅");
+                        ch |= ui.add(egui::Slider::new(&mut self.mon[2], 0.2..=2.0)
+                                     .fixed_decimals(3).show_value(true))
+                            .on_hover_text("1VSYNC周期のうち管面に出る割合")
+                            .changed();
+                    });
+                    ui.horizontal(|ui| {
+                        ui.monospace("V位置");
+                        ch |= ui.add(egui::Slider::new(&mut self.mon[3], -0.5..=0.5)
+                                     .fixed_decimals(3).show_value(true))
+                            .on_hover_text("右へ動かすと絵が下へ動く")
+                            .changed();
+                    });
+                    if ch {
+                        self.mark_settings_dirty();
+                    }
+                    // 有効映像が管面のどれだけを占めるか。モードごとに違って当然で、
+                    // 15kHzはラインの0.842を占めるので大きく、31kHzは0.696なので小さい
+                    let (aw, ah) = {
+                        let st = self.shared.stats.lock().unwrap();
+                        (st.span_w as f32, st.span_h as f32)
+                    };
+                    if let Some(m) = self.shared.mode.lock().unwrap().as_ref() {
+                        if m.htotal > 0 && m.vtotal > 0 && aw > 0.0 {
+                            let fw = aw / m.htotal as f32 / self.mon[0].max(0.01) * 100.0;
+                            // 縦はスロット目盛り。1ラインが何スロットを占めるかは
+                            // 織り込みの有無で変わる(mflags bit0)
+                            let k = if m.mflags & 0x0001 != 0 { 1.0 } else { 2.0 };
+                            let vt = m.vtotal as f32 * k;
+                            let fh = ah / vt / self.mon[2].max(0.01) * 100.0;
+                            ui.weak(format!("有効映像は管面の {fw:.0}% x {fh:.0}%"));
+                        }
+                    }
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.monospace("H位置");
+                        let mut c = (self.window[0] + self.window[1]) * 0.5;
+                        let mut w = self.window[1] - self.window[0];
+                        let a = ui.add(egui::DragValue::new(&mut c).speed(0.002).range(0.0..=1.0)
+                                       .fixed_decimals(3));
+                        ui.monospace("H幅");
+                        let b = ui.add(egui::DragValue::new(&mut w).speed(0.002).range(0.05..=1.0)
+                                       .fixed_decimals(3));
+                        if a.changed() || b.changed() {
+                            self.window[0] = (c - w * 0.5).clamp(-0.5, 1.5);
+                            self.window[1] = self.window[0] + w;
+                            self.mark_settings_dirty();
                         }
                     });
-                if rot != self.rotate {
-                    self.rotate = rot;
-                    self.mark_settings_dirty();
+                    ui.horizontal(|ui| {
+                        ui.monospace("V位置");
+                        let mut c = (self.window[2] + self.window[3]) * 0.5;
+                        let mut h = self.window[3] - self.window[2];
+                        let a = ui.add(egui::DragValue::new(&mut c).speed(0.002).range(0.0..=1.0)
+                                       .fixed_decimals(3));
+                        ui.monospace("V幅");
+                        let b = ui.add(egui::DragValue::new(&mut h).speed(0.002).range(0.05..=1.0)
+                                       .fixed_decimals(3));
+                        if a.changed() || b.changed() {
+                            self.window[2] = (c - h * 0.5).clamp(-0.5, 1.5);
+                            self.window[3] = self.window[2] + h;
+                            self.mark_settings_dirty();
+                        }
+                    });
+                }
+                ui.horizontal(|ui| {
+                    // 縦画面のゲーム(ドラゴンスピリット等)向け
+                    ui.monospace("回転");
+                    let mut rot = self.rotate;
+                    egui::ComboBox::from_id_salt("rotate")
+                        .width(72.0)
+                        .selected_text(["0°", "90°", "180°", "270°"][rot as usize])
+                        .show_ui(ui, |ui| {
+                            for (i, t) in ["0°", "90°", "180°", "270°"].iter().enumerate() {
+                                ui.selectable_value(&mut rot, i as u32, *t);
+                            }
+                        });
+                    if rot != self.rotate {
+                        self.rotate = rot;
+                        self.mark_settings_dirty();
+                        self.want_fit = true;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    // 管面(表示領域)の縦横比。実際のCRTと同じで、ドット数ではなく
+                    // 管面の形が表示を決める。4:3 にすれば 512x256 でも 768x512 でも
+                    // 同じ形に映る。
+                    ui.monospace("管面");
+                    let cur = self.tube_aspect;
+                    let mut sel = cur;
+                    let name = |a: f32| -> &'static str {
+                        if a <= 0.0 { "そのまま" }
+                        else if (a - 4.0 / 3.0).abs() < 0.01 { "4:3" }
+                        else if (a - 1.0).abs() < 0.01 { "1:1" }
+                        else if (a - 16.0 / 9.0).abs() < 0.01 { "16:9" }
+                        else { "任意" }
+                    };
+                    egui::ComboBox::from_id_salt("tube")
+                        .width(96.0)
+                        .selected_text(name(cur))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut sel, 0.0, "そのまま");
+                            ui.selectable_value(&mut sel, 4.0 / 3.0, "4:3");
+                            ui.selectable_value(&mut sel, 1.0, "1:1");
+                            ui.selectable_value(&mut sel, 16.0 / 9.0, "16:9");
+                        });
+                    if sel != cur {
+                        self.tube_aspect = sel;
+                        self.mark_settings_dirty();
+                        self.want_fit = true;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    // 拡大時の補間。sharp-bilinear は非整数倍でもドット幅が不揃いに
+                    // ならず、かつ全体がぼやけない。高解像度モニタ向けの既定。
+                    ui.monospace("補間");
+                    let mut f = self.filter;
+                    egui::ComboBox::from_id_salt("filter")
+                        .width(120.0)
+                        .selected_text(["ニアレスト", "バイリニア", "sharp-bilinear"][f as usize])
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut f, 0, "ニアレスト");
+                            ui.selectable_value(&mut f, 1, "バイリニア");
+                            ui.selectable_value(&mut f, 2, "sharp-bilinear");
+                        });
+                    if f != self.filter {
+                        self.filter = f;
+                        self.mark_settings_dirty();
+                    }
+                });
+                // 縦倍率(と 4:3 / 1.0 / integer scaling)は撤去した。表示の形は
+                // 管面が決めるので、ドット数に対する倍率という概念が要らない。
+                // 512x256 も 768x512 も、管面を 4:3 にすれば同じ形で映る。
+                if ui.button("画に合わせる").clicked() {
                     self.want_fit = true;
                 }
-            });
-            ui.horizontal(|ui| {
-                // 管面(表示領域)の縦横比。実際のCRTと同じで、ドット数ではなく
-                // 管面の形が表示を決める。4:3 にすれば 512x256 でも 768x512 でも
-                // 同じ形に映る。
-                ui.monospace("管面");
-                let cur = self.tube_aspect;
-                let mut sel = cur;
-                let name = |a: f32| -> &'static str {
-                    if a <= 0.0 { "そのまま" }
-                    else if (a - 4.0 / 3.0).abs() < 0.01 { "4:3" }
-                    else if (a - 1.0).abs() < 0.01 { "1:1" }
-                    else if (a - 16.0 / 9.0).abs() < 0.01 { "16:9" }
-                    else { "任意" }
-                };
-                egui::ComboBox::from_id_salt("tube")
-                    .width(96.0)
-                    .selected_text(name(cur))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut sel, 0.0, "そのまま");
-                        ui.selectable_value(&mut sel, 4.0 / 3.0, "4:3");
-                        ui.selectable_value(&mut sel, 1.0, "1:1");
-                        ui.selectable_value(&mut sel, 16.0 / 9.0, "16:9");
-                    });
-                if sel != cur {
-                    self.tube_aspect = sel;
-                    self.mark_settings_dirty();
-                    self.want_fit = true;
-                }
-            });
-            ui.horizontal(|ui| {
-                // 拡大時の補間。sharp-bilinear は非整数倍でもドット幅が不揃いに
-                // ならず、かつ全体がぼやけない。高解像度モニタ向けの既定。
-                ui.monospace("補間");
-                let mut f = self.filter;
-                egui::ComboBox::from_id_salt("filter")
-                    .width(120.0)
-                    .selected_text(["ニアレスト", "バイリニア", "sharp-bilinear"][f as usize])
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut f, 0, "ニアレスト");
-                        ui.selectable_value(&mut f, 1, "バイリニア");
-                        ui.selectable_value(&mut f, 2, "sharp-bilinear");
-                    });
-                if f != self.filter {
-                    self.filter = f;
-                    self.mark_settings_dirty();
-                }
-            });
-            // 縦倍率(と 4:3 / 1.0 / integer scaling)は撤去した。表示の形は
-            // 管面が決めるので、ドット数に対する倍率という概念が要らない。
-            // 512x256 も 768x512 も、管面を 4:3 にすれば同じ形で映る。
-            if ui.button("画に合わせる").clicked() {
-                self.want_fit = true;
-            }
+                });
         });
 
         // 管面の外側は黒。実CRTと同じで、掃引が届かない場所には何も出ない。

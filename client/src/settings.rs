@@ -28,6 +28,10 @@ pub struct Settings {
     pub tune_video_bw: u8,
     /// サンプリング位相 0..31。ドット周期の1/32刻み
     pub tune_phase: u8,
+    /// 1ラインまるごと送る(非黒範囲の最適化を切る)
+    pub tune_full_line: bool,
+    /// 映像ソースのプロファイル名。空文字は「自動」(全プロファイルを試す)
+    pub source_profile: String,
     /// 画面回転 0/1/2/3 = 時計回りに 0/90/180/270 度(縦画面のゲーム用)
     pub rotate: u32,
     /// 管面(表示領域)の縦横比 幅/高さ。0 なら有効映像の比をそのまま使う。
@@ -90,6 +94,8 @@ impl Default for Settings {
             tune_pll_divide: 1104,
             tune_video_bw: 15,
             tune_phase: 16,
+            tune_full_line: false,
+            source_profile: String::new(),
             rotate: 0,
             window: [0.22, 0.94, 0.07, 0.98],
             tube_time_based: true,
@@ -153,6 +159,8 @@ impl Settings {
                     | "tune_field_src" => {}
                 "tune_video_bw" => { if let Ok(x) = v.parse() { s.tune_video_bw = x } }
                 "tune_phase" => { if let Ok(x) = v.parse::<u8>() { s.tune_phase = x.min(31) } }
+                "source_profile" => s.source_profile = v.to_string(),
+                "tune_full_line" => s.tune_full_line = v == "true",
                 "rotate" => {
                     if let Ok(x) = v.parse::<u32>() {
                         s.rotate = if x < 4 { x } else { 0 };
@@ -250,6 +258,8 @@ impl Settings {
              tune_pll_divide = {}\n\
              tune_video_bw = {}\n\
              tune_phase = {}\n\
+             source_profile = {}\n\
+             tune_full_line = {}\n\
              tube_time_based = {}\n\
              mon = {:.4},{:.4},{:.4},{:.4}\n\
              rotate = {}\n\
@@ -271,6 +281,8 @@ impl Settings {
             self.tune_pll_divide,
             self.tune_video_bw,
             self.tune_phase,
+            self.source_profile,
+            self.tune_full_line,
             self.tube_time_based,
             self.mon[0], self.mon[1], self.mon[2], self.mon[3],
             self.rotate,

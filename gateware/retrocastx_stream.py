@@ -295,6 +295,12 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_vbp        = Signal(13, reset=cfg_vbp)         # key 0x10
         self.cfg_hs_offset  = Signal(13, reset=cfg_hs_offset)   # key 0x11
         self.cfg_pll_divide = Signal(12, reset=cfg_pll_divide)  # key 0x12
+        # 診断用: 1ラインまるごと送る(非黒範囲の最適化を切る)。key 0x30。
+        # 「全黒行の直後の数行だけ count_px=0 で届く」現象が、範囲の判定
+        # (ln_first/ln_last)の問題なのか、バッファへの書き込み自体の問題なのかを
+        # 実行時のA/Bで切り分けるために入れた。1にすると範囲を無視して 0..htotal
+        # を送るので、範囲判定が原因なら直り、書き込みが原因なら直らない。
+        self.cfg_full_line  = Signal(reset=0)                    # key 0x30
         self.cfg_video_bw   = Signal(4, reset=0xF)               # key 0x17
         self.cfg_fine_clamp = Signal(8, reset=0x87)              # key 0x18
         # H-PLL制御(reg 03h)。VCOレンジはピクセルクロックで決まる(データシート
@@ -376,6 +382,9 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x17),
                         self.cfg_video_bw.eq(rx.data[:4]),
                     ),
+                    If((cfg_target == 0) & (cfg_key == 0x30),
+                        self.cfg_full_line.eq(rx.data[0]),
+                    ),
                     If((cfg_target == 0) & (cfg_key == 0x1F),
                         self.cfg_phase.eq(rx.data[:5]),
                     ),
@@ -428,6 +437,7 @@ class RetroCastXStreamer(LiteXModule):
             0x10: reply_mux.eq(self.cfg_vbp),
             0x11: reply_mux.eq(self.cfg_hs_offset),
             0x12: reply_mux.eq(self.cfg_pll_divide),
+            0x30: reply_mux.eq(self.cfg_full_line),
             0x17: reply_mux.eq(self.cfg_video_bw),
             0x18: reply_mux.eq(self.cfg_fine_clamp),
             0x19: reply_mux.eq(self.cfg_pll_ctl),
@@ -526,7 +536,35 @@ class RetroCastXStreamer(LiteXModule):
             # 送信完了時の pop で FIFO が空になった直後に「空ヘッドの残留値」で
             # 余分なラインを送ってしまう(古いframe番号が混ざり、受信側で
             # frameが N↔N+1 を往復=実フレームの5倍のfpsに見える)。
-            self.comb += line_pending.eq(capture.line_valid)
+            #
+            # ただし「FIFOに有る」だけでは送り始められない。送る範囲(span_*)は
+            # FIFO先頭から2段のレジスタなので、先頭が変わった直後の2サイクルは
+            # まだ前のラインの範囲を指している。FSMは pop した次のサイクルには
+            # 次のラインを掴めるので、FIFOに次が溜まっていると必ずそこを踏む。
+            #
+            # 実機での見え方: 全幅の明るい行は大きなパケットになって送出が遅れ、
+            # その間にFIFOが溜まる。続く数行が立て続けに送られて前のラインの範囲を
+            # 掴み、範囲がずれた分だけ絵が横にずれた(「明るい横線の直後3行」)。
+            # 範囲の3つの値が別ラインから来ていた頃はさらに減算がアンダーフロー
+            # して過大なパケットになり、揃えたあとは「前が全黒なら空範囲」で行が
+            # まるごと消えた。どちらも根は同じで、範囲が確定する前に送り始めること。
+            #
+            # 先頭が変わるのは pop したときと、空のFIFOに最初の1本が入ったときの
+            # 2つだけ。そこから2サイクル待てば span_* は追いついている。sysは
+            # 50MHz前後なので待ち時間は40ns、ライン周期31.7µsに対して無視できる。
+            span_rdy = Signal()
+            span_wait = Signal(2, reset=3)
+            lv_p = Signal()
+            self.sync += [
+                lv_p.eq(capture.line_valid),
+                If(capture.line_ack | (capture.line_valid & ~lv_p),
+                    span_wait.eq(2),
+                ).Elif(span_wait != 0,
+                    span_wait.eq(span_wait - 1),
+                ),
+            ]
+            self.comb += span_rdy.eq(span_wait == 0)
+            self.comb += line_pending.eq(capture.line_valid & span_rdy)
         else:
             _timer.append(If(line_clr, line_pending.eq(0)))
             _timer.append(If(sub_valid & (line_cnt == 0), line_pending.eq(1)))
@@ -728,27 +766,52 @@ class RetroCastXStreamer(LiteXModule):
             span_hi = Signal(16)
             span_n = Signal(16)
             # 組合せで作るとFIFO先頭から加算・比較・muxを経てFSMのレジスタ入力まで
-            # 伸び、sysが45MHzを割った(実測 48.1 → 42.4MHz)。レジスタに落とす。
-            # FIFO先頭はラインが送出待ちの間ずっと安定しているので、1クロック遅れても
-            # 送出開始時には正しい値になっている。
+            # 伸び、sysが45MHzを割った(実測 48.1 → 42.4MHz)。2段のレジスタに落とす。
+            #
+            # 段に分けるときは「同じラインから出た値どうしを揃える」ことが要る。
+            # 以前は span_hi の全黒分岐が span_lo(レジスタ = 1つ前のラインの値)を
+            # 読み、span_n も span_hi/span_lo のレジスタから作っていたため、ラインの
+            # 境目で別々のラインの値が混ざった。全黒行は line_first が最大値へ跳ねる
+            # ので差がアンダーフローし、count_px が 65506 のような巨大値になる
+            # (sim_capture_black.py で再現。実機の「全黒行の直後がおかしい」と一致)。
+            #
+            # 段1: このラインの範囲。全黒分岐もレジスタではなく入力値を使う。
+            lo_in = Signal(16)
+            lo1 = Signal(16)
+            hi1 = Signal(16)
+            # ライン内の絶対位置にする。hs_offset を足しておけば、受信側は
+            # offset_px をそのままライン内の位置として使える(hs_offset が
+            # 描画位置に影響しなくなる = ドットクロック再生と描画の分離)。
+            self.comb += lo_in.eq(Cat(C(0, 1), capture.line_first)
+                                  + self.cfg_hs_offset)
             self.sync += [
-                # ライン内の絶対位置にする。hs_offset を足しておけば、受信側は
-                # offset_px をそのままライン内の位置として使える(hs_offset が
-                # 描画位置に影響しなくなる = ドットクロック再生と描画の分離)。
-                span_lo.eq(Cat(C(0, 1), capture.line_first) + self.cfg_hs_offset),
+                # 診断: 範囲を無視して1ラインまるごと送る(key 0x30)
+                If(self.cfg_full_line,
+                    lo1.eq(0),
+                    hi1.eq(self.cfg_pll_divide),
                 # line_last は内包。全黒の行では line_first > line_last になるので
                 # その場合は空(送るピクセル0)にする。行自体は送る(落とすと受信側が
                 # 「黒い行」と「届かなかった行」を区別できない)。
-                If(capture.line_last >= capture.line_first,
-                    span_hi.eq(Cat(C(0, 1), capture.line_last) + 2
-                               + self.cfg_hs_offset),
+                ).Elif(capture.line_last >= capture.line_first,
+                    lo1.eq(lo_in),
+                    hi1.eq(Cat(C(0, 1), capture.line_last) + 2
+                           + self.cfg_hs_offset),
                 ).Else(
-                    span_hi.eq(span_lo),
+                    # 全黒行は「位置0の空範囲」にする。line_first は1画素も
+                    # 書かれないと初期値(entries-1)のまま残るので、そのまま使うと
+                    # offset_px が窓の外(width-2 = 2046)を指す。実害は出ていな
+                    # かったが、こういう特異値は他がわずかに狂ったときに一気に
+                    # 壊れる形で効く(実際、この値がアンダーフローの引き金だった)。
+                    lo1.eq(0),
+                    hi1.eq(0),
                 ),
-                If(span_hi - span_lo > FRAG_PX,
+                # 段2: 対 (lo1, hi1) だけから作るので、3つは必ず同じラインのもの
+                span_lo.eq(lo1),
+                span_hi.eq(hi1),
+                If(hi1 - lo1 > FRAG_PX,
                     span_n.eq(FRAG_PX),
                 ).Else(
-                    span_n.eq(span_hi - span_lo),
+                    span_n.eq(hi1 - lo1),
                 ),
             ]
             line_span = [
@@ -1135,7 +1198,11 @@ def main():
     # 全ドメインが余裕を持って通るようになった(eth_rx 130〜136MHz)。
     # ビルド後は必ず全ドメインの PASS/FAIL を確認すること(途中経過ではなく
     # ルーティング後の最終値を見る。dataclk だけ見ると eth_rx の違反を見落とす)。
-    ap.add_argument("--seed", type=int, default=2, help="nextpnr placement seed")
+    # それでも eth_rx はシード次第で125MHzを割ることがある。span計算を2段にした
+    # あと seed 2 は eth_rx 123.17MHz で落ち、seed 3 は 131.51MHz で通った
+    # (同ビルドの sys は 52.92 → 55.39MHz。要求45MHzに対して余裕があるので、
+    # 段を足したこと自体は効いていない)。既定を通る方へ寄せてある。
+    ap.add_argument("--seed", type=int, default=3, help="nextpnr placement seed")
     ap.add_argument("--no-capture", action="store_true",
                     help="実キャプチャを無効化しテストパターンを送出")
     # 入力mux(0x19)の切り替え。既定は全て _3 = 基板配線。緑のクランプ異常の

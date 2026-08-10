@@ -48,6 +48,11 @@ CFG_KEY_GAIN_B = 0x001C         # 細ゲイン Blue (レジスタ0x08) Gain=1+N/
 CFG_KEY_GAIN_G = 0x001D         # 細ゲイン Green(レジスタ0x09)
 CFG_KEY_GAIN_R = 0x001E         # 細ゲイン Red  (レジスタ0x0A)
 CFG_KEY_PHASE = 0x001F          # サンプリング位相 0..31 (レジスタ0x04 bit[7:3])
+CFG_KEY_FULL_LINE = 0x0030      # 1ラインまるごと送る(非黒範囲の最適化を切る)
+# 生同期(TVPを通らない経路)の実測値。pll_divide に依存しない絶対値
+CFG_KEY_FH_RAW = 0x002A         # 生HSYNC周波数 [Hz]
+CFG_KEY_FV_RAW = 0x002B         # 生VSYNC周波数 [mHz]
+CFG_KEY_LINES_RAW = 0x002C      # 生VSYNC間の生HSYNC数(=vtotal)
 
 # アプリ→ボードのパケット(SUBSCRIBE/CONFIG)の宛先MACワイルドカード。
 # 同一LANの全ボードが反応するため、複数ボード環境では実MACを指名すること
