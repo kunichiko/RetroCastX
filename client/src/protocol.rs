@@ -241,6 +241,9 @@ pub const CFG_KEY_VIDEO_BW: u16 = 0x0017;
 /// ADCがドットのどこを掴むかを決める。ずれると全画素が一様にぼける。
 /// 最適値はモードごとに変わる(遅延は固定[ns]だがこの刻みはドット周期に比例)。
 pub const CFG_KEY_PHASE: u16 = 0x001F;
+/// H-PLL制御(TVPレジスタ03h)。VCOレンジ[7:6] + チャージポンプ電流[5:3]。
+/// ピクセルクロックとpixels per lineから決まるので、モードごとに計算して送る
+pub const CFG_KEY_PLL_CTL: u16 = 0x0019;
 
 /// SUBSCRIBE(16B): 共通ヘッダ8B + 宛先MAC 6B + 予約2B。
 /// mac で宛先ボードを指名する(WILDCARD_MAC で全ボード)。

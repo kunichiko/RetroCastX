@@ -30,6 +30,8 @@ pub struct FrameAssembler {
     px_filled: usize,
     last_seq: Option<u16>,
     line_seen: Vec<bool>, // このフレームで各lineを受信したか
+    /// 太らせても埋まらなかった行数(診断用)
+    pub unfilled_rows: u32,
     decay: f32,           // 欠損ラインの減衰率(1.0=前フレーム保持のまま, 0.8=毎フレーム80%へ暗転)
 }
 
@@ -45,6 +47,7 @@ impl FrameAssembler {
             px_filled: 0,
             last_seq: None,
             line_seen: Vec::new(),
+            unfilled_rows: 0,
             decay: 0.8,
         }
     }
@@ -123,9 +126,17 @@ impl FrameAssembler {
                 if self.cur_frame.is_none() {
                     self.cur_frame = Some(l.frame);
                 }
-                if l.line >= vactive || l.offset_px as usize + l.count_px as usize > hactive as usize {
-                    return completed; // out of range for the current mode; drop
+                if l.line >= vactive {
+                    return completed; // 行がモードの範囲外
                 }
+                // 範囲がバッファ幅を超えていても、ラインごと捨てずに入る分だけ書く。
+                //
+                // 捨てると line_seen が立たず、太らせの対象からも外れるので、その行は
+                // 前フレームの残りを保持し続けて薄い影として見える。しかもボード側で
+                // HSYNCを取り逃がした行は範囲が右へ伸びるため、絵の内容が増えるほど
+                // 該当行が増える(実機で「U>を増やすほど未充填の行が増える」形で出た)。
+                let off = (l.offset_px as usize).min(hactive as usize);
+                let fit = (hactive as usize - off).min(l.count_px as usize);
                 // このフレームでその行を初めて受けたら、行全体を黒で消してから書く。
                 //
                 // ボードはライン毎に「黒でない範囲」だけを送る(offset_px/count_px が
@@ -144,16 +155,16 @@ impl FrameAssembler {
                         // alpha(px[3])は不変
                     }
                 }
-                let base = (l.line as usize * self.width + l.offset_px as usize) * 4;
+                let base = (l.line as usize * self.width + off) * 4;
                 match l.pixfmt {
                     proto::PIXFMT_RGB888 => {
-                        for (i, px) in l.pixels.chunks_exact(3).enumerate() {
+                        for (i, px) in l.pixels.chunks_exact(3).enumerate().take(fit) {
                             let o = base + i * 4;
                             self.fb[o..o + 3].copy_from_slice(px);
                         }
                     }
                     proto::PIXFMT_RGB555 => {
-                        for (i, px) in l.pixels.chunks_exact(2).enumerate() {
+                        for (i, px) in l.pixels.chunks_exact(2).enumerate().take(fit) {
                             let v = u16::from_le_bytes([px[0], px[1]]);
                             let (r5, g5, b5) = ((v >> 10) & 0x1F, (v >> 5) & 0x1F, v & 0x1F);
                             let o = base + i * 4;
@@ -165,7 +176,7 @@ impl FrameAssembler {
                     }
                     _ => return completed,
                 }
-                self.px_filled += l.count_px as usize;
+                self.px_filled += fit;
                 if (l.line as usize) < self.line_seen.len() {
                     self.line_seen[l.line as usize] = true;
                 }
@@ -229,6 +240,9 @@ impl FrameAssembler {
                 }
             }
         }
+        // 太らせても埋まらなかった行を数える。0でないと前フレームの残りが減衰して
+        // 薄い影として見える。診断用に統計へ出す
+        self.unfilled_rows = self.line_seen.iter().filter(|s| !**s).count() as u32;
         for s in self.line_seen.iter_mut() {
             *s = false;
         }

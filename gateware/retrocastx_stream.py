@@ -299,7 +299,10 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_field_src  = Signal()                           # key 0x16
         self.cfg_video_bw   = Signal(4, reset=0xF)               # key 0x17
         self.cfg_fine_clamp = Signal(8, reset=0x87)              # key 0x18
-        self.cfg_pll_ctl    = Signal(8, reset=0xA8)              # key 0x19 (reg 03h)
+        # H-PLL制御(reg 03h)。VCOレンジはピクセルクロックで決まる(データシート
+        # Table 4 / 03h の定義)。X68000は全モード PCLK < 36MHz で Ultra low。
+        # 既定は 31kHz 768x512 用の 18h。Viewerがモードから計算して送り直す。
+        self.cfg_pll_ctl    = Signal(8, reset=0x18)              # key 0x19 (reg 03h)
         self.cfg_clamp_start= Signal(8, reset=0x32)              # key 0x1A (reg 05h)
         self.cfg_clamp_width= Signal(8, reset=0x20)              # key 0x1B (reg 06h)
         self.cfg_gain_b     = Signal(8, reset=35)                # key 0x1C (reg 08h)
@@ -309,6 +312,10 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_sync_ctl   = Signal(8, reset=0x52)              # key 0x22 (reg 0Eh)
         # TVPのステータス 38h(bit5=P/I detect)。上位から供給される読み出し専用
         self.stat_lpf_hi    = Signal(8)
+        # ラインごとのHSYNC周期プローブ。key 0x27 で行を選び 0x28/0x29 で読む
+        self.cfg_hs_probe_row = Signal(13)
+        self.stat_hs_raw    = Signal(16)
+        self.stat_hs_tvp    = Signal(16)
         self.cfg_f2_row     = Signal(13, reset=0)                # key 0x14
         self.cfg_field_swap = Signal()                           # key 0x15
         audio_mask = Signal(3, reset=0b111)      # key 0x0001: 音声ソース有効マスク
@@ -391,6 +398,9 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x22),
                         self.cfg_sync_ctl.eq(rx.data[:8]),
                     ),
+                    If((cfg_target == 0) & (cfg_key == 0x27),
+                        self.cfg_hs_probe_row.eq(rx.data[:13]),
+                    ),
                     If((cfg_target == 0) & (cfg_key == 0x18),
                         self.cfg_fine_clamp.eq(rx.data[:8]),
                     ),
@@ -466,7 +476,13 @@ class RetroCastXStreamer(LiteXModule):
         # ための生データ(位相が0付近と中央付近で交互になるか、FIDOUTが交互に
         # なるかを見る)。書き込みは無視される読み取り専用。
         if cap_mode:
-            self.comb += If(cfg_key == 0x26,
+            self.comb += If(cfg_key == 0x28,
+                cfg_reply_val.eq(self.stat_hs_raw),
+            ).Elif(cfg_key == 0x29,
+                cfg_reply_val.eq(self.stat_hs_tvp),
+            ).Elif(cfg_key == 0x27,
+                cfg_reply_val.eq(self.cfg_hs_probe_row),
+            ).Elif(cfg_key == 0x26,
                 cfg_reply_val.eq(self.stat_lpf_hi),      # 38h(bit5=P/I detect)
             ).Elif(cfg_key == 0x24,
                 cfg_reply_val.eq(capture.stat_vs_x_raw),
@@ -905,8 +921,8 @@ _capture_io = [
         # 同期制御レジスタ0x0Eを256通り振っても現れなかった)。半ライン位相が読めれば
         # インターレースの判定と第2フィールドの位置決めが測定で決まる。
         # 既存の SN74LVC2G17 の出力から分岐しているので新規部品は無い。
-        Subsignal("hs_raw", Pins("F2")),                          # P3 pin155 生HSYNC
-        Subsignal("vs_raw", Pins("E1")),                          # P3 pin153 生VSYNC(RC遅延後)
+        Subsignal("hs_raw", Pins("F2")),                          # P4-6 pin155 生HSYNC
+        Subsignal("vs_raw", Pins("E1")),                          # P4-5 pin153 生VSYNC(RC遅延後)
         IOStandard("LVCMOS33")),
 ]
 
@@ -1117,6 +1133,9 @@ class RetroCastXStream(SoCMini):
                 # TVPが検出したインターレース(38h bit5 P/I detect は 0=インターレース)
                 self.capture.cfg_il_detect.eq(~self.status.lpf_hi[5]),
                 self.streamer.stat_lpf_hi.eq(self.status.lpf_hi),
+                self.capture.cfg_hs_probe_row.eq(self.streamer.cfg_hs_probe_row),
+                self.streamer.stat_hs_raw.eq(self.capture.stat_hs_probe_raw),
+                self.streamer.stat_hs_tvp.eq(self.capture.stat_hs_probe_tvp),
                 # 38h bit5 は 0=インターレース。手動上書き(cfg_interlace)も反映する
                 self.streamer.stat_interlaced.eq(
                     ~self.status.lpf_hi[5] | (self.streamer.cfg_interlace != 0)),

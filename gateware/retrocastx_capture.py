@@ -147,6 +147,16 @@ class TvpCapture(Module):
         self.cfg_il_detect     = Signal()
         # 1 で生同期の位相を使わない(切り分け用)。既定0=生同期があれば使う。
         self.cfg_no_raw_phase  = Signal()
+        # ラインごとのHSYNC周期を測るプローブ。
+        #
+        # 「全幅の明るい横線の直後の3行だけ、内容が2サンプル早く取り込まれる」現象の
+        # 切り分け用。生HSYNCとTVPのHSOUTを同じ行で同時に測れば、
+        #   生の周期が変わっている  → X68000側がそう出している(実CRTでも起きる)
+        #   生は一定でTVPだけ動く   → TVPの同期スライサが映像に引かれている
+        # のどちらかが分かる。cfg_hs_probe_row で行を選び、2つの値を読む。
+        self.cfg_hs_probe_row = Signal(13)
+        self.stat_hs_probe_raw = Signal(16)   # その行の生HSYNC周期
+        self.stat_hs_probe_tvp = Signal(16)   # その行のTVP HSOUT周期
         # 1ライン当たりのDATACLK数(=H-PLL分周比)。位相判定のしきい値に使う
         self.cfg_hs_total      = Signal(13, reset=hs_total or 0)
         # 診断用(sysで観測): VSYNCエッジ時の行内カウンタと、そのときのFIDOUT
@@ -211,10 +221,16 @@ class TvpCapture(Module):
         self.comb += vs_edge.eq(vs_edge_raw &
                                 ((self.cfg_vs_min_rows == 0) |
                                  (vrow >= self.cfg_vs_min_rows)))
+        probe_tvp = Signal(16)
         self.sync.pix += [
-            If(hs_edge, If(vrow != 0x1FFF, vrow.eq(vrow + 1))),
+            If(hs_edge,
+                If(vrow != 0x1FFF, vrow.eq(vrow + 1)),
+                # 指定行のTVP HSOUT周期(hs_edge時点のxが直前ラインの長さ)
+                If(vrow == self.cfg_hs_probe_row, probe_tvp.eq(x)),
+            ),
             If(vs_edge, vrow.eq(0)),
         ]
+        self.specials += MultiReg(probe_tvp, self.stat_hs_probe_tvp, "sys")
         # 測定用のVSYNCは cfg_vs_min_rows に依存させない。設定が現在のモードに
         # 合っていないと(例: vtotal 262 のモードでガードが497)VSYNCが全て捨てられ、
         # vtotalが測れなくなってモード追従が始められない(鶏と卵)。
@@ -283,6 +299,17 @@ class TvpCapture(Module):
             ]
             self.specials += MultiReg(vs_xr, self.stat_vs_x_raw, "sys")
             self.specials += MultiReg(hs_len_r, self.stat_hs_len_raw, "sys")
+            # 生VSYNCからの行数を数え、指定行の周期をラッチする
+            vrow_r = Signal(13)
+            probe_raw = Signal(16)
+            self.sync.pix += [
+                If(hr_edge,
+                    If(vrow_r != 0x1FFF, vrow_r.eq(vrow_r + 1)),
+                    If(vrow_r == self.cfg_hs_probe_row, probe_raw.eq(xr)),
+                ),
+                If(vr_edge, vrow_r.eq(0)),
+            ]
+            self.specials += MultiReg(probe_raw, self.stat_hs_probe_raw, "sys")
 
             # 半ライン位相のビット。VSYNCがラインの中央付近に来たフィールドは
             # 半ライン分あとから始まるので、そのラインは1スロット下へ落ちる。

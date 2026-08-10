@@ -79,6 +79,9 @@ pub struct StatsSnapshot {
     pub span_y: u16,
     pub span_w: u16,
     pub span_h: u16,
+    /// 太らせても埋まらなかった行数(前フレームの残りが減衰して見える行)。
+    /// 0でないと薄い影が出る
+    pub unfilled_rows: u32,
 }
 
 /// pll_divide と位相を自動で決めるための測定器。
@@ -768,6 +771,7 @@ fn tick_stats(
         span_y: tune.by,
         span_w: tune.bw,
         span_h: tune.bh,
+        unfilled_rows: asm.unfilled_rows,
         occ_h: tune.occ,
         tune_n: tune.n,
         active_w: abox.w,

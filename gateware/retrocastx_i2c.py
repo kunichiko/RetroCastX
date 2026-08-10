@@ -217,7 +217,27 @@ class StatusDisplay(Module):
         # データシートの規定と合っていない箇所があるので実測したが、良好な電源の
         # 下ではどちらも測定可能な効果が無かった(下記)。実行時に変更できるように
         # だけしてある(CONFIG key 0x19 / 0x1A / 0x1B)。
-        self.cfg_pll_ctl = Signal(8, reset=0xA8)
+        # H-PLL制御(レジスタ03h)。VCOレンジ[7:6] + チャージポンプ電流[5:3]。
+        #
+        # データシート:
+        #   VCO 00 = Ultra low (KVCO  75)  PCLK < 36 MHz
+        #       01 = Low       (KVCO  85)  36 ≤ PCLK < 70
+        #       10 = Medium    (KVCO 150)  70 ≤ PCLK < 135   ← 既定(A8h)
+        #       11 = High      (KVCO 200)  135 ≤ PCLK ≤ 165
+        #   ICP = 40 × KVCO / (pixels per line)
+        #
+        # X68000の全モードは PCLK < 36MHz なので Ultra low が正しい:
+        #   31kHz 768x512   34.78MHz / 1104 → ICP 3 → 18h
+        #   24kHz 1024x848  34.77MHz / 1408 → ICP 2 → 10h
+        #   15kHz 512x512   19.43MHz / 1216 → ICP 2 → 10h
+        #   31kHz 512x512   23.18MHz /  736 → ICP 4 → 20h
+        #
+        # 以前は既定の A8h(Medium)をそのまま書いていた。レンジ外で動かすと
+        # データシートが言う "improve the noise performance" が効かず、位相ノイズが
+        # 増えてラインごとにサンプリング位相が揺れる(実機で行単位の横ずれとして出た)。
+        # ここでは最も使う 31kHz 768x512 の値を既定にし、Viewerがモードから
+        # 計算して送り直す(CONFIG key 0x19)。
+        self.cfg_pll_ctl = Signal(8, reset=0x18)
         self.cfg_clamp_start = Signal(8, reset=0x32)
         self.cfg_clamp_width = Signal(8, reset=0x20)
         # 細ゲイン(08h=Blue / 09h=Green / 0Ah=Red)。Gain = 1 + N/256。
@@ -308,7 +328,7 @@ class StatusDisplay(Module):
         #                     実行時に振って効果を測れるようCONFIGから変えられる。
         WR_REG = [0x19, 0x0E, 0x17, 0x18, 0x31, 0x10, 0x3F, 0x2A, 0x03, 0x05, 0x06,
                   0x08, 0x09, 0x0A, 0x04]
-        WR_VAL = [MUX1, 0x52, 0x02, 0x01, 0x18, 0x58, 0x0F, 0x87, 0xA8, 0x32, 0x20,
+        WR_VAL = [MUX1, 0x52, 0x02, 0x01, 0x18, 0x58, 0x0F, 0x87, 0x18, 0x32, 0x20,
                   35, 33, 39, 0x80]
         if pll_divide:
             # 0x01=PLL divide[11:4], 0x02=[7:4]にPLL divide[3:0]。データシート指定どおり

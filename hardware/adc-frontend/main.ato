@@ -1071,10 +1071,10 @@ module App:
     # バッファ出力は2つの入力を駆動できるので、既存の SN74LVC2G17 の出力から
     # 分岐するだけでよい(新規部品なし・配線2本)。VSYNC側はRC遅延後の信号だが、
     # 遅延は約150nsで半ライン(24kHzで20µs)の判定には影響しない。
-    # 置き場所は同じP3端子(pin129〜157)に揃える。F2はクロック対応ボールなので
-    # 生HSYNCを置いておく(将来HSYNCをクロックとして使う余地を残す)。
-    sodimm.io_f2 ~ buf_sync.out_a   # pin155 (F2, クロック対応) 生HSYNC
-    sodimm.io_e1 ~ buf_sync.out_b   # pin153 (E1) 生VSYNC(RC遅延後)
+    # 置き場所はP4端子。F2はクロック対応ボールなので生HSYNCを置いておく
+    # (将来HSYNCをクロックとして使う余地を残す)。
+    sodimm.io_f2 ~ buf_sync.out_a   # pin155 (F2, P4-6, クロック対応) 生HSYNC
+    sodimm.io_e1 ~ buf_sync.out_b   # pin153 (E1, P4-5) 生VSYNC(RC遅延後)
 
     # --- 音声入力(3系統: DSUB15音声 / LINE入力 / S/PDIF光) ---
     # クロック系: 12.288MHz XO(=256fs@48kHz)を両ADCのSCKIとFPGA(F1=PCLKC6_1)へ。

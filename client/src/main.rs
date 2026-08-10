@@ -986,6 +986,36 @@ impl ViewerApp {
         Some(aw / m.htotal as f32 * (1000.0 / fh_khz))
     }
 
+    /// H-PLL制御(TVPレジスタ03h)の値をモードから計算する。
+    ///
+    /// データシート 03h の定義:
+    ///   VCO 00 = Ultra low (KVCO  75)  PCLK < 36 MHz
+    ///       01 = Low       (KVCO  85)  36 ≤ PCLK < 70
+    ///       10 = Medium    (KVCO 150)  70 ≤ PCLK < 135   ← 既定(A8h)
+    ///       11 = High      (KVCO 200)  135 ≤ PCLK ≤ 165
+    ///   ICP = 40 × KVCO / (pixels per line)
+    ///
+    /// データシートは「VCOレンジ制御の目的はノイズ性能の改善」と書いている。
+    /// レンジ外で動かすと位相ノイズが増え、ラインごとにサンプリング位相が揺れて
+    /// 行単位の横ずれになる(既定のA8h=Mediumを全モードに使っていて実機で発生)。
+    /// X68000は全モード PCLK < 36MHz なので Ultra low が正しい。
+    ///
+    /// 計算式が Table 4 と一致することは確認済み(720×480p: 27MHz/858 → ICP 3.50
+    /// → 18h)。
+    fn pll_ctl_for(pclk_hz: f64, pix_per_line: u32) -> u8 {
+        let (vco, kvco) = if pclk_hz < 36.0e6 {
+            (0u8, 75.0)
+        } else if pclk_hz < 70.0e6 {
+            (1, 85.0)
+        } else if pclk_hz < 135.0e6 {
+            (2, 150.0)
+        } else {
+            (3, 200.0)
+        };
+        let icp = (40.0 * kvco / pix_per_line.max(1) as f64).round().clamp(0.0, 7.0) as u8;
+        (vco << 6) | (icp << 3)
+    }
+
     /// fH[kHz] を呼称の帯域へ分類する。
     ///
     /// 丸めると 24.698kHz が 25 になって呼称とずれる。マルチスキャンモニタの
@@ -1032,6 +1062,17 @@ impl ViewerApp {
         // 実際のCRTは 0.85〜0.95 あたりが近い)。
         self.mon = self.mon_bands.get(&khz).copied().unwrap_or([1.0, 0.0, 1.0, 0.0]);
         self.band_khz = khz;
+        // H-PLLのVCOレンジ/チャージポンプはピクセルクロックとpixels per lineで
+        // 決まるので、モードが変わったら計算して送り直す
+        if let Some((pclk, ht)) = {
+            let m = self.shared.mode.lock().unwrap().clone();
+            m.map(|m| (m.dotclk_hz as f64, m.htotal as u32))
+        } {
+            if pclk > 1.0e6 && ht > 0 {
+                let v = Self::pll_ctl_for(pclk, ht);
+                self.send_cfg(protocol::CFG_KEY_PLL_CTL, v as u32);
+            }
+        }
         self.mark_settings_dirty();
         self.want_fit = true;
     }
@@ -1751,6 +1792,14 @@ impl eframe::App for ViewerApp {
             ui.monospace(format!("frames {}", s.frames));
             ui.monospace(format!("pkts {}  lost {}", s.packets, s.lost_packets));
             ui.monospace(format!("orphan lines {}", s.orphan_lines));
+            // 太らせても埋まらなかった行数。0でないと前フレームの残りが減衰して
+            // 薄い影として見える。プログレッシブでは0になるべき
+            if s.unfilled_rows > 0 {
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 170, 60),
+                    format!("未充填の行 {}", s.unfilled_rows),
+                );
+            }
             // 暗部のフレーム間差分=点状ノイズの量。配線やパスコンの効果を数値で見る
             ui.monospace(format!(
                 "noise {:.1}%  lvl {:.1}",
