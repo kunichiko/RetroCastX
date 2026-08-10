@@ -1106,15 +1106,12 @@ class RetroCastXStream(SoCMini):
             # 取り込み、送るのは中身のある範囲だけにするので、hs_offset は調整
             # 項目でなくなる。height は行位置が半ライン単位のスロットになった分
             # 2倍必要(BRAMはラインバッファ nface 本ぶんだけなので縦は費用ゼロ)。
-            # nface: ラインバッファの面数。assert は nface >= fifo_depth+2 で足りる
-            # ことにしていたが、メタのCDC(stream.ClockDomainCrossing)は AsyncFIFO の
-            # 前後にバッファ段を持つので、実際に飛んでいるメタの数はそれより多い。
-            # 実測で「メタの行番号と範囲は互いに整合しているのに、参照している面の
-            # 画素が4ライン新しい内容になっている」形の食い違いが約30%の行で出た
-            # (host/python/retrocastx/line_probe.py と全ライン送信 key 0x30 のA/B)。
-            # 書き込みポインタが送出待ちの面を追い越しているとみて倍にする。
-            self.capture = TvpCapture(cap_pads, width=2048, height=2048, nface=16,
-                                      fifo_depth=8,   # 切り分け用: 遅れが8ラインになるか
+            # nface/fifo_depth は既定(8/4)。行欠けを追う過程で 16/8 に振って
+            # 「範囲の遅れが fifo_depth に比例する」ことを確認したが、原因は
+            # 送信側のヘッダ組み立てだったので大きくする理由は無い。既定でも
+            # 通常モード・全ライン送信モードのどちらも cap_drops(key 0x33)は0
+            # (実測: 送出は最悪でもライン周期の1/3しか使わない)。
+            self.capture = TvpCapture(cap_pads, width=2048, height=2048,
                                       hs_active_low=True, vs_active_low=True,
                                       vtotal=568, vs_min_rows=497,
                                       vs_row_at_sync=vs_row_at_sync,
