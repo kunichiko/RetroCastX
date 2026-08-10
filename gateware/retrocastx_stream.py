@@ -387,6 +387,9 @@ class RetroCastXStreamer(LiteXModule):
                     ),
                     *([If((cfg_target == 0) & (cfg_key == 0x31),
                           capture.cfg_span_probe_row.eq(rx.data[:13]),
+                      ),
+                       If((cfg_target == 0) & (cfg_key == 0x35),
+                          capture.cfg_frame_skip.eq(rx.data[:4]),
                       )] if cap_mode else []),
                     If((cfg_target == 0) & (cfg_key == 0x1F),
                         self.cfg_phase.eq(rx.data[:5]),
@@ -475,6 +478,7 @@ class RetroCastXStreamer(LiteXModule):
                 0x32: reply_mux.eq(capture.stat_span_probe),
                 0x33: reply_mux.eq(capture.cap_drops),
                 0x34: reply_mux.eq(capture.stat_pop_probe),
+                0x35: reply_mux.eq(capture.cfg_frame_skip),
             })
         self.comb += Case(cfg_key, reply_cases)
         self.sync += cfg_reply_val.eq(Mux(cfg_target == 1, argus_reg, reply_mux))

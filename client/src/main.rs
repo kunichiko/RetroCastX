@@ -338,6 +338,9 @@ struct ViewerApp {
     /// 1ラインまるごと送る(非黒範囲の最適化を切る)。
     /// 全黒行の直後の数行で範囲判定が壊れて行が欠ける不具合の回避策。
     tune_full_line: bool,
+    /// フレーム間引き。0=毎フレーム / 1=2フレームに1回 …
+    /// 受信が追いつかない機械での保険。音声は間引かない
+    tune_frame_skip: u8,
     /// 映像ソースのプロファイル名(profiles::PROFILES の key)。空文字は「自動」。
     /// pll_divide を絵の内容ではなく fH とドットクロック候補から決めるのに使う
     source_profile: String,
@@ -445,6 +448,7 @@ impl ViewerApp {
             tune_pll_divide: cfg.tune_pll_divide,
             tune_video_bw: cfg.tune_video_bw,
             tune_full_line: cfg.tune_full_line,
+            tune_frame_skip: cfg.tune_frame_skip,
             tune_phase: cfg.tune_phase,
             source_profile: cfg.source_profile.clone(),
             tune_pending: Default::default(),
@@ -582,6 +586,7 @@ impl ViewerApp {
             tune_pll_divide: self.tune_pll_divide,
             tune_video_bw: self.tune_video_bw,
             tune_full_line: self.tune_full_line,
+            tune_frame_skip: self.tune_frame_skip,
             tune_phase: self.tune_phase,
             source_profile: self.source_profile.clone(),
         }
@@ -760,13 +765,14 @@ impl ViewerApp {
     }
 
     /// 実行時に調整できるキーの一覧。読み戻しと表示の同期に使う
-    const TUNE_KEYS: [u16; 6] = [
+    const TUNE_KEYS: [u16; 7] = [
         protocol::CFG_KEY_VBP,
         protocol::CFG_KEY_HS_OFFSET,
         protocol::CFG_KEY_PLL_DIVIDE,
         protocol::CFG_KEY_VIDEO_BW,
         protocol::CFG_KEY_PHASE,
         protocol::CFG_KEY_FULL_LINE,
+        protocol::CFG_KEY_FRAME_SKIP,
     ];
 
     /// ボードの現在値を表示へ反映する。
@@ -1013,6 +1019,7 @@ impl ViewerApp {
                 protocol::CFG_KEY_PLL_DIVIDE => self.tune_pll_divide = val as i32,
                 protocol::CFG_KEY_VIDEO_BW => self.tune_video_bw = val as u8,
                 protocol::CFG_KEY_FULL_LINE => self.tune_full_line = val != 0,
+                protocol::CFG_KEY_FRAME_SKIP => self.tune_frame_skip = val as u8,
                 protocol::CFG_KEY_PHASE => self.tune_phase = (val as u8).min(31),
                 _ => {}
             }
@@ -1507,6 +1514,28 @@ impl ViewerApp {
                        if self.tune_full_line { 1 } else { 0 }));
             self.mark_settings_dirty();
         }
+        // フレーム間引き。受信が追いつかない機械での保険。
+        // 映像だけを間引き、音声は間引かないので、音の途切れが減る。
+        ui.horizontal(|ui| {
+            ui.monospace("間引き");
+            let mut n = self.tune_frame_skip as i32;
+            if ui.add(egui::DragValue::new(&mut n).range(0..=7))
+                .on_hover_text("映像を何フレームに1回にするか。0=毎フレーム、\n\
+                                1=2フレームに1回(帯域とfpsが半分)。\n\
+                                音声は間引かないので、映像を減らすと\n\
+                                音の途切れも減ります")
+                .changed()
+            {
+                self.tune_frame_skip = n as u8;
+                send.push((protocol::CFG_KEY_FRAME_SKIP, n as u32));
+            }
+            ui.monospace(if self.tune_frame_skip == 0 {
+                "毎フレーム".to_string()
+            } else {
+                format!("1/{} ({}fps相当)", self.tune_frame_skip + 1,
+                        55 / (self.tune_frame_skip as u32 + 1))
+            });
+        });
         ui.horizontal(|ui| {
             ui.monospace("帯域制限");
             let mut bw = self.tune_video_bw as i32;
@@ -1583,6 +1612,7 @@ impl ViewerApp {
             send.push((protocol::CFG_KEY_PHASE, self.tune_phase as u32));
             send.push((protocol::CFG_KEY_FULL_LINE,
                        if self.tune_full_line { 1 } else { 0 }));
+            send.push((protocol::CFG_KEY_FRAME_SKIP, self.tune_frame_skip as u32));
         }
         if !send.is_empty() {
             let now = std::time::Instant::now();

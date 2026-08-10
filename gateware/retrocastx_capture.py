@@ -100,6 +100,12 @@ class TvpCapture(Module):
         # FIFOも送信FSMも通らないので、キャプチャの判定そのものが正しいかを
         # 切り分けられる。実測で「範囲だけがFIFOの滞留段数ぶん遅れて見える」
         # 現象が出たが、それが判定側かFIFO/読出側かをこれで区別する。
+        # フレーム間引き。0=毎フレーム送る、1=2フレームに1回、2=3回に1回…
+        # 低スペックな受信機で取りこぼす場合の保険。映像だけを間引き、音声は
+        # 間引かないので、同じ受信キューを共有している音声の取りこぼしも減る。
+        # 間引くのは push の段階なので、メタFIFOにも面にも載らず、
+        # ボード側の仕事そのものが減る。
+        self.cfg_frame_skip     = Signal(4)          # key 0x35
         self.cfg_span_probe_row = Signal(row_bits)   # key 0x31
         self.stat_span_probe    = Signal(32)         # key 0x32: {any, hi, lo}
         # FIFO出口で pop した瞬間の {row, x_hi, x_lo}。同じエントリの値が揃って
@@ -230,6 +236,11 @@ class TvpCapture(Module):
         frame = Signal(16)
         field = Signal()
         wrote = Signal()                          # 現ラインに1画素以上書いたか
+        # フレーム間引きの状態。frame_start で更新するが、push の判定に使うので
+        # ここで宣言しておく(Migenは宣言順に依存しないが、Pythonの変数として
+        # 先に存在している必要がある)
+        skip_cnt = Signal(4)
+        send_frame = Signal(reset=1)              # 間引きで落とすフレームでは 0
         pair_lo = Signal(16)                      # 偶数xピクセル保持
 
         # VSYNCエッジ行数ガード: 前回受理VSYNCからの経過行数(vrow)が vs_min_rows 以上の
@@ -557,7 +568,8 @@ class TvpCapture(Module):
 
         push = Signal()
         self.comb += [
-            push.eq(hs_edge & wrote & row_ok),
+            # 間引きで落とすフレームは push しない(FIFOにも面にも載せない)
+            push.eq(hs_edge & wrote & row_ok & send_frame),
             meta.sink.face.eq(face),
             meta.sink.row.eq(row_eff[:row_bits]),
             meta.sink.frame.eq(frame),
@@ -630,6 +642,15 @@ class TvpCapture(Module):
             # 自走しない設定ではVSYNCで即座にrowを0へ(旧来の挙動)
             If(vs_edge & ~free_run, row.eq(0), wrote.eq(0)),
             If(frame_start, frame.eq(frame + 1), field.eq(~field)),
+            # このフレームを送るか。frame_start ごとに数え、cfg_frame_skip 回
+            # 飛ばして1回送る。0 なら常に送る。
+            If(frame_start,
+                If(skip_cnt >= self.cfg_frame_skip,
+                    skip_cnt.eq(0), send_frame.eq(1),
+                ).Else(
+                    skip_cnt.eq(skip_cnt + 1), send_frame.eq(0),
+                ),
+            ),
         ]
 
         # --- 実測タイミング: 1秒窓(sysクロック基準=25MHz水晶由来で正確)で
