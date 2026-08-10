@@ -87,10 +87,27 @@ impl FrameAssembler {
                 self.track_seq(m.seq);
                 // フレームバッファの作り直しは解像度が変わった時だけ(毎秒のMODEで
                 // 描画中フレームを捨てないため)。
-                let resized = self.width != m.hactive as usize
+                // 幅は hactive ではなく htotal に絞る。
+                //
+                // hactive はボードのキャプチャ幅(2048固定。どのモードの htotal も
+                // 入る大きさ)で、実際に画素が書かれるのは 0..htotal だけ。31kHz なら
+                // 1104 で、残り944列は常に黒のまま毎フレーム確保・複製・GPU転送されて
+                // いた。2048×1136×4 = 9.3MB/フレーム、54fpsで約500MB/秒がフレームの
+                // clone とテクスチャ転送の両方にかかり、受信スレッドが詰まって
+                // UDPを取りこぼした(Windowsの低スペック機で lost 9.9%)。
+                // htotal に絞ると 1104×1136×4 = 5.0MB で46%削減できる。
+                //
+                // シェーダは絶対サンプル位置をテクスチャ幅で割って参照するので、
+                // 幅が変わっても対応は崩れない(位置は 0..htotal に収まる)。
+                let want_w = if m.htotal > 0 {
+                    (m.htotal as usize).min(m.hactive as usize)
+                } else {
+                    m.hactive as usize
+                };
+                let resized = self.width != want_w
                     || self.height != m.vactive as usize;
                 if self.mode.as_ref().map(|c| c.mode_id) != Some(m.mode_id) || resized {
-                    self.width = m.hactive as usize;
+                    self.width = want_w;
                     self.height = m.vactive as usize;
                     self.fb = vec![0u8; self.width * self.height * 4];
                     // alpha=255 で初期化
@@ -116,7 +133,7 @@ impl FrameAssembler {
                         return None;
                     }
                 };
-                let (hactive, vactive) = (mode.hactive, mode.vactive);
+                let vactive = mode.vactive;
                 let mut completed = None;
                 if let Some(cur) = self.cur_frame {
                     if l.frame != cur {
@@ -135,8 +152,9 @@ impl FrameAssembler {
                 // 前フレームの残りを保持し続けて薄い影として見える。しかもボード側で
                 // HSYNCを取り逃がした行は範囲が右へ伸びるため、絵の内容が増えるほど
                 // 該当行が増える(実機で「U>を増やすほど未充填の行が増える」形で出た)。
-                let off = (l.offset_px as usize).min(hactive as usize);
-                let fit = (hactive as usize - off).min(l.count_px as usize);
+                // 幅は htotal に絞ってあるので、範囲がそれを超える行は入る分だけ書く
+                let off = (l.offset_px as usize).min(self.width);
+                let fit = (self.width - off).min(l.count_px as usize);
                 // このフレームでその行を初めて受けたら、行全体を黒で消してから書く。
                 //
                 // ボードはライン毎に「黒でない範囲」だけを送る(offset_px/count_px が

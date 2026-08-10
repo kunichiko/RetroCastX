@@ -506,7 +506,25 @@ pub fn spawn(
         socket2::Type::DGRAM,
         Some(socket2::Protocol::UDP),
     )?;
-    raw.set_recv_buffer_size(8 << 20)?;
+    // 受信バッファ。500Mbps級のバーストに耐えるだけ確保したい。
+    //
+    // 要求しても OS が黙って上限で切るので、大きい方から順に試して
+    // 「実際に確保できた値」を読み戻して表示する。macOS は
+    // kern.ipc.maxsockbuf(既定8MB程度)で頭打ちになるが、Windows は
+    // もっと積める。以前は 8MB を要求して結果を見ていなかった。
+    //
+    // 足りないと、受信スレッドが一瞬止まるだけで取りこぼす。実測: Windows の
+    // 低スペック機で 280Mbps を受けて lost 9.9%。280Mbps なら 8MB は
+    // 0.23秒ぶんしか無い。
+    for mb in [64usize, 32, 16, 8, 4] {
+        if raw.set_recv_buffer_size(mb << 20).is_ok() {
+            break;
+        }
+    }
+    match raw.recv_buffer_size() {
+        Ok(n) => eprintln!("recv buffer: {:.1} MB", n as f64 / (1 << 20) as f64),
+        Err(e) => eprintln!("recv buffer: 読めません ({e})"),
+    }
     raw.bind(&std::net::SocketAddr::from(([0, 0, 0, 0], cfg.port)).into())?;
     let sock: UdpSocket = raw.into();
     sock.set_read_timeout(Some(Duration::from_millis(200)))?;
