@@ -385,6 +385,9 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x30),
                         self.cfg_full_line.eq(rx.data[0]),
                     ),
+                    *([If((cfg_target == 0) & (cfg_key == 0x31),
+                          capture.cfg_span_probe_row.eq(rx.data[:13]),
+                      )] if cap_mode else []),
                     If((cfg_target == 0) & (cfg_key == 0x1F),
                         self.cfg_phase.eq(rx.data[:5]),
                     ),
@@ -467,6 +470,11 @@ class RetroCastXStreamer(LiteXModule):
                 0x2A: reply_mux.eq(capture.meas_fh_raw),
                 0x2B: reply_mux.eq(capture.meas_fv_raw),
                 0x2C: reply_mux.eq(capture.meas_lines_raw),
+                # 指定行の範囲(push時点、pixドメインの生値)と捨てた数
+                0x31: reply_mux.eq(capture.cfg_span_probe_row),
+                0x32: reply_mux.eq(capture.stat_span_probe),
+                0x33: reply_mux.eq(capture.cap_drops),
+                0x34: reply_mux.eq(capture.stat_pop_probe),
             })
         self.comb += Case(cfg_key, reply_cases)
         self.sync += cfg_reply_val.eq(Mux(cfg_target == 1, argus_reg, reply_mux))
@@ -549,22 +557,10 @@ class RetroCastXStreamer(LiteXModule):
             # して過大なパケットになり、揃えたあとは「前が全黒なら空範囲」で行が
             # まるごと消えた。どちらも根は同じで、範囲が確定する前に送り始めること。
             #
-            # 先頭が変わるのは pop したときと、空のFIFOに最初の1本が入ったときの
-            # 2つだけ。そこから2サイクル待てば span_* は追いついている。sysは
-            # 50MHz前後なので待ち時間は40ns、ライン周期31.7µsに対して無視できる。
-            span_rdy = Signal()
-            span_wait = Signal(2, reset=3)
-            lv_p = Signal()
-            self.sync += [
-                lv_p.eq(capture.line_valid),
-                If(capture.line_ack | (capture.line_valid & ~lv_p),
-                    span_wait.eq(2),
-                ).Elif(span_wait != 0,
-                    span_wait.eq(span_wait - 1),
-                ),
-            ]
-            self.comb += span_rdy.eq(span_wait == 0)
-            self.comb += line_pending.eq(capture.line_valid & span_rdy)
+            # 範囲は row/ts と同じ瞬間に先頭からラッチするようにしたので、
+            # 「範囲が追いつくまで待つ」仕掛けは要らなくなった(以前は2サイクル
+            # 待たせていたが、待っても別エントリを指す可能性が残っていた)。
+            self.comb += line_pending.eq(capture.line_valid)
         else:
             _timer.append(If(line_clr, line_pending.eq(0)))
             _timer.append(If(sub_valid & (line_cnt == 0), line_pending.eq(1)))
@@ -765,65 +761,75 @@ class RetroCastXStreamer(LiteXModule):
             span_lo = Signal(16)
             span_hi = Signal(16)
             span_n = Signal(16)
-            # 組合せで作るとFIFO先頭から加算・比較・muxを経てFSMのレジスタ入力まで
-            # 伸び、sysが45MHzを割った(実測 48.1 → 42.4MHz)。2段のレジスタに落とす。
+            # 範囲は row/ts/frame と「同じ瞬間に」FIFO先頭から取る。
             #
-            # 段に分けるときは「同じラインから出た値どうしを揃える」ことが要る。
-            # 以前は span_hi の全黒分岐が span_lo(レジスタ = 1つ前のラインの値)を
-            # 読み、span_n も span_hi/span_lo のレジスタから作っていたため、ラインの
-            # 境目で別々のラインの値が混ざった。全黒行は line_first が最大値へ跳ねる
-            # ので差がアンダーフローし、count_px が 65506 のような巨大値になる
-            # (sim_capture_black.py で再現。実機の「全黒行の直後がおかしい」と一致)。
+            # 以前は先頭を毎サイクル追いかける2段レジスタから取っていた。row/ts は
+            # 送出開始時の直接スナップショットなので、両者が同じエントリを指す保証が
+            # なく、実機では範囲だけが fifo_depth ライン遅れて乗った(depth 4 → 4
+            # ライン、8 → 8ライン。key 0x32/0x34 の窓で「pixドメインもFIFO出口も
+            # 正しいのに電線だけ違う」ことを確認済み)。内容のある行が空で送られ、
+            # 行が欠けて見えていた。
             #
-            # 段1: このラインの範囲。全黒分岐もレジスタではなく入力値を使う。
-            lo_in = Signal(16)
-            lo1 = Signal(16)
-            hi1 = Signal(16)
+            # 段を分けるのは組合せ経路の長さのため(組合せで作るとFIFO先頭から
+            # 加算・比較・muxを経てFSMのレジスタ入力まで伸び、sysが45MHzを割った。
+            # 実測 48.1 → 42.4MHz)。ただし段を分けるなら「同じエントリから出た値
+            # どうしを揃える」ことが要る。ここでは
+            #   IDLE  : 先頭から span_lo/span_hi を1段でラッチ(row/tsと同時)
+            #   LPREP : そのラッチ値だけから派生値(断片数・長さ)を作る
+            # という2段にしてある。1ライン当たり1サイクル増えるだけ(31.7µsに対し20ns)。
+            lo_c = Signal(16)
+            hi_c = Signal(16)
             # ライン内の絶対位置にする。hs_offset を足しておけば、受信側は
             # offset_px をそのままライン内の位置として使える(hs_offset が
             # 描画位置に影響しなくなる = ドットクロック再生と描画の分離)。
-            self.comb += lo_in.eq(Cat(C(0, 1), capture.line_first)
-                                  + self.cfg_hs_offset)
-            self.sync += [
+            self.comb += [
+                lo_c.eq(Cat(C(0, 1), capture.line_first) + self.cfg_hs_offset),
                 # 診断: 範囲を無視して1ラインまるごと送る(key 0x30)
                 If(self.cfg_full_line,
-                    lo1.eq(0),
-                    hi1.eq(self.cfg_pll_divide),
+                    hi_c.eq(self.cfg_pll_divide),
                 # line_last は内包。全黒の行では line_first > line_last になるので
                 # その場合は空(送るピクセル0)にする。行自体は送る(落とすと受信側が
                 # 「黒い行」と「届かなかった行」を区別できない)。
                 ).Elif(capture.line_last >= capture.line_first,
-                    lo1.eq(lo_in),
-                    hi1.eq(Cat(C(0, 1), capture.line_last) + 2
-                           + self.cfg_hs_offset),
+                    hi_c.eq(Cat(C(0, 1), capture.line_last) + 2
+                            + self.cfg_hs_offset),
                 ).Else(
-                    # 全黒行は「位置0の空範囲」にする。line_first は1画素も
-                    # 書かれないと初期値(entries-1)のまま残るので、そのまま使うと
-                    # offset_px が窓の外(width-2 = 2046)を指す。実害は出ていな
-                    # かったが、こういう特異値は他がわずかに狂ったときに一気に
-                    # 壊れる形で効く(実際、この値がアンダーフローの引き金だった)。
-                    lo1.eq(0),
-                    hi1.eq(0),
-                ),
-                # 段2: 対 (lo1, hi1) だけから作るので、3つは必ず同じラインのもの
-                span_lo.eq(lo1),
-                span_hi.eq(hi1),
-                If(hi1 - lo1 > FRAG_PX,
-                    span_n.eq(FRAG_PX),
-                ).Else(
-                    span_n.eq(hi1 - lo1),
+                    hi_c.eq(lo_c),
                 ),
             ]
+            # 全黒行では lo_c が窓の外(line_first が初期値 entries-1 のまま)を
+            # 指すので、空範囲なら位置0に寄せる。特異値を残すと、他がわずかに
+            # 狂ったときに一気に壊れる形で効く(実際アンダーフローの引き金だった)。
+            lo_use = Signal(16)
+            hi_use = Signal(16)
+            self.comb += If(hi_c == lo_c,
+                lo_use.eq(0), hi_use.eq(0),
+            ).Else(
+                lo_use.eq(lo_c), hi_use.eq(hi_c),
+            )
+            # IDLE でのラッチ。row/ts/frame と同じ瞬間の先頭の値
             line_span = [
+                NextValue(span_lo, lo_use),
+                NextValue(span_hi, hi_use),
+            ]
+            # LPREP で作る派生値。span_lo/span_hi(同一エントリ由来)だけを使う。
+            # 経路はレジスタ→減算→比較→mux→レジスタで、以前 line_span が
+            # span_lo/span_n から作っていたのと同じ深さ。
+            n_c = Signal(16)
+            self.comb += n_c.eq(Mux(span_hi - span_lo > FRAG_PX,
+                                    FRAG_PX, span_hi - span_lo))
+            line_prep = [
+                NextValue(span_n, n_c),
                 NextValue(x, span_lo),
                 NextValue(frag_off, span_lo),
-                NextValue(frag_cnt, span_n),
+                NextValue(frag_cnt, n_c),
                 NextValue(px_end, span_hi),
-                NextValue(frag_last, span_lo + span_n >= span_hi),
-                NextValue(length, 20 + Cat(C(0, 1), span_n)),
-                NextValue(nwords, 5 + span_n[1:]),
+                NextValue(frag_last, span_lo + n_c >= span_hi),
+                NextValue(length, 20 + Cat(C(0, 1), n_c)),
+                NextValue(nwords, 5 + n_c[1:]),
             ]
         else:
+            line_prep = []
             line_span = [
                 NextValue(x, 0),
                 NextValue(frag_off, 0),
@@ -858,7 +864,7 @@ class RetroCastXStreamer(LiteXModule):
             NextValue(frag_idx, 0),
             *line_span,
             *line_snap,
-            NextState("SEND"),
+            NextState("LPREP" if cap_mode else "SEND"),
         )
         for k in range(n_aud):
             idle_if = idle_if.Elif(aud_pending[k],
@@ -893,6 +899,11 @@ class RetroCastXStreamer(LiteXModule):
             NextValue(word_idx, 0),
             idle_if,
         )
+        if cap_mode:
+            # ラッチした span_lo/span_hi だけから派生値を作る1サイクル。
+            # ここを挟むことで「行番号・ts と範囲が同じFIFOエントリ由来」に
+            # なることが構造的に保証される。
+            fsm.act("LPREP", *line_prep, NextState("SEND"))
         fsm.act("SEND",
             sink.valid.eq(1),
             sink.last.eq(word_idx == nwords - 1),
@@ -1095,7 +1106,15 @@ class RetroCastXStream(SoCMini):
             # 取り込み、送るのは中身のある範囲だけにするので、hs_offset は調整
             # 項目でなくなる。height は行位置が半ライン単位のスロットになった分
             # 2倍必要(BRAMはラインバッファ nface 本ぶんだけなので縦は費用ゼロ)。
-            self.capture = TvpCapture(cap_pads, width=2048, height=2048,
+            # nface: ラインバッファの面数。assert は nface >= fifo_depth+2 で足りる
+            # ことにしていたが、メタのCDC(stream.ClockDomainCrossing)は AsyncFIFO の
+            # 前後にバッファ段を持つので、実際に飛んでいるメタの数はそれより多い。
+            # 実測で「メタの行番号と範囲は互いに整合しているのに、参照している面の
+            # 画素が4ライン新しい内容になっている」形の食い違いが約30%の行で出た
+            # (host/python/retrocastx/line_probe.py と全ライン送信 key 0x30 のA/B)。
+            # 書き込みポインタが送出待ちの面を追い越しているとみて倍にする。
+            self.capture = TvpCapture(cap_pads, width=2048, height=2048, nface=16,
+                                      fifo_depth=8,   # 切り分け用: 遅れが8ラインになるか
                                       hs_active_low=True, vs_active_low=True,
                                       vtotal=568, vs_min_rows=497,
                                       vs_row_at_sync=vs_row_at_sync,

@@ -96,6 +96,17 @@ class TvpCapture(Module):
         self.rd_face    = Signal(nface_bits)      # 読み出す面(送信側がラッチして固定)
         self.rd_word    = Signal(max=max(entries, 2))   # 面内ワード位置(=x/2)
         self.rd_data    = Signal(32)              # {pix1, pix0}
+        # 指定した行の「push時点の非黒範囲」を pix ドメインでラッチして見る窓。
+        # FIFOも送信FSMも通らないので、キャプチャの判定そのものが正しいかを
+        # 切り分けられる。実測で「範囲だけがFIFOの滞留段数ぶん遅れて見える」
+        # 現象が出たが、それが判定側かFIFO/読出側かをこれで区別する。
+        self.cfg_span_probe_row = Signal(row_bits)   # key 0x31
+        self.stat_span_probe    = Signal(32)         # key 0x32: {any, hi, lo}
+        # FIFO出口で pop した瞬間の {row, x_hi, x_lo}。同じエントリの値が揃って
+        # 出ているかを見る。ヘッダの row は先頭からの直接スナップショット、
+        # offset_px は先頭を追いかける2段レジスタ(span_lo)経由という非対称が
+        # あるので、どちらで壊れているかをここで切り分ける。key 0x34
+        self.stat_pop_probe     = Signal(32)
         # 診断用(sysで観測)
         self.cap_frame  = Signal(16)
         self.cap_drops  = Signal(16)
@@ -810,6 +821,27 @@ class TvpCapture(Module):
             meta.source.ready.eq(self.line_ack),
             rd.adr.eq(Cat(self.rd_word, self.rd_face)),  # 送信側ラッチ面を読む
             self.rd_data.eq(rd.dat_r),
+        ]
+        # 指定行の範囲を push 時点でラッチ(pixドメイン)。row_eff[:row_bits] は
+        # meta.sink.row と同じ値なので、FIFOに載る値そのものを見ていることになる。
+        probe_lo = Signal(entry_bits)
+        probe_hi = Signal(entry_bits)
+        probe_any = Signal()
+        self.sync.pix += [
+            If(push & (row_eff[:row_bits] == self.cfg_span_probe_row),
+                probe_lo.eq(ln_first), probe_hi.eq(ln_last), probe_any.eq(ln_any),
+            ),
+        ]
+        # パルス後しか変化しないのでMultiRegで受けて良い(既存のstat_*と同じ扱い)
+        self.specials += MultiReg(Cat(probe_lo, probe_hi, probe_any),
+                                 self.stat_span_probe[:2 * entry_bits + 1], "sys")
+        # pop した瞬間の先頭の値(sysドメインなのでCDC不要)
+        self.sync += [
+            If(self.line_ack & meta.source.valid,
+                self.stat_pop_probe.eq(
+                    Cat(meta.source.x_lo, meta.source.x_hi,
+                        meta.source.row[:32 - 2 * entry_bits])),
+            ),
         ]
         # 診断CDC
         self.specials += MultiReg(frame, self.cap_frame, "sys")
