@@ -1,0 +1,361 @@
+name: Viewer Release Build
+
+# Viewer(client/、Rust + eframe)の Mac/Windows ビルドと配布。
+#
+#   タグ v1.2.3 を push   → GitHub Release を作り、zip を添付する(macOSは署名+公証)
+#   main へのPR          → 両OSでビルドとテストだけ(署名も公証もしない)
+#   手動実行             → プラットフォームを選んでビルド(署名はする、Releaseは触らない)
+#
+# バージョンの正は client/Cargo.toml。タグと食い違っていたら prepare で止める。
+# 構成は MimicX-app の release-build.yml に倣っている(Secretsの名前も同じなので
+# 同じ証明書とAPIキーをそのまま設定できる)。
+
+on:
+  push:
+    tags: ['v*.*.*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to build'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - macos
+          - windows
+
+env:
+  BUNDLE_ID: jp.ohnaka.RetroCastX
+  APP_NAME: RetroCastX Viewer
+
+jobs:
+  prepare:
+    name: Prepare version
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.version.outputs.app_version }}
+      build_number: ${{ steps.version.outputs.build_number }}
+      is_release: ${{ steps.version.outputs.is_release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Determine versions
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # client/Cargo.toml の [package] 直下の version を正とする
+          APP_VERSION=$(grep -m1 -E '^version[[:space:]]*=' client/Cargo.toml \
+                        | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+          if [ -z "${APP_VERSION}" ]; then
+            echo "::error::client/Cargo.toml から version を読めませんでした"
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+            echo "git tag       : ${GITHUB_REF#refs/tags/}"
+            echo "tag version   : ${TAG_VERSION}"
+            echo "Cargo.toml    : ${APP_VERSION}"
+            if [ "${TAG_VERSION}" != "${APP_VERSION}" ]; then
+              echo "::error::client/Cargo.toml の version (${APP_VERSION}) がタグ (${TAG_VERSION}) と一致しません"
+              exit 1
+            fi
+            echo "is_release=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "Cargo.toml    : ${APP_VERSION} (manual build)"
+            echo "is_release=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+          echo "app_version=${APP_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "build_number=${GITHUB_RUN_NUMBER}" >> "${GITHUB_OUTPUT}"
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: prepare
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        if: needs.prepare.outputs.is_release == 'true'
+        uses: actions/checkout@v6
+
+      - name: Create GitHub Release
+        if: needs.prepare.outputs.is_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # v0.2.0-rc1 のようにハイフン付きなら prerelease にする(Latest に巻き込まない)
+          PRERELEASE_FLAG=""
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes \
+              --verify-tag \
+              ${PRERELEASE_FLAG}
+          fi
+
+      - name: Skip release creation
+        if: needs.prepare.outputs.is_release != 'true'
+        run: echo "Release creation is skipped for non-tag builds."
+
+  macos:
+    name: Build macOS
+    runs-on: macos-15
+    needs: [prepare, release]
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform == 'all' || github.event.inputs.platform == 'macos'
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: client
+    env:
+      MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+      APPSTORE_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+      APPSTORE_PRIVATE_KEY: ${{ secrets.APPSTORE_PRIVATE_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            client/target
+          key: cargo-macos-${{ hashFiles('client/Cargo.lock') }}
+          restore-keys: |
+            cargo-macos-
+
+      - name: Toolchain info
+        run: |
+          rustc --version
+          cargo --version
+          rustup target add x86_64-apple-darwin
+
+      - name: Test
+        run: cargo test --locked
+
+      # Intel Mac も対象にするため universal binary にする。arm64ランナー上で
+      # x86_64 をクロスビルドし lipo で束ねる(実行時アセットは無いので他に同梱物なし)
+      - name: Build (universal)
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          mkdir -p ../dist
+          lipo -create -output ../dist/retrocastx-viewer \
+            target/aarch64-apple-darwin/release/retrocastx-viewer \
+            target/x86_64-apple-darwin/release/retrocastx-viewer
+          ARCHS=$(lipo -archs ../dist/retrocastx-viewer)
+          echo "archs: ${ARCHS}"
+          for want in arm64 x86_64; do
+            case " ${ARCHS} " in *" ${want} "*) ;; *)
+              echo "::error::universal binary に ${want} が入っていません (${ARCHS})"; exit 1 ;;
+            esac
+          done
+
+      - name: Bundle .app
+        run: |
+          set -euo pipefail
+          mkdir -p ../dist/app
+          packaging/macos/bundle.sh ../dist/retrocastx-viewer \
+            "${{ needs.prepare.outputs.app_version }}" \
+            "${{ needs.prepare.outputs.build_number }}" \
+            ../dist/app
+
+      # 署名/公証をするかを決める。Secretsが揃っていないフォークやPRでも
+      # 「未署名の.appは作れる」ようにしておく(タグのリリースだけは必須にする)
+      - name: Decide signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          SIGN=1
+          for name in MACOS_CERTIFICATE_BASE64 MACOS_CERTIFICATE_PASSWORD KEYCHAIN_PASSWORD \
+                      APPSTORE_ISSUER_ID APPSTORE_KEY_ID APPSTORE_PRIVATE_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "note: Secret ${name} が無い"
+              SIGN=0
+            fi
+          done
+          if [ "${{ needs.prepare.outputs.is_release }}" = "true" ] && [ "${SIGN}" != "1" ]; then
+            echo "::error::タグからのリリースでは署名と公証が必須です。上に出ている Secret を設定してください"
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "note: PRでは公証しない(数分かかるため)"
+            SIGN=0
+          fi
+          echo "SIGN=${SIGN}" >> "${GITHUB_ENV}"
+          [ "${SIGN}" = "1" ] && echo "署名と公証を行います" || echo "**未署名**のまま成果物を作ります"
+
+      - name: Install signing certificate
+        if: env.SIGN == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CERTIFICATE_PATH="${RUNNER_TEMP}/macos-signing.p12"
+          KEYCHAIN_PATH="${RUNNER_TEMP}/macos-signing.keychain-db"
+          echo "${MACOS_CERTIFICATE_BASE64}" | base64 --decode > "${CERTIFICATE_PATH}"
+
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security import "${CERTIFICATE_PATH}" -P "${MACOS_CERTIFICATE_PASSWORD}" -A -t cert -f pkcs12 -k "${KEYCHAIN_PATH}"
+          security list-keychain -d user -s "${KEYCHAIN_PATH}" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -s -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+
+          SIGN_IDENTITY=$(security find-identity -v -p codesigning "${KEYCHAIN_PATH}" \
+                          | sed -n 's/.*"\(Developer ID Application:.*\)".*/\1/p' | head -n 1)
+          if [ -z "${SIGN_IDENTITY}" ]; then
+            echo "::error::MACOS_CERTIFICATE_BASE64 に Developer ID Application 証明書が入っていません"
+            exit 1
+          fi
+          echo "MACOS_SIGN_IDENTITY=${SIGN_IDENTITY}" >> "${GITHUB_ENV}"
+
+      # 単一の実行ファイルなので、署名するのは .app 1つだけ(同梱のdylib/framework無し)。
+      # entitlements は付けない: サンドボックス無し・JIT無し・プラグイン読み込み無しで、
+      # Hardened Runtime だけで公証を通せる。
+      - name: Sign and notarize
+        if: env.SIGN == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="../dist/app/${APP_NAME}.app"
+          NOTARY_ZIP="${RUNNER_TEMP}/retrocastx-viewer-notary.zip"
+          KEY_DIR="${HOME}/.appstoreconnect/private_keys"
+          KEY_PATH="${KEY_DIR}/AuthKey_${APPSTORE_KEY_ID}.p8"
+
+          mkdir -p "${KEY_DIR}"
+          if [[ "${APPSTORE_PRIVATE_KEY}" == *"BEGIN PRIVATE KEY"* ]]; then
+            printf '%s' "${APPSTORE_PRIVATE_KEY}" | perl -pe 's/\\n/\n/g; s/\r$//' > "${KEY_PATH}"
+          else
+            printf '%s' "${APPSTORE_PRIVATE_KEY}" | base64 --decode > "${KEY_PATH}"
+          fi
+          if ! grep -q "BEGIN PRIVATE KEY" "${KEY_PATH}"; then
+            echo "::error::APPSTORE_PRIVATE_KEY は App Store Connect APIキー(.p8)の中身か、そのbase64である必要があります"
+            exit 1
+          fi
+          chmod 600 "${KEY_PATH}"
+
+          codesign --force --timestamp --options runtime \
+            --sign "${MACOS_SIGN_IDENTITY}" "${APP_PATH}"
+          codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
+
+          ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "${NOTARY_ZIP}"
+          xcrun notarytool submit "${NOTARY_ZIP}" \
+            --key "${KEY_PATH}" \
+            --key-id "${APPSTORE_KEY_ID}" \
+            --issuer "${APPSTORE_ISSUER_ID}" \
+            --wait
+          xcrun stapler staple "${APP_PATH}"
+          xcrun stapler validate "${APP_PATH}"
+
+      - name: Package zip
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.prepare.outputs.app_version }}"
+          SUFFIX=""
+          [ "${SIGN:-0}" = "1" ] || SUFFIX="-unsigned"
+          ZIP_NAME="RetroCastXViewer_macos-${VERSION}${SUFFIX}.zip"
+          # ditto で固めると署名とスタンプが保たれる(zipコマンドは属性を落とす)
+          ditto -c -k --sequesterRsrc --keepParent \
+            "../dist/app/${APP_NAME}.app" "../dist/${ZIP_NAME}"
+          echo "zip_name=${ZIP_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: retrocastx-viewer-macos-${{ needs.prepare.outputs.app_version }}-${{ needs.prepare.outputs.build_number }}
+          path: dist/${{ steps.package.outputs.zip_name }}
+          retention-days: 14
+
+      - name: Upload to GitHub Release
+        if: needs.prepare.outputs.is_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" "../dist/${{ steps.package.outputs.zip_name }}" --clobber
+
+  windows:
+    name: Build Windows
+    runs-on: windows-latest
+    needs: [prepare, release]
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform == 'all' || github.event.inputs.platform == 'windows'
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            client/target
+          key: cargo-windows-${{ hashFiles('client/Cargo.lock') }}
+          restore-keys: |
+            cargo-windows-
+
+      - name: Toolchain info
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      # 署名はしない(証明書が無い)。SmartScreen の警告の回避方法は同梱の
+      # README-first.txt に書いてある。受信バッファーの設定も同じファイル。
+      - name: Package zip
+        id: package
+        shell: pwsh
+        run: |
+          $version = "${{ needs.prepare.outputs.app_version }}"
+          $stage = "..\dist\RetroCastXViewer"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target\release\retrocastx-viewer.exe $stage
+          Copy-Item packaging\windows\README-first.txt $stage
+          $zipName = "RetroCastXViewer_windows-$version.zip"
+          Compress-Archive -Path "$stage\*" -DestinationPath "..\dist\$zipName" -Force
+          "zip_name=$zipName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: retrocastx-viewer-windows-${{ needs.prepare.outputs.app_version }}-${{ needs.prepare.outputs.build_number }}
+          path: dist/${{ steps.package.outputs.zip_name }}
+          retention-days: 14
+
+      - name: Upload to GitHub Release
+        if: needs.prepare.outputs.is_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: gh release upload "$env:GITHUB_REF_NAME" "..\dist\${{ steps.package.outputs.zip_name }}" --clobber

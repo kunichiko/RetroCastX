@@ -38,6 +38,59 @@ sender_sim を相手にした動作確認:
 cargo run --release -- --no-subscribe
 ```
 
+## 配布(GitHub Actions)
+
+`.github/workflows/viewer-release.yml` が Mac/Windows のビルドと配布をする。
+構成は MimicX-app の `release-build.yml` に倣ってあり、**Secretsの名前も同じ**なので
+同じ証明書とAPIキーをそのまま設定できる。
+
+| きっかけ | すること |
+|---|---|
+| タグ `v1.2.3` を push | Releaseを作り zip を添付。macOSは署名+公証+staple |
+| main へのPR | 両OSで `cargo test` + ビルドのみ(署名も公証もしない) |
+| 手動実行(Actions画面) | プラットフォームを選んでビルド。Releaseは触らない |
+
+**バージョンの正は `client/Cargo.toml`。** タグと食い違っていたら `prepare` で止まる
+(`v0.2.0` を打つなら先に `version = "0.2.0"` にしてコミットする)。
+
+必要な Secrets(**RetroCastXリポジトリにも登録が必要**。リポジトリのSecretsは
+他リポジトリから見えないので、MimicX と同じ値をコピーする):
+
+| Secret | 用途 |
+|---|---|
+| `MACOS_CERTIFICATE_BASE64` | Developer ID Application 証明書(.p12)のbase64 |
+| `MACOS_CERTIFICATE_PASSWORD` | その .p12 のパスワード |
+| `KEYCHAIN_PASSWORD` | CI上に作る一時キーチェーンのパスワード(任意の文字列) |
+| `APPSTORE_ISSUER_ID` / `APPSTORE_KEY_ID` / `APPSTORE_PRIVATE_KEY` | 公証(notarytool)用のApp Store Connect APIキー |
+
+Secretsが無くてもビルドは通り、**未署名**の `...-unsigned.zip` ができる(フォークや
+PRのため)。ただし**タグからのリリースだけは署名必須**で、無ければエラーで止まる。
+
+成果物:
+
+    RetroCastXViewer_macos-<version>.zip     universal(arm64 + x86_64)の .app、署名済み
+    RetroCastXViewer_windows-<version>.zip   retrocastx-viewer.exe + README-first.txt
+
+macOSの `.app` は `packaging/macos/bundle.sh` が組み立てる。**CIのYAMLにロジックを
+置かず**スクリプトにしてあるので、手元で同じものを作って試せる:
+
+```sh
+cargo build --release
+packaging/macos/bundle.sh target/release/retrocastx-viewer 0.1.0 0 /tmp/out
+open "/tmp/out/RetroCastX Viewer.app"
+```
+
+未対応(必要になったら):
+
+- **アプリアイコン**: `packaging/macos/AppIcon.icns` を置けば自動で入る(いま無いので
+  汎用アイコン)。素材は `assets/cz612d.svg` が使える
+- **Windowsの署名**: 証明書が無いので未署名。SmartScreenの警告は同梱の
+  README-first.txt で案内している
+- **Windowsのインストーラ**: いまはzipのみ。`windows-latest` には Inno Setup が
+  入っているので、固定パスへ入れたくなったら追加できる(実行ファイルのパスが
+  変わるとファイアウォールの許可を再度聞かれるので、その観点では利点がある)
+- **ゲートウェア/Python側のCI**: このワークフローはViewerだけを見る
+
 ## 構成
 
 - `src/protocol.rs` — プロトコルv0のパース(リファレンスは `host/python/retrocastx/protocol.py`)

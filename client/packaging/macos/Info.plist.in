@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>@NAME@</string>
+	<key>CFBundleDisplayName</key>
+	<string>@NAME@</string>
+	<key>CFBundleIdentifier</key>
+	<string>@BUNDLE_ID@</string>
+	<key>CFBundleExecutable</key>
+	<string>@EXECUTABLE@</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<!-- 表示用のバージョン(タグと一致させる)と、ビルド毎に増える番号 -->
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BUILD@</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<!-- wgpu/Metal と universal binary の arm64 スライスに合わせる -->
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<!-- macOS 15 以降は「ローカルネットワーク」の許可ダイアログが出る。
+	     この文言が無いと理由が表示されず、利用者は何を許可するのか分からない。
+	     Viewer は SUBSCRIBE をブロードキャストし、ボードからのUDPを受ける。 -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>同一ネットワーク上の RetroCastX ボードを見つけ、映像と音声を受け取るために使います。</string>
+</dict>
+</plist>
