@@ -126,6 +126,24 @@ impl FrameAssembler {
                 if l.line >= vactive || l.offset_px as usize + l.count_px as usize > hactive as usize {
                     return completed; // out of range for the current mode; drop
                 }
+                // このフレームでその行を初めて受けたら、行全体を黒で消してから書く。
+                //
+                // ボードはライン毎に「黒でない範囲」だけを送る(offset_px/count_px が
+                // 内容に応じて変わる)。範囲の外側を消さないと前フレームの内容が
+                // 残る。黒判定のしきい値付近の画素はノイズで揺れるので範囲の端も
+                // ラインごと・フレームごとに2画素単位で動き、結果として絵の端が
+                // ラインごとにギザギザに見えた(実機で発生)。
+                // 固定幅を送っていた頃には無かった副作用。
+                if !self.line_seen.get(l.line as usize).copied().unwrap_or(true) {
+                    let row = &mut self.fb[l.line as usize * self.width * 4
+                        ..(l.line as usize + 1) * self.width * 4];
+                    for px in row.chunks_exact_mut(4) {
+                        px[0] = 0;
+                        px[1] = 0;
+                        px[2] = 0;
+                        // alpha(px[3])は不変
+                    }
+                }
                 let base = (l.line as usize * self.width + l.offset_px as usize) * 4;
                 match l.pixfmt {
                     proto::PIXFMT_RGB888 => {
