@@ -248,14 +248,20 @@ def scenario_b():
         assert pkt.line & 1 == parity, "row parity mismatch"
         assert pkt.last_fragment
 
-    # weave: 各フィールド完了時、当該極性の行=当フィールド、逆極性=前フィールドの内容
+    # weave: 各フィールド完了時、当該極性の行=当フィールド、逆極性=前フィールドの内容。
+    # fill=0.5 は「そのフィールドの行が全部来た」ことを意味する(1フィールド=全行の半分)。
     fields = {fidx: img for fidx, img, fill in completed
               if abs(fill - 0.5) < 1e-6}
     assert len(fields) >= 3, "too few complete fields: %d" % len(fields)
     checked = 0
-    for fidx, img in fields.items():
-        if fidx == 0:
-            continue  # 逆極性行の期待値は前フィールド由来なのでfidx>=1のみ検査
+    for fidx, img in sorted(fields.items()):
+        # 逆極性の行の期待値は前フィールド由来なので、前フィールドが欠けていると
+        # 検査できない。SUBSCRIBE はフィールドの途中で届くので最初のフィールドは
+        # 必ず頭が欠ける(実測で field 0 は 16行中15行)。fidx>=1 で除けるのは
+        # 「前フィールドが存在しない」場合だけで、「前フィールドが不完全」は
+        # 除けていなかった。前フィールドが揃っているかで判定する。
+        if fidx - 1 not in fields:
+            continue
         cur = quantize(pattern.make_frame(W, H, fidx))
         prv = quantize(pattern.make_frame(W, H, fidx - 1))
         p = fidx & 1
