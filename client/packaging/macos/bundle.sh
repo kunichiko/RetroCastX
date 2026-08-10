@@ -6,7 +6,7 @@
 # 例(手元で試すとき):
 #   cd client && cargo build --release
 #   packaging/macos/bundle.sh target/release/retrocastx-viewer 0.1.0 0 /tmp/out
-#   open "/tmp/out/RetroCastX Viewer.app"
+#   open "/tmp/out/RetroCast X.app"
 #
 # CI(.github/workflows/viewer-release.yml)からも同じスクリプトを呼ぶ。
 # **YAMLの中にロジックを書かない**こと: 署名で詰まったときに手元で同じものを
@@ -22,7 +22,7 @@ BUILD="${3:?ビルド番号 (例 GITHUB_RUN_NUMBER)}"
 OUTDIR="${4:?出力先ディレクトリ}"
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-APP_NAME="RetroCastX Viewer"
+APP_NAME="RetroCast X"
 BUNDLE_ID="jp.ohnaka.RetroCastX"
 EXECUTABLE="retrocastx-viewer"
 

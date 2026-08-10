@@ -1,7 +1,7 @@
-RetroCastX Viewer (Windows)
-===========================
+RetroCast X (Windows)
+=====================
 
-retrocastx-viewer.exe を実行するだけで使えます。インストールは不要です。
+RetroCastX.exe を実行するだけで使えます。インストールは不要です。
 起動すると SUBSCRIBE をブロードキャストしてボードを探し、映像を受け取ります。
 
 
@@ -21,7 +21,7 @@ NIC の「受信バッファー」(受信記述子リング)の既定値 256 は
     受信バッファー 256   : lost 1.7%    音が途切れる
     受信バッファー 2048  : lost 0.0013% 音は途切れない(316Mbps, 55.8fps)
 
-うまくいっているかは Viewer 右側の Stats の "lost" で分かります。増え続けるなら
+うまくいっているかは右側の Stats の "lost" で分かります。増え続けるなら
 次を見てください。errors がほぼ 0 なのに discards だけ増えるなら、上の設定です。
 
     Get-NetAdapterStatistics -Name 'イーサネット' | fl ReceivedDiscardedPackets,ReceivedPacketErrors

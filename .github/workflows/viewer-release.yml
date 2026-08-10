@@ -27,9 +27,8 @@ on:
           - macos
           - windows
 
-env:
-  BUNDLE_ID: jp.ohnaka.RetroCastX
-  APP_NAME: RetroCastX Viewer
+# アプリ名(RetroCast X)とバンドルIDは client/packaging/macos/bundle.sh が持つ。
+# ここで重複させると、片方だけ変えたときに .app を見失う。
 
 jobs:
   prepare:
@@ -238,7 +237,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          APP_PATH="../dist/app/${APP_NAME}.app"
+          # 名前は bundle.sh が決めるので、こちらは出来たものを拾う
+          APP_PATH=$(ls -d ../dist/app/*.app)
           NOTARY_ZIP="${RUNNER_TEMP}/retrocastx-viewer-notary.zip"
           KEY_DIR="${HOME}/.appstoreconnect/private_keys"
           KEY_PATH="${KEY_DIR}/AuthKey_${APPSTORE_KEY_ID}.p8"
@@ -276,10 +276,10 @@ jobs:
           VERSION="${{ needs.prepare.outputs.app_version }}"
           SUFFIX=""
           [ "${SIGN:-0}" = "1" ] || SUFFIX="-unsigned"
-          ZIP_NAME="RetroCastXViewer_macos-${VERSION}${SUFFIX}.zip"
+          ZIP_NAME="RetroCastX_macos-${VERSION}${SUFFIX}.zip"
           # ditto で固めると署名とスタンプが保たれる(zipコマンドは属性を落とす)
           ditto -c -k --sequesterRsrc --keepParent \
-            "../dist/app/${APP_NAME}.app" "../dist/${ZIP_NAME}"
+            "$(ls -d ../dist/app/*.app)" "../dist/${ZIP_NAME}"
           echo "zip_name=${ZIP_NAME}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload artifact
@@ -340,9 +340,10 @@ jobs:
           $version = "${{ needs.prepare.outputs.app_version }}"
           $stage = "..\dist\RetroCastXViewer"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item target\release\retrocastx-viewer.exe $stage
+          # 配布する実行ファイルは製品名にする(開発時の retrocastx-viewer は変えない)
+          Copy-Item target\release\retrocastx-viewer.exe "$stage\RetroCastX.exe"
           Copy-Item packaging\windows\README-first.txt $stage
-          $zipName = "RetroCastXViewer_windows-$version.zip"
+          $zipName = "RetroCastX_windows-$version.zip"
           Compress-Archive -Path "$stage\*" -DestinationPath "..\dist\$zipName" -Force
           "zip_name=$zipName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 

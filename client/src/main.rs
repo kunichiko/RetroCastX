@@ -124,12 +124,12 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([cfg.window_w, cfg.window_h])
-            .with_title("RetroCastX Viewer"),
+            .with_title("RetroCast X"),
         wgpu_options,
         ..Default::default()
     };
     eframe::run_native(
-        "RetroCastX Viewer",
+        "RetroCast X",
         options,
         Box::new(move |cc| {
             Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, no_vsync, decay,

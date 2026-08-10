@@ -1,4 +1,4 @@
-# RetroCastX Viewer(クライアントアプリ雛形)
+# RetroCast X(Viewer / クライアントアプリ)
 
 Rust + eframe/egui(wgpuバックエンド)のクロスプラットフォーム・ビューア。
 Mac/Windows/Linux を単一コードベースでカバーする。
@@ -68,8 +68,8 @@ PRのため)。ただし**タグからのリリースだけは署名必須**で�
 
 成果物:
 
-    RetroCastXViewer_macos-<version>.zip     universal(arm64 + x86_64)の .app、署名済み
-    RetroCastXViewer_windows-<version>.zip   retrocastx-viewer.exe + README-first.txt
+    RetroCastX_macos-<version>.zip     「RetroCast X.app」universal(arm64+x86_64)、署名済み
+    RetroCastX_windows-<version>.zip   RetroCastX.exe + README-first.txt
 
 macOSの `.app` は `packaging/macos/bundle.sh` が組み立てる。**CIのYAMLにロジックを
 置かず**スクリプトにしてあるので、手元で同じものを作って試せる:
@@ -77,7 +77,7 @@ macOSの `.app` は `packaging/macos/bundle.sh` が組み立てる。**CIのYAML
 ```sh
 cargo build --release
 packaging/macos/bundle.sh target/release/retrocastx-viewer 0.1.0 0 /tmp/out
-open "/tmp/out/RetroCastX Viewer.app"
+open "/tmp/out/RetroCast X.app"
 ```
 
 アイコンは `packaging/AppIcon.png`(1024×1024)が master で、そこから

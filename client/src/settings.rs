@@ -281,7 +281,7 @@ impl Settings {
             }
         }
         let body = format!(
-            "# RetroCastX Viewer settings (自動生成。消しても既定値で起動する)\n\
+            "# RetroCast X settings (自動生成。消しても既定値で起動する)\n\
              volume = {:.3}\n\
              muted = {}\n\
              audio_source = {}\n\
