@@ -172,6 +172,19 @@ class TvpCapture(Module):
         self.meas_vfreq  = Signal(32)             # 垂直周波数 [mHz] (8秒積算)
         self.meas_htotal = Signal(16)             # 1ライン当たりDATACLK数
         self.meas_vtotal = Signal(16)             # 1フレーム当たりライン数
+        # 生同期(TVPを通らない経路)から測った絶対値。**pll_divideに一切依存しない。**
+        #
+        # 既存の meas_hfreq はTVPのHSOUTのエッジを数えているので、TVPのPLLが
+        # サブハーモニックにロックすると半分の値になる。実機で発生: 31kHz 256x256
+        # (真の htotal 552)に pll_div 1182 を入れるとPLLが半分のライン周期に
+        # ロックし、fH が 15.98kHz と測れた。その値から VCOレンジやpll_minを決めて
+        # いたため誤りが自己維持し、正しい値へ戻せなくなった。
+        #
+        # 生同期を sysドメイン(25MHz水晶由来)で数えれば、DATACLKが止まっていても
+        # PLLが誤ロックしていても正しい値が得られる。すべての設定の根拠にできる。
+        self.meas_fh_raw = Signal(32)             # 生HSYNC周波数 [Hz]
+        self.meas_fv_raw = Signal(32)             # 生VSYNC周波数 [mHz](8秒積算)
+        self.meas_lines_raw = Signal(16)          # 生VSYNC間の生HSYNC数(=vtotal)
 
         # --- ラインバッファ(true dual-port: write=pix / read=sys)---
         self.specials.mem = mem = Memory(32, nface * entries)
@@ -642,6 +655,40 @@ class TvpCapture(Module):
                 If(win == WIN - 1, win.eq(0)).Else(win.eq(win + 1)),
                 If(win == WIN - 1, wait.eq(32)).Elif(wait != 0, wait.eq(wait - 1)),
             ]
+            # --- 生同期を sysドメインで数える(pll_divideに依存しない絶対値)---
+            if hasattr(pads, "hs_raw") and hasattr(pads, "vs_raw"):
+                # 生同期は sys に対して非同期なので2段FFで受ける
+                sh0 = Signal(); sh = Signal(); sh_p = Signal()
+                sv0 = Signal(); sv = Signal(); sv_p = Signal()
+                self.sync += [sh0.eq(pads.hs_raw), sh.eq(sh0), sh_p.eq(sh),
+                              sv0.eq(pads.vs_raw), sv.eq(sv0), sv_p.eq(sv)]
+                she = Signal(); sve = Signal()
+                self.comb += [she.eq(sh_p & ~sh), sve.eq(sv_p & ~sv)]
+                ch = Signal(32); cv = Signal(32)
+                lines_now = Signal(16); lines_cnt = Signal(16)
+                vacc_r = Signal(24); vwin_r = Signal(3)
+                self.sync += [
+                    # 生VSYNC間の生HSYNC数 = そのモードのvtotal(pll非依存)
+                    If(she, lines_cnt.eq(lines_cnt + 1)),
+                    If(sve, lines_now.eq(lines_cnt), lines_cnt.eq(0)),
+                    # 1秒窓のエッジ数 = 周波数[Hz]
+                    If(win == WIN - 1,
+                        self.meas_fh_raw.eq(ch), ch.eq(she),
+                        self.meas_lines_raw.eq(lines_now),
+                        # fVは8秒積算して mHz にする(1秒窓だと分解能±1Hz)
+                        If(vwin_r == 7,
+                            self.meas_fv_raw.eq((vacc_r + cv) * 125),
+                            vacc_r.eq(0), vwin_r.eq(0),
+                        ).Else(
+                            vacc_r.eq(vacc_r + cv), vwin_r.eq(vwin_r + 1),
+                        ),
+                        cv.eq(sve),
+                    ).Else(
+                        If(she, ch.eq(ch + 1)),
+                        If(sve, cv.eq(cv + 1)),
+                    ),
+                ]
+
             # vfreqは1秒窓のエッジ数だと分解能±1Hz(55.456Hz→55と表示された)。
             # 8秒積算して×125すれば mHz 単位で 0.125Hz 分解能になる。htotal/vtotal と
             # dotclk は1秒窓のままにして応答性(モード変化の検出)を保つ。

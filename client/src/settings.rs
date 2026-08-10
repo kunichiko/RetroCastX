@@ -66,6 +66,7 @@ pub struct Settings {
     /// 管面を時間ベースで決める(実CRTと同じ挙動)
     pub tube_time_based: bool,
     /// いまの帯域のモニタプロファイル [H幅, H位置, V幅, V位置]。
+    /// pll_divide と位相は帯域ごとに別途持つ(mon_pll)。
     ///
     /// 3モードディスプレイの偏向は「1HSYNC周期でブラウン管の左右をちょうど掃引する」
     /// ように周波数ごとに速度が切り替わる。だから管面の横幅は 1/fH そのもので、
@@ -74,6 +75,14 @@ pub struct Settings {
     pub mon: [f32; 4],
     /// 帯域ごとのモニタプロファイル(CZ-612Dのような3モードディスプレイに相当)
     pub mon_bands: BTreeMap<u32, [f32; 4]>,
+    /// 帯域ごとの [pll_divide, 位相]。
+    ///
+    /// pll_divide はモードごとに正解が違い(31kHz 768x512 は1104、15kHz 512x512 は
+    /// 1216 など)、位相も帯域ごとに最適値が変わる(ケーブルとTVP内部の遅延は固定[ns]
+    /// だが、位相レジスタはドット周期の1/32刻みなのでドットクロックが変われば
+    /// 同じ遅延が別の目盛りになる)。1つだけ持つと帯域を切り替えるたびに合わせ直しに
+    /// なるので、帯域ごとに覚える。
+    pub band_pll: BTreeMap<u32, [u32; 2]>,
     /// 管面の位置合わせ(実CRTのH位置/V位置つまみ)
 
     /// モードごとの設定。キーは "fH[100Hz単位]_vtotal_htotal"。
@@ -116,6 +125,7 @@ impl Default for Settings {
 
             mon: [1.0, 0.0, 1.0, 0.0],
             mon_bands: BTreeMap::new(),
+            band_pll: BTreeMap::new(),
             modes: BTreeMap::new(),
             tube_aspect: 0.0,
             filter: 2,
@@ -200,6 +210,15 @@ impl Settings {
                     let n: Vec<f32> =
                         v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                     if n.len() >= 4 { s.mon = [n[0], n[1], n[2], n[3]] }
+                }
+                k if k.starts_with("bandpll.") => {
+                    if let Ok(khz) = k[8..].parse::<u32>() {
+                        let n: Vec<u32> =
+                            v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                        if n.len() >= 2 {
+                            s.band_pll.insert(khz, [n[0], n[1].min(31)]);
+                        }
+                    }
                 }
                 k if k.starts_with("mon.") => {
                     if let Ok(khz) = k[4..].parse::<u32>() {
@@ -327,6 +346,9 @@ impl Settings {
             self.window_h,
         );
         let mut body = body;
+        for (khz, v) in &self.band_pll {
+            body.push_str(&format!("bandpll.{khz} = {},{}\n", v[0], v[1]));
+        }
         for (khz, v) in &self.mon_bands {
             body.push_str(&format!(
                 "mon.{khz} = {},{},{},{}\n", v[0], v[1], v[2], v[3]));

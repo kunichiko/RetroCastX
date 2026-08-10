@@ -473,6 +473,10 @@ class RetroCastXStreamer(LiteXModule):
                 0x27: reply_mux.eq(self.cfg_hs_probe_row),
                 0x28: reply_mux.eq(self.stat_hs_raw),
                 0x29: reply_mux.eq(self.stat_hs_tvp),
+                # 生同期から測った絶対値(pll_divideに依存しない)
+                0x2A: reply_mux.eq(capture.meas_fh_raw),
+                0x2B: reply_mux.eq(capture.meas_fv_raw),
+                0x2C: reply_mux.eq(capture.meas_lines_raw),
             })
         self.comb += Case(cfg_key, reply_cases)
         self.sync += cfg_reply_val.eq(Mux(cfg_target == 1, argus_reg, reply_mux))

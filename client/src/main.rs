@@ -438,6 +438,8 @@ struct ViewerApp {
     mon: [f32; 4],
     /// 帯域ごとのモニタプロファイル(CZ-612Dのような3モードディスプレイに相当)
     mon_bands: std::collections::BTreeMap<u32, [f32; 4]>,
+    /// 帯域ごとの [pll_divide, 位相]
+    band_pll: std::collections::BTreeMap<u32, [u32; 2]>,
     /// いまの周波数帯[kHz]。0 は未確定
     band_khz: u32,
     auto: Option<AutoTune>,
@@ -523,6 +525,7 @@ impl ViewerApp {
             tube_time_based: cfg.tube_time_based,
             mon: cfg.mon,
             mon_bands: cfg.mon_bands.clone(),
+            band_pll: cfg.band_pll.clone(),
             band_khz: 0,
             auto: None,
             auto_done: None,
@@ -567,6 +570,8 @@ impl ViewerApp {
         if self.band_khz > 0 {
             let k = self.band_khz;
             self.mon_bands.insert(k, self.mon);
+            self.band_pll.insert(k, [self.tune_pll_divide.max(0) as u32,
+                                     self.tune_phase as u32]);
         }
         if !self.mode_key.is_empty() {
             let k = self.mode_key.clone();
@@ -594,6 +599,7 @@ impl ViewerApp {
             tube_time_based: self.tube_time_based,
             mon: self.mon,
             mon_bands: self.mon_bands.clone(),
+            band_pll: self.band_pll.clone(),
             modes: self.modes.clone(),
             crop_x: self.crop[0],
             crop_y: self.crop[1],
@@ -965,6 +971,26 @@ impl ViewerApp {
         self.want_fit = true;
     }
 
+    /// pll_divide を変える。hs_offset を同じ比で追従させて絵が動かないようにする。
+    ///
+    /// サンプル k の水平位置は (hs_offset + k)/htotal で htotal = pll_divide。
+    /// k は pll_divide に比例して増えるので式としては時間ベースだが、hs_offset は
+    /// サンプル単位なので固定のままだと取り込み開始「時刻」が変わり、絵が横へ跳ぶ。
+    /// pll_divide はドットクロック再生のためのもので描画位置とは無関係でなければ
+    /// ならない。いまは hs_offset を常に0で運用しているので実質的な効果は無いが、
+    /// 0以外にしたときに壊れないようにしておく。
+    fn set_pll(&mut self, new: u32) {
+        let old = self.tune_pll_divide.max(1) as f32;
+        let hs = ((self.tune_hs_offset as f32 * (new as f32 / old)).round() as i32)
+            .clamp(0, (new / 2) as i32);
+        self.tune_pll_divide = new as i32;
+        self.send_cfg(protocol::CFG_KEY_PLL_DIVIDE, new);
+        if hs != self.tune_hs_offset {
+            self.tune_hs_offset = hs;
+            self.send_cfg(protocol::CFG_KEY_HS_OFFSET, hs as u32);
+        }
+    }
+
     /// CONFIGを1つ送る。UIの外(モード追従など)から使う
     fn send_cfg(&mut self, key: u16, val: u32) {
         self.tune_pending.insert(key, (val, std::time::Instant::now()));
@@ -1002,6 +1028,11 @@ impl ViewerApp {
     ///
     /// 計算式が Table 4 と一致することは確認済み(720×480p: 27MHz/858 → ICP 3.50
     /// → 18h)。
+    /// 想定される最大のライン周波数。VCOレンジを決めるときの最悪ケースに使う。
+    /// レトロ機の水平周波数は 15〜32kHz の範囲なので、上端を取れば
+    /// 「PLLが作る必要のある最大周波数」を fH の測定値に依存せず見積もれる。
+    const FH_MAX_HZ: f64 = 32_000.0;
+
     fn pll_ctl_for(pclk_hz: f64, pix_per_line: u32) -> u8 {
         let (vco, kvco) = if pclk_hz < 36.0e6 {
             (0u8, 75.0)
@@ -1055,6 +1086,22 @@ impl ViewerApp {
         if self.band_khz > 0 {
             let old = self.band_khz;
             self.mon_bands.insert(old, self.mon);
+            self.band_pll.insert(old, [self.tune_pll_divide.max(0) as u32,
+                                       self.tune_phase as u32]);
+        }
+        // 帯域ごとの pll_divide / 位相を復元してボードへ送る。
+        // pll_divide はモードごとに正解が違い、位相も帯域ごとに最適値が変わるので、
+        // 1つだけ持つと帯域を切り替えるたびに合わせ直しになる。
+        if let Some(v) = self.band_pll.get(&khz).copied() {
+            let pll = (v[0] as i32).clamp(200, 2304);
+            if pll != self.tune_pll_divide {
+                self.set_pll(pll as u32);
+            }
+            let ph = (v[1].min(31)) as u8;
+            if ph != self.tune_phase {
+                self.tune_phase = ph;
+                self.send_cfg(protocol::CFG_KEY_PHASE, ph as u32);
+            }
         }
         // 未知の帯域は「1周期まるごとが管面に出る」から始める。管面の横幅は 1/fH
         // そのものなので、これで必ず全体が収まる。あとは実機のモニタに合わせて
@@ -1064,15 +1111,17 @@ impl ViewerApp {
         self.band_khz = khz;
         // H-PLLのVCOレンジ/チャージポンプはピクセルクロックとpixels per lineで
         // 決まるので、モードが変わったら計算して送り直す
-        if let Some((pclk, ht)) = {
-            let m = self.shared.mode.lock().unwrap().clone();
-            m.map(|m| (m.dotclk_hz as f64, m.htotal as u32))
-        } {
-            if pclk > 1.0e6 && ht > 0 {
-                let v = Self::pll_ctl_for(pclk, ht);
-                self.send_cfg(protocol::CFG_KEY_PLL_CTL, v as u32);
-            }
-        }
+        // VCOレンジは「報告されたドットクロック」ではなく pll_divide から決める。
+        //
+        // 報告値は誤ったロックの結果でもあり得るので、それを根拠にすると誤りが
+        // 固定される。実機で発生: pll_div 1182 に対しレンジを Ultra low(<36MHz)に
+        // 設定したため、必要な 37.2MHz を出せずPLLが半分のライン周期にロックし、
+        // その状態が自己維持した。pll_divide × 想定最大fH で見積もれば、レンジが
+        // 足りなくなることはない(少し高めのレンジになりノイズ性能を僅かに譲るが、
+        // 誤ロックより害が小さい)。
+        let ht = self.tune_pll_divide.max(1) as u32;
+        let v = Self::pll_ctl_for(ht as f64 * Self::FH_MAX_HZ, ht);
+        self.send_cfg(protocol::CFG_KEY_PLL_CTL, v as u32);
         self.mark_settings_dirty();
         self.want_fit = true;
     }
