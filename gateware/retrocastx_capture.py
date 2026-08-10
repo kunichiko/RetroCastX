@@ -359,7 +359,13 @@ class TvpCapture(Module):
             # 生同期が無い場合だけ「TVPのフレームの後半が第2フィールド」と推測する。
             # これはVSOUTが2本のVSYNCのどちらで出るかに依存するので当たらないことが
             # あり、実機では逆になった。その場合の逃げ道として swap を残す。
-            If(raw_ok & ~self.cfg_no_raw_phase,
+            # プログレッシブでは1フィールドしかないので偶奇は常に0。
+            # 位相による反転はインターレースの第2フィールドを見分けるためのもので、
+            # 無条件に適用すると全ての行が奇数スロットへ入り、半ライン分ずれた位置に
+            # 置かれる(実機で「全行が同じようにずれる」形で出た)。
+            If(~il_det,
+                fld_pos.eq(0),
+            ).Elif(raw_ok & ~self.cfg_no_raw_phase,
                 fld_pos.eq(~ph_raw),
             ).Else(
                 fld_pos.eq(in_f2 ^ self.cfg_field_swap),

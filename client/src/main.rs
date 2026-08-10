@@ -1846,7 +1846,11 @@ impl eframe::App for ViewerApp {
                 if let Some(m) = self.shared.mode.lock().unwrap().as_ref() {
                     if m.htotal > 0 && m.vtotal > 0 && aw > 0.0 {
                         let fw = aw / m.htotal as f32 / self.mon[0].max(0.01) * 100.0;
-                        let fh = ah / m.vtotal as f32 / self.mon[2].max(0.01) * 100.0;
+                        // 縦はスロット目盛り。1ラインが何スロットを占めるかは
+                        // 織り込みの有無で変わる(mflags bit0)
+                        let k = if m.mflags & 0x0001 != 0 { 1.0 } else { 2.0 };
+                        let vt = m.vtotal as f32 * k;
+                        let fh = ah / vt / self.mon[2].max(0.01) * 100.0;
                         ui.weak(format!("有効映像は管面の {fw:.0}% x {fh:.0}%"));
                     }
                 }

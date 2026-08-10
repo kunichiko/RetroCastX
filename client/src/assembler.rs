@@ -197,17 +197,23 @@ impl FrameAssembler {
         // なるので、この処理は何もしない。
         //
         // 埋めるのは「隙間がちょうど1スロットで両隣が埋まっている」場合だけ。
-        // 構造的な空きは1つ飛びで規則的に現れるので必ずこの形になる。送信ドロップは
-        // 不規則で幅もまちまちなので、幅2以上の欠損は従来どおり減衰させる
-        // (1本だけのドロップはここで隣からの複製になるが、減衰より見た目が良い)。
-        let seen: Vec<bool> = self.line_seen.clone();
-        for line in 1..h {
-            let below = if line + 1 < h { seen[line + 1] } else { true };
-            if !seen[line] && seen[line - 1] && below {
-                let (a, b) = self.fb.split_at_mut(line * w * 4);
-                let src = &a[(line - 1) * w * 4..];
-                b[..w * 4].copy_from_slice(&src[..w * 4]);
-                self.line_seen[line] = true;
+        // 構造的な空きは1つ飛びで規則的に現れるので必ずこの形になる。
+        //
+        // 織り込み済み(mflags bit0)のときは全スロットが埋まるので、この処理は本来
+        // 発動しない。ところが1本だけドロップすると発動し、**別フィールドの行**を
+        // 複製してしまう(隣のスロットは別フィールド)。実機で「ところどころ開始位置が
+        // 他の行と合わない」形で出た。織り込み時は太らせない。
+        let interlaced = self.mode.as_ref().map_or(false, |m| m.mflags & 0x0001 != 0);
+        if !interlaced {
+            let seen: Vec<bool> = self.line_seen.clone();
+            for line in 1..h {
+                let below = if line + 1 < h { seen[line + 1] } else { true };
+                if !seen[line] && seen[line - 1] && below {
+                    let (a, b) = self.fb.split_at_mut(line * w * 4);
+                    let src = &a[(line - 1) * w * 4..];
+                    b[..w * 4].copy_from_slice(&src[..w * 4]);
+                    self.line_seen[line] = true;
+                }
             }
         }
         if d < 1.0 {
