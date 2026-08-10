@@ -1,5 +1,7 @@
 # RetroCastX
 
+<img src="client/packaging/AppIcon.png" alt="RetroCastX" width="128" align="right">
+
 レトロPC(X68000 / PC-98 など)のアナログRGB信号を、フレームバッファレスで PC/Mac に伝送・表示するプロジェクト。
 
 ```

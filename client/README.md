@@ -80,10 +80,18 @@ packaging/macos/bundle.sh target/release/retrocastx-viewer 0.1.0 0 /tmp/out
 open "/tmp/out/RetroCastX Viewer.app"
 ```
 
+アイコンは `packaging/AppIcon.png`(1024×1024)が master で、そこから
+`packaging/make-icons.sh` が2つを作る。**生成物もコミットしてある**(CIに画像変換
+ツールを入れない方針。作り直したときは一緒にコミットする):
+
+    packaging/macos/AppIcon.icns    .app に入る(bundle.sh が拾う)
+    packaging/windows/AppIcon.ico   exe に埋め込む(build.rs が拾う)
+
+Windows の窓とタスクバーの絵も exe のアイコンで決まる(winit は明示指定が無ければ
+実行ファイルのアイコンを使う)ので、埋め込みだけで両方に効く。
+
 未対応(必要になったら):
 
-- **アプリアイコン**: `packaging/macos/AppIcon.icns` を置けば自動で入る(いま無いので
-  汎用アイコン)。素材は `assets/cz612d.svg` が使える
 - **Windowsの署名**: 証明書が無いので未署名。SmartScreenの警告は同梱の
   README-first.txt で案内している
 - **Windowsのインストーラ**: いまはzipのみ。`windows-latest` には Inno Setup が
