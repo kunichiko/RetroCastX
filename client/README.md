@@ -12,6 +12,25 @@ cargo run --release -- --headless 5 --no-subscribe  # GUIなしで受信統計�
 cargo test                              # プロトコル/アセンブラのユニットテスト
 ```
 
+## Windows で使うときの必須設定: NICの受信バッファー
+
+**これをやらないとパケットを1〜6%落とす**(映像に穴、音が途切れる)。Intel NIC の
+`受信バッファー`(受信記述子リング)の既定 **256** が RetroCastX のパケットレート
+(31kHz等倍で約35,000 pkt/s)に足りない。管理者PowerShellで:
+
+```powershell
+Set-NetAdapterAdvancedProperty -Name 'イーサネット' -RegistryKeyword '*ReceiveBuffers' -RegistryValue 2048
+```
+
+実測(同じ機械・同じ線): **256 → lost 1.7%**(間引き2で帯域1/3にしても落ちる)、
+**2048 → lost 0.0013%**(等倍316Mbps、audio underruns 0)。
+
+`SO_RCVBUF`(Viewerは64MB確保する)を増やしても効かない。捨てているのは
+ソケットバッファではなく**その手前のNICドライバのリング**だから。切り分けは
+`Get-NetAdapterStatistics -Name 'イーサネット' | fl ReceivedDiscardedPackets,ReceivedPacketErrors`
+で、**errors≒0 なのに discards が大きい**ならこれ。詳細は
+[docs/design-notes.md](../docs/design-notes.md)。
+
 sender_sim を相手にした動作確認:
 
 ```sh
