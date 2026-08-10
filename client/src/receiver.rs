@@ -757,7 +757,13 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             tune.feed(&frame.rgba, frame.width, frame.height);
             weave.feed(&frame.rgba, frame.width, frame.height);
             *shared.mode.lock().unwrap() = asm.mode.clone();
-            *shared.frame.lock().unwrap() = Some(frame);
+            // 差し替えて、UIが使い終わった前のバッファを組立側へ返す。
+            // ロックはUIがテクスチャ転送を終えるまで取れないので、返した時点で
+            // もう誰も参照していない。これで毎フレームの4.8MB確保が消える。
+            let old = shared.frame.lock().unwrap().replace(frame);
+            if let Some(old) = old {
+                asm.recycle(old.rgba);
+            }
             shared.frame_gen.fetch_add(1, Ordering::Release);
             repaint();
         }

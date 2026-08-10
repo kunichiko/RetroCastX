@@ -33,6 +33,9 @@ pub struct FrameAssembler {
     /// 太らせても埋まらなかった行数(診断用)
     pub unfilled_rows: u32,
     decay: f32,           // 欠損ラインの減衰率(1.0=前フレーム保持のまま, 0.8=毎フレーム80%へ暗転)
+    /// 公開用バッファの使い回し先。UIが使い終わったものを recycle() で戻す。
+    /// 毎フレームの確保をなくすためだけのもので、中身に意味は無い。
+    spare: Option<Vec<u8>>,
 }
 
 impl FrameAssembler {
@@ -41,6 +44,7 @@ impl FrameAssembler {
             mode: None,
             stats: Stats::default(),
             fb: Vec::new(),
+            spare: None,
             width: 0,
             height: 0,
             cur_frame: None,
@@ -215,6 +219,16 @@ impl FrameAssembler {
         }
     }
 
+    /// 公開し終わったバッファを返してもらう。次の emit() で使い回す。
+    ///
+    /// 大きさが変わっている(モード切替)ときは捨てる。捨てても次で確保し直す
+    /// だけなので害はない。
+    pub fn recycle(&mut self, buf: Vec<u8>) {
+        if buf.len() == self.fb.len() {
+            self.spare = Some(buf);
+        }
+    }
+
     fn emit(&mut self) -> CompletedFrame {
         // このフレームで受信できなかったライン(=送信側でドロップ)を前値×decayで減衰。
         // 継続的に欠損するラインは 0.8^n で徐々に暗転し「しばらくすると消える」。
@@ -265,11 +279,30 @@ impl FrameAssembler {
             *s = false;
         }
         let total = (self.width * self.height).max(1);
+        // 公開用のバッファは使い回す。
+        //
+        // 以前は self.fb.clone() で毎フレーム新規確保していた。31kHzなら
+        // 1104x1136x4 = 4.8MB を 55回/秒、つまり毎秒263MBを確保+コピーする。
+        // この大きさだとアロケータがOSから取り直し、初回書き込みでページ
+        // フォールトも起きるので、単純なmemcpyよりずっと重い。その間
+        // recv_from が呼ばれないので、OSのUDPバッファが溢れて取りこぼす
+        // (実測: Windowsの低スペック機で lost 9.9%)。
+        //
+        // UIが使い終わったバッファを recycle() で戻してもらい、それへ
+        // copy_from_slice する。確保もページフォールトも起きず、memcpy 1回で済む。
+        // fb 自体は次フレームへ持ち越す必要がある(受信していない行は前の内容を
+        // 保つ設計)ので、move ではなくコピーが要る。
+        let need = self.fb.len();
+        let mut out = match self.spare.take() {
+            Some(v) if v.len() == need => v,
+            _ => vec![0u8; need],
+        };
+        out.copy_from_slice(&self.fb);
         let f = CompletedFrame {
             frame_idx: self.cur_frame.unwrap_or(0),
             width: self.width,
             height: self.height,
-            rgba: self.fb.clone(),
+            rgba: out,
             fill_ratio: self.px_filled as f32 / total as f32,
         };
         self.stats.frames += 1;
