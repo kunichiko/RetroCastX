@@ -278,38 +278,6 @@ fn signal_is_valid(m: &protocol::Mode) -> bool {
         && m.dotclk_hz > 5_000_000
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Backdrop {
-    Black,
-    DarkGray,
-    Magenta,
-}
-
-impl Backdrop {
-    fn color(self) -> egui::Color32 {
-        match self {
-            Backdrop::Black => egui::Color32::BLACK,
-            Backdrop::DarkGray => egui::Color32::from_gray(40),
-            // 映像には出にくい色。画枠を厳密に見たいとき用
-            Backdrop::Magenta => egui::Color32::from_rgb(120, 0, 120),
-        }
-    }
-    fn label(self) -> &'static str {
-        match self {
-            Backdrop::Black => "black",
-            Backdrop::DarkGray => "dark gray",
-            Backdrop::Magenta => "magenta",
-        }
-    }
-    fn from_str(s: &str) -> Self {
-        match s {
-            "black" => Backdrop::Black,
-            "magenta" => Backdrop::Magenta,
-            _ => Backdrop::DarkGray,
-        }
-    }
-}
-
 /// pll_divide と位相を自動で決める処理の進行状態。
 ///
 /// 原理は host/python/retrocastx/pll_tune.py の autotune と同じ。要点だけ:
@@ -358,22 +326,11 @@ struct ViewerApp {
     audio_muted: bool,
     /// 設定の保存(スライダー操作中に毎フレーム書かないよう、変更後に少し待って書く)
     settings_dirty: Option<std::time::Instant>,
-    /// キャプチャ範囲の外側の色と、境界の枠線表示
-    backdrop: Backdrop,
-    show_border: bool,
     /// 画枠パラメータ(ボードへCONFIGで送る値)。モードごとに最適値が違うので、
     /// ビルドし直さずにここで追い込む。
     tune_vbp: i32,
     tune_hs_offset: i32,
     tune_pll_divide: i32,
-    /// 目標の有効幅[ドット](そのモードの水平解像度)。pll_div の推奨値算出に使う
-    tune_target_w: i32,
-    /// 推奨値を8の倍数に丸める(X68000のhtotalは8ドット単位)
-    tune_snap8: bool,
-    /// インターレース方式。0=なし / 1=1VSYNCに2フィールド / 2=フィールド毎VSYNC
-    /// 第2フィールドが始まる row(0=vtotal/2)
-    /// フィールドの偶奇を入れ替える
-    /// 方式2の極性の取得元。0=位相 / 1=FIDOUT
     /// TVPのアナログ映像帯域。0=最大 / 15=最小(約95MHz)
     tune_video_bw: u8,
     tune_phase: u8,
@@ -384,7 +341,6 @@ struct ViewerApp {
     tune_get_at: Option<std::time::Instant>,
     /// ボードの現在値を取り込み済みか。起動時に1回だけ合わせる
     tune_synced: bool,
-    /// インターレースの織り込み方を自動判定している最中の状態
     /// 現在のウィンドウ内寸(保存用)
     window_size: egui::Vec2,
     /// 中央の描画領域と画のサイズ。ウィンドウを等倍に合わせるのに使う
@@ -398,9 +354,6 @@ struct ViewerApp {
     frame_size: (u32, u32),
     render_state: Option<eframe::egui_wgpu::RenderState>,
     seen_gen: u64,
-    integer_scale: bool,
-    /// 表示時の縦倍率(ドットが正方形でないモードの縦つぶれを直す)
-    vscale: f32,
     /// 画面回転 0/1/2/3 = 時計回りに 0/90/180/270 度
     rotate: u32,
     /// 表示する切り出し範囲[画素]。w か h が 0 なら全体を表示
@@ -469,13 +422,9 @@ impl ViewerApp {
             audio_volume: cfg.volume,
             audio_muted: cfg.muted,
             settings_dirty: None,
-            backdrop: Backdrop::from_str(&cfg.backdrop),
-            show_border: cfg.show_border,
             tune_vbp: cfg.tune_vbp,
             tune_hs_offset: cfg.tune_hs_offset,
             tune_pll_divide: cfg.tune_pll_divide,
-            tune_target_w: cfg.tune_target_w,
-            tune_snap8: cfg.tune_snap8,
             tune_video_bw: cfg.tune_video_bw,
             tune_phase: cfg.tune_phase,
             tune_pending: Default::default(),
@@ -489,8 +438,6 @@ impl ViewerApp {
             frame_size: (0, 0),
             render_state: cc.wgpu_render_state.clone(),
             seen_gen: 0,
-            integer_scale: cfg.integer_scale,
-            vscale: cfg.vscale,
             rotate: cfg.rotate,
             crop: [cfg.crop_x, cfg.crop_y, cfg.crop_w, cfg.crop_h],
             tube_aspect: cfg.tube_aspect,
@@ -564,8 +511,6 @@ impl ViewerApp {
             muted: self.audio_muted,
             audio_source: self.audio_source,
             audio_device: self.audio_device_sel.clone(),
-            integer_scale: self.integer_scale,
-            vscale: self.vscale,
             rotate: self.rotate,
             tube_aspect: self.tube_aspect,
             filter: self.filter,
@@ -581,13 +526,9 @@ impl ViewerApp {
             crop_h: self.crop[3],
             window_w: self.window_size.x,
             window_h: self.window_size.y,
-            backdrop: self.backdrop.label().to_string(),
-            show_border: self.show_border,
             tune_vbp: self.tune_vbp,
             tune_hs_offset: self.tune_hs_offset,
             tune_pll_divide: self.tune_pll_divide,
-            tune_target_w: self.tune_target_w,
-            tune_snap8: self.tune_snap8,
             tune_video_bw: self.tune_video_bw,
             tune_phase: self.tune_phase,
         }
@@ -1368,9 +1309,13 @@ impl ViewerApp {
                 format!("pll_div は {pll_min} 以上に(12MHz未満はTVPの範囲外)"),
             );
         }
-        // 実測した有効映像の大きさと、そこから求まる pll_div の推奨値。
-        // pll_div は「1ラインを何サンプルで取るか」なので、有効幅は pll_div に比例する。
-        // 目標のドット数になるよう比例計算すれば一発で決まる(勘で動かす必要はない)。
+        // 実測した有効映像の大きさ。pll_div が妥当かの目安として出す。
+        //
+        // ここには「目標の有効幅から pll_div を比例計算する」UI(target w / ×8 /
+        // → pll)があったが撤去した。比例計算は有効映像の実測が信用できないと
+        // 上限まで走り、実機で pll_div が 2304 に達して絵が崩れ、DATACLKが
+        // 100MHzを超えてボードごとハングした。いまは下の「自動調整」が絵の
+        // スペクトルから倍率を割り出すので、初期値がどれだけ外れていても収束する。
         let st = self.shared.stats.lock().unwrap().clone();
         ui.monospace(format!(
             "active {}x{} at ({},{})",
@@ -1385,92 +1330,6 @@ impl ViewerApp {
                 "1ラインがバッファに入り切っていません(過剰サンプル)",
             );
         }
-        // 測定が信用できるか。有効映像が窓に入り切っていないと外接矩形は
-        // 有効映像の幅を表さず、そこから計算した推奨値は正しい方向へ行かない。
-        // 実際この状態で押し続けて pll_div が上限まで走り、DATACLKが100MHzを
-        // 超えてボードがハングした。信用できないときはボタンを押せなくする。
-        let mut measure_ok = st.active_w > 0;
-        if st.active_w > 0 {
-            let r = self.tune_target_w as f32 / st.active_w as f32;
-            if !(0.75..=1.35).contains(&r) {
-                measure_ok = false;
-                ui.colored_label(
-                    egui::Color32::from_rgb(220, 170, 60),
-                    format!("target w が active({}) とかけ離れています", st.active_w),
-                );
-            }
-        }
-        ui.horizontal(|ui| {
-            ui.monospace("target w  ");
-            ui.add(egui::DragValue::new(&mut self.tune_target_w).range(64..=2048));
-            // X68000のCRTCは水平トータルを8ドット単位で持つので、正解は必ず
-            // 8の倍数になる。丸めておくと実測の端数に引きずられない
-            // (24kHz 1024x424 で 1407.7 → 1408 = 176×8)。他機種で外したい
-            // ことがあるかもしれないので切れるようにしておく。
-            ui.checkbox(&mut self.tune_snap8, "×8");
-            if st.active_w > 0 {
-                let raw = self.tune_pll_divide as f64 * self.tune_target_w as f64
-                    / st.active_w as f64;
-                let base = if self.tune_snap8 {
-                    ((raw / 8.0).round() * 8.0) as i32
-                } else {
-                    raw.round() as i32
-                };
-                // 1サンプル=1ドットにするとTVPの下限(12MHz)を割るモードがある
-                // (15kHz 512x480 の 1:1 は 608 = 9.7MHz)。その場合は2倍、
-                // 足りなければ4倍にして範囲内へ入れる。オーバーサンプリングなので
-                // 情報は失われず、8の倍数のままでもある。
-                let mut want = base.max(1);
-                let mut over = 1;
-                while want < pll_min && want * 2 <= 2304 {
-                    want *= 2;
-                    over *= 2;
-                }
-                let want = want
-                // 測定が壊れていると推奨値が青天井に走る。実際、連打してDATACLKが
-                // 100MHzを超え、ボードがハングした。1回の変化は2倍までに抑え、
-                // 上限もgateware側と揃える。
-                .clamp(
-                    (self.tune_pll_divide / 2).max(pll_min),
-                    (self.tune_pll_divide * 2).min(2304),
-                );
-                let label = if over > 1 {
-                    format!("→ pll {want} (×{over})")
-                } else {
-                    format!("→ pll {want}")
-                };
-                let btn = ui.add_enabled(measure_ok, egui::Button::new(label));
-                let btn = if measure_ok {
-                    btn
-                } else {
-                    btn.on_disabled_hover_text(
-                        "実測(active)が目標と合っていないので計算できません。\n\
-                         絵が窓に入り切っていない可能性があります。\n\
-                         pll_div を手で入れて絵全体が入る状態にしてから使ってください。",
-                    )
-                };
-                if btn.clicked() {
-                    let old = self.tune_pll_divide.max(1);
-                    self.tune_pll_divide = want.clamp(200, 4095);
-                    // pll_divに比例するのはHSYNCからの絶対位置、つまり
-                    // (画の左端x + hs_offset)。xを動かさずに幅だけ変えるには、
-                    // この和を比例させてからxを引き戻す。hs_offset単体を比例させる
-                    // のでは足りない(hs_offsetが小さいほど補正不足になる)。
-                    let x = st.active_x as f64;
-                    // hs_offset が pll_div に近付くとキャプチャ窓がライン終端から
-                    // 始まり、1画素も取り込めなくなる(実際に hs_offset=pll_div=1560
-                    // になって映像が壊れた)。窓の先頭は必ずラインの手前側に置く。
-                    let limit = (self.tune_pll_divide / 2).max(1);
-                    self.tune_hs_offset = (((x + self.tune_hs_offset as f64)
-                        * self.tune_pll_divide as f64 / old as f64)
-                        - x)
-                        .round()
-                        .clamp(0.0, limit as f64) as i32;
-                    send.push((protocol::CFG_KEY_PLL_DIVIDE, self.tune_pll_divide as u32));
-                    send.push((protocol::CFG_KEY_HS_OFFSET, self.tune_hs_offset as u32));
-                }
-            }
-        });
         // インターレースの設定は撤去した。すべて測定から決まる:
         //   TVPの検出ビット(38h bit5)      インターレースかどうか
         //   生VSYNCの半ライン位相          どちらのフィールドが下か
@@ -1853,59 +1712,21 @@ impl eframe::App for ViewerApp {
                     self.mark_settings_dirty();
                 }
             });
-            ui.horizontal(|ui| {
-                ui.monospace("縦倍率");
-                if ui
-                    .add(egui::DragValue::new(&mut self.vscale).speed(0.01).range(0.25..=4.0))
-                    .changed()
-                {
-                    self.mark_settings_dirty();
-                }
-                // 実測した有効映像の縦横比が4:3になる倍率にする。CRTCHKのように
-                // 画面いっぱいの絵で押すこと(外接矩形は内容の大きさなので)。
-                let st = self.shared.stats.lock().unwrap().clone();
-                if st.active_w > 0 && st.active_h > 0 && ui.button("4:3").clicked() {
-                    self.vscale =
-                        (3.0 * st.active_w as f32 / (4.0 * st.active_h as f32)).clamp(0.25, 4.0);
-                    self.mark_settings_dirty();
-                    self.want_fit = true;
-                }
-                if ui.button("1.0").clicked() {
-                    self.vscale = 1.0;
-                    self.mark_settings_dirty();
-                    self.want_fit = true;
-                }
-            });
+            // 縦倍率(と 4:3 / 1.0 / integer scaling)は撤去した。表示の形は
+            // 管面が決めるので、ドット数に対する倍率という概念が要らない。
+            // 512x256 も 768x512 も、管面を 4:3 にすれば同じ形で映る。
             if ui.button("画に合わせる").clicked() {
                 self.want_fit = true;
             }
-            if ui.checkbox(&mut self.integer_scale, "integer scaling").changed() {
-                self.mark_settings_dirty();
-            }
-            if ui.checkbox(&mut self.show_border, "capture border").changed() {
-                self.mark_settings_dirty();
-            }
-            ui.horizontal(|ui| {
-                ui.label("outside");
-                let mut bd = self.backdrop;
-                egui::ComboBox::from_id_salt("backdrop")
-                    .selected_text(bd.label())
-                    .show_ui(ui, |ui| {
-                        for v in [Backdrop::Black, Backdrop::DarkGray, Backdrop::Magenta] {
-                            ui.selectable_value(&mut bd, v, v.label());
-                        }
-                    });
-                if bd != self.backdrop {
-                    self.backdrop = bd;
-                    self.mark_settings_dirty();
-                }
-            });
         });
 
-        // キャプチャ範囲の外側は背景色で塗る。取り込んだ絵が真っ黒だと画枠の
-        // 位置が分からないので、黒以外を選べるようにしてある(既定は暗い灰)。
+        // 管面の外側は黒。実CRTと同じで、掃引が届かない場所には何も出ない。
+        // 以前は「capture border(赤い枠)」と「outside(外側の色)」で画枠の位置を
+        // 見えるようにしていたが、幾何がGPU側へ移ってどちらもキャプチャ範囲では
+        // なく管面の外周を指すようになったので撤去した。管面の位置は H位置/H幅
+        // のスライダーで直接合わせる。
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(self.backdrop.color()))
+            .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(root, |ui| {
                 if self.frame_size.0 == 0 {
                     ui.centered_and_justified(|ui| {
@@ -1936,8 +1757,8 @@ impl eframe::App for ViewerApp {
                 if !self.did_autofit {
                     self.did_autofit = true;
                 }
-                let resp = ui.centered_and_justified(|ui| {
-                    let (rect, r) = ui.allocate_exact_size(size, egui::Sense::hover());
+                ui.centered_and_justified(|ui| {
+                    let (rect, _r) = ui.allocate_exact_size(size, egui::Sense::hover());
                     // Retina では論理座標と実画素が違う。sharp-bilinear は出力
                     // 画素数を基準に境目の幅を決めるので、実画素で渡す。
                     let ppp = ui.ctx().pixels_per_point();
@@ -1948,19 +1769,7 @@ impl eframe::App for ViewerApp {
                             dst: (rect.width() * ppp, rect.height() * ppp),
                         },
                     ));
-                    r
                 });
-                // キャプチャ範囲の境界に枠線。画の内容に埋もれないよう、外周の
-                // すぐ外側(1px外)に引く
-                if self.show_border {
-                    let r = resp.inner.rect.expand(1.0);
-                    ui.painter().rect_stroke(
-                        r,
-                        0.0,
-                        egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 64, 64)),
-                        egui::StrokeKind::Outside,
-                    );
-                }
             });
 
         // ウィンドウを画にぴったり合わせる。中央パネルを描いた後に行う

@@ -20,25 +20,14 @@ pub struct Settings {
     pub audio_source: Option<u8>,
     /// 出力デバイス名。None はシステム既定
     pub audio_device: Option<String>,
-    pub integer_scale: bool,
-    /// キャプチャ範囲の外側の色: black|dark gray|magenta
-    pub backdrop: String,
-    /// キャプチャ範囲の境界に枠線を描く
-    pub show_border: bool,
     /// 画枠パラメータ(ボードへCONFIGで送る値)
     pub tune_vbp: i32,
     pub tune_hs_offset: i32,
     pub tune_pll_divide: i32,
-    /// 目標の有効幅[ドット]
-    pub tune_target_w: i32,
-    /// 推奨値を8の倍数に丸める
-    pub tune_snap8: bool,
     /// TVPのアナログ映像帯域。0=最大 / 15=最小
     pub tune_video_bw: u8,
     /// サンプリング位相 0..31。ドット周期の1/32刻み
     pub tune_phase: u8,
-    /// 表示時の縦倍率。ドットが正方形でないモードの縦つぶれを直す
-    pub vscale: f32,
     /// 画面回転 0/1/2/3 = 時計回りに 0/90/180/270 度(縦画面のゲーム用)
     pub rotate: u32,
     /// 管面(表示領域)の縦横比 幅/高さ。0 なら有効映像の比をそのまま使う。
@@ -96,17 +85,11 @@ impl Default for Settings {
             muted: false,
             audio_source: Some(0),
             audio_device: None,
-            integer_scale: true,
-            backdrop: "dark gray".into(),
-            show_border: true,
             tune_vbp: 43,
             tune_hs_offset: 152,
             tune_pll_divide: 1104,
-            tune_target_w: 768,
-            tune_snap8: true,
             tune_video_bw: 15,
             tune_phase: 16,
-            vscale: 1.0,
             rotate: 0,
             window: [0.22, 0.94, 0.07, 0.98],
             tube_time_based: true,
@@ -153,14 +136,17 @@ impl Settings {
                     }
                 }
                 "muted" => s.muted = v == "true",
-                "integer_scale" => s.integer_scale = v == "true",
-                "show_border" => s.show_border = v == "true",
-                "backdrop" => s.backdrop = v.to_string(),
                 "tune_vbp" => { if let Ok(x) = v.parse() { s.tune_vbp = x } }
                 "tune_hs_offset" => { if let Ok(x) = v.parse() { s.tune_hs_offset = x } }
                 "tune_pll_divide" => { if let Ok(x) = v.parse() { s.tune_pll_divide = x } }
-                "tune_target_w" => { if let Ok(x) = v.parse() { s.tune_target_w = x } }
-                "tune_snap8" => s.tune_snap8 = v == "true",
+                // 表示倍率まわりの設定は撤去した。表示の形は管面(tube_aspect と
+                // モニタプロファイル)が決めるので、ドット数に対する倍率や整数倍の
+                // 概念が要らない。枠線と外側の色も、幾何がGPU側へ移って
+                // キャプチャ範囲ではなく管面の外周を指すようになったのでやめた。
+                "integer_scale" | "show_border" | "backdrop" | "vscale" => {}
+                // pll_divide の比例計算(target w)は撤去した。実測が信用できないと
+                // 上限まで走るので、いまはスペクトルから求める「自動調整」を使う
+                "tune_target_w" | "tune_snap8" => {}
                 // インターレースの設定は撤去した(すべて測定から決まる)。
                 // 古い設定ファイルにこれらの行が残っていても読み捨てる
                 "tune_interlace" | "tune_f2_row" | "tune_field_swap"
@@ -224,11 +210,6 @@ impl Settings {
                 "crop_y" => { if let Ok(x) = v.parse() { s.crop_y = x } }
                 "crop_w" => { if let Ok(x) = v.parse() { s.crop_w = x } }
                 "crop_h" => { if let Ok(x) = v.parse() { s.crop_h = x } }
-                "vscale" => {
-                    if let Ok(x) = v.parse::<f32>() {
-                        s.vscale = x.clamp(0.25, 4.0);
-                    }
-                }
                 "window_w" => {
                     if let Ok(x) = v.parse::<f32>() {
                         s.window_w = x.clamp(480.0, 8192.0);
@@ -264,14 +245,9 @@ impl Settings {
              muted = {}\n\
              audio_source = {}\n\
              audio_device = {}\n\
-             integer_scale = {}\n\
-             backdrop = {}\n\
-             show_border = {}\n\
              tune_vbp = {}\n\
              tune_hs_offset = {}\n\
              tune_pll_divide = {}\n\
-             tune_target_w = {}\n\
-             tune_snap8 = {}\n\
              tune_video_bw = {}\n\
              tune_phase = {}\n\
              tube_time_based = {}\n\
@@ -284,21 +260,15 @@ impl Settings {
              crop_y = {}\n\
              crop_w = {}\n\
              crop_h = {}\n\
-             vscale = {:.3}\n\
              window_w = {:.0}\n\
              window_h = {:.0}\n",
             self.volume,
             self.muted,
             self.audio_source.map(|v| v.to_string()).unwrap_or_else(|| "off".into()),
             self.audio_device.clone().unwrap_or_default(),
-            self.integer_scale,
-            self.backdrop,
-            self.show_border,
             self.tune_vbp,
             self.tune_hs_offset,
             self.tune_pll_divide,
-            self.tune_target_w,
-            self.tune_snap8,
             self.tune_video_bw,
             self.tune_phase,
             self.tube_time_based,
@@ -314,7 +284,6 @@ impl Settings {
             self.crop_y,
             self.crop_w,
             self.crop_h,
-            self.vscale,
             self.window_w,
             self.window_h,
         );
