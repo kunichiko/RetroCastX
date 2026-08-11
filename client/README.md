@@ -132,6 +132,56 @@ touch "/path/to/RetroCast X.app" && killall Dock
 - `src/assembler.rs` — LINE→フレーム再構成(RGBA8出力、ロス/迷子ライン統計)
 - `src/receiver.rs` — UDP受信スレッド + SUBSCRIBEキープアライブ(2秒ごと)
 - `src/main.rs` — eframe UI(映像表示 + モード/統計/発見ボードのサイドパネル)
+- `src/remote_input.rs` — MimicX へのキー転送(CoreMIDI SysEx)
+- `src/keytap.rs` — 物理キーの取り出し(macOS の AppKit イベント監視)
+
+## MimicX と組み合わせてリモート操作する(macOS)
+
+映像は RetroCastX、キー入力は MimicX(HIDアダプタのホストアプリ)が実機へ送る。
+macOS はフォーカスの無いアプリにキーイベントを配送しないので、RetroCastX の画面を
+見ながら操作するには**RetroCastX が受けたキーを MimicX へ転送する**必要がある。
+プロトコルの仕様は `docs/mimicx-remote-input.md`。
+
+使い方:
+
+1. MimicX を起動し、アダプタに接続して**キーボード操作画面に入る**
+   (リモート入力のハンドラはこの画面が生きている間だけ動く)
+2. RetroCastX の右パネル「Remote input」で転送を入れる、または **⌘+Shift+ESC**
+3. 転送中は画面左上に赤いバッジが出る。**⌘+Shift+ESC かバッジのクリック**で解除
+
+- 切り替えは **⌘+Shift+ESC**(F12 も受け付ける)。⌘ は X68000 のキーボードに無いので、
+  組み合わせにすれば実機へ送りたい打鍵と衝突しない。**ESC 単独は実機の ESC**
+  として送られる。
+  Shift まで要るのは **⌘+ESC が macOS のシステムショートカットに取られていて
+  アプリに届かない**ため(`AppleSymbolicHotKeys` id 73)。別の組み合わせに
+  変えるときは、先に取られていないかを確かめること:
+
+  ```sh
+  defaults export com.apple.symbolichotkeys - | plutil -convert json -o - - \
+    | python3 -c "import sys,json;[print(k, v['value']['parameters']) for k,v in json.load(sys.stdin)['AppleSymbolicHotKeys'].items() if v.get('enabled') and 'parameters' in v.get('value',{})]"
+  ```
+
+  出力の `parameters` は `(文字, キーコード, 修飾)`。ESC は 53、⌘ は 0x100000。
+- 転送中は Tab / B などの RetroCastX 自身のキー操作もすべて実機へ行く。
+  マウス操作(パネルやバッジ)は効いたままなので、キーが届かない環境でも戻れる。
+- **⌘ 付きの打鍵は Mac の操作**として扱い、実機へは送らない。転送中でも
+  ⌘Q で終了、⌘H で隠す、などがそのまま効く(終了時は全解放が走るので、
+  キーが押しっぱなしで実機に残らない)。
+- 起動時は必ずOFF(保存しない)。キーが黙って実機へ流れる状態で始まらないように。
+- 数値欄(pll_div など)へ打ち込んでいる間は転送を止めて UI に譲る。欄から
+  外れれば転送に戻る。
+- ゲームパッドは転送しない。MimicX がフォーカス無しでも直接受け取るので、
+  転送すると二重入力になる。
+- Shift / Control / Option の左右、テンキー、JIS 配列のキー(¥ / ろ / かな /
+  英数)も区別して送る。egui のキーイベントはこれらを落とし、修飾キーは macOS
+  では keyDown を出さないので、AppKit のイベントを直接見ている(`src/keytap.rs`)。
+- `--fullscreen` でも ⌘+Shift+ESC で転送できる。転送中の素の ESC は実機の ESC として
+  送るので、終了するには先に ⌘+Shift+ESC で転送を切る。
+- 経路の切り分けに `--mimicx-probe`。CoreMIDI の宛先一覧を出し、A を
+  押して離すところまでを GUI 無しで試す。
+- 「このキーが効かない」ときは `--log-keys`。受け取った物理キーと修飾の状態、
+  送る usage を stderr へ出すので、**そもそもアプリに届いていない**のか、
+  届いているが転送していないのかが分かる(OS が横取りする組み合わせを疑うとき)。
 
 ## 設計メモ
 

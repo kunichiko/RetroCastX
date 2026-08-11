@@ -17,10 +17,11 @@ use eframe::wgpu;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, KeyCode, NamedKey, NativeKeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::receiver;
+use crate::remote_input;
 use crate::render;
 
 pub fn run(port: u16, subscribe_to: Option<String>, target_mac: Option<[u8; 6]>, decay: f32,
@@ -38,7 +39,9 @@ pub fn run(port: u16, subscribe_to: Option<String>, target_mac: Option<[u8; 6]>,
 
     let event_loop = EventLoop::new().unwrap();
     let mut app = App { shared: Some((shared, rx)), window: None,
-                        size: Arc::new(AtomicU64::new(0)), params };
+                        size: Arc::new(AtomicU64::new(0)), params,
+                        remote: remote_input::RemoteInput::default(),
+                        remote_toggle: Default::default(), remote_mods: Default::default() };
     event_loop.run_app(&mut app).unwrap();
     std::process::exit(0);
 }
@@ -48,6 +51,13 @@ struct App {
     window: Option<Arc<Window>>,
     size: Arc<AtomicU64>, // (w<<32)|h — リサイズをrenderスレッドへ伝える
     params: render::Params,
+    /// MimicX へのキー転送。この経路は winit の生イベントを直接見られるので、
+    /// テンキーやJIS配列のキー(かな/変換/¥/ろ)も区別して送れる
+    /// (通常モードは egui の変換を経るためテンキーが最上段と同じになる)
+    remote: remote_input::RemoteInput,
+    remote_toggle: remote_input::ToggleDetect,
+    /// いまの修飾(⌘ / Shift)。転送ON/OFFの組み合わせ判定に使う
+    remote_mods: remote_input::Mods,
 }
 
 impl ApplicationHandler for App {
@@ -92,10 +102,99 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.logical_key == Key::Named(NamedKey::Escape) {
-                    event_loop.exit();
+            // ⌘の状態。転送ON/OFFの組み合わせ(⌘+ESC)の判定に使う
+            WindowEvent::ModifiersChanged(m) => {
+                let s = m.state();
+                self.remote_mods = remote_input::Mods {
+                    command: if cfg!(target_os = "macos") {
+                        s.super_key()
+                    } else {
+                        s.control_key()
+                    },
+                    shift: s.shift_key(),
+                };
+                if !self.remote_mods.is_toggle_combo() {
+                    // 修飾が揃っていない間はラッチを戻す。macOS は ⌘ を押し
+                    // ながらの keyUp を配送しないことがあり、これが無いと
+                    // 2回目が効かない
+                    self.remote_toggle.rearm_chord();
                 }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                let (code, vk) = match event.physical_key {
+                    PhysicalKey::Code(c) => (Some(c), None),
+                    // winit は macOS の JIS キー(ろ/かな/英数、テンキーの ,)を
+                    // 未対応のまま残しているので、生のキーコードから補う
+                    PhysicalKey::Unidentified(NativeKeyCode::MacOS(vk)) => {
+                        (remote_input::keycode_from_mac_vk(vk), Some(vk))
+                    }
+                    PhysicalKey::Unidentified(_) => (None, None),
+                };
+                // 転送のON/OFF(⌘+ESC / F12)。転送中でも必ず効く(唯一の抜け道)。
+                // ESC 単独は横取りされないので、下の終了判定と実機への転送へ流れる
+                if let Some(code) = code {
+                    remote_input::log_key(code, vk, event.state.is_pressed(), self.remote_mods);
+                    let (toggle, eat) =
+                        self.remote_toggle
+                            .feed(code, event.state.is_pressed(), self.remote_mods);
+                    if toggle {
+                        self.remote.toggle();
+                        self.remote.update(true);
+                        eprintln!(
+                            "remote input: {}{}",
+                            if self.remote.enabled() { "on" } else { "off" },
+                            if self.remote.enabled() && !self.remote.connected() {
+                                format!(" — {}", self.remote.status())
+                            } else {
+                                String::new()
+                            }
+                        );
+                    }
+                    if eat {
+                        return;
+                    }
+                }
+                // 転送中の ESC は X68000 の ESC として送る。抜けるには先に
+                // 転送を切る(borderless フルスクリーンには閉じるボタンが無いので、
+                // ESC が唯一の終了手段になる)
+                if !self.remote.enabled() && event.logical_key == Key::Named(NamedKey::Escape) {
+                    event_loop.exit();
+                    return;
+                }
+                if !self.remote.active() {
+                    return;
+                }
+                // 送るのは押下と解放のエッジだけ。リピートは MimicX が自前の
+                // Timer で作るので転送すると二重にかかる
+                if event.repeat {
+                    return;
+                }
+                let Some(code) = code else { return };
+                // ⌘ を押している間は Mac の操作(⌘Q で終了など)。押下は実機へ
+                // 送らない。X68000 のキーボードに ⌘ は無いので、⌘ 付きの打鍵が
+                // 実機向けであることはない。
+                // **解放は ⌘ の有無に関わらず送る** — 押している途中で ⌘ を
+                // 足すと、解放だけ落ちて実機にキーが残る。
+                if event.state.is_pressed() && self.remote_mods.command {
+                    return;
+                }
+                // ⌘ 自体も送らない(実機に無いキーで、MimicX も捨てる)
+                if matches!(code, KeyCode::SuperLeft | KeyCode::SuperRight) {
+                    return;
+                }
+                if let Some(usage) = remote_input::usage_from_keycode(code) {
+                    self.remote.key(usage, event.state.is_pressed());
+                }
+            }
+            // フォーカスを失うと以後のキー解放が届かない。全解放しないと
+            // キーが押しっぱなしで実機に残る。押下状態も忘れる(⌘+ESC の
+            // 解放が届かないまま残ると次のトグルが効かなくなる)
+            WindowEvent::Focused(focused) => {
+                if !focused {
+                    self.remote_toggle.reset();
+                    self.remote_mods = Default::default();
+                }
+                self.remote.update(focused);
             }
             WindowEvent::Resized(sz) => {
                 self.size
@@ -103,6 +202,11 @@ impl ApplicationHandler for App {
             }
             _ => {}
         }
+    }
+
+    /// 終了時にも全解放する。`run` は exit(0) するので Drop は走らない
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.remote.set_enabled(false);
     }
 }
 
