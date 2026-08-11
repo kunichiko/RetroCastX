@@ -2069,7 +2069,7 @@
 	)
 	(model "${KIPRJMOD}/../../parts/TE_Connectivity_1473005_4/SO-DIMM-SMD_L71.5-W26-H5.2_200P-P0.60_1473005-4.step"
 		(offset
-			(xyz 0 0 0.6)
+			(xyz 4.5 0 5.1)
 		)
 		(scale
 			(xyz 1 1 1)

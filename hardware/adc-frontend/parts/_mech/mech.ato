@@ -249,6 +249,28 @@ component BoxHeader2x8Argus:
     gnd ~ pin 16
     # pin 13(+5V), 15(VBUS) = NC(RetroCastXは自己給電)
 
+component MountingHoleM26:
+    """基板固定用ネジ穴 M2.6(GND接続)。
+
+    穴径 2.8mm = M2.6 のクリアランス(普通級。ねじ外径2.6 + 0.2)。
+    5.6mm のアニュラーパッド付きメッキ穴で、**表裏どちらも銅が露出**する
+    (KiCad標準 MountingHole_2.7mm_M2.5_Pad と同じ作り: layers "*.Cu" "*.Mask")。
+    zone_connect 2 = GNDベタへベタ付け接続。
+
+    ★金属スペーサ/金属筐体で留めると、この穴を通じて**論理GNDが筐体に落ちる**。
+      本基板はMagJackのシェル用に「シャーシGNDの島」を4.7nF/2kVで論理GNDから
+      分離しているので、金属筐体だとその分離がネジ経由で短絡される。
+      樹脂スペーサを使うか、分離をやめる判断を意図的にすること。
+    ★ネジ頭が銅に直接触れるので、頭の外径(M2.6なめしなべで約5mm)が
+      隣の配線に乗らないよう、周囲はパッド径5.6mmぶん空けておく。
+    穴だけなので実装対象外(JLC発注除外)。
+    """
+    trait is_atomic_part<manufacturer="", partnumber="MountingHole_2.8mm_M2.6", footprint="MountingHole_2.8mm_M2.6_Pad.kicad_mod", symbol="MountingHole.kicad_sym">
+    trait has_designator_prefix<prefix="H">
+    trait has_part_removed
+    signal gnd ~ pin 1
+
+
 component Tp1Pad:
     """1穴THテストポイント(プローブ/ワイヤ用)。手実装/DNP。"""
     trait is_atomic_part<manufacturer="", partnumber="TestPoint_TH1", footprint="TestPoint_TH1.kicad_mod", symbol="TestPoint.kicad_sym">

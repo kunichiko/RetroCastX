@@ -8,7 +8,7 @@ import is_atomic_part
 import has_part_picked
 import has_designator_prefix
 import has_part_removed
-from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeader2x8Argus, Tp1Pad, PogoPin, HeaderJtag, HeaderOled, HeaderDebug20
+from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeader2x8Argus, Tp1Pad, PogoPin, HeaderJtag, HeaderOled, HeaderDebug20, MountingHoleM26
 from "parts/TE_Connectivity_1473005_4/sodimm_i5.ato" import SoDimmI5
 from "parts/RICHTEK_RT9013_18GB/RICHTEK_RT9013_18GB.ato" import RICHTEK_RT9013_18GB_package
 from "parts/FTDI_FT2232HL_REEL/FTDI_FT2232HL_REEL.ato" import FTDI_FT2232HL_REEL_package
@@ -1412,6 +1412,19 @@ module App:
     j11_argus.gnd ~ gnd
     j11_argus.sda ~ tvp.sda
     j11_argus.scl ~ tvp.scl
+
+    # --- 基板固定用ネジ穴 M2.6 ×5(GNDに接続) ---
+    # 穴径2.8mm(M2.6クリアランス普通級)・5.6mmアニュラーパッド・表裏露出。
+    # GNDベタへベタ付け(zone_connect 2)。
+    # ★金属スペーサ/金属筐体だと論理GNDが筐体に落ち、MagJack用のシャーシGND島の
+    #   分離(4.7nF/2kV)がネジ経由で短絡される。樹脂スペーサを使うか、分離をやめる
+    #   判断を意図的にすること。
+    mount = new MountingHoleM26[5]
+    mount[0].gnd ~ gnd
+    mount[1].gnd ~ gnd
+    mount[2].gnd ~ gnd
+    mount[3].gnd ~ gnd
+    mount[4].gnd ~ gnd
 
     # --- ステータス表示用 SSD1306 I2C OLED(128x64)ヘッダ ---
     # I2CバスをTVP7002と共有(OLED既定0x3C, TVP0x5C/EEPROM0x50-51と非衝突)。
