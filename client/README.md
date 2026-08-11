@@ -31,6 +31,28 @@ Set-NetAdapterAdvancedProperty -Name 'イーサネット' -RegistryKeyword '*Rec
 で、**errors≒0 なのに discards が大きい**ならこれ。詳細は
 [docs/design-notes.md](../docs/design-notes.md)。
 
+**アプリが自分で気付いて知らせる**(`src/netcheck.rs`)。README を読まなくても
+分かるように、右パネルの Stats に警告とコピーできるコマンドを出す。二段構え:
+
+1. **設定を読む。** ボードのIPから `GetBestInterfaceEx` で経路上のNICを引き
+   (全アダプタを見ると Wi-Fi と有線が両方生きている機械で誤判定する)、
+   LUID → GUID → レジストリの `*ReceiveBuffers` を読む。**読むだけなので管理者
+   権限は不要**(実機の ACL は `BUILTIN\Users: ReadKey`)
+2. **実測のロスを見る。** `*ReceiveBuffers` は NDIS の advanced property で、
+   **ドライバが公開していなければ存在しない**。実機の15アダプタのうち持っていたのは
+   Intel の有線だけで、TP-Link の Wi-Fi は持っていなかった。**無いことを「小さい」と
+   扱うと嘘の警告になる**ので、その場合は黙って実測のロス率だけで判断する
+
+`--netcheck <ボードのIP>` で GUI なしに結果だけ見られる。実機(Windows 11 26200)
+で4通りとも確認済み: Intel有線 → `Known{2048}`「足りています」、同じNICを一時的に
+256 にすると「小さすぎます」+ アダプタ名を埋めたコマンド、TP-Link Wi-Fi →
+`Unsupported`、Bluetooth PAN → `Unknown`。値は **REG_SZ の文字列**で入る
+(DWORD 決め打ちでは読めない)。
+
+一時変更の検証は `Set-NetAdapterAdvancedProperty ... -NoRestart` で行う。
+レジストリだけ書いてドライバを再起動しないので、**リンクが落ちず**(SSH越しでも
+切れない)実際の受信性能も変わらないまま、読み取り側の判定だけ確かめられる。
+
 sender_sim を相手にした動作確認:
 
 ```sh
@@ -115,6 +137,16 @@ Windows版はコンソール窓を出さずに起動する(`#![windows_subsystem
 コンソールから起動したときだけ `AttachConsole(ATTACH_PARENT_PROCESS)` で親の
 コンソールへ出力を戻すので、`--headless` の表示は失われない。
 
+**ただしスクリプトから呼ぶときは待たせること。** GUIサブシステムの実行ファイルは
+シェルが終了を待たないので、`& exe --netcheck ...` や `cmd /c exe > log` では
+**出力が間に合わず空になる**(実機でこれに引っかかった。exit code は 0 なので
+気付きにくい)。PowerShell なら:
+
+```powershell
+Start-Process -FilePath .\RetroCastX.exe -ArgumentList "--netcheck","192.168.11.50" `
+              -Wait -NoNewWindow -RedirectStandardOutput out.log
+```
+
 **exeへの埋め込みだけではタスクバーに出ない。** winit はウィンドウクラスを
 `hIcon: 0` で登録し、`window_icon` が `None` なら明示的にアイコンを外すので、
 
@@ -146,6 +178,7 @@ touch "/path/to/RetroCast X.app" && killall Dock
 - `src/main.rs` — eframe UI(映像表示 + モード/統計/発見ボードのサイドパネル)
 - `src/remote_input.rs` — MimicX へのキー転送(CoreMIDI SysEx)
 - `src/keytap.rs` — 物理キーの取り出し(macOS の AppKit イベント監視)
+- `src/netcheck.rs` — NIC受信バッファーの確認(Windows、レジストリを読む)
 
 ## MimicX と組み合わせてリモート操作する(macOS)
 
