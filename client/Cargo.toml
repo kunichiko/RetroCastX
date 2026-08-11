@@ -6,7 +6,17 @@ edition = "2024"
 [target.'cfg(windows)'.dependencies]
 # コンソール窓を出さずに起動し(windows_subsystem)、コンソールから起動された
 # ときだけ親のコンソールへ出力を戻すため
-windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+# 残りの feature は NIC 受信バッファーの確認(src/netcheck.rs)に使う。
+# 経路から NIC を引き、レジストリの *ReceiveBuffers を読む
+windows-sys = { version = "0.61", features = [
+    "Win32_System_Console",
+    "Win32_System_Registry",
+    "Win32_NetworkManagement_IpHelper",
+    # ConvertInterface* は LUID 型が Ndis 側にあるため、この feature の配下にある
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    "Win32_Foundation",
+] }
 
 [target.'cfg(windows)'.build-dependencies]
 # 実行ファイルへのアイコン埋め込み(build.rs)。Windows以外では取得も不要
