@@ -196,8 +196,25 @@ component HeaderOled:
     signal scl ~ pin 3   # SCK
     signal sda ~ pin 4
 
+component SolderJumperClosed:
+    """はんだジャンパ(2パッド)・**既定=閉**。2つのパッドが0.8mm幅の銅ブリッジで
+    繋がっており、ギャップ部にマスク開口があるのでナイフで切って開に、
+    再度はんだを盛れば閉に戻せる(KiCad標準 SolderJumper-2_..._Bridged と同じ作り)。
+
+    ブリッジ断面は 0.8 × 0.035mm(1oz)で長さ0.3mm、両側の大きなパッドに熱が逃げるので
+    1A以上流せる。**設計意図が「既定で繋がっている」ジャンパにはこちらを使う。**
+    開放が既定のものは SolderJumper(下記)を使う。
+    """
+    trait is_atomic_part<manufacturer="", partnumber="SolderJumper_2_Bridged", footprint="SolderJumper_2_Bridged.kicad_mod", symbol="SolderJumper_2.kicad_sym">
+    trait has_designator_prefix<prefix="JP">
+    trait has_part_removed  # 銅で繋がっているだけなので実装部品は無い
+    signal a ~ pin 1
+    signal b ~ pin 2
+
+
 component SolderJumper:
-    """はんだジャンパ(2パッド)。フットプリントはKiCad標準 SolderJumper-2 を想定。"""
+    """はんだジャンパ(2パッド)・**既定=開**(銅ブリッジ無し)。閉にするには
+    はんだを盛る。既定で繋がっている必要があるものには SolderJumperClosed を使う。"""
     trait is_atomic_part<manufacturer="", partnumber="SolderJumper_2", footprint="SolderJumper_2.kicad_mod", symbol="SolderJumper_2.kicad_sym">
     trait has_designator_prefix<prefix="JP">
     trait has_part_removed  # 手実装/DNP: 基板にFPは載せるがJLC発注しない

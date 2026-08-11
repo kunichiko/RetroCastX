@@ -8,7 +8,7 @@ import is_atomic_part
 import has_part_picked
 import has_designator_prefix
 import has_part_removed
-from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeader2x8Argus, Tp1Pad, PogoPin, HeaderJtag, HeaderOled, HeaderDebug20, MountingHoleM26
+from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeader2x8Argus, Tp1Pad, PogoPin, HeaderJtag, HeaderOled, HeaderDebug20, MountingHoleM26, SolderJumperClosed
 from "parts/TE_Connectivity_1473005_4/sodimm_i5.ato" import SoDimmI5
 from "parts/RICHTEK_RT9013_18GB/RICHTEK_RT9013_18GB.ato" import RICHTEK_RT9013_18GB_package
 from "parts/FTDI_FT2232HL_REEL/FTDI_FT2232HL_REEL.ato" import FTDI_FT2232HL_REEL_package
@@ -1012,7 +1012,11 @@ module App:
     jtag_hdr.vref ~ p3v3_io.hv
 
     signal p5v_ext
-    sj_ext5v = new SolderJumper
+    # ★既定=閉のジャンパを使う(2026-08-11 修正)。ここは i5 モジュールへの5V供給
+    #   全部が通る経路で「SJ1(閉=既定)」という設計意図なのに、フットプリントが
+    #   銅ブリッジ無し=既定開だった。そのまま起こすと**基板が出来た時点では
+    #   i5に5Vが来ず、はんだを盛るまで動かない**状態になっていた。
+    sj_ext5v = new SolderJumperClosed
     p5v_ext ~ sj_ext5v.a
     sj_ext5v.b ~ power_5v.hv
     jack.center ~ power_5v.hv
@@ -1369,13 +1373,15 @@ module App:
     adc_dsub.gnd ~ gnd
     adc_dsub.power_5va ~ p5v_audio
     adc_dsub.power_3v3 ~ p3v3_io
-    # X68000のD-SUB15はpin10=AUDIO-L, pin11=AUDIO-R。SJで切離し可(LINE入力優先時等)
-    sj_aud_l = new SolderJumper
-    sj_aud_r = new SolderJumper
-    vga.audio_l ~ sj_aud_l.a   # DSUB15 pin10
-    sj_aud_l.b ~ adc_dsub.in_l
-    vga.audio_r ~ sj_aud_r.a   # DSUB15 pin11
-    sj_aud_r.b ~ adc_dsub.in_r
+    # X68000のD-SUB15は pin10=AUDIO-L, pin11=AUDIO-R。ADCへ直結する。
+    # 以前は切り離し用のはんだジャンパを入れていたが削除した(2026-08-11):
+    #   - 当初の理由は「VGA HD-15のpin4/11はID/DDCなので、一般VGAケーブルを挿す運用では
+    #     切り離せるようにする」だった。しかしコネクタを**2列DA-15(X68000式)**へ変更した
+    #     時点で3列のVGAケーブルは物理的に挿せなくなり、この理由は消えていた
+    #   - その後コメントは「LINE入力優先時」に書き換わっていたが、**LINE入力はADCが
+    #     別(U1=D-SUB / U2=LINE)でDOUTも個別**なので、D-SUB側を切る必要はない
+    vga.audio_l ~ adc_dsub.in_l   # DSUB15 pin10
+    vga.audio_r ~ adc_dsub.in_r   # DSUB15 pin11
 
     # ADC B: 基板上の3.5mmステレオLINE入力
     adc_line = new AudioAdc

@@ -159,7 +159,6 @@
 	(net 4 "p3v3_a")
 	(net 5 "pll_avdd")
 	(net 6 "sda")
-	(net 7 "aud_dsub_l")
 	(net 8 "esd_rgb-6")
 	(net 9 "esd_sync-4")
 	(net 10 "esd_sync-6")
@@ -169,7 +168,6 @@
 	(net 14 "gin2_nc")
 	(net 15 "sogin1_nc")
 	(net 16 "pll_filt1")
-	(net 17 "aud_dsub_r")
 	(net 18 "jack_line-switch")
 	(net 19 "p1v9_d")
 	(net 20 "rin2_nc")
@@ -186,8 +184,6 @@
 	(net 31 "vin_g")
 	(net 32 "vin_r")
 	(net 33 "vsync")
-	(net 34 "audio_r")
-	(net 35 "audio_l")
 	(net 36 "ys")
 	(net 37 "A5")
 	(net 38 "p5v")
@@ -386,6 +382,8 @@
 	(net 236 "drgbi_g")
 	(net 237 "drgbi_b")
 	(net 238 "drgbi_i")
+	(net 114 "aud_dsub_r")
+	(net 115 "aud_dsub_l")
 	(footprint "UNKNOWN_TYPE_C_31_M_12:USB-C_SMD-TYPE-C-31-M-12_1"
 		(layer "F.Cu")
 		(uuid "0192066a-6e01-44de-a0c1-54844642524b")
@@ -9607,7 +9605,7 @@
 			(size 1.8 1.8)
 			(drill 1.199896)
 			(layers "*.Cu" "*.Mask")
-			(net 35 "audio_l")
+			(net 115 "aud_dsub_l")
 			(uuid "3d9356a8-23b8-4f95-acfd-19f9c5693137")
 		)
 		(pad "11" thru_hole circle
@@ -9615,7 +9613,7 @@
 			(size 1.8 1.8)
 			(drill 1.199896)
 			(layers "*.Cu" "*.Mask")
-			(net 34 "audio_r")
+			(net 114 "aud_dsub_r")
 			(uuid "efbdbe9f-745d-4df3-a0da-d95000ba596e")
 		)
 		(pad "12" thru_hole circle
@@ -11304,7 +11302,7 @@
 			)
 		)
 	)
-	(footprint "_mech:SolderJumper_2"
+	(footprint "_mech:SolderJumper_2_Bridged"
 		(layer "F.Cu")
 		(uuid "3af29c02-0877-471d-a288-26324642524b")
 		(at 105.4 132)
@@ -11369,18 +11367,100 @@
 				)
 			)
 		)
-		(attr smd exclude_from_pos_files)
+		(attr smd exclude_from_pos_files exclude_from_bom)
+		(fp_line
+			(start -1.3 -0.9)
+			(end 1.3 -0.9)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(layers "F.SilkS")
+			(locked no)
+			(uuid "28d48e2d-31f5-43fa-9fd0-53683965e02b")
+		)
+		(fp_line
+			(start 1.3 -0.9)
+			(end 1.3 0.9)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(layers "F.SilkS")
+			(locked no)
+			(uuid "4857ed1a-0d26-44d3-832a-da6d43ddd075")
+		)
+		(fp_line
+			(start 1.3 0.9)
+			(end -1.3 0.9)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(layers "F.SilkS")
+			(locked no)
+			(uuid "ed5453ee-e5f7-4209-ab26-37c9f73e8dde")
+		)
+		(fp_line
+			(start -1.3 0.9)
+			(end -1.3 -0.9)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(layers "F.SilkS")
+			(locked no)
+			(uuid "41eae94b-6401-4f7b-9ea0-2e49ace45c9a")
+		)
+		(fp_rect
+			(start -1.35 -0.95)
+			(end 1.35 0.95)
+			(stroke
+				(width 0.05)
+				(type solid)
+			)
+			(fill no)
+			(layer "F.CrtYd")
+			(uuid "7223c497-a4b0-44b3-ad6f-494bf231eba5")
+		)
+		(fp_rect
+			(start -0.15 -0.6)
+			(end 0.15 0.6)
+			(stroke
+				(width 0)
+				(type solid)
+			)
+			(fill yes)
+			(layer "F.Mask")
+			(uuid "9ca86581-cf28-47d7-8672-bb78c91b23b0")
+		)
+		(fp_poly
+			(pts
+				(xy -0.2 -0.4) (xy 0.2 -0.4) (xy 0.2 0.4) (xy -0.2 0.4)
+			)
+			(stroke
+				(width 0)
+				(type solid)
+			)
+			(fill yes)
+			(layer "F.Cu")
+			(uuid "4e311a66-8c48-4b3a-bdb7-b93ba8745cdd")
+		)
 		(pad "1" smd rect
 			(at -0.6 0)
 			(size 0.9 1.2)
-			(layers "F.Cu" "F.Mask" "F.Paste")
+			(layers "F.Cu" "F.Mask")
 			(net 149 "p5v_ext")
 			(uuid "39b27b5c-b2e2-4577-8d3a-7ba4b3a3dc77")
 		)
 		(pad "2" smd rect
 			(at 0.6 0)
 			(size 0.9 1.2)
-			(layers "F.Cu" "F.Mask" "F.Paste")
+			(layers "F.Cu" "F.Mask")
 			(net 38 "p5v")
 			(uuid "d9e9b5fd-4262-4efd-b7e1-ff953dfe2ea9")
 		)
@@ -17013,88 +17093,6 @@
 				(xyz 0 0 270)
 			)
 		)
-	)
-	(footprint "_mech:SolderJumper_2"
-		(layer "F.Cu")
-		(uuid "605ac85a-0fcd-4904-8452-cddf4642524b")
-		(at 108.5 83)
-		(descr "2-pad solder jumper, hand-configured.")
-		(property "Reference" "JP1"
-			(at 0 0 0)
-			(layer "F.SilkS")
-			(hide yes)
-			(uuid "5cf75e35-97c9-40cc-bd93-5b834642524b")
-			(effects
-				(font
-					(size 1.27 1.27)
-					(thickness 0.15)
-				)
-			)
-		)
-		(property "Value" ""
-			(at 0 0 0)
-			(layer "F.Fab")
-			(hide yes)
-			(uuid "61fb2a31-e750-44d0-a39c-f64a4642524b")
-			(effects
-				(font
-					(size 1.27 1.27)
-					(thickness 0.15)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 0 0 0)
-			(layer "F.Fab")
-			(hide yes)
-			(uuid "93785bb8-3b27-4b4e-af32-63db18a92b46")
-			(effects
-				(font
-					(size 1.27 1.27)
-					(thickness 0.15)
-				)
-			)
-		)
-		(property "Description" ""
-			(at 0 0 0)
-			(layer "F.Fab")
-			(hide yes)
-			(uuid "069bafa7-1ae8-43a6-b344-a465d05e54e3")
-			(effects
-				(font
-					(size 1.27 1.27)
-					(thickness 0.15)
-				)
-			)
-		)
-		(property "atopile_address" "sj_aud_l"
-			(at 0 0 0)
-			(layer "User.9")
-			(hide yes)
-			(uuid "aa5e261e-d327-4e50-84f7-bb3c4642524b")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
-		(attr smd exclude_from_pos_files)
-		(pad "1" smd rect
-			(at -0.6 0)
-			(size 0.9 1.2)
-			(layers "F.Cu" "F.Mask" "F.Paste")
-			(net 35 "audio_l")
-			(uuid "31165598-b8cb-4c2d-b6bb-8b5255688bc3")
-		)
-		(pad "2" smd rect
-			(at 0.6 0)
-			(size 0.9 1.2)
-			(layers "F.Cu" "F.Mask" "F.Paste")
-			(net 7 "aud_dsub_l")
-			(uuid "eb030ff4-11c0-43b2-aa71-5c9e6f36646b")
-		)
-		(embedded_fonts no)
 	)
 	(footprint "FH_0402B102K500NT:C0402"
 		(layer "F.Cu")
@@ -24445,7 +24443,7 @@
 			(at -0.7 0 0)
 			(size 0.8 0.9)
 			(layers "F.Cu" "F.Paste" "F.Mask")
-			(net 17 "aud_dsub_r")
+			(net 114 "aud_dsub_r")
 			(uuid "3ce8992e-e2e1-483f-a260-59cf8f8a15ae")
 		)
 		(pad "2" smd rect
@@ -26116,7 +26114,7 @@
 			(at -0.7 0 0)
 			(size 0.8 0.9)
 			(layers "F.Cu" "F.Paste" "F.Mask")
-			(net 7 "aud_dsub_l")
+			(net 115 "aud_dsub_l")
 			(uuid "7cd98ff4-a2aa-4377-ac89-e80217231e29")
 		)
 		(pad "2" smd rect
@@ -26327,7 +26325,7 @@
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
 			(remove_unused_layers no)
-			(net 35 "audio_l")
+			(net 115 "aud_dsub_l")
 			(uuid "4e27a1b1-79eb-44b7-a17d-442cfce9f9be")
 		)
 		(pad "8" thru_hole oval
@@ -26336,7 +26334,7 @@
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
 			(remove_unused_layers no)
-			(net 34 "audio_r")
+			(net 114 "aud_dsub_r")
 			(uuid "29093161-df23-49a2-a9ab-d6b853f4a682")
 		)
 		(pad "9" thru_hole oval
@@ -29092,88 +29090,6 @@
 				(xyz 0 0 0)
 			)
 		)
-	)
-	(footprint "_mech:SolderJumper_2"
-		(layer "F.Cu")
-		(uuid "adcfbdd2-7746-41c5-870a-0e314642524b")
-		(at 108.5 84.75)
-		(descr "2-pad solder jumper, hand-configured.")
-		(property "Reference" "JP2"
-			(at 0 0 0)
-			(layer "F.SilkS")
-			(hide yes)
-			(uuid "d25e1e3c-1cd4-4136-a087-5d8d4642524b")
-			(effects
-				(font
-					(size 1.27 1.27)
-					(thickness 0.15)
-				)
-			)
-		)
-		(property "Value" ""
-			(at 0 0 0)
-			(layer "F.Fab")
-			(hide yes)
-			(uuid "bfdcb967-f082-47bc-abbf-bdf44642524b")
-			(effects
-				(font
-					(size 1.27 1.27)
-					(thickness 0.15)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 0 0 0)
-			(layer "F.Fab")
-			(hide yes)
-			(uuid "4c64e041-c580-49f4-a3a0-94a8fbefdffd")
-			(effects
-				(font
-					(size 1.27 1.27)
-					(thickness 0.15)
-				)
-			)
-		)
-		(property "Description" ""
-			(at 0 0 0)
-			(layer "F.Fab")
-			(hide yes)
-			(uuid "c463da3c-4865-46c0-a561-48b690e73497")
-			(effects
-				(font
-					(size 1.27 1.27)
-					(thickness 0.15)
-				)
-			)
-		)
-		(property "atopile_address" "sj_aud_r"
-			(at 0 0 0)
-			(layer "User.9")
-			(hide yes)
-			(uuid "40548235-6d31-49be-856b-d8324642524b")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
-		(attr smd exclude_from_pos_files)
-		(pad "1" smd rect
-			(at -0.6 0)
-			(size 0.9 1.2)
-			(layers "F.Cu" "F.Mask" "F.Paste")
-			(net 34 "audio_r")
-			(uuid "6b12956d-793f-4701-9f4d-19cd70794b30")
-		)
-		(pad "2" smd rect
-			(at 0.6 0)
-			(size 0.9 1.2)
-			(layers "F.Cu" "F.Mask" "F.Paste")
-			(net 17 "aud_dsub_r")
-			(uuid "0d0324de-f192-448f-8abc-0f0abbbaa406")
-		)
-		(embedded_fonts no)
 	)
 	(footprint "_mech:SolderJumper_2"
 		(layer "F.Cu")
@@ -44614,7 +44530,7 @@
 			(at -0.5 -0.75 0)
 			(size 0.28 0.6)
 			(layers "B.Cu" "B.Paste" "B.Mask")
-			(net 7 "aud_dsub_l")
+			(net 115 "aud_dsub_l")
 			(uuid "78bf57e1-c569-4d51-851d-5776cc65d700")
 		)
 		(pad "2" smd rect
@@ -44628,7 +44544,7 @@
 			(at 0.5 -0.75 0)
 			(size 0.28 0.6)
 			(layers "B.Cu" "B.Paste" "B.Mask")
-			(net 17 "aud_dsub_r")
+			(net 114 "aud_dsub_r")
 			(uuid "01f1520d-03f4-41ac-8b10-bb67627a42a6")
 		)
 		(pad "4" smd rect
