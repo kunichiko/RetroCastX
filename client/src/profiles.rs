@@ -39,11 +39,23 @@ pub struct Profile {
     /// htotal の粒度。X68000のCRTCは水平トータルを8ドット単位で持つので、
     /// 正解は必ず8の倍数になる。この制約が候補をさらに絞る
     pub htotal_multiple: i32,
+    /// 実機で裏を取れているか。**自動選択の順位付けに使う。**
+    ///
+    /// 水晶が違っても fH ひとつからは同じくらいよく合う候補が出ることがある。
+    /// 実際 MSX の fH 15.699kHz に対し、未検証の pc98(21.0525MHz)が
+    /// htotal 1341(相対誤差 6.7e-6)で、正解の msx(342、相対誤差 4.8e-5)より
+    /// 良く見えてしまう。残差の閾値を通っている時点でどちらも「信号を説明できる」
+    /// ので、そこから先は推測の水晶より実測済みの水晶を優先する。
+    pub verified: bool,
 }
 
-/// 実測で裏を取れているのは x68000 だけ。3帯域すべてが2つの水晶の分周で
-/// 説明でき、このプロジェクトの記録(31kHz→1104 / 24kHz→1408 / 15kHz→1216)と
-/// 一致した。他は候補の並びを見る参考に留めること。
+/// 実測で裏を取れているのは x68000 と msx。
+///
+/// x68000 は3帯域すべてが2つの水晶の分周で説明でき、このプロジェクトの記録
+/// (31kHz→1104 / 24kHz→1408 / 15kHz→1216)と一致した。
+/// msx は実機の fH 15.699kHz から 342.0165(ずれ0.017)が出て、Viewer の表示
+/// (dotclk 21.4773MHz / total 1368x262)とも一致した。
+/// vga / pc98 は未検証で、候補の並びを見る参考に留めること。
 pub const PROFILES: &[Profile] = &[
     Profile {
         key: "x68000",
@@ -51,6 +63,31 @@ pub const PROFILES: &[Profile] = &[
         oscillators: &[("69.55199MHz", 69.551_99e6), ("38.86363MHz", 38.863_63e6)],
         dividers: &[1, 2, 4, 8],
         htotal_multiple: 8,
+        verified: true,
+    },
+    Profile {
+        key: "msx",
+        label: "MSX",
+        // 水晶 21.477270MHz = NTSCカラーサブキャリア 3.579545MHz × 6。
+        // VDP(V9938/V9958)のドットクロックはこの 1/4 = 5.3693MHz(256ドット系)と
+        // 1/2 = 10.7386MHz(512ドット系 SCREEN 6/7)。どちらも htotal は
+        // 342 / 684 で、TVPの下限12MHzを満たす整数倍にすると両方 pll_divide=1368 に
+        // 収束する。
+        //
+        // 実機確認: MSX turboR の BASIC 画面で fH 15.699kHz を実測。
+        //   f_dot/fH = 5.369318MHz / 15699Hz = 342.0165 (整数からのずれ 0.017)
+        //   逆算した正確な fH = 15699.76Hz
+        // Viewer 上の表示も dotclk 21.4773MHz / total 1368x262 で一致した。
+        //
+        // dividers に 1 や 8 を入れないのは、実在しないドットクロックで他機種の
+        // fH に誤マッチするのを避けるため(1368/171 も同じ pll_divide に収束するので
+        // 入れても得は無い)。
+        oscillators: &[("21.47727MHz", 21.477_270e6)],
+        dividers: &[2, 4],
+        // MSXのVDPは htotal 342 固定(512ドット系でもドットクロックが倍になるだけ)
+        // なので粒度の概念が無い。制約は付けず、相対誤差だけで判定させる。
+        htotal_multiple: 1,
+        verified: true,
     },
     Profile {
         key: "vga",
@@ -58,6 +95,7 @@ pub const PROFILES: &[Profile] = &[
         oscillators: &[("25.175MHz", 25.175e6), ("28.322MHz", 28.322e6)],
         dividers: &[1, 2],
         htotal_multiple: 1,
+        verified: false,
     },
     Profile {
         key: "pc98",
@@ -65,6 +103,7 @@ pub const PROFILES: &[Profile] = &[
         oscillators: &[("21.0525MHz", 21.052_5e6), ("25.175MHz", 25.175e6)],
         dividers: &[1, 2],
         htotal_multiple: 1,
+        verified: false,
     },
 ];
 
@@ -193,6 +232,9 @@ pub fn best_over_all(fh_hz: f64) -> Option<(&'static Profile, Candidate)> {
     ranked.sort_by(|a, b| {
         b.1.multiple_ok
             .cmp(&a.1.multiple_ok)
+            // 残差の閾値を通った時点でどちらも信号を説明できているので、
+            // 相対誤差の僅差より「実機で裏を取れているか」を優先する
+            .then(b.0.verified.cmp(&a.0.verified))
             .then(a.1.rel_err().partial_cmp(&b.1.rel_err()).unwrap())
     });
     ranked.into_iter().next()
@@ -214,6 +256,28 @@ mod tests {
             let c = best(p, fh).expect("候補なし");
             assert_eq!(c.pll_divide, want, "fH={fh} で {} を選んだ", c.pll_divide);
         }
+    }
+
+    /// MSX実機(fH 15.699kHz)。htotal 342 の4倍オーバーサンプルで 1368。
+    #[test]
+    fn msx_basic() {
+        let p = by_key("msx").unwrap();
+        let c = best(p, 15699.0).expect("候補なし");
+        assert_eq!(c.pll_divide, 1368, "選んだのは {}", c.pll_divide);
+        assert_eq!(c.htotal * c.oversample, 1368);
+    }
+
+    /// x68000 の15kHz(fH 15.98kHz)を msx と取り違えないこと。
+    /// 両者は帯域が近いので、プロファイル自動選択がここで崩れると実害が出る。
+    #[test]
+    fn msx_and_x68000_15khz_are_distinguished() {
+        let (p, c) = best_over_all(15980.0).expect("候補なし");
+        assert_eq!(p.key, "x68000", "X68000の15kHzで {} を選んだ", p.key);
+        assert_eq!(c.pll_divide, 1216);
+
+        let (p, c) = best_over_all(15699.0).expect("候補なし");
+        assert_eq!(p.key, "msx", "MSXのfHで {} を選んだ", p.key);
+        assert_eq!(c.pll_divide, 1368);
     }
 
     #[test]
