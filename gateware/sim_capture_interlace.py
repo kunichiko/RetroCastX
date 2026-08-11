@@ -97,6 +97,9 @@ def run(interlace: bool, nframes=4):
         # 折り返し点は常に vtotal/2(F2_ROW = VTOTAL//2 と一致)。手で指定する
         # 設定は撤去した(信号から測れる量なので)
         yield cap.cfg_il_detect.eq(1 if interlace else 0)
+        # TVPが測るフレーム当たりライン数。方式1はVSOUTがフレームに1回なので
+        # VSOUT間の行数(VTOTAL)とフレーム当たり行数が一致する → il_frame=1
+        yield cap.cfg_lpf_tvp.eq(VTOTAL)
         yield cap.cfg_vactive.eq(VACT)
         for _ in range(5):
             yield
@@ -148,9 +151,14 @@ def tag_of(px):
 
 LINE_CYCLES = 12          # 方式2の検証で使う1ラインの長さ[pixクロック]
 VT2 = 8                   # 方式2の1フィールドあたり行数
+# 方式2の有効行数。**VT2/2 より大きくすること。**
+# 折り返し点は vtotal/2 = VT2/2 = 4 なので、有効行がそこを超えていないと
+# 「誤って折り返す」不具合がテストに現れない(以前 VACT=4 でちょうど境界に
+# 乗っており、il_frame を間違えても結果が変わらなかった)。
+VACT2 = 6
 
 
-def run_mode2(swap=0, nframes=5):
+def run_mode2(nframes=6):
     """方式2: VSYNCがフィールドごとに来る。極性はVSYNCの水平位相で決まる。
 
     片方のフィールドはVSYNCがラインの先頭付近、もう片方は中央付近に来る。
@@ -197,18 +205,24 @@ def run_mode2(swap=0, nframes=5):
 
     def tb():
         yield cap.cfg_il_detect.eq(1)
+        # 方式2はVSOUTがフィールドごとに来るので、VSOUT間の行数(VT2)に対して
+        # TVPのフレーム当たりライン数はその2倍になる → il_frame=0(折り返さない)。
+        # ここを与えないとフォールバックで「フレーム単位」と誤判定し、
+        # 折り返し点 VT2/2 で1フィールドを真ん中から割ってしまう
+        # (実機のMSXインターレースで絵がスカスカのストライプになった症状)
+        yield cap.cfg_lpf_tvp.eq(VT2 * 2)
         yield cap.cfg_hs_total.eq(LINE_CYCLES)
         yield cap.cfg_vtotal.eq(VT2)
         yield cap.cfg_vs_min_rows.eq(VT2 - 2)
         yield cap.cfg_vs_row_at_sync.eq(0)
-        yield cap.cfg_vactive.eq(VACT)
+        yield cap.cfg_vactive.eq(VACT2)
         for _ in range(5):
             yield
         for f in range(nframes):
             # 偶数フィールドはVSYNCをラインの先頭付近、奇数は中央付近に置く
             vs_at = 0 if f % 2 == 0 else LINE_CYCLES // 2
             for r in range(VT2):
-                tag = r if r < VACT else None
+                tag = r if r < VACT2 else None
                 yield from hline(tag, vs_at if r == 0 else None)
                 yield from drain()
         for _ in range(20):
@@ -257,6 +271,28 @@ def main():
         assert rows == [2 * k for k in range(VACT)], \
             f"スロットが1つ飛びになっていない: {rows}"
     print(f"  [OK] スロット 0,2,..,{2 * (VACT - 1)} に並ぶ")
+
+    print("\n=== 方式2: VSOUTがフィールドごとに来る(MSX等、C-SYNCをSOGで受ける機種) ===")
+    # このときVSOUT間の行数は1フィールド分なので、折り返してはいけない。
+    # 折り返すか否かは cfg_lpf_tvp(TVPのフレーム当たりライン数)との比で決まる。
+    for frame, lines in run_mode2():
+        rows = [r for r, _ in lines]
+        print(f"  field {frame}: slots {rows}")
+        # 1フィールド分の行が、折り返されずに等間隔(2つ飛び)で並ぶこと。
+        # 誤って折り返すと frow が途中で0へ戻り、スロットが重複/逆行する。
+        assert len(rows) == VACT2, f"行数が合わない: {rows} (期待 {VACT2}行)"
+        assert rows == sorted(rows), f"スロットが逆行している(折り返しの疑い): {rows}"
+        assert all(b - a == 2 for a, b in zip(rows, rows[1:])), \
+            f"スロットが等間隔でない(折り返しの疑い): {rows}"
+        # 折り返しの検出はスロット側(等間隔・単調増加)が担う。折り返すと
+        # frow が途中で0へ戻り、スロットが 0,2,4,6,1,3 のように逆行する。
+        # 中身は「1フィールド分の全行が重複なく揃っているか」を見る。
+        # (並びが1つ回るのは、VSYNCを行0の途中で立てる模擬のためで折り返しではない)
+        tags = [tag_of(px) for _, px in lines]
+        assert sorted(tags) == list(range(VACT2)), \
+            f"1フィールド分の行が揃っていない: {tags}"
+        print(f"           中身 tag {tags}")
+    print(f"  [OK] 折り返さずに1フィールド{VACT2}行が等間隔・連番で並ぶ")
 
     print("\nALL OK")
 

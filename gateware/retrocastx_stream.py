@@ -1308,6 +1308,10 @@ class RetroCastXStream(SoCMini):
                 #   見ていて、インターレース判定が実質乱数になっていた。
                 #   レジスタ名の根拠: Linux drivers/media/i2c/tvp7002_reg.h
                 self.capture.cfg_il_detect.eq(~self.status.lpf_lo[5]),
+                # TVPが測ったフレーム当たりライン数(37h=LSBs, 38h[3:0]=MSBs)。
+                # VSOUTがフィールド単位かフレーム単位かの判別に使う
+                self.capture.cfg_lpf_tvp.eq(Cat(self.status.lpf_hi,
+                                                self.status.lpf_lo[0:4])),
                 self.streamer.stat_lpf_hi.eq(self.status.lpf_hi),
                 self.streamer.stat_syncdet.eq(self.status.syncdet),
                 self.streamer.stat_lpf_msbs.eq(self.status.lpf_lo),
@@ -1360,7 +1364,14 @@ def main():
     # あと seed 2 は eth_rx 123.17MHz で落ち、seed 3 は 131.51MHz で通った
     # (同ビルドの sys は 52.92 → 55.39MHz。要求45MHzに対して余裕があるので、
     # 段を足したこと自体は効いていない)。既定を通る方へ寄せてある。
-    ap.add_argument("--seed", type=int, default=3, help="nextpnr placement seed")
+    #
+    # 2026-08-12: インターレースのフィールド単位判定(cfg_lpf_tvp)を足したところ、
+    # 今度は seed 3 が eth_rx 123.59MHz で落ちた。判定をsysドメインへ移して
+    # pix側の比較器と16bitのCDCを無くしても 124.19MHz で変わらず、ロジック量では
+    # なく配置運の問題だった。他のシードは全て余裕を持って通ったので既定を 5 にする:
+    #   seed 1 = 128.01MHz / seed 5 = 140.61MHz / seed 7 = 126.69MHz (いずれもPASS)
+    # ロジックを足して eth_rx が落ちたら、まず数シード試すこと。
+    ap.add_argument("--seed", type=int, default=5, help="nextpnr placement seed")
     ap.add_argument("--no-capture", action="store_true",
                     help="実キャプチャを無効化しテストパターンを送出")
     # 入力mux(0x19)の切り替え。既定は全て _3 = 基板配線。緑のクランプ異常の

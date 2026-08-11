@@ -157,6 +157,11 @@ class TvpCapture(Module):
         # on the H-PLL being locked. 0 = Interlaced video detected"。
         # 1 なら折り返し+スロット偶奇の振り分けを自動で行う。
         self.cfg_il_detect     = Signal()
+        # TVP自身が測った Lines per Frame(レジスタ37h:38h の12bit)。上位から供給。
+        # 「VSOUTがフィールド単位か frame単位か」の判別に使う。生同期が来ない機種
+        # (C-SYNCのみ→SOG)では meas_lines_raw が0になるので、こちらが唯一の手掛かり。
+        # 0 なら未供給とみなして従来の仮定に落ちる。
+        self.cfg_lpf_tvp       = Signal(12)
         # 1 で生同期の位相を使わない(切り分け用)。既定0=生同期があれば使う。
         self.cfg_no_raw_phase  = Signal()
         # ラインごとのHSYNC周期を測るプローブ。
@@ -399,15 +404,39 @@ class TvpCapture(Module):
         # (5シード中4つが 123〜124MHz で失敗)。判定はモード切替時にしか
         # 変わらないので1クロック遅れは無害。
         il_frame = Signal()      # TVPのvtotalがフレーム全体を覆っているか
-        raw_lines = Signal(16)
-        self.specials += MultiReg(self.meas_lines_raw[:16], raw_lines, "pix")
-        # 生同期が無い環境(旧基板/SIM)では判別できないので、従来どおり
-        # 「フレーム単位」と仮定して折り返す(24kHz 1024x848 はこれで正しく動いていた)。
-        self.sync.pix += If(raw_lines > 32,
-            il_frame.eq(self.cfg_vtotal > (raw_lines + (raw_lines >> 1))),  # >1.5×生
+        # 判定に使う3つ(cfg_vtotal / meas_lines_raw / cfg_lpf_tvp)は全て sys の
+        # レジスタなので、**判定ごと sys で済ませて1bitだけCDCする**。
+        # 以前は meas_lines_raw を16bitでCDCして pix 側で比較していたが、そこへ
+        # cfg_lpf_tvp との比較を足したら eth_rx が 123.59MHz まで落ちて要求125MHzを
+        # 割った(配線後の最終レポート)。pix側の比較器と広いCDCを無くすことで、
+        # in_f2 → frow → fe → row_eff の組合せも短くなる。
+        # 判定はモード切替時にしか変わらないので、CDCの遅れは無害。
+        il_frame_sys = Signal()
+        self.sync += If(self.meas_lines_raw > 32,
+            # 生同期が使える機種: TVPのvtotalが生のライン数の1.5倍を超えるか
+            il_frame_sys.eq(self.cfg_vtotal >
+                            (self.meas_lines_raw + (self.meas_lines_raw >> 1))),
+        ).Elif(self.cfg_lpf_tvp != 0,
+            # 生同期が使えない機種(MSXのようにC-SYNCしか出ずSOG経由で受けるもの)は
+            # meas_lines_raw が0のままなので上が使えない。TVP自身の Lines per Frame
+            # (レジスタ37h:38h、内部基準で測るのでH-PLLにも生同期にも依存しない)と
+            # cfg_vtotal(VSOUT間のライン数)を比べれば同じ判別ができる:
+            #   フレーム単位 cfg_vtotal ≈ LPF     → 1.5倍すればLPFを超える
+            #   フィールド単位 cfg_vtotal ≈ LPF/2 → 1.5倍してもLPFに届かない
+            # 実測(MSXインターレース): LPF=525, cfg_vtotal=262 → 393 < 525 でフィールド単位。
+            # 以前はここが無く「フレーム単位」と決め打ちしていたため、折り返し点
+            # vtotal/2 で1フィールドを真ん中から割っていた(絵がスカスカのストライプ)。
+            #
+            # 0 は「上位から未供給」の意味。TVPが壊れた値(実測で Lines per Frame が
+            # 1 になる状態を見ている)を返しても、その場合は比較が真になって従来どおり
+            # 「フレーム単位」に落ちるので害は無い。
+            il_frame_sys.eq((self.cfg_vtotal + (self.cfg_vtotal >> 1)) >
+                            self.cfg_lpf_tvp),
         ).Else(
-            il_frame.eq(1),
+            # どちらも無い(SIM等)。従来どおりフレーム単位と仮定する
+            il_frame_sys.eq(1),
         )
+        self.specials += MultiReg(il_frame_sys, il_frame, "pix")
         il_det = Signal()
         self.comb += [
             il_det.eq(self.cfg_il_detect),

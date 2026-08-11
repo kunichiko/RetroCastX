@@ -377,8 +377,17 @@ class StatusDisplay(Module):
         #               0x5B=SOG(HもVもSOGから。映像レベルCSYNC/sync-on-green)
         #          0x11<-同期セパレータ閾値, 0x12/0x13<-Pre/Post-Coast
         #               (既定0でcoast未生成。CSYNC運用では要設定)
-        #          0x17<-0x02(Output En=0: RGB/DATACLK/HSOUT/VSOUT/FIDOUT 出力ON。
-        #                     既定0x03はbit0=1で全出力Hi-Z=DATACLKが出ない。SOG Enは1のまま)
+        #          0x17<-0x00(Output En=0 かつ SOG En=0)
+        #            bit0 Output En: 0で RGB/DATACLK/HSOUT/VSOUT/FIDOUT を出力。
+        #              既定0x03はbit0=1で全出力Hi-Z=DATACLKが出ない。
+        #            bit1 SOG En: 0で SOGOUT(同期スライサの出力そのもの)を出力。
+        #              既定1はHi-Z。**インターレースのフィールド極性のために有効にする。**
+        #              C-SYNCのみの機種(MSX等)をSOG経由で受けると、TVPのVSOUTもFIDOUTも
+        #              フィールド極性を出さない(実機測定: FIDOUT=1固定、VSOUT位相=1066固定)。
+        #              半ライン位相は入力のC-SYNCには存在するので、スライサ直後の
+        #              SOGOUTをFPGAで直接見れば、hs_raw/vs_raw と同じやり方で測れる。
+        #              新基板では SO-DIMM pin131(C4) へ引き出してある(main.ato)。
+        #            bit[6:4] Test output control: 000 = Field ID output(既定)
         #          0x18<-0x01(CLK POL=1: データをDATACLK立下りでlaunch。FPGAは立上りで
         #                     安定サンプルできる。他ビットは既定0)
         #          0x31<-0x18(ALC Placement: データシートが「PCグラフィックス/バイレベル
@@ -404,7 +413,7 @@ class StatusDisplay(Module):
                   0x22, 0x36, 0x1A,
                   0x3F, 0x2A, 0x03, 0x05, 0x06,
                   0x08, 0x09, 0x0A, 0x04]
-        WR_VAL = [MUX1, 0x52, 0x02, 0x01, 0x18, 0x58, 0x75, 3, 3,
+        WR_VAL = [MUX1, 0x52, 0x00, 0x01, 0x18, 0x58, 0x75, 3, 3,
                   0x08, 0x00, 0x12,
                   0x0F, 0x87, 0x18, 0x32, 0x20,
                   35, 33, 39, 0x80]
