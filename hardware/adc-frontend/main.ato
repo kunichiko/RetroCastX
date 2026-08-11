@@ -371,12 +371,14 @@ component DigitalRgbConnector:
     YIYUAN YTC-A1251-08ABW(A1251/PicoBlade互換系)。LCSC: C7436577
 
     ピン配置(ピッチ1.25mm、pad9/10=取付タブ):
-      1=GND  2=HS  3=R  4=G  5=B  6=I(輝度)  7=VS  8=GND   9,10=取付タブ→GND
+      1=GND  2=R  3=G  4=B  5=I(輝度)  6=HS  7=VS  8=GND   9,10=取付タブ→GND
 
-    **GNDを両端に置き、HSとVSがそれぞれGNDに隣接する順番にしている。**
-    8極では信号6本+GND2本しか取れないので、どの2本をGNDの隣にするかを選ぶ必要が
-    ある。フレーム全体を壊すのは同期の誤りなので、被害が大きいHS/VSを端(GND隣)に
-    置き、ドットクロック速度でトグルする色4bitを中央にまとめた。
+    **信号の並びを R/G/B/I → HS/VS の自然な順にしている**(2026-08-11 変更)。
+    以前は「フレーム全体を壊すのは同期なので HS/VS を GND の隣に置く」という理由で
+    1=GND 2=HS 3=R…7=VS としていたが、変換ケーブルを自作する前提だと**並びの
+    分かりやすさ(取り違え防止)の方が実利が大きい**と判断して並べ替えた。
+    8極では信号6本+GND2本しか取れないので、GNDは両端(1と8)のみ。この順では
+    VS(7)はGND(8)に隣接するが、HS(6)は I(5) と VS(7) に挟まれてGNDに隣接しない。
     ケーブルが長くノイズが出る場合は同シリーズの10極(GNDを1本おきに配置)へ
     差し替えられる(フットプリント変更のみ)。
 
@@ -388,11 +390,11 @@ component DigitalRgbConnector:
     trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C7436577", manufacturer="YIYUAN", partno="YTC-A1251-08ABW">
     trait has_designator_prefix<prefix="J">
     signal gnd ~ pin 1
-    signal hs ~ pin 2
-    signal r ~ pin 3
-    signal g ~ pin 4
-    signal b ~ pin 5
-    signal intensity ~ pin 6
+    signal r ~ pin 2
+    signal g ~ pin 3
+    signal b ~ pin 4
+    signal intensity ~ pin 5
+    signal hs ~ pin 6
     signal vs ~ pin 7
     gnd ~ pin 8
     gnd ~ pin 9    # 取付タブ
@@ -1132,10 +1134,17 @@ module App:
     buf_sync.gnd ~ gnd
     c_buf = new C100nF_0402
     buf_sync.vcc ~> c_buf ~> gnd
-    vga.hsync ~ buf_sync.in_a
-    vs_delayed ~ buf_sync.in_b
-    buf_sync.out_a ~ tvp.hsync_a
-    buf_sync.out_b ~ tvp.vsync_a
+    # ★チャンネル割当を入れ替えてある(2026-08-11): HSYNC=ch.B / VSYNC=ch.A。
+    #   SOT-23-6 では ch.A(in_a pin1 / out_a pin6)が「下側」、ch.B(in_b pin3 /
+    #   out_b pin4)が「上側」に並ぶ。D-SUB15 側は pin14 HSYNC が pin15 VSYNC より
+    #   上に出ているので、A=HSYNC のままだと同期2本が U3 の手前で交差する。
+    #   入れ替えるとレイアウト上で交差が消える(電気的には等価。dualの2chは同一仕様)。
+    #   ※out_a/out_b の行き先(TVP と SO-DIMM の両方)も揃えて入れ替える必要がある。
+    #     片方だけ直すと 生HSYNC が F2(クロック対応ボール)から外れてしまう。
+    vga.hsync ~ buf_sync.in_b
+    vs_delayed ~ buf_sync.in_a
+    buf_sync.out_b ~ tvp.hsync_a
+    buf_sync.out_a ~ tvp.vsync_a
 
     # 未使用同期入力はGND
     tvp.hsync_b ~ gnd
@@ -1263,8 +1272,10 @@ module App:
     # 遅延は約150nsで半ライン(24kHzで20µs)の判定には影響しない。
     # 置き場所はP4端子。F2はクロック対応ボールなので生HSYNCを置いておく
     # (将来HSYNCをクロックとして使う余地を残す)。
-    sodimm.io_f2 ~ buf_sync.out_a   # pin155 (F2, P4-6, クロック対応) 生HSYNC
-    sodimm.io_e1 ~ buf_sync.out_b   # pin153 (E1, P4-5) 生VSYNC(RC遅延後)
+    # ※U3のチャンネル割当を入れ替えた(HSYNC=ch.B)ので、out_b が HSYNC 側になる。
+    #   F2 に生HSYNC を載せる意図を保つため、ここも合わせて入れ替えている。
+    sodimm.io_f2 ~ buf_sync.out_b   # pin155 (F2, P4-6, クロック対応) 生HSYNC
+    sodimm.io_e1 ~ buf_sync.out_a   # pin153 (E1, P4-5) 生VSYNC(RC遅延後)
 
     # --- デジタルRGB入力(TTL R/G/B/I + HS/VS): TVP7002を経由せずFPGA直結 ---
     # PC-6001mkII/SR・PC-8801・X1 等のデジタルRGB(16色)を取り込む。
@@ -1560,6 +1571,9 @@ module App:
     filt_mid.override_net_name = "pll_filt_mid"
 
     # --- 同期系(自動名がcap名/pin名に化けるネット) ---
+    # YS(D-SUB15 pin7 → TP1)。自動命名だと素の "pad" になり追跡できない。
+    # 意図的に「コネクタとテストパッドの2点だけ」のネット(未使用・保護なし)。
+    tp_ys.pad.override_net_name = "ys"
     vs_delayed.override_net_name = "vsync_delayed"
     tvp.vsync_a.override_net_name = "vsync_a"
 
