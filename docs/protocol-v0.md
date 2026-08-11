@@ -117,6 +117,27 @@ CONFIG(key 0x0001)で選択する。
 |---|---|---|
 | 0 (board) | 0x0001 | audio_enable_mask: bit0=RGB端子音声, bit1=LINE, bit2=S/PDIF |
 | 1 (ArgusX) | 0x0001 | 映像入力選択(値の意味はArgusX側仕様で定義) |
+| 0 (board) | 0x0022 | sync_ctl (TVP reg 0Eh): 0x52=5線 / 0x53=4線TTL C-SYNC / 0x5B=SOG |
+| 0 (board) | 0x0050 | sog_thresh (TVP reg 10h): SOGスライス閾値 |
+| 0 (board) | 0x0051 | sep_thresh (TVP reg 11h): 同期セパレータ閾値 |
+| 0 (board) | 0x0052 | precoast (TVP reg 12h): プリコースト[ライン]。最低1が必要 |
+| 0 (board) | 0x0053 | postcoast (TVP reg 13h): ポストコースト[ライン]。最低1が必要 |
+| 0 (board) | 0x0054 | syncdet (TVP reg 14h): 同期検出ステータス。**読み取り専用** |
+| 0 (board) | 0x0055 | lines_per_frame (TVP reg 37h:38h): TVPが測ったライン数/フレーム。**読み取り専用** |
+| 0 (board) | 0x0056 | clocks_per_line (TVP reg 39h:3Ah): TVPが測ったDATACLK数/ライン。**読み取り専用** |
+
+- 0x0054〜0x0056 は **TVP自身の測定値**で、ボードのキャプチャロジックに依存しない。
+  SOG(映像レベルC-SYNC)運用では生同期ピンが無信号になり 0x002A〜0x002C が使えないため、
+  「H/Vが入力にロックしているか」を判定できる唯一の絶対測定になる
+- 0x0050 は 5bit値。TVP reg 10h の下位3bitはクランプ選択(R/G/B全てbottom-level)で
+  共用されているため、ボード側が保持して bit[7:3] だけを差し替える
+
+- 0x0010〜0x002C・0x0030〜0x0035・0x0040〜0x0045 は画枠パラメータと診断用の
+  読み出しに割り当て済み。**新しい設定キーは 0x0050 以降から取る**
+  (0x0023〜0x0026 は診断キーと衝突する)
+
+キーの割り当ては `host/python/retrocastx/protocol.py` の `CFG_KEY_*` を正とし、
+ゲートウェア側は `gateware/retrocastx_stream.py` の `reply_cases` と対応させる。
 
 - ArgusX宛のCONFIGは、ゲートウェアがI2Cバス(TVP7002と共有、J11コネクタ)経由で
   ArgusXへ中継する。ArgusXのI2Cアドレス・レジスタマップはArgusX側で確定後に反映
@@ -125,6 +146,9 @@ CONFIG(key 0x0001)で選択する。
   (直結・DHCPなし等)ではユニキャストがOSのルーティングで送れないため、
   アプリはCONFIGもブロードキャストで送ってよい。ただし同一LANの全ボードに
   適用されるため、複数ボード環境ではDHCP導入後にユニキャストで送ること
+- ブロードキャストで送る場合、**アプリは応答の flags bit0(REPLY)を必ず検査する**。
+  ブロードキャストは自分自身の送信パケットにもループバックするため、REPLYを見ないと
+  自分の要求を応答と誤認し、SETが常に成功・GETが常に送った値に見える(実際に踏んだ)
 
 ## INFO / ANNOUNCE パケット(type=3)
 

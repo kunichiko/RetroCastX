@@ -180,8 +180,15 @@ class StatusDisplay(Module):
         # 観測用
         self.tvp_ack = Signal()
         self.syncdet = Signal(8)  # reg0x14 Sync Detect Status
-        self.lpf_hi = Signal(8); self.lpf_lo = Signal(8)  # 0x37/0x38 Lines/Frame
-        self.cpl_hi = Signal(8); self.cpl_lo = Signal(8)  # 0x39/0x3A Clocks/Line
+        # ★名前が逆。_hi が LSB 側、_lo が MSB 側。
+        #   Linux drivers/media/i2c/tvp7002_reg.h より:
+        #     0x37 L_FRAME_STAT_LSBS / 0x38 L_FRAME_STAT_MSBS
+        #     0x39 CLK_L_STAT_LSBS   / 0x3A CLK_L_STAT_MSBS
+        #   MSBs側は下位4bitが値の[11:8]で、上位はステータス(bit5=P/I detect)。
+        #   OLEDの表示(lpf_lo[0:4],lpf_hi[4:8],lpf_hi[0:4])はこの並びで正しい。
+        #   名前に釣られて MSBs/LSBs を取り違えやすいので注意(実際に踏んだ)。
+        self.lpf_hi = Signal(8); self.lpf_lo = Signal(8)  # 0x37(LSBs)/0x38(MSBs)
+        self.cpl_hi = Signal(8); self.cpl_lo = Signal(8)  # 0x39(LSBs)/0x3A(MSBs)
         # H-PLL帰還分周比(=1ライン当たりDATACLK数)。実行時に変更可。
         # このFSMは初期化書き込みを毎周(約30回/秒)繰り返すので、値を変えれば
         # 次の周で自動的にTVPへ書き込まれる(別途トリガは不要)。
@@ -213,6 +220,69 @@ class StatusDisplay(Module):
         # B +2.0% → +0.3%、G +2.6% → +2.2% と改善した。時定数(bit[4:3])は
         # 効果が無く、原因はチャンネル間のクロストークだった。
         self.cfg_fine_clamp = Signal(8, reset=0x87)
+
+        # --- CSYNC(映像レベル)を SOG 経由で受けるための同期分離パラメータ ---
+        # MSX のように C-SYNC しか出さない機種を SOGIN に 1nF で結合して受ける運用で
+        # 効くレジスタ群。cfg_sync_ctl(0Eh) を 0x5B にすると H も V も SOG から取る。
+        # いずれも実機を見ながら振る前提で、CONFIG から実行時に変えられるようにした。
+
+        # SOGスライスレベル(レジスタ 10h の bit[7:3])。クランプしたsync tipから
+        # 何mV上で切るか。C-SYNCの振幅は機種で違うので、SOGOUT(FPGAに来ている)を
+        # 見ながら合わせる。
+        # レジスタ 10h は複合で、bit0=Red CS / bit2=Blue CS のクランプ選択が同居する
+        # (0x58 = R/G/B全てbottom-levelクランプ。崩すと背景が紫がかる)。そのため
+        # **閾値だけを5bitで持ち**、書き込み時に下位3bitを付け足す。
+        self.cfg_sog_thresh = Signal(5, reset=0x58 >> 3)
+
+        # 同期セパレータ閾値(レジスタ 11h)。**TVPの既定 20h は使わない。**
+        # 「内部クロック基準(約6.5MHz)を何周期数えたらH/Vを切り替えるか」= 長いパルスを
+        # Vとみなす境界。データシートの条件は
+        #   Threshold × 最小クロック周期(133ns) > 負同期パルス幅
+        # で、480i60Hz(=MSXと同じ15.7kHz族)の範囲は MIN 1Fh / MID 75h / MAX ABh。
+        # 「40h = 大半のフォーマットの推奨値」「中央値でマージン最大」とある。
+        #
+        # TVP既定の 20h は MIN(1Fh)の真上でマージンが無く、実測(MSXのC-SYNCをSOGで受用)
+        # では水平パルスまでVと判定してしまい **Lines per Frame が 1**(毎ラインVSYNC)に
+        # なった。0x50 以上で 262(MSXの正解値)に張り付く。推奨の中央値を既定にする。
+        self.cfg_sep_thresh = Signal(8, reset=0x75)
+
+        # H-PLL Pre-Coast / Post-Coast(レジスタ 12h / 13h)。**両方とも既定 00h**。
+        # C-SYNCでは垂直区間のパルス列がH-PLLを引っ張るので、その間だけPLLを
+        # 保持(coast)させる必要がある。データシートに
+        #   「Pre-Coast: A minimum setting of 1 is required to guarantee
+        #    generation of an internal coast signal.」
+        # と明記されており、0 のままでは coast が生成されない。単位はHSYNC周期。
+        # 推奨値の表: 480i/p・576i/p は 3/3、1080i/p・720p・PC SOG Graphics は 1/0。
+        # 15kHz機(MSX等)は480i/p族なので 3/3 を既定にする。
+        self.cfg_precoast = Signal(8, reset=3)
+        self.cfg_postcoast = Signal(8, reset=3)
+
+        # 同期処理制御(レジスタ 22h)。既定 08h。bit0=VS Bypass, bit1=VS Select。
+        # 既定では「同期セパレータの活動が無いとき VSOUT はハーフライン積算器が
+        # 生成する」。積算器はインターレース(NTSC 525ライン/フレーム)前提なので、
+        # 262ライン progressive の MSX では2フレームに1回しかVを出さない。実測では
+        # どちらが勝つかがロック毎に決まり 1×/2× が50/50で双安定になった。
+        # bit0=1 で VSOUT を同期セパレータ直結にすると決定的になる。
+        self.cfg_sync_ctl2 = Signal(8, reset=0x08)
+        # 同期バイパス(レジスタ 36h)。既定 00h。bit0=HS BP, bit1=VS BP。
+        # HS BP=1 で HSOUT が生の未処理HSYNCになる。HSOUTの2倍化がスライサ由来か
+        # 後段由来かの切り分け用(通常運用には非推奨とデータシートにある)。
+        self.cfg_sync_bypass = Signal(8, reset=0x00)
+        # 入力Mux選択2(レジスタ 1Ah)。既定 C2h。
+        #   bit[7:6] SOG LPF SEL  00=2.5MHz 01=10MHz 10=33MHz 11=バイパス(既定)
+        #   bit[5:4] CLP LPF SEL  00=4.8MHz(既定,HDTV/グラフィックス向け)
+        #                         01=0.5MHz「Suitable for SDTV formats」 10=1.7MHz
+        #   bit3 CLK SEL / bit2 VS SEL / bit1 PCLK SEL / bit0 HS SEL は既定のまま(0b0010)
+        # データシートの Glitch Immunity 節:
+        #   「During white-to-black transitions, the input video waveform may undershoot
+        #    below the sync slicer threshold. To help attenuate the amplitude of such
+        #    glitches, a single-pole low-pass filter ... is provided at the input of the
+        #    SOG voltage comparator circuit. This filter is bypassed in the default mode.」
+        # 15kHz機(MSX等)はSDTVなので SOG=2.5MHz / CLP=0.5MHz の 0x12 を既定にする。
+        # 既定の C2h はどちらもHDTV/グラフィックス向けで15kHz機に合っていない。
+        # 注: 「Excessive filtering can lead to sync detection issues and increased
+        #      sample clock jitter」とあるので、効果はCONFIGで振って確認する。
+        self.cfg_in_mux2 = Signal(8, reset=0x12)
         # PLL設定(0x03)とクランプ位置(0x05/0x06)はTVPの既定値のまま書く。
         # データシートの規定と合っていない箇所があるので実測したが、良好な電源の
         # 下ではどちらも測定可能な効果が無かった(下記)。実行時に変更できるように
@@ -303,6 +373,10 @@ class StatusDisplay(Module):
         # TVPステップ: 先頭NWRITE個=初期化書込(reg<-val)、残り=ステータス読出
         #   write: 0x19<-0xAA(SOG/R/G/B 全て _3 入力を選択, OSSC互換)
         #          0x0E<-0x52(AHSS=0/AVSS=0: 外部HSYNC/VSYNC を有効HSYNC/VSYNCに)
+        #               0x53=4線(HSYNCピンのTTL CSYNC、Vは内部分離)
+        #               0x5B=SOG(HもVもSOGから。映像レベルCSYNC/sync-on-green)
+        #          0x11<-同期セパレータ閾値, 0x12/0x13<-Pre/Post-Coast
+        #               (既定0でcoast未生成。CSYNC運用では要設定)
         #          0x17<-0x02(Output En=0: RGB/DATACLK/HSOUT/VSOUT/FIDOUT 出力ON。
         #                     既定0x03はbit0=1で全出力Hi-Z=DATACLKが出ない。SOG Enは1のまま)
         #          0x18<-0x01(CLK POL=1: データをDATACLK立下りでlaunch。FPGAは立上りで
@@ -326,9 +400,13 @@ class StatusDisplay(Module):
         #                     雑音がそのまま折り返して絵に乗る。最小設定でも50MHz以上
         #                     なので折り返しは残るが、それより上の雑音は減らせる。
         #                     実行時に振って効果を測れるようCONFIGから変えられる。
-        WR_REG = [0x19, 0x0E, 0x17, 0x18, 0x31, 0x10, 0x3F, 0x2A, 0x03, 0x05, 0x06,
+        WR_REG = [0x19, 0x0E, 0x17, 0x18, 0x31, 0x10, 0x11, 0x12, 0x13,
+                  0x22, 0x36, 0x1A,
+                  0x3F, 0x2A, 0x03, 0x05, 0x06,
                   0x08, 0x09, 0x0A, 0x04]
-        WR_VAL = [MUX1, 0x52, 0x02, 0x01, 0x18, 0x58, 0x0F, 0x87, 0x18, 0x32, 0x20,
+        WR_VAL = [MUX1, 0x52, 0x02, 0x01, 0x18, 0x58, 0x75, 3, 3,
+                  0x08, 0x00, 0x12,
+                  0x0F, 0x87, 0x18, 0x32, 0x20,
                   35, 33, 39, 0x80]
         if pll_divide:
             # 0x01=PLL divide[11:4], 0x02=[7:4]にPLL divide[3:0]。データシート指定どおり
@@ -370,6 +448,30 @@ class StatusDisplay(Module):
         if 0x0E in WR_REG:
             self.comb += If(step == WR_REG.index(0x0E),
                             wval_b.eq(self.cfg_sync_ctl))
+        if 0x10 in WR_REG:
+            # 下位3bit(Red CS/Blue CS のクランプ選択)は 0x58 の値を保持し、
+            # SOG Threshold[7:3] だけを差し替える。生の8bitを書くとクランプ修正
+            # (背景が紫がかる問題)を巻き込んで壊す
+            self.comb += If(step == WR_REG.index(0x10),
+                            wval_b.eq(Cat(C(0x58 & 0x07, 3), self.cfg_sog_thresh)))
+        if 0x11 in WR_REG:
+            self.comb += If(step == WR_REG.index(0x11),
+                            wval_b.eq(self.cfg_sep_thresh))
+        if 0x12 in WR_REG:
+            self.comb += If(step == WR_REG.index(0x12),
+                            wval_b.eq(self.cfg_precoast))
+        if 0x13 in WR_REG:
+            self.comb += If(step == WR_REG.index(0x13),
+                            wval_b.eq(self.cfg_postcoast))
+        if 0x22 in WR_REG:
+            self.comb += If(step == WR_REG.index(0x22),
+                            wval_b.eq(self.cfg_sync_ctl2))
+        if 0x36 in WR_REG:
+            self.comb += If(step == WR_REG.index(0x36),
+                            wval_b.eq(self.cfg_sync_bypass))
+        if 0x1A in WR_REG:
+            self.comb += If(step == WR_REG.index(0x1A),
+                            wval_b.eq(self.cfg_in_mux2))
         if 0x04 in WR_REG:
             self.comb += If(step == WR_REG.index(0x04),
                             wval_b.eq(Cat(C(0, 3), self.cfg_phase)))

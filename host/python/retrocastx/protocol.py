@@ -48,7 +48,37 @@ CFG_KEY_GAIN_B = 0x001C         # 細ゲイン Blue (レジスタ0x08) Gain=1+N/
 CFG_KEY_GAIN_G = 0x001D         # 細ゲイン Green(レジスタ0x09)
 CFG_KEY_GAIN_R = 0x001E         # 細ゲイン Red  (レジスタ0x0A)
 CFG_KEY_PHASE = 0x001F          # サンプリング位相 0..31 (レジスタ0x04 bit[7:3])
+CFG_KEY_SYNC_CTL = 0x0022       # TVP同期制御(レジスタ0x0E) 下記 SYNC_* を入れる
 CFG_KEY_FULL_LINE = 0x0030      # 1ラインまるごと送る(非黒範囲の最適化を切る)
+# TVPの同期スライサ/セパレータ調整(レジスタ10h/11h/12h/13h)。C-SYNC入力や
+# SOG入力を実機で追い込むための足回り。0x23〜0x26 は診断キーに使われているので
+# 0x50 から取っている(retrocastx_stream.py の reply_cases と対応)
+CFG_KEY_SOG_THRESH = 0x0050     # レジスタ10h bit[7:3] SOGスライス閾値(5bit値)
+                                #   下位3bitはクランプ選択なのでボード側が保持する
+CFG_KEY_SEP_THRESH = 0x0051     # レジスタ11h 同期セパレータ閾値
+CFG_KEY_PRECOAST = 0x0052       # レジスタ12h プリコースト[ライン] 最低1が必要
+CFG_KEY_POSTCOAST = 0x0053      # レジスタ13h ポストコースト[ライン] 最低1が必要
+# TVP自身が測った値(読み取り専用)。キャプチャロジックに依存しない絶対値なので、
+# 「H/Vが入力にロックしているか」の判定はこれで行う。SOG(C-SYNC)運用では生同期
+# ピンが無信号で 0x2A〜0x2C が使えないため、これが唯一の絶対測定になる
+CFG_KEY_SYNCDET = 0x0054        # レジスタ14h 同期検出ステータス
+CFG_KEY_LINES_PER_FRAME = 0x0055  # レジスタ37h:38h TVPが測ったライン数/フレーム
+CFG_KEY_CLOCKS_PER_LINE = 0x0056  # レジスタ39h:3Ah TVPが測ったDATACLK数/ライン
+CFG_KEY_LPF_MSBS = 0x0057       # レジスタ38h 生値。bit5=P/I detect(0=インターレース)
+# TVPのHSOUT/VSOUTを sysクロック基準で測った絶対値(読み取り専用)。SOG(C-SYNCのみの
+# 機種)では 0x002A〜0x002C が無信号で0になるため、ロック判定はこちらで行う。
+# DATACLK基準の測定はPLL出力自身を測る循環参照になり常に pll_divide を返す
+CFG_KEY_FH_TVP = 0x0058         # TVP HSOUT周波数 [Hz]
+CFG_KEY_FV_TVP = 0x0059         # TVP VSOUT周波数 [mHz]
+CFG_KEY_LINES_TVP = 0x005A      # VSOUT間のHSOUT数(=vtotal)
+CFG_KEY_SYNC_CTL2 = 0x005B      # レジスタ22h 同期処理制御。bit0=VS Bypass bit1=VS Select
+                                #   bit0=1 で VSOUT を同期セパレータ直結にする。既定0x08 では
+                                #   セパレータ非活動時にハーフライン積算器がVSOUTを作り、
+                                #   progressive 262ライン機では2フレームに1回になる
+CFG_KEY_SYNC_BYPASS = 0x005C    # レジスタ36h bit0=HS BP bit1=VS BP(生同期を素通し。診断用)
+CFG_KEY_IN_MUX2 = 0x005D        # レジスタ1Ah bit[7:6]=SOG LPF bit[5:4]=クランプLPF
+                                #   既定C2hはSOG LPFバイパス+クランプ4.8MHz(HDTV向け)。
+                                #   15kHz機は 0x12 (SOG 2.5MHz + クランプ 0.5MHz) が適正
 CFG_KEY_FRAME_SKIP = 0x0035     # フレーム間引き 0=毎フレーム / 1=2回に1回 …
 # ARP学習の診断(読み取り専用)。gateware/retrocastx_net.py の ArpLearner。
 # 相手がARP要求に応答しない環境(別サブネットのWindows)で、ボードが宛先MACを
@@ -63,6 +93,14 @@ CFG_KEY_ARP_LAST_MAC_HI = 0x0045  # 同 MACの上位2バイト
 CFG_KEY_FH_RAW = 0x002A         # 生HSYNC周波数 [Hz]
 CFG_KEY_FV_RAW = 0x002B         # 生VSYNC周波数 [mHz]
 CFG_KEY_LINES_RAW = 0x002C      # 生VSYNC間の生HSYNC数(=vtotal)
+
+# CFG_KEY_SYNC_CTL に入れる値(TVP7002 レジスタ0x0E)。
+# 5線=HSYNC/VSYNC端子から個別に取る(X68000などRGB+HS+VS機)
+# 4線=HSYNC端子に来たTTL C-SYNCからVを内部分離する
+# SOG =SOGIN端子の映像レベル同期からH/V両方を内部分離する(MSXなどC-SYNCのみの機)
+SYNC_5WIRE = 0x52
+SYNC_4WIRE_CSYNC = 0x53
+SYNC_SOG = 0x5B
 
 # アプリ→ボードのパケット(SUBSCRIBE/CONFIG)の宛先MACワイルドカード。
 # 同一LANの全ボードが反応するため、複数ボード環境では実MACを指名すること

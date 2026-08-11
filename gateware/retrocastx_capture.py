@@ -197,6 +197,11 @@ class TvpCapture(Module):
         self.meas_fh_raw = Signal(32)             # 生HSYNC周波数 [Hz]
         self.meas_fv_raw = Signal(32)             # 生VSYNC周波数 [mHz](8秒積算)
         self.meas_lines_raw = Signal(16)          # 生VSYNC間の生HSYNC数(=vtotal)
+        # TVPのHSOUT/VSOUTを sysクロック基準で測った絶対値。SOG(C-SYNCのみ)の機種では
+        # 上の生同期系が全部0になるので、ロック判定はこちらで行う
+        self.meas_fh_tvp = Signal(32)             # TVP HSOUT周波数 [Hz]
+        self.meas_fv_tvp = Signal(32)             # TVP VSOUT周波数 [mHz](8秒積算)
+        self.meas_lines_tvp = Signal(16)          # VSOUT間のHSOUT数(=vtotal)
 
         # --- ラインバッファ(true dual-port: write=pix / read=sys)---
         self.specials.mem = mem = Memory(32, nface * entries)
@@ -731,6 +736,40 @@ class TvpCapture(Module):
                         If(sve, cv.eq(cv + 1)),
                     ),
                 ]
+
+            # --- TVPのHSOUT/VSOUTも sysドメインで数える ---
+            # 生同期(hs_raw/vs_raw)はC-SYNCのみの機種(MSX等、SOG経由)では無信号に
+            # なるため、上の絶対測定が全部0になり「ロックしているか」を判定できない。
+            # stat_hs_probe_tvp は DATACLK基準で、DATACLK自体がこのHSOUTにロックした
+            # PLLの出力なので常に pll_divide を返す循環参照になっていて使えない。
+            # sysクロック基準で数えれば pll_divide に依存しない絶対値が得られる。
+            th0 = Signal(); th = Signal(); th_p = Signal()
+            tv0 = Signal(); tv = Signal(); tv_p = Signal()
+            self.sync += [th0.eq(pads.hs), th.eq(th0), th_p.eq(th),
+                          tv0.eq(pads.vs), tv.eq(tv0), tv_p.eq(tv)]
+            the = Signal(); tve = Signal()
+            self.comb += [the.eq(th_p & ~th), tve.eq(tv_p & ~tv)]
+            tch = Signal(32); tcv = Signal(32)
+            tlines_now = Signal(16); tlines_cnt = Signal(16)
+            tvacc = Signal(24); tvwin = Signal(3)
+            self.sync += [
+                If(the, tlines_cnt.eq(tlines_cnt + 1)),
+                If(tve, tlines_now.eq(tlines_cnt), tlines_cnt.eq(0)),
+                If(win == WIN - 1,
+                    self.meas_fh_tvp.eq(tch), tch.eq(the),
+                    self.meas_lines_tvp.eq(tlines_now),
+                    If(tvwin == 7,
+                        self.meas_fv_tvp.eq((tvacc + tcv) * 125),
+                        tvacc.eq(0), tvwin.eq(0),
+                    ).Else(
+                        tvacc.eq(tvacc + tcv), tvwin.eq(tvwin + 1),
+                    ),
+                    tcv.eq(tve),
+                ).Else(
+                    If(the, tch.eq(tch + 1)),
+                    If(tve, tcv.eq(tcv + 1)),
+                ),
+            ]
 
             # vfreqは1秒窓のエッジ数だと分解能±1Hz(55.456Hz→55と表示された)。
             # 8秒積算して×125すれば mHz 単位で 0.125Hz 分解能になる。htotal/vtotal と

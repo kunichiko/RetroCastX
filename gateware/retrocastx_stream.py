@@ -317,8 +317,55 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_gain_r     = Signal(8, reset=39)                # key 0x1E (reg 0Ah)
         self.cfg_phase      = Signal(5, reset=16)                # key 0x1F (reg 04h)
         self.cfg_sync_ctl   = Signal(8, reset=0x52)              # key 0x22 (reg 0Eh)
+        # --- 映像レベルCSYNCをSOG経由で受けるための分離パラメータ(2026-08-11) ---
+        # MSXのようにC-SYNCしか出ない機種を SOGIN に1nFで結合して受ける運用で使う。
+        # cfg_sync_ctl(0Eh)=0x5B でHもVもSOGから取るようにしたうえで、下の3つを振る。
+        # reg 10h は複合レジスタで、bit0=Red CS / bit2=Blue CS のクランプ選択と
+        # SOG Threshold[7:3] が同居している。下位3bitは 0x58 で確定した値(R/G/B全て
+        # bottom-levelクランプ。ここを崩すと黒が R,B≈128 になって背景が紫がかる)。
+        # よって**閾値だけを5bitで持ち**、書き込み時に Cat(0b000, thresh) に組み立てる。
+        # 生の8bitを持たせるとクランプ修正を巻き込んで壊す(実際に踏みかけた)。
+        self.cfg_sog_thresh = Signal(5, reset=0x58 >> 3)          # key 0x50 (reg 10h[7:3])
+        # reg 11h は TVP既定 0x20 では MIN の真上でマージンが無く、C-SYNC運用で
+        # 水平パルスをVと誤判定する(実測: Lines per Frame が 1 になる)。
+        # データシートの 480i60Hz 中央値 0x75 を既定にする。詳細は retrocastx_i2c.py
+        self.cfg_sep_thresh = Signal(8, reset=0x75)               # key 0x51 (reg 11h)
+        # Pre/Post-Coast は TVP既定0で「coastが生成されない」(データシート:
+        # 「A minimum setting of 1 is required to guarantee generation of an
+        # internal coast signal.」)。単位はHSYNC周期。推奨値の表では
+        # 480i/p と 576i/p が 3/3、1080i/p・720p・PC SOG Graphics が 1/0。
+        # 15kHz機(MSX等)は480i/p族なので 3/3 を既定にする。
+        self.cfg_precoast   = Signal(8, reset=3)                  # key 0x52 (reg 12h)
+        self.cfg_postcoast  = Signal(8, reset=3)                  # key 0x53 (reg 13h)
+        # 同期処理制御(レジスタ 22h)。既定 08h。**bit0 VS Bypass が本命。**
+        # 既定(VS Select=0, VS Bypass=0)では「同期セパレータの活動が無いときは
+        # ハーフライン積算器が VSOUT を生成する」という条件分岐が働く。積算器は
+        # インターレース用でNTSCの525ライン/フレームを前提にするため、262ライン
+        # progressive の MSX では **2フレームに1回** しか V を出さない。どちらが勝つかは
+        # ロック取得時に決まるので、実測では 1×/2× がほぼ50/50で双安定になった
+        # (VSOUT間のHSOUT数が 523 と 1046 を行き来する = 画面が上下に二重化する)。
+        # bit0=1 にすると VSOUT が同期セパレータ直結になり決定的になる。
+        # 注: VSOUTの遅延が reg 11h に依存するようになり、reg 35h は無効になる。
+        self.cfg_sync_ctl2  = Signal(8, reset=0x08)               # key 0x5B (reg 22h)
+        # 同期バイパス(レジスタ 36h)。既定 00h。bit0 HS BP / bit1 VS BP。
+        # HS BP=1 で HSOUT が「生の未処理HSYNC」になる。HSOUTが入力の2倍で出ている
+        # 問題が、SOGスライサ由来か後段の同期処理/PLL由来かを切り分けるのに使う
+        # (データシートは通常運用には非推奨としているので、診断用)。
+        self.cfg_sync_bypass = Signal(8, reset=0x00)              # key 0x5C (reg 36h)
+        # 入力Mux選択2(レジスタ 1Ah)。bit[7:6]=SOG LPF, bit[5:4]=クランプLPF。
+        # 既定 C2h は SOG LPF バイパス + クランプ 4.8MHz(HDTV向け)。15kHz機は
+        # SOG=2.5MHz / クランプ=0.5MHz(SDTV向け) が適正なので 0x12 を既定にする。
+        # 詳細な根拠は retrocastx_i2c.py 側のコメント参照
+        self.cfg_in_mux2    = Signal(8, reset=0x12)               # key 0x5D (reg 1Ah)
         # TVPのステータス 38h(bit5=P/I detect)。上位から供給される読み出し専用
         self.stat_lpf_hi    = Signal(8)
+        # TVP自身が測った値。**キャプチャロジックに依存しない絶対値**なので、
+        # 「H/Vが入力にロックしているか」の判定はこれで行う。OLEDには出ていたが
+        # CONFIGに出ていなかったため、SOG運用の切り分けが手探りになっていた。
+        self.stat_syncdet   = Signal(8)      # key 0x54 (reg 14h 同期検出ステータス)
+        self.stat_lpf       = Signal(16)     # key 0x55 (reg 37h:38h Lines/Frame)
+        self.stat_cpl       = Signal(16)     # key 0x56 (reg 39h:3Ah Clocks/Line)
+        self.stat_lpf_msbs  = Signal(8)      # key 0x57 (reg 38h 生値。bit5=P/I detect)
         # ラインごとのHSYNC周期プローブ。key 0x27 で行を選び 0x28/0x29 で読む
         self.cfg_hs_probe_row = Signal(13)
         self.stat_hs_raw    = Signal(16)
@@ -400,6 +447,27 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x22),
                         self.cfg_sync_ctl.eq(rx.data[:8]),
                     ),
+                    If((cfg_target == 0) & (cfg_key == 0x50),
+                        self.cfg_sog_thresh.eq(rx.data[:8]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x51),
+                        self.cfg_sep_thresh.eq(rx.data[:8]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x52),
+                        self.cfg_precoast.eq(rx.data[:8]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x5B),
+                        self.cfg_sync_ctl2.eq(rx.data[:8]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x5C),
+                        self.cfg_sync_bypass.eq(rx.data[:8]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x5D),
+                        self.cfg_in_mux2.eq(rx.data[:8]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x53),
+                        self.cfg_postcoast.eq(rx.data[:8]),
+                    ),
                     If((cfg_target == 0) & (cfg_key == 0x27),
                         self.cfg_hs_probe_row.eq(rx.data[:13]),
                     ),
@@ -457,12 +525,31 @@ class RetroCastXStreamer(LiteXModule):
             0x1E: reply_mux.eq(self.cfg_gain_r),
             0x1F: reply_mux.eq(self.cfg_phase),
             0x22: reply_mux.eq(self.cfg_sync_ctl),
+            0x50: reply_mux.eq(self.cfg_sog_thresh),
+            0x51: reply_mux.eq(self.cfg_sep_thresh),
+            0x52: reply_mux.eq(self.cfg_precoast),
+            0x53: reply_mux.eq(self.cfg_postcoast),
+            0x54: reply_mux.eq(self.stat_syncdet),
+            0x55: reply_mux.eq(self.stat_lpf),
+            0x56: reply_mux.eq(self.stat_cpl),
+            0x57: reply_mux.eq(self.stat_lpf_msbs),
+            0x5B: reply_mux.eq(self.cfg_sync_ctl2),
+            0x5C: reply_mux.eq(self.cfg_sync_bypass),
+            0x5D: reply_mux.eq(self.cfg_in_mux2),
         }
         # 診断用の読み出し(書き込みは無視される読み取り専用)。
         # フィールド極性をどちらから取るべきか、ラインごとのHSYNC周期が揺れて
         # いないか等を実機で判断するための生データ。
+        # ★dict.update で足すと既存キーを黙って上書きしてしまう(実際に 0x23〜0x26 の
+        #   設定キーが診断キーに潰され、SETは効くのにGETで読めない状態になった)。
+        #   下の _add_reply() 経由で足して、重複は必ずビルド時に落とす。
+        def _add_reply(mapping):
+            for k, stmt in mapping.items():
+                assert k not in reply_cases, f"CONFIG key {k:#x} が重複している"
+                reply_cases[k] = stmt
+
         if cap_mode:
-            reply_cases.update({
+            _add_reply({
                 0x20: reply_mux.eq(capture.stat_vs_x),
                 0x21: reply_mux.eq(capture.stat_fid),
                 0x23: reply_mux.eq(capture.meas_vtotal),
@@ -476,6 +563,11 @@ class RetroCastXStreamer(LiteXModule):
                 0x2A: reply_mux.eq(capture.meas_fh_raw),
                 0x2B: reply_mux.eq(capture.meas_fv_raw),
                 0x2C: reply_mux.eq(capture.meas_lines_raw),
+                # TVPのHSOUT/VSOUTをsysクロック基準で測った絶対値。SOG運用では
+                # 0x2A〜0x2C が無信号で0になるので、ロック判定はこちらを見る
+                0x58: reply_mux.eq(capture.meas_fh_tvp),
+                0x59: reply_mux.eq(capture.meas_fv_tvp),
+                0x5A: reply_mux.eq(capture.meas_lines_tvp),
                 # 指定行の範囲(push時点、pixドメインの生値)と捨てた数
                 0x31: reply_mux.eq(capture.cfg_span_probe_row),
                 0x32: reply_mux.eq(capture.stat_span_probe),
@@ -483,9 +575,7 @@ class RetroCastXStreamer(LiteXModule):
                 0x34: reply_mux.eq(capture.stat_pop_probe),
                 0x35: reply_mux.eq(capture.cfg_frame_skip),
             })
-        for key, sig in (extra_stats or {}).items():
-            assert key not in reply_cases, f"CONFIG key {key:#x} が重複している"
-            reply_cases[key] = reply_mux.eq(sig)
+        _add_reply({k: reply_mux.eq(sig) for k, sig in (extra_stats or {}).items()})
         self.comb += Case(cfg_key, reply_cases)
         self.sync += cfg_reply_val.eq(Mux(cfg_target == 1, argus_reg, reply_mux))
 
@@ -1211,9 +1301,21 @@ class RetroCastXStream(SoCMini):
             self.comb += [
                 self.capture.cfg_vbp.eq(self.streamer.cfg_vbp),
                 self.capture.cfg_hs_offset.eq(hs_use),
-                # TVPが検出したインターレース(38h bit5 P/I detect は 0=インターレース)
-                self.capture.cfg_il_detect.eq(~self.status.lpf_hi[5]),
+                # TVPが検出したインターレース(P/I detect は 0=インターレース)。
+                # ★status の lpf_hi/lpf_lo は名前が逆で、lpf_hi←reg37h(L_FRAME_STAT_LSBS)、
+                #   lpf_lo←reg38h(L_FRAME_STAT_MSBS)。P/I detect は 38h bit5 なので
+                #   参照先は lpf_lo。以前は lpf_hi[5](=ライン数下位バイトのデータビット)を
+                #   見ていて、インターレース判定が実質乱数になっていた。
+                #   レジスタ名の根拠: Linux drivers/media/i2c/tvp7002_reg.h
+                self.capture.cfg_il_detect.eq(~self.status.lpf_lo[5]),
                 self.streamer.stat_lpf_hi.eq(self.status.lpf_hi),
+                self.streamer.stat_syncdet.eq(self.status.syncdet),
+                self.streamer.stat_lpf_msbs.eq(self.status.lpf_lo),
+                # 12bit値。MSBs側の上位4bitはステータスなのでマスクして組む
+                self.streamer.stat_lpf.eq(Cat(self.status.lpf_hi,
+                                              self.status.lpf_lo[0:4])),
+                self.streamer.stat_cpl.eq(Cat(self.status.cpl_hi,
+                                              self.status.cpl_lo[0:4])),
                 self.capture.cfg_hs_probe_row.eq(self.streamer.cfg_hs_probe_row),
                 self.streamer.stat_hs_raw.eq(self.capture.stat_hs_probe_raw),
                 self.streamer.stat_hs_tvp.eq(self.capture.stat_hs_probe_tvp),
@@ -1226,6 +1328,13 @@ class RetroCastXStream(SoCMini):
                 self.status.cfg_video_bw.eq(self.streamer.cfg_video_bw),
                 self.status.cfg_phase.eq(self.streamer.cfg_phase),
                 self.status.cfg_sync_ctl.eq(self.streamer.cfg_sync_ctl),
+                self.status.cfg_sog_thresh.eq(self.streamer.cfg_sog_thresh),
+                self.status.cfg_sep_thresh.eq(self.streamer.cfg_sep_thresh),
+                self.status.cfg_precoast.eq(self.streamer.cfg_precoast),
+                self.status.cfg_postcoast.eq(self.streamer.cfg_postcoast),
+                self.status.cfg_sync_ctl2.eq(self.streamer.cfg_sync_ctl2),
+                self.status.cfg_sync_bypass.eq(self.streamer.cfg_sync_bypass),
+                self.status.cfg_in_mux2.eq(self.streamer.cfg_in_mux2),
                 self.status.cfg_fine_clamp.eq(self.streamer.cfg_fine_clamp),
                 self.status.cfg_pll_ctl.eq(self.streamer.cfg_pll_ctl),
                 self.status.cfg_clamp_start.eq(self.streamer.cfg_clamp_start),
