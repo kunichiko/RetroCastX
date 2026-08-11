@@ -1090,8 +1090,32 @@ module App:
     ch_g.output ~ tvp.gin_3
     ch_b.output ~ tvp.bin_3
 
-    # green -> SOGIN_3 (Sync-on-Green / アナログcsync対応): 1nF結合
-    c_sog3 = new C1nF_0402
+    # green -> SOGIN_3 (Sync-on-Green / 映像レベルC-SYNC対応)
+    #
+    # 結合は 0.1uF。データシートのアナログ入力の指定が
+    #   「The inputs must be ac coupled. The recommended coupling capacitor is 0.1 uF」
+    # で、応用回路図でも駆動される映像入力(GIN_1/BIN_1/RIN_1)は全て 0.1uF。
+    # SOGIN のピン表にある 1nF は「Unused inputs should be connected to ground using
+    # a 1-nF capacitor」= **未使用ピンをGNDへ落とす用途**で、駆動する入力の結合値ではない。
+    #
+    # ここは以前 1nF(未使用ピン用の値)にしていた。実機で 0.1uF に交換して確認した
+    # ことを、後から取り違えないように分けて書く:
+    #
+    #  - **倍化現象には効かなかった。** MSXのC-SYNCをSOGで受けたとき、SOGスライサ
+    #    由来のH基準が31.3kHz(=1ラインに2パルス。実ライン周波数15.65kHzの2倍)に
+    #    なる問題があったが、交換前後どちらでも「TVPのSOGローパスフィルタ(reg 1Ah)を
+    #    バイパスにすると2×、10MHz以下にすると1×」で挙動は同じだった。
+    #    倍化を消しているのは reg 1Ah であって、この結合容量ではない。
+    #  - **絵の品質には効いた。** 交換後、Viewerのノイズ表示が 12〜14.6% → 0.0% に
+    #    なった(ただし同時に pll_divide も変えているので容量単独の寄与とは言い切れない)。
+    #
+    # グリッチは10〜33MHz帯にある(10MHzのLPFで消え、33MHzでは消えない)。RGB各
+    # チャネルには 220Ω+33pF(fc≈22MHz)のアンチエイリアスRCが入っているのに、
+    # このSOG分岐は結合容量からSOGIN_3へ直結で高域が素通しになっている。
+    # RGBと同じRCをここにも入れれば、チップ内LPFに頼らずに済む(データシートは
+    # 「Excessive filtering can lead to ... increased sample clock jitter」と
+    # 警告しているので、チップ内LPFは軽いほど有利)。→ 要検討
+    c_sog3 = new C100nF_0402
     vga.g ~> c_sog3 ~> tvp.sogin_3
 
     # D-SUB15のGND(RGB各GND・共通GND・シェル)
