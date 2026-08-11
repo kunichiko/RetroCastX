@@ -8,6 +8,8 @@
 //! Usage:
 //!   cargo run --release -- [--board IP] [--mac AA:BB:..] [--port 34600] [--no-subscribe]
 //!
+//! --mimicx-probe は MimicX へのキー転送経路(CoreMIDI)だけを確かめて終了する。
+//!
 //! --mac は購読対象ボードのMACを指名する(複数ボードLANで必須。省略時は
 //! ワイルドカード=全ボード、単一ボードLAN専用)。
 //!
@@ -26,7 +28,9 @@ mod assembler;
 mod audio;
 mod bezel;
 mod fullscreen;
+mod keytap;
 mod profiles;
+mod remote_input;
 mod render;
 mod protocol;
 mod receiver;
@@ -96,6 +100,14 @@ fn main() -> eframe::Result {
                 audio.source =
                     Some(args.next().expect("--audio needs 0|1|2").parse().unwrap());
                 cfg.audio_source = audio.source;
+            }
+            // MimicX への経路だけを確かめて終了する(GUIは起動しない)。
+            // 「キーが効かない」ときに、宛先が無いのか送れているのかを切り分ける
+            "--mimicx-probe" => std::process::exit(!remote_input::probe() as i32),
+            // 受け取った物理キーを stderr へ出す。「そのキーがアプリに届いて
+            // いないのか、届いているが転送していないのか」の切り分け用
+            "--log-keys" => {
+                remote_input::LOG_KEYS.store(true, Ordering::Relaxed);
             }
             "--no-audio" => {
                 audio.source = None;
@@ -445,6 +457,14 @@ struct ViewerApp {
     subscribe_to: Option<String>,
     no_vsync: bool,
     pace: PaceMeter,
+    /// MimicX へのキー転送。起動時は常にOFF(保存しない)。ONのまま起動すると
+    /// キーが黙って実機へ流れるので、毎回明示的に入るようにしている
+    remote: remote_input::RemoteInput,
+    /// 転送ON/OFF操作(⌘+Shift+ESC / F12)の検出。押下の瞬間だけを拾う
+    remote_toggle: remote_input::ToggleDetect,
+    /// 物理キーの取り出し口。egui の Key では JIS の ¥/_/かな が落ちるので、
+    /// AppKit のイベントを直接見る(keytap.rs)
+    keytap: keytap::KeyTap,
 }
 
 impl ViewerApp {
@@ -523,6 +543,9 @@ impl ViewerApp {
             subscribe_to,
             no_vsync,
             pace: PaceMeter::new(),
+            remote: remote_input::RemoteInput::default(),
+            remote_toggle: Default::default(),
+            keytap: keytap::KeyTap::install(&cc.egui_ctx),
         }
     }
 
@@ -1664,9 +1687,193 @@ impl ViewerApp {
     }
 }
 
+/// --- MimicX リモート入力 ---
+impl ViewerApp {
+    /// 物理キーを MimicX へ転送する。毎フレーム、UIを組む前に呼ぶ
+    /// (`raw_input_hook`)。
+    ///
+    /// **キーの出どころは egui ではなく `keytap`(AppKit のイベント監視)。**
+    /// egui が変換した `Key` には JIS の ¥ / _ / かな / 英数 が無く、テンキーも
+    /// 最上段の数字に潰れる。転送中に egui へイベントを渡さないのも keytap 側で
+    /// 捨てている(渡すと egui が Tab / 矢印 / Escape をフォーカス移動として
+    /// 解釈し、パネルのウィジェットにフォーカスが移って転送が中断される)。
+    ///
+    /// 転送してよいのは「このウィンドウにフォーカスがあり、UIへ文字を打ち込んで
+    /// いないとき」だけ。MimicX にフォーカスがあるときは MimicX 自身がキーを
+    /// 受け取るので、そもそもここへイベントは来ない(macOS はフォーカスの無い
+    /// アプリに配送しない)。だから二重入力にはならない。
+    fn remote_step(&mut self, ctx: &egui::Context, raw: &egui::RawInput) {
+        if !remote_input::AVAILABLE {
+            return;
+        }
+        if !raw.focused {
+            // 以後の解放イベントが届かないので押下状態を忘れる
+            self.remote_toggle.reset();
+        } else if !self.keytap.mods().is_toggle_combo() {
+            // 修飾が揃っていない間は組み合わせのラッチを戻す。macOS は ⌘ を
+            // 押しながらの keyUp を配送しないことがあり、これが無いと2回目が
+            // 効かない。修飾は keytap 側(キーと同じ経路)を見る
+            self.remote_toggle.rearm_chord();
+        }
+        // 転送のON/OFF(⌘+Shift+ESC / F12)を先に判定し、そのキーは転送しない。
+        // **転送中でも必ず効く**(これが抜け道になる)
+        let mut edge = false;
+        let mut forward: Vec<(u32, bool)> = Vec::new();
+        for ev in self.keytap.drain() {
+            let Some(code) = remote_input::keycode_from_mac_vk(ev.vk) else {
+                remote_input::log_unknown(ev.vk, ev.pressed);
+                continue;
+            };
+            remote_input::log_key(code, Some(ev.vk), ev.pressed, ev.mods);
+            let (toggle, eat) = self.remote_toggle.feed(code, ev.pressed, ev.mods);
+            edge |= toggle;
+            if eat {
+                continue;
+            }
+            // ⌘ を押している間は Mac の操作(⌘Q で終了、など)。押下は実機へ
+            // 送らない。X68000 のキーボードに ⌘ は無いので、⌘ 付きの打鍵が
+            // 実機向けであることはない。
+            //
+            // **解放は ⌘ の有無に関わらず送る。** 押している途中で ⌘ を足すと、
+            // 解放だけ落ちて実機にキーが押しっぱなしで残る。
+            if ev.pressed && ev.mods.command {
+                continue;
+            }
+            // ⌘ 自体も送らない(実機に無いキーで、MimicX も捨てる)
+            if matches!(code, winit::keyboard::KeyCode::SuperLeft
+                            | winit::keyboard::KeyCode::SuperRight)
+            {
+                continue;
+            }
+            // 表に無いキー(メディアキー等)は送らない。MimicX 側も黙って捨てる
+            if let Some(usage) = remote_input::usage_from_keycode(code) {
+                forward.push((usage, ev.pressed));
+            }
+        }
+        if edge {
+            self.remote.toggle();
+            if self.remote.enabled() {
+                // IME に食われるとキーイベントが届かない。egui/winit は
+                // 「テキスト入力中のウィジェットがある」ときだけ IME を許可する
+                // ので、フォーカスを外せば IME は無効になる
+                ctx.memory_mut(|m| m.stop_text_input());
+            }
+        }
+
+        // フォーカスを失った瞬間・UIが文字入力を始めた瞬間に全解放される
+        // (update の中で送られる)。これを怠るとキーが押しっぱなしで実機に残る。
+        // フォーカスは raw の値を見る(ctx 側は1フレーム前の状態)。
+        //
+        // 譲るのは「文字を打ち込んでいるウィジェットがあるとき」だけにする。
+        // 「フォーカスがあるウィジェット」で判定すると、転送を入れるチェック
+        // ボックス自身がフォーカスを持ったまま残って転送が始まらない。
+        // pll_div などの数値欄へ打ち込む間だけ UI に渡し、外せば転送に戻る。
+        //
+        // 転送の可否を決めてから流す(順序が逆だと、ONにした最初のフレームの
+        // 打鍵が落ちる)。
+        self.remote.update(raw.focused && !ctx.text_edit_focused());
+        for (usage, pressed) in forward {
+            self.remote.key(usage, pressed);
+        }
+        // 次のイベントを egui へ渡すかどうかを keytap へ伝える
+        self.keytap.set_capturing(self.remote.active());
+    }
+
+    /// 転送中であることを画面に出す。キーが実機へ流れている状態は見ただけでは
+    /// 分からない(映像は転送していなくても同じ)ので、必ず示す。
+    /// パネルを隠していても見えるように、最前面レイヤへ置く。
+    ///
+    /// これ自体がボタンで、押すと転送をやめる。**キーに頼らない抜け道**を必ず
+    /// 用意するため(キーボードによっては打ちにくい・そのキーが無いことがあり、
+    /// パネルを隠しているとキー以外の手段が無くなる)。
+    fn remote_badge(&mut self, ctx: &egui::Context) {
+        if !self.remote.active() {
+            return;
+        }
+        let mut off = false;
+        egui::Area::new(egui::Id::new("remote_input_badge"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(ctx.content_rect().left_top() + egui::vec2(8.0, 8.0))
+            .show(ctx, |ui| {
+                let label = egui::RichText::new(format!(
+                    "⌨ MimicX 転送中 — {} かクリックで解除",
+                    remote_input::TOGGLE_LABEL
+                ))
+                .size(12.0)
+                .color(egui::Color32::WHITE);
+                let btn = egui::Button::new(label)
+                    .fill(egui::Color32::from_rgba_unmultiplied(170, 40, 40, 215))
+                    .corner_radius(4.0);
+                off = ui
+                    .add(btn)
+                    .on_hover_text("キー転送をやめて RetroCastX の操作に戻ります")
+                    .clicked();
+            });
+        if off {
+            self.remote.set_enabled(false);
+        }
+    }
+
+    fn remote_ui(&mut self, ui: &mut egui::Ui) {
+        if !remote_input::AVAILABLE {
+            ui.weak("リモート入力は macOS 専用です");
+            return;
+        }
+        let mut on = self.remote.enabled();
+        if ui
+            .checkbox(&mut on, format!("キーを MimicX へ転送 ({})",
+                                      remote_input::TOGGLE_LABEL))
+            .on_hover_text(format!(
+                "このウィンドウで受けた物理キーを MimicX へ流し、\n\
+                 実機のキーボード入力にします。\n\
+                 転送中は Tab / B などもすべて実機へ行きます。\n\
+                 {} か、画面左上に出るバッジのクリックで解除できます。\n\
+                 ESC 単独は実機の ESC として送ります。\n\
+                 MimicX を起動し、アダプタに接続して\n\
+                 キーボード操作画面に入っている必要があります。",
+                remote_input::TOGGLE_LABEL_FULL
+            ))
+            .changed()
+        {
+            self.remote.set_enabled(on);
+            if on {
+                ui.ctx().memory_mut(|m| m.stop_text_input());
+            }
+        }
+        if !self.remote.enabled() {
+            return;
+        }
+        if self.remote.connected() {
+            ui.monospace(format!(
+                "{}  押下 {}",
+                if self.remote.active() { "転送中" } else { "待機(未フォーカス/入力中)" },
+                self.remote.held()
+            ));
+        } else {
+            ui.colored_label(egui::Color32::from_rgb(220, 170, 60), self.remote.status())
+                .on_hover_text(format!(
+                    "CoreMIDI の宛先 \"{}\" を探しています。\n\
+                     MimicX が起動すれば自動で繋がります",
+                    remote_input::PORT_NAME
+                ));
+        }
+        // ゲームパッドは MimicX 側が背景でも直接受け取るので転送しない
+        // (両方送ると二重入力になる)
+        ui.weak("ゲームパッドは MimicX が直接受け取ります");
+    }
+}
+
 impl eframe::App for ViewerApp {
+    /// MimicX へのキー転送。キーそのものは keytap(AppKit のイベント監視)から
+    /// 取るので、ここでは RawInput を読むだけ(フォーカスと修飾の状態)
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.remote_step(ctx, raw_input);
+    }
+
     /// 終了時にも保存する(遅延書込の待ち時間中に閉じても取りこぼさない)
     fn on_exit(&mut self) {
+        // 押しっぱなしのキーを実機に残さない。ここで送らないと操作不能になる
+        self.remote.set_enabled(false);
         // 遅延を無視して即座に書く
         self.settings_dirty = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
         self.flush_settings();
@@ -1692,6 +1899,10 @@ impl eframe::App for ViewerApp {
         // last_tex は「切り替わる前のレイアウト」の値なので、それで合わせると
         // 毎回ずれ、出し入れを繰り返すとウィンドウが縮み続ける(実際そうなった)。
         // 大きさを合わせたいときは「画に合わせる」を押す。
+        //
+        // MimicX への転送中はここへ来ない。raw_input_hook が先にイベントを
+        // 取り除いているので、Tab も B も X68000 のキーとして送られる
+        // (⌘+Shift+ESC で転送を切れば元に戻る)。
         if root.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
             self.show_panel = !self.show_panel;
             self.mark_settings_dirty();
@@ -1786,6 +1997,10 @@ impl eframe::App for ViewerApp {
 
                 ui.strong("Audio");
                 self.audio_ui(ui);
+                ui.separator();
+
+                ui.strong("Remote input");
+                self.remote_ui(ui);
                 ui.separator();
 
                 ui.strong("Tune");
@@ -2187,6 +2402,8 @@ impl eframe::App for ViewerApp {
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
         }
+
+        self.remote_badge(&ctx);
 
         // ストリーム停止中でもUI(統計・発見リスト)を更新し続ける
         ctx.request_repaint_after(std::time::Duration::from_millis(250));

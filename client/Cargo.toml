@@ -12,6 +12,17 @@ windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
 # 実行ファイルへのアイコン埋め込み(build.rs)。Windows以外では取得も不要
 winresource = "0.1"
 
+# MimicX へのキー転送(src/remote_input.rs)。MimicX は macOS 版だけで、CoreMIDI も
+# 同一マシン内の経路なので、依存ごと macOS に閉じる
+[target.'cfg(target_os = "macos")'.dependencies]
+midir = "0.11"
+# 通常モード(eframe)で物理キーを取り出すため(src/keytap.rs)。egui の Key は
+# JIS の ¥/_/かな を持たず、テンキーも最上段の数字に潰すので、AppKit の
+# イベントを直接見るしかない
+objc2 = "0.6"
+block2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSEvent", "block2"] }
+
 [dependencies]
 cpal = "0.18.1"
 eframe = "0.35.0"
