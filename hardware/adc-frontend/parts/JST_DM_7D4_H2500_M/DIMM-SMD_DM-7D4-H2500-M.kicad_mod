@@ -1739,18 +1739,18 @@
 		(layers "F.Cu" "F.Paste" "F.Mask")
 		(uuid "f06dbf6d-a826-4c82-bfcc-8316fc1bf17c")
 	)
-	(pad "" thru_hole circle
+	(pad "" np_thru_hole circle
 		(at -38.3 0)
 		(size 1.05 1.05)
 		(drill 1.05)
-		(layers "*.Cu" "*.Mask")
+		(layers "F&B.Cu" "*.Mask")
 		(uuid "b3900c5a-a028-485f-a70d-a4b9f5c9f1b3")
 	)
-	(pad "" thru_hole circle
+	(pad "" np_thru_hole circle
 		(at 38.3 0)
 		(size 1.45 1.45)
 		(drill 1.45)
-		(layers "*.Cu" "*.Mask")
+		(layers "F&B.Cu" "*.Mask")
 		(uuid "c9af0c93-ead5-4ced-9975-8235c9c53306")
 	)
 	(model "${KIPRJMOD}/../../parts/JST_DM_7D4_H2500_M/DIMM-SMD_DM-7D4-H2500-M.step"

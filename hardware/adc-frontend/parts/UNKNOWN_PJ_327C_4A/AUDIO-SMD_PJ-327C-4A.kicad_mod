@@ -253,18 +253,18 @@
 		(layers "F.Cu" "F.Paste" "F.Mask")
 		(uuid "e0101d18-1c4c-4dfd-838b-4c43c42e88ce")
 	)
-	(pad "" thru_hole circle
+	(pad "" np_thru_hole circle
 		(at 0 -3.83)
 		(size 1.5 1.5)
 		(drill 1.5)
-		(layers "*.Cu" "*.Mask")
+		(layers "F&B.Cu" "*.Mask")
 		(uuid "c22a8e8b-521b-4c22-a853-30c578da304b")
 	)
-	(pad "" thru_hole circle
+	(pad "" np_thru_hole circle
 		(at 0 2.18)
 		(size 1.5 1.5)
 		(drill 1.5)
-		(layers "*.Cu" "*.Mask")
+		(layers "F&B.Cu" "*.Mask")
 		(uuid "2fc7c775-4c8d-4927-a661-d4f1da768f3c")
 	)
 	(model "${KIPRJMOD}/../../parts/UNKNOWN_PJ_327C_4A/AUDIO-SMD_L11.8-W6.0-H5.0-4P.step"

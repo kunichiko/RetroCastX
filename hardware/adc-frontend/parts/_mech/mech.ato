@@ -136,6 +136,55 @@ component HeaderArgus:
     signal scl ~ pin 3
     signal gnd ~ pin 4
 
+component HeaderDebug20:
+    """将来拡張用デバッグ端子(2×15, 2.54mm)。SO-DIMM偶数側の空きGPIO 20本を引き出す。
+
+    SO-DIMM 偶数ピン 54〜94(pin56=GNDのみ除く)= 完全に連続した空きGPIO 20本を、
+    SO-DIMM昇順 ↔ ヘッダ昇順の単調割当で出す(交差無し配線)。
+    5列ごとにGNDカラムを挟むのでロジアナのGNDクリップが近くに取れる。
+
+    ピン配置(列= (1,2),(3,4)… の標準ジグザグ):
+      1,2=GND / 3-10=dbg1-8 / 11,12=GND / 13-20=dbg9-16 / 21,22=GND
+      23-26=dbg17-20 / 27,28,29=GND / 30=3V3
+    3V3は角(pin30、両隣はGND)に置き、GPIOへの誤ショートを避ける。
+    直列保護抵抗は入れていない(必要なら各線に33〜100Ωを後付けする)。
+    手実装/DNP(JLC発注除外)。
+    """
+    trait is_atomic_part<manufacturer="", partnumber="PinHeader_2x15_2.54", footprint="Header_2x15_P2.54mm.kicad_mod", symbol="Header_2x15.kicad_sym">
+    trait has_designator_prefix<prefix="J">
+    trait has_part_removed  # 手実装/DNP: 基板にFPは載せるがJLC発注しない
+    signal gnd ~ pin 1
+    gnd ~ pin 2
+    signal dbg1 ~ pin 3
+    signal dbg2 ~ pin 4
+    signal dbg3 ~ pin 5
+    signal dbg4 ~ pin 6
+    signal dbg5 ~ pin 7
+    signal dbg6 ~ pin 8
+    signal dbg7 ~ pin 9
+    signal dbg8 ~ pin 10
+    gnd ~ pin 11
+    gnd ~ pin 12
+    signal dbg9 ~ pin 13
+    signal dbg10 ~ pin 14
+    signal dbg11 ~ pin 15
+    signal dbg12 ~ pin 16
+    signal dbg13 ~ pin 17
+    signal dbg14 ~ pin 18
+    signal dbg15 ~ pin 19
+    signal dbg16 ~ pin 20
+    gnd ~ pin 21
+    gnd ~ pin 22
+    signal dbg17 ~ pin 23
+    signal dbg18 ~ pin 24
+    signal dbg19 ~ pin 25
+    signal dbg20 ~ pin 26
+    gnd ~ pin 27
+    gnd ~ pin 28
+    gnd ~ pin 29
+    signal p3v3 ~ pin 30
+
+
 component HeaderOled:
     """SSD1306 I2C OLED(128x64)接続用 1×4 ヘッダ。ピン順 GND/VDD/SCK/SDA。
     I2CバスはTVP7002と共有(OLED既定アドレス0x3C, 他と非衝突)。手実装/DNP。"""

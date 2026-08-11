@@ -308,4 +308,18 @@
 		(options "")
 		(descr "atopile: part lib: RICHTEK_RT9013_18GB")
 	)
+	(lib
+		(name "YIYUAN_YTC_A1251_08ABW")
+		(type "KiCad")
+		(uri "${KIPRJMOD}/../../parts/YIYUAN_YTC_A1251_08ABW")
+		(options "")
+		(descr "atopile: part lib: YIYUAN_YTC_A1251_08ABW")
+	)
+	(lib
+		(name "TE_Connectivity_1473005_4")
+		(type "KiCad")
+		(uri "${KIPRJMOD}/../../parts/TE_Connectivity_1473005_4")
+		(options "")
+		(descr "atopile: part lib: TE_Connectivity_1473005_4")
+	)
 )

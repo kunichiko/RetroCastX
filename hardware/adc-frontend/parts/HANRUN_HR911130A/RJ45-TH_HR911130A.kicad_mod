@@ -341,18 +341,18 @@
 		(layers "*.Cu" "*.Mask")
 		(uuid "1ba236f4-5620-48c4-8748-588c72d285b3")
 	)
-	(pad "" thru_hole circle
+	(pad "" np_thru_hole circle
 		(at -5.72 -2)
 		(size 3.25 3.25)
 		(drill 3.25)
-		(layers "*.Cu" "*.Mask")
+		(layers "F&B.Cu" "*.Mask")
 		(uuid "45990183-565b-4d03-adb1-58dd91465288")
 	)
-	(pad "" thru_hole circle
+	(pad "" np_thru_hole circle
 		(at 5.72 -2)
 		(size 3.25 3.25)
 		(drill 3.25)
-		(layers "*.Cu" "*.Mask")
+		(layers "F&B.Cu" "*.Mask")
 		(uuid "e617828e-71da-470e-90b5-73899da9dc61")
 	)
 	(model "${KIPRJMOD}/../../parts/HANRUN_HR911130A/RJ45-TH_HR911130A.STEP"

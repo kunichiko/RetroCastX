@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>RetroCastX — パスコン配置先一覧</title>
+<style>
+:root{--bg:#eef2f1;--surface:#fff;--surface2:#f6f9f8;--ink:#132220;--muted:#5c6f6c;--line:#d3dedb;
+--accent:#0e8fa3;--accent-ink:#065c6a;
+--crit-bg:#fce4e2;--crit-ink:#b23a34;--near-bg:#fde7d4;--near-ink:#b5651a;--calm-bg:#e6ecea;--calm-ink:#6a7a77;
+--mark:#fdf0c8}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1413;--surface:#131e1c;--surface2:#0f1817;--ink:#e5efec;--muted:#8da09c;--line:#243330;
+--accent:#37c2d6;--accent-ink:#8fe3ef;
+--crit-bg:#3a1c1a;--crit-ink:#f0928c;--near-bg:#361f0d;--near-ink:#f0a860;--calm-bg:#1a2523;--calm-ink:#8a9c98;
+--mark:#3a3316}}
+[data-theme="light"]{--bg:#eef2f1;--surface:#fff;--surface2:#f6f9f8;--ink:#132220;--muted:#5c6f6c;--line:#d3dedb;--accent:#0e8fa3;--accent-ink:#065c6a;--crit-bg:#fce4e2;--crit-ink:#b23a34;--near-bg:#fde7d4;--near-ink:#b5651a;--calm-bg:#e6ecea;--calm-ink:#6a7a77;--mark:#fdf0c8}
+[data-theme="dark"]{--bg:#0d1413;--surface:#131e1c;--surface2:#0f1817;--ink:#e5efec;--muted:#8da09c;--line:#243330;--accent:#37c2d6;--accent-ink:#8fe3ef;--crit-bg:#3a1c1a;--crit-ink:#f0928c;--near-bg:#361f0d;--near-ink:#f0a860;--calm-bg:#1a2523;--calm-ink:#8a9c98;--mark:#3a3316}
+
+*{box-sizing:border-box}html{color-scheme:light dark}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:14px;line-height:1.6;padding:28px 20px 60px}
+.wrap{max-width:1220px;margin:0 auto}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;background:var(--surface2);border:1px solid var(--line);border-radius:4px;padding:0 4px}
+
+header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:14px}
+.eyebrow{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent-ink);font-weight:600;margin:0 0 4px}
+h1{font-size:23px;margin:0;letter-spacing:-.01em}
+.sub{color:var(--muted);margin:8px 0 0;max-width:80ch}
+button.theme{font:inherit;font-size:12px;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer}
+button.theme:hover{border-color:var(--accent)}
+a.back{font-size:12px;color:var(--accent-ink);text-decoration:none;border-bottom:1px solid transparent}
+a.back:hover{border-bottom-color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.summary{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 0}
+.stat{display:flex;align-items:baseline;gap:7px;background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:7px 13px}
+.stat b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:18px;font-variant-numeric:tabular-nums}
+.stat span{font-size:12px;color:var(--muted)}
+.stat.s1 b{color:var(--crit-ink)}.stat.s2 b{color:var(--near-ink)}.stat.s3 b{color:var(--calm-ink)}
+
+.toolbar{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line);padding:11px 0;margin:20px 0 22px}
+.toolbar-in{display:flex;flex-wrap:wrap;gap:9px;align-items:center}
+input[type=search]{flex:1 1 240px;min-width:0;font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:7px 11px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{font:inherit;font-size:12px;cursor:pointer;border-radius:999px;padding:5px 12px;border:1px solid var(--line);background:var(--surface);color:var(--muted)}
+.chip[aria-pressed=true]{color:#fff;border-color:transparent}
+.chip.c1[aria-pressed=true]{background:var(--crit-ink)}
+.chip.c2[aria-pressed=true]{background:var(--near-ink)}
+.chip.c3[aria-pressed=true]{background:var(--calm-ink)}
+.count{font-size:12px;color:var(--muted);margin-left:auto;white-space:nowrap}
+
+.group{margin:0 0 24px;background:var(--surface);border:1px solid var(--line);border-radius:11px;overflow:hidden}
+.group-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 13px;padding:12px 16px;background:var(--surface2);border-bottom:1px solid var(--line)}
+.group-ref{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px;font-weight:700;color:var(--accent-ink)}
+.group-name{font-weight:600}
+.group-meta{font-size:12px;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
+.group-n{margin-left:auto;font-size:12px;color:var(--muted)}
+.group-note{padding:10px 16px;font-size:13px;color:var(--muted);border-bottom:1px solid var(--line)}
+.group-note b{color:var(--ink)}
+
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:700px}
+th{text-align:left;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600;padding:8px 11px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:var(--surface2)}
+td.ref{width:1%;white-space:nowrap;border-left:3px solid transparent}
+tr.s1 td.ref{border-left-color:var(--crit-ink)}
+tr.s2 td.ref{border-left-color:var(--near-ink)}
+tr.s3 td.ref{border-left-color:var(--calm-ink)}
+.refname{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;font-size:14px}
+.pkg{font-size:11px;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.val{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;color:var(--muted);font-variant-numeric:tabular-nums}
+td.where{min-width:220px}
+td.why{color:var(--muted);font-size:12.5px}
+.tag{display:inline-block;font-size:10.5px;letter-spacing:.04em;padding:2px 8px;border-radius:999px;white-space:nowrap;font-weight:600}
+.tag.s1{background:var(--crit-bg);color:var(--crit-ink)}
+.tag.s2{background:var(--near-bg);color:var(--near-ink)}
+.tag.s3{background:var(--calm-bg);color:var(--calm-ink)}
+mark{background:var(--mark);color:var(--ink);border-radius:3px;padding:0 2px}
+.empty{padding:34px 16px;text-align:center;color:var(--muted)}
+
+section.legend{margin:26px 0 0;padding:16px;border:1px dashed var(--line);border-radius:11px;background:var(--surface2)}
+section.legend h2{font-size:13px;margin:0 0 9px;letter-spacing:.02em}
+section.legend ul{margin:0;padding-left:18px;color:var(--muted);font-size:13px}
+section.legend li{margin-bottom:5px}
+footer{margin-top:26px;padding-top:16px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
+
+@media (max-width:640px){.count{margin-left:0;width:100%}}
+@media print{.toolbar,button.theme,a.back{display:none}body{background:#fff;font-size:10pt;padding:0}.group{break-inside:avoid}.tw{overflow:visible}table{min-width:0}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div>
+    <p class="eyebrow">RetroCastX · ADC フロントエンド</p>
+    <h1>パスコン配置先一覧</h1>
+  </div>
+  <div style="display:flex;gap:12px;align-items:center">
+    <a class="back" href="./">← ドキュメント一覧</a>
+    <button class="theme" id="tt" type="button">◐ テーマ切替</button>
+  </div>
+</header>
+
+<p class="sub">コンデンサ 84 個すべてを「どの部品のどのピンの直近に置くか」で引ける表。designator と回路上の役割は <code>default.kicad_pcb</code> の <code>atopile_address</code> プロパティとネットリストから機械的に対応付けてあり、ピン番号は <code>main.ato</code> の部品定義に一致する。<b>ネットリスト上は同じ電源ネットでも、電源ピン群ごとに1個ずつ割り当ててある</b>ので、まとめて置くと片方が無防備になる。</p>
+
+<div class="summary" id="summary"></div>
+
+<div class="toolbar">
+  <div class="toolbar-in">
+    <input type="search" id="q" placeholder="C33 / U10 / VREF / TVP … で絞り込み（/ でフォーカス）" aria-label="検索">
+    <div class="chips" role="group" aria-label="優先度で絞り込み">
+      <button class="chip c1" data-p="1" aria-pressed="false">最優先</button>
+      <button class="chip c2" data-p="2" aria-pressed="false">直近</button>
+      <button class="chip c3" data-p="3" aria-pressed="false">近傍でよい</button>
+    </div>
+    <span class="count" id="count"></span>
+  </div>
+</div>
+
+<main id="out"></main>
+
+<section class="legend">
+  <h2>優先度の意味</h2>
+  <ul>
+    <li><span class="tag s1">最優先</span> ループ面積が効く。<b>2mm 以内・ビアを挟まない</b>。ここを妥協すると実測で症状が出た箇所</li>
+    <li><span class="tag s2">直近</span> 対象ピンの<b>直近（5mm 以内目安）</b>。パッド → コンデンサ → GND の経路を短く、GND ビアはコンデンサ直下に</li>
+    <li><span class="tag s3">近傍でよい</span> レール上のバルクや終端。<b>10mm 程度</b>離れても実害は小さい</li>
+  </ul>
+</section>
+
+<footer>
+座標は <code>hardware/adc-frontend/layouts/default/default.kicad_pcb</code> の配置（2026-08-11 時点）。部品を動かすと変わる。<br>
+典拠: TVP7002 データシート SLES206C / PCM1808 SLES177B の Layout Example / PLR135 データシート / <code>hardware/adc-frontend/docs/layout-guidelines.md</code>
+</footer>
+
+</div>
+
+<script>
+const G = [
+ {ref:"U10", name:"TVP7002 (映像ADC)", meta:"HTQFP-100 · 141.00, 70.50",
+  note:"14個の電源デカップリングは<b>電源ピン群ごとに1個ずつ割り当て済み</b>。下表のピン番号どおりに散らすこと。A33VDD が pin 13/14 と 93/94 の二箇所に分かれているように、同じネットでも物理的に離れたピン群がある。",
+  rows:[
+   ["C15","100nF","0402","PLLループフィルタ: FILT1(87)–PLL_F(89) 間",1,"最も敏感な回路。r_filt(1.5k)と合わせて3ピンの間に押し込み、他の信号から隔離する"],
+   ["C16","4.7nF","0402","PLLループフィルタ: FILT2(88)–PLL_F(89) 間",1,"同上。ループを小さく"],
+   ["C81","33pF","0603","RIN_3 (pin 9) の直近",1,"アンチエイリアス。<b>TVPの入力ピン直近でないと効かない</b>。R/G/Bで等条件に"],
+   ["C80","33pF","0603","GIN_3 (pin 98) の直近",1,"同上"],
+   ["C79","33pF","0603","BIN_3 (pin 16) の直近",1,"同上"],
+   ["C25","100nF","0402","A33VDD pin 13/14 の直近",2,"アナログ3.3V"],
+   ["C26","100nF","0402","A33VDD pin 93/94 の直近",2,"アナログ3.3V（反対側の電源ピン群）"],
+   ["C27","100nF","0402","AVDD pin 4 の直近",2,"1.85V アナログコア。FB2(fb_avdd)はTVP側に置く"],
+   ["C28","100nF","0402","AVDD pin 6 の直近",2,""],
+   ["C29","100nF","0402","AVDD pin 7 の直近",2,""],
+   ["C30","100nF","0402","AVDD pin 19 の直近",2,""],
+   ["C31","100nF","0402","PLL_AVDD pin 84 の直近",2,"PLL電源。FB3(fb_pll)もTVP側"],
+   ["C32","100nF","0402","PLL_AVDD pin 85 の直近",2,""],
+   ["C33","100nF","0402","DVDD pin 39 の直近",2,"1.9V デジタルコア"],
+   ["C34","100nF","0402","DVDD pin 69 の直近",2,""],
+   ["C35","100nF","0402","IOVDD pin 26 の直近",2,"3.3V 出力ドライバ。24bit出力が一斉に振れるので効く"],
+   ["C36","100nF","0402","IOVDD pin 41 の直近",2,""],
+   ["C37","100nF","0402","IOVDD pin 53 の直近",2,""],
+   ["C38","100nF","0402","IOVDD pin 66 の直近",2,""],
+   ["C18","1nF","0402","GIN側 → SOGIN_3 (pin 97)",2,"Sync-on-Green 結合。G入力経路の近く"],
+   ["C47","10nF","0402","RIN_1 (pin 11)",3,"未使用アナログ入力の終端（データシート指定）"],
+   ["C48","10nF","0402","RIN_2 (pin 10)",3,"未使用入力の終端"],
+   ["C49","10nF","0402","BIN_1 (pin 18)",3,"未使用入力の終端"],
+   ["C50","10nF","0402","BIN_2 (pin 17)",3,"未使用入力の終端"],
+   ["C51","10nF","0402","GIN_1 (pin 2)",3,"未使用入力の終端"],
+   ["C52","10nF","0402","GIN_2 (pin 100)",3,"未使用入力の終端"],
+   ["C53","10nF","0402","GIN_4 (pin 96)",3,"未使用入力の終端"],
+   ["C54","1nF","0402","SOGIN_1 (pin 1)",3,"未使用SOG入力の終端（SOG系は1nF指定）"],
+   ["C55","1nF","0402","SOGIN_2 (pin 99)",3,"未使用SOG入力の終端"]
+  ]},
+
+ {ref:"J10", name:"D-SUB15 映像入力 / アナログ前段", meta:"DS1037-15F · 95.00, 69.00",
+  note:"順序は <b>コネクタ → D2(ESD) → 75Ω終端 → ここの100nF → r_aa(220Ω) → TVP入力ピンの33pF</b>。100nFはコネクタ側、33pFはTVP側に分かれる。",
+  rows:[
+   ["C24","100nF","0402","J10 pin 1 (R) 側、75Ω終端の直後",2,"ACカップリング。R/G/B 3本は等長・並走させる"],
+   ["C23","100nF","0402","J10 pin 3 (G) 側、75Ω終端の直後",2,"ACカップリング"],
+   ["C22","100nF","0402","J10 pin 5 (B) 側、75Ω終端の直後",2,"ACカップリング"]
+  ]},
+
+ {ref:"U3", name:"SN74LVC2G17 同期バッファ", meta:"SOT-23-6 · 121.60, 69.42", note:"",
+  rows:[
+   ["C14","100nF","0402","U3 VCC (pin 5) の直近",2,"バッファのVCCデカップリング"],
+   ["C20","1nF","0402","U3 IN_B (pin 3) 側、r_vs(220Ω)とセット",2,"VSYNCのRC遅延。VSYNCエッジがHSYNCと完全一致するのを避ける（データシート推奨）"]
+  ]},
+
+ {ref:"X1", name:"27MHz 発振器 (EXT_CLK)", meta:"SMD3225 · 148.25, 58.16", note:"",
+  rows:[["C17","100nF","0402","X1 VCC (pin 4) の直近",2,"発振器の電源デカップリング。TVP EXT_CLK(pin 80)の近くに置く"]]},
+
+ {ref:"U1", name:"PCM1808 音声ADC（D-SUB15音声）", meta:"TSSOP-14 · 118.00, 83.00",
+  note:"ΔΣ型でSCKI/BCKに同期した電流パルスを引く。<b>各ピン直近にバルクが無いと共有GNDに L·di/dt が乗り、TVPアナログ入力の基準電位を揺らす</b>（試作でパスコン未実装のとき、映像の暗部に点状ノイズとして実測された）。",
+  rows:[
+   ["C3","10µF","0805","U1 VREF (pin 1) の直近",1,"データシート Layout Example の必須要件。10µF+100nFをペアで"],
+   ["C4","100nF","0402","U1 VREF (pin 1) の直近",1,"C3とペア。ICに最も近い側へ"],
+   ["C75","10µF","0805","U1 VCC (pin 3) の直近",2,"アナログ5V（FB1で分離後）"],
+   ["C5","100nF","0402","U1 VCC (pin 3) の直近",2,"C75とペア"],
+   ["C76","10µF","0805","U1 VDD (pin 4) の直近",2,"デジタル3.3V"],
+   ["C6","100nF","0402","U1 VDD (pin 4) の直近",2,"C76とペア"],
+   ["C1","1µF","0603","U1 VINL (pin 13) の直近",2,"入力ACカップリング。D-SUB15音声のL"],
+   ["C2","1µF","0603","U1 VINR (pin 14) の直近",2,"入力ACカップリング。D-SUB15音声のR"]
+  ]},
+
+ {ref:"U2", name:"PCM1808 音声ADC（3.5mm LINE入力）", meta:"TSSOP-14 · 118.00, 91.00", note:"U1 と同じ扱い。",
+  rows:[
+   ["C9","10µF","0805","U2 VREF (pin 1) の直近",1,"データシート Layout Example の必須要件"],
+   ["C10","100nF","0402","U2 VREF (pin 1) の直近",1,"C9とペア"],
+   ["C77","10µF","0805","U2 VCC (pin 3) の直近",2,"アナログ5V"],
+   ["C11","100nF","0402","U2 VCC (pin 3) の直近",2,"C77とペア"],
+   ["C78","10µF","0805","U2 VDD (pin 4) の直近",2,"デジタル3.3V"],
+   ["C12","100nF","0402","U2 VDD (pin 4) の直近",2,"C78とペア"],
+   ["C7","1µF","0603","U2 VINL (pin 13) の直近",2,"入力ACカップリング。J6(3.5mm)のTip"],
+   ["C8","1µF","0603","U2 VINR (pin 14) の直近",2,"入力ACカップリング。J6のRing"]
+  ]},
+
+ {ref:"FB1 / X2", name:"音声用アナログ5V と マスタークロック", meta:"FB1 111.52, 83.73 · X2 157.33, 101.81", note:"",
+  rows:[
+   ["C13","10µF","0805","FB1 の出口側（p5v_audio）、U1/U2 寄り",3,"ビーズでデジタル5Vから分離した後のバルク"],
+   ["C21","100nF","0402","X2 (12.288MHz XO) VCC (pin 4) の直近",2,"MCLK源。GbE/映像デジタルから離して配置する"]
+  ]},
+
+ {ref:"U13", name:"FT2232H (USB書換え/UART)", meta:"LQFP-64 · 131.88, 141.87",
+  note:"VREGOUT(49) と VCORE(12/37/64) は<b>同一ネット</b>。C74 は pin 49 側、C68 は VCORE ピン側に分けて置く。",
+  rows:[
+   ["C64","100nF","0402","U13 VCCIO pin 20 の直近",2,"4本のVCCIOに1個ずつ"],
+   ["C65","100nF","0402","U13 VCCIO pin 31 の直近",2,""],
+   ["C66","100nF","0402","U13 VCCIO pin 42 の直近",2,""],
+   ["C67","100nF","0402","U13 VCCIO pin 56 の直近",2,""],
+   ["C72","100nF","0402","U13 VREGIN pin 50 の直近",2,"内部1.8V LDOの入力"],
+   ["C71","10µF","0805","U13 VREGIN pin 50 の近く",3,"バルク。C72より外側でよい"],
+   ["C74","100nF","0402","U13 VREGOUT pin 49 の直近",2,"内部LDOの出力"],
+   ["C73","1µF","0603","U13 VREGOUT pin 49 の近く",3,"バルク"],
+   ["C68","100nF","0402","U13 VCORE pin 12/37/64 の直近",2,"コア電源。VREGOUTと同一ネットだがVCOREピン側に置く"],
+   ["C69","100nF","0402","U13 VPHY pin 4 の直近（FB4の後）",2,"USB PHY電源。ビーズで分離済み"],
+   ["C70","100nF","0402","U13 VPLL pin 9 の直近（FB5の後）",2,"PLL電源。ビーズで分離済み"],
+   ["C46","33pF","0603","X3 pin 1 / U13 OSCI (pin 2) の直近",2,"12MHz水晶の負荷容量。水晶とICの間に短く"],
+   ["C63","33pF","0603","X3 pin 3 / U13 OSCO (pin 3) の直近",2,"同上"],
+   ["C45","100nF","0402","U12 (93LC56 EEPROM) VCC (pin 8) の直近",2,"構成EEPROMの電源"]
+  ]},
+
+ {ref:"U6-U9", name:"電源レール（LDO 出力バルク）", meta:"U9 109.00,126.00 · U7 133.00,88.00 · U6 142.94,48.44 · U8 146.32,112.92",
+  note:"AZ1117 は出力に <b>≥10µF</b> の ESR 安定性要求がある。各LDOの出力ピン直近に置くこと（レールのどこか、ではない）。",
+  rows:[
+   ["C56","10µF","0805","5V入口（J9 USB-C / J7 DCジャック）と U9/U7 VIN の間",3,"5V入力バルク"],
+   ["C57","10µF","0805","U9 (ldo_io) OUT (pin 2) の直近",2,"3.3V IO レール。安定性要求あり"],
+   ["C58","10µF","0805","U7 (ldo_a33) OUT (pin 2) の直近",2,"3.3V アナログレール。安定性要求あり"],
+   ["C59","10µF","0805","U6 (RT9013-18) VOUT (pin 5) の直近",2,"1.85V アナログ（AVDD/PLL）"],
+   ["C60","10µF","0805","U8 (TLV70019) OUT (pin 5) の直近",2,"1.9V デジタル（DVDD）"]
+  ]},
+
+ {ref:"J2 / J11", name:"GbE MagJack ×2", meta:"J2 177.00, 58.00 · J11 177.00, 77.00",
+  note:"<b>磁気部の下は論理GND/電源プレーンをくり抜き</b>、シャーシGNDのアイランドを作る。4.7nF/2kV はその絶縁ギャップを<b>またいで</b>置く（沿面距離を確保）。",
+  rows:[
+   ["C43","100nF","0402","J2 の CT (pin P1) の直近",2,"PHY側センタータップのデカップリング"],
+   ["C44","100nF","0402","J11 の CT (pin P1) の直近",2,"同上"],
+   ["C41","4.7nF/2kV","1812","J2 側、論理GND⇄シャーシGND の絶縁ギャップをまたぐ",2,"HV Yキャップ。ポートごとに2個"],
+   ["C42","4.7nF/2kV","1812","J2 側、同上（2個目）",2,"HV Yキャップ"],
+   ["C61","4.7nF/2kV","1812","J11 側、絶縁ギャップをまたぐ",2,"HV Yキャップ"],
+   ["C62","4.7nF/2kV","1812","J11 側、同上（2個目）",2,"HV Yキャップ"]
+  ]},
+
+ {ref:"U14-U16", name:"デジタルRGB入力バッファ", meta:"SOT-23-6 · 100.15,122.55 / 100.00,126.50 / 100.15,130.45", note:"",
+  rows:[
+   ["C82","100nF","0402","U14 VCC (pin 5) の直近",2,"R/G バッファ"],
+   ["C83","100nF","0402","U15 VCC (pin 5) の直近",2,"B/I バッファ"],
+   ["C84","100nF","0402","U16 VCC (pin 5) の直近",2,"HS/VS バッファ"]
+  ]},
+
+ {ref:"J8", name:"TOSLINK 受信モジュール", meta:"PLR135/T10 · 94.90, 106.45", note:"",
+  rows:[["C19","100nF","0402","J8 の Vcc(pin 3)–GND(pin 2) 間、<b>7mm 以内</b>",1,"データシートの必須要件。光受信は感度が高いので高速デジタル/スイッチングから離す"]]},
+
+ {ref:"U4 / U5", name:"MACアドレス EEPROM ×2", meta:"SOIC-8 · 155.90,111.60 / 165.43,112.23", note:"",
+  rows:[
+   ["C39","100nF","0402","U4 VCC (pin 8) の直近",2,"0x50 = ETH0用"],
+   ["C40","100nF","0402","U5 VCC (pin 8) の直近",2,"0x51 = ETH1用"]
+  ]}
+];
+
+const P={1:"最優先",2:"直近",3:"近傍でよい"};
+const out=document.getElementById('out'),q=document.getElementById('q'),cnt=document.getElementById('count');
+let active=new Set();
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function hl(html,t){if(!t)return html;return html.replace(new RegExp('('+t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi'),'<mark>$1</mark>');}
+
+function render(){
+  const t=q.value.trim(),tl=t.toLowerCase();
+  let shown=0,total=0;
+  out.innerHTML=G.map(g=>{
+    const rows=g.rows.filter(r=>{
+      total++;
+      if(active.size&&!active.has(String(r[4])))return false;
+      if(!tl)return true;
+      return (r[0]+' '+r[1]+' '+r[3]+' '+r[5]+' '+g.ref+' '+g.name).toLowerCase().includes(tl);
+    });
+    if(!rows.length)return '';
+    shown+=rows.length;
+    return `<section class="group">
+      <div class="group-head">
+        <span class="group-ref">${esc(g.ref)}</span>
+        <span class="group-name">${esc(g.name)}</span>
+        <span class="group-meta">${esc(g.meta)}</span>
+        <span class="group-n">${rows.length} 個</span>
+      </div>
+      ${g.note?`<div class="group-note">${g.note}</div>`:''}
+      <div class="tw"><table>
+        <thead><tr><th>部品</th><th>値</th><th>置く場所</th><th>優先度</th><th>理由・注意</th></tr></thead>
+        <tbody>${rows.map(r=>`<tr class="s${r[4]}">
+          <td class="ref"><span class="refname">${hl(esc(r[0]),t)}</span><div class="pkg">${esc(r[2])}</div></td>
+          <td class="val">${esc(r[1])}</td>
+          <td class="where">${hl(r[3],t)}</td>
+          <td><span class="tag s${r[4]}">${P[r[4]]}</span></td>
+          <td class="why">${hl(r[5]||'—',t)}</td></tr>`).join('')}</tbody>
+      </table></div>
+    </section>`;
+  }).join('')||`<div class="group"><p class="empty">該当なし</p></div>`;
+  cnt.textContent=`${shown} / ${total} 個を表示`;
+}
+
+(function(){
+  const c={1:0,2:0,3:0};
+  G.forEach(g=>g.rows.forEach(r=>c[r[4]]++));
+  document.getElementById('summary').innerHTML=
+    `<div class="stat"><b>${c[1]+c[2]+c[3]}</b><span>コンデンサ合計</span></div>`+
+    `<div class="stat s1"><b>${c[1]}</b><span>最優先（2mm以内）</span></div>`+
+    `<div class="stat s2"><b>${c[2]}</b><span>直近（5mm目安）</span></div>`+
+    `<div class="stat s3"><b>${c[3]}</b><span>近傍でよい</span></div>`;
+})();
+
+q.addEventListener('input',render);
+document.querySelectorAll('.chip').forEach(b=>b.addEventListener('click',()=>{
+  const p=b.dataset.p,on=b.getAttribute('aria-pressed')==='true';
+  b.setAttribute('aria-pressed',String(!on));
+  on?active.delete(p):active.add(p);
+  render();
+}));
+addEventListener('keydown',e=>{
+  if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}
+  if(e.key==='Escape'&&document.activeElement===q){q.value='';render();q.blur();}
+});
+render();
+
+(function(){var b=document.getElementById("tt");b.addEventListener("click",function(){var r=document.documentElement,c=r.getAttribute("data-theme");if(!c)c=matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light";r.setAttribute("data-theme",c==="dark"?"light":"dark");});})();
+</script>
+</body></html>

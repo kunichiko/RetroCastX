@@ -8,8 +8,8 @@ import is_atomic_part
 import has_part_picked
 import has_designator_prefix
 import has_part_removed
-from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeader2x8Argus, Tp1Pad, PogoPin, HeaderJtag, HeaderOled
-from "parts/JST_DM_7D4_H2500_M/sodimm_i5.ato" import SoDimmI5
+from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeader2x8Argus, Tp1Pad, PogoPin, HeaderJtag, HeaderOled, HeaderDebug20
+from "parts/TE_Connectivity_1473005_4/sodimm_i5.ato" import SoDimmI5
 from "parts/RICHTEK_RT9013_18GB/RICHTEK_RT9013_18GB.ato" import RICHTEK_RT9013_18GB_package
 from "parts/FTDI_FT2232HL_REEL/FTDI_FT2232HL_REEL.ato" import FTDI_FT2232HL_REEL_package
 from "parts/MICROCHIP_93LC56BT_I_SN/MICROCHIP_93LC56BT_I_SN.ato" import MICROCHIP_93LC56BT_I_SN_package
@@ -361,6 +361,39 @@ component Eeprom24aa025e48:
     signal vcc ~ pin 8
 
 
+component DigitalRgbConnector:
+    """デジタルRGB(TTL)入力コネクタ: 1.25mmピッチ 単列8極、右アングルSMD。
+    YIYUAN YTC-A1251-08ABW(A1251/PicoBlade互換系)。LCSC: C7436577
+
+    ピン配置(ピッチ1.25mm、pad9/10=取付タブ):
+      1=GND  2=HS  3=R  4=G  5=B  6=I(輝度)  7=VS  8=GND   9,10=取付タブ→GND
+
+    **GNDを両端に置き、HSとVSがそれぞれGNDに隣接する順番にしている。**
+    8極では信号6本+GND2本しか取れないので、どの2本をGNDの隣にするかを選ぶ必要が
+    ある。フレーム全体を壊すのは同期の誤りなので、被害が大きいHS/VSを端(GND隣)に
+    置き、ドットクロック速度でトグルする色4bitを中央にまとめた。
+    ケーブルが長くノイズが出る場合は同シリーズの10極(GNDを1本おきに配置)へ
+    差し替えられる(フットプリント変更のみ)。
+
+    ★取付タブ(pad9/10)は機械保持用。GNDへ落として実装強度と静電的な安定を得る。
+    ★JLCの実装ライブラリ収載は未確認。実装対象外になる場合は手はんだで対応可
+      (0.8mmパッド・1.25mmピッチなので難しくない)。
+    """
+    trait is_atomic_part<manufacturer="YIYUAN", partnumber="YTC-A1251-08ABW", footprint="parts/YIYUAN_YTC_A1251_08ABW/CONN-SMD_8P-P1.25_YTC-A1251-08ABW.kicad_mod", symbol="parts/YIYUAN_YTC_A1251_08ABW/YTC-A1251-08ABW.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C7436577", manufacturer="YIYUAN", partno="YTC-A1251-08ABW">
+    trait has_designator_prefix<prefix="J">
+    signal gnd ~ pin 1
+    signal hs ~ pin 2
+    signal r ~ pin 3
+    signal g ~ pin 4
+    signal b ~ pin 5
+    signal intensity ~ pin 6
+    signal vs ~ pin 7
+    gnd ~ pin 8
+    gnd ~ pin 9    # 取付タブ
+    gnd ~ pin 10   # 取付タブ
+
+
 component DcJack:
     """DC005 barrel jack (5V in)。EXT給電運用時は未実装可。LCSC: C431533"""
     trait is_atomic_part<manufacturer="SHOU-HAN", partnumber="DC005", footprint="parts/SHOU_HAN_DC005/DC-IN-TH_DC005.kicad_mod", symbol="parts/SHOU_HAN_DC005/DC005_C431533.kicad_sym">
@@ -465,6 +498,109 @@ module VideoInputChannel:
     coupled ~> r_aa ~> output
     c_aa = new C33pF_0603
     output ~> c_aa ~> power.lv
+
+
+module DigitalRgbFrontEnd:
+    """デジタルRGB(TTL)入力段: 5V TTL 6本 → ESD → プルダウン → 3.3V化 → FPGA直結。
+
+    PC-6001mkII/SR、PC-8801、X1 等の「デジタルRGB」出力を取り込む経路。
+    TTLの R/G/B/I(輝度)4bit + HS + VS の6本で、アナログRGB経路(TVP7002)とは
+    完全に独立している。両方を同時に繋いだままにしても干渉しない
+    (別のFPGAピンに入るので、どちらを取り込むかはゲートウェア/CONFIGで選ぶ)。
+
+    **TVP7002は使わない。** デジタル信号をADCに通す意味は無く、TVPのH-PLLは
+    アナログ用のループフィルタ定数で固定されている。ドットクロックは FPGA 内で
+    50〜100MHz程度のオーバーサンプリングから再生する(または生サンプルのまま
+    送出してPC側でデコードする)。よってクロック線は基板上に無い。
+
+    ## レベル変換が必須な理由
+    レトロ機のデジタルRGBは 5V TTL(74LSシリーズ等の出力)だが、**ECP5 の I/O は
+    5Vトレラントではない**。3.3V以上を直接入れると入力保護ダイオードが導通して
+    FPGAを壊す。ここでは既存の同期バッファと同じ **SN74LVC2G17** を使う:
+
+      - LVCファミリの入力は Vcc=3.3V でも 5.5V まで許容(5Vトレラント)
+      - シュミットトリガなので、ケーブルで鈍った/リンギングしたTTLエッジを整形できる
+      - 出力は3.3V CMOS = FPGAに直結できる
+      - dual入りなので 3個(6ch)でちょうど足りる。**既存 U2 と同一型番なので
+        BOM行が増えない**(部品調達・実装の追加リスクが無い)
+
+    ## 10kΩ プルダウン
+    ケーブル未接続時に入力が浮くと、シュミットでも中間電位で発振して無駄な
+    トグルがFPGAに入る。各入力を10kΩでGNDに落として「未接続=L」に確定させる。
+    TTL出力(LOW時のシンク電流 数mA)に対して10kΩは軽いので駆動の妨げにならない。
+    ※もし将来オープンコレクタ出力の機種を繋ぐ場合は、この抵抗を外して
+      同じパッドに3.3Vへのプルアップを実装する(パッドは流用できる)。
+
+    ## RCフィルタを入れない理由
+    アナログRGB側と違い、ここは折り返しの問題が無い(デジタル値をそのまま
+    読むだけ)。逆にRCを入れるとエッジが鈍ってオーバーサンプリングでの
+    ドットクロック再生精度が落ちる。よって直列R・並列Cは付けない。
+    """
+    power_3v3 = new ElectricPower
+    signal gnd
+
+    # コネクタ側(5V TTL)
+    signal in_r
+    signal in_g
+    signal in_b
+    signal in_i
+    signal in_hs
+    signal in_vs
+    # FPGA側(3.3V CMOS)
+    signal out_r
+    signal out_g
+    signal out_b
+    signal out_i
+    signal out_hs
+    signal out_vs
+
+    # ESD保護(コネクタ直近に置く): 4ライン品×2で6ライン分。残り2chは未使用
+    esd = new EsdArray4[2]
+    esd[0].gnd ~ gnd
+    esd[1].gnd ~ gnd
+    in_r ~ esd[0].io1
+    in_g ~ esd[0].io2
+    in_b ~ esd[0].io3
+    in_i ~ esd[0].io4
+    in_hs ~ esd[1].io1
+    in_vs ~ esd[1].io2
+
+    # 未接続時にLに確定させるプルダウン
+    pd = new R10K_0402[6]
+    in_r ~> pd[0] ~> gnd
+    in_g ~> pd[1] ~> gnd
+    in_b ~> pd[2] ~> gnd
+    in_i ~> pd[3] ~> gnd
+    in_hs ~> pd[4] ~> gnd
+    in_vs ~> pd[5] ~> gnd
+
+    # 5Vトレラント シュミットバッファ ×3(dual = 6ch)
+    buf = new Lvc2g17[3]
+    dec = new C100nF_0402[3]
+    buf[0].vcc ~ power_3v3.hv
+    buf[1].vcc ~ power_3v3.hv
+    buf[2].vcc ~ power_3v3.hv
+    buf[0].gnd ~ gnd
+    buf[1].gnd ~ gnd
+    buf[2].gnd ~ gnd
+    buf[0].vcc ~> dec[0] ~> gnd
+    buf[1].vcc ~> dec[1] ~> gnd
+    buf[2].vcc ~> dec[2] ~> gnd
+
+    # 色4bitを2個に、同期2本を1個にまとめる(同期のバッファはHS/VSの遅延差が
+    # そろうので、同一パッケージに入れる方が位相比較に有利)
+    buf[0].in_a ~ in_r
+    buf[0].out_a ~ out_r
+    buf[0].in_b ~ in_g
+    buf[0].out_b ~ out_g
+    buf[1].in_a ~ in_b
+    buf[1].out_a ~ out_b
+    buf[1].in_b ~ in_i
+    buf[1].out_b ~ out_i
+    buf[2].in_a ~ in_hs
+    buf[2].out_a ~ out_hs
+    buf[2].in_b ~ in_vs
+    buf[2].out_b ~ out_vs
 
 
 module AudioAdc:
@@ -620,26 +756,74 @@ module EthernetPort:
     jack2.bobsmith ~ chassis
     jack2.shield ~ chassis
 
-    # --- リンク/アクティビティLED: 両ポートの緑/黄をFPGA GPIOで駆動 ---
-    # GPIO(3.3V) → R220 → アノード, カソード→GND(GPIO High=点灯, ~6mA)。
-    # 点灯パターン(リンク/アクティビティ)はゲートウェアで生成。
-    # ETH2=jack(io_r1/io_t1), ETH1=jack2(io_w1/io_v1)。GPIOはP6の同一クラスタでセット。
-    signal led_g_drive    # ETH2 緑LED (App: sodimm.io_r1)
-    signal led_y_drive    # ETH2 黄LED (App: sodimm.io_t1)
-    signal led_g_drive2   # ETH1 緑LED (App: sodimm.io_w1)
-    signal led_y_drive2   # ETH1 黄LED (App: sodimm.io_v1)
+    # --- リンク/アクティビティLED: 2系統を用意し、実装で選べるようにする ---
+    #
+    # 経路A(既定): **i5モジュール底面のPHY LEDパッドをポゴピンで直に拾う**。
+    #   Colorlight i5 の各GbE PHY(B50612D)のLED出力はモジュール底面のパッドに
+    #   出ており、JTAGと同じ流儀でバネ接触させられる。実在プロジェクト
+    #   chenzhuoyu/rainbow-board (Apache-2.0) がこの方式で、同じ HR911130A 系
+    #   MagJack の pin11/14(アノード) へ直列抵抗経由で入れている。
+    #   利点:
+    #     - **ゲートウェア不要**。PHYが出す本物のリンク/アクティビティが光る
+    #     - **ビットストリームを焼く前から光る** → 「そもそもリンクしているか」の
+    #       切り分けが実機デバッグで即できる(過去のARP問題の切り分けで欲しかった情報)
+    #     - FPGAのGPIO 4本(io_r1/io_t1/io_u1/io_y2)が解放される
+    #
+    # 経路B(代替): 従来どおり FPGA GPIO から駆動し、点灯パターンをゲートウェアで作る。
+    #   **直列にはんだジャンパを入れてあり、既定は開(=経路Aを使う)**。
+    #   ポゴピンの接触が不安定だった/PHYパッドの位置が実機と合わなかった場合に、
+    #   ジャンパを閉じてこちらへ逃げられる。基板改造なしで切り替えられるのが狙い。
+    #
+    # ★同時に両方を有効にしないこと。両方生かすとPHY出力とGPIO出力が
+    #   220Ω+220Ω=440Ω 越しに押し合う(3.3V/440Ω≒7.5mA。壊れはしないが表示が濁る)。
+    #   経路Aを使うときはゲートウェア側でGPIOを入力(ハイインピーダンス)にしておく。
+    #
+    # 抵抗値は 220Ω を採用(既存部品と同一でBOM行が増えない)。3.3V・Vf≒2Vで約6mA。
+    # rainbow-board は68Ω(≒19mA)だが、i5モジュール側に直列抵抗が入っている可能性が
+    # あり(モジュール自身のLEDと並列にタップしている疑い)、PHYのLEDピンに流し過ぎる
+    # リスクを避けて安全側にした。暗ければ100Ω→68Ωへ下げる。
+    signal led_g_drive    # ETH2 緑LED GPIO (App: sodimm.io_r1)
+    signal led_y_drive    # ETH2 黄LED GPIO (App: sodimm.io_t1)
+    signal led_g_drive2   # ETH1 緑LED GPIO (App: sodimm.io_u1)
+    signal led_y_drive2   # ETH1 黄LED GPIO (App: sodimm.io_y2)
+    # PHYタップ(ポゴピンで受ける。AppでPogoPinへ接続)
+    signal phy_led_g      # ETH2 PHY LED D2 → 緑
+    signal phy_led_y      # ETH2 PHY LED D4 → 黄
+    signal phy_led_g2     # ETH1 PHY LED D2 → 緑
+    signal phy_led_y2     # ETH1 PHY LED D4 → 黄
+
+    jack.led_g_k ~ gnd
+    jack.led_y_k ~ gnd
+    jack2.led_g_k ~ gnd
+    jack2.led_y_k ~ gnd
+
+    # 経路A: PHYタップ → 220Ω → アノード
+    r_phy_g = new R220_0402
+    r_phy_y = new R220_0402
+    r_phy_g2 = new R220_0402
+    r_phy_y2 = new R220_0402
+    phy_led_g ~> r_phy_g ~> jack.led_g_a
+    phy_led_y ~> r_phy_y ~> jack.led_y_a
+    phy_led_g2 ~> r_phy_g2 ~> jack2.led_g_a
+    phy_led_y2 ~> r_phy_y2 ~> jack2.led_y_a
+
+    # 経路B: GPIO → はんだジャンパ(既定=開) → 220Ω → アノード
+    sj_led_g = new SolderJumper
+    sj_led_y = new SolderJumper
+    sj_led_g2 = new SolderJumper
+    sj_led_y2 = new SolderJumper
     r_led_g = new R220_0402
     r_led_y = new R220_0402
     r_led_g2 = new R220_0402
     r_led_y2 = new R220_0402
-    led_g_drive ~> r_led_g ~> jack.led_g_a
-    jack.led_g_k ~ gnd
-    led_y_drive ~> r_led_y ~> jack.led_y_a
-    jack.led_y_k ~ gnd
-    led_g_drive2 ~> r_led_g2 ~> jack2.led_g_a
-    jack2.led_g_k ~ gnd
-    led_y_drive2 ~> r_led_y2 ~> jack2.led_y_a
-    jack2.led_y_k ~ gnd
+    led_g_drive ~ sj_led_g.a
+    sj_led_g.b ~> r_led_g ~> jack.led_g_a
+    led_y_drive ~ sj_led_y.a
+    sj_led_y.b ~> r_led_y ~> jack.led_y_a
+    led_g_drive2 ~ sj_led_g2.a
+    sj_led_g2.b ~> r_led_g2 ~> jack2.led_g_a
+    led_y_drive2 ~ sj_led_y2.a
+    sj_led_y2.b ~> r_led_y2 ~> jack2.led_y_a
     bridge_caps = new C4nF7_1812_2kV[4]
     chassis ~> bridge_caps[0] ~> gnd
     chassis ~> bridge_caps[1] ~> gnd
@@ -1076,6 +1260,64 @@ module App:
     sodimm.io_f2 ~ buf_sync.out_a   # pin155 (F2, P4-6, クロック対応) 生HSYNC
     sodimm.io_e1 ~ buf_sync.out_b   # pin153 (E1, P4-5) 生VSYNC(RC遅延後)
 
+    # --- デジタルRGB入力(TTL R/G/B/I + HS/VS): TVP7002を経由せずFPGA直結 ---
+    # PC-6001mkII/SR・PC-8801・X1 等のデジタルRGB(16色)を取り込む。
+    # 5V TTL → ESD → 10kプルダウン → SN74LVC2G17(5Vトレラント シュミット)→ 3.3V。
+    # ドットクロックはFPGA内でオーバーサンプリング(50〜100MHz)して再生するので
+    # クロック線は無い。HSにcsync(複合同期)が来る機種でもゲートウェアで分離できる。
+    # アナログRGB経路とはFPGAピンが別なので、両方を繋いだままにしても干渉しない。
+    drgb = new DigitalRgbFrontEnd
+    drgb.gnd ~ gnd
+    drgb.power_3v3 ~ p3v3_io
+
+    j_drgb = new DigitalRgbConnector
+    j_drgb.gnd ~ gnd
+    j_drgb.r ~ drgb.in_r
+    j_drgb.g ~ drgb.in_g
+    j_drgb.b ~ drgb.in_b
+    j_drgb.intensity ~ drgb.in_i
+    j_drgb.hs ~ drgb.in_hs
+    j_drgb.vs ~ drgb.in_vs
+
+    # SO-DIMM 割当(P4クラスタの空き)。HSだけクロック対応ボール F3(PCLKC7_1)に置き、
+    # 将来HSをFPGAのPLL基準に使う余地を残す。残るクロック対応ボール
+    # G3(PCLKT7_1)/H4(GR_PCLK7_1)は未接続のまま予備に残す。
+    sodimm.io_f3 ~ drgb.out_hs   # pin132 (F3=PCLKC7_1, クロック対応)
+    sodimm.io_h3 ~ drgb.out_r    # pin136 (H3)
+    sodimm.io_h5 ~ drgb.out_g    # pin140 (H5)
+    sodimm.io_j4 ~ drgb.out_b    # pin142 (J4)
+    sodimm.io_j5 ~ drgb.out_i    # pin144 (J5)
+    sodimm.io_k3 ~ drgb.out_vs   # pin146 (K3)
+
+    # --- 将来拡張用デバッグ端子: SO-DIMM偶数側の空きGPIO 20本 ---
+    # 偶数側 pin54〜94(pin56=GNDのみ除く)= 完全連続の空きGPIO 20本。ソケット上でも
+    # 0.6mmピッチで一列に並ぶので、SO-DIMM昇順↔ヘッダ昇順の単調割当で交差無しに引ける。
+    # dbg14(J18=GR_PCLK2_0)はクロック対応ボールなので外部クロック入力にも使える。
+    # 直列保護抵抗は入れていない(必要なら各線に33〜100Ωを後付け)。
+    j_dbg = new HeaderDebug20
+    j_dbg.gnd ~ gnd
+    j_dbg.p3v3 ~ p3v3_io.hv
+    j_dbg.dbg1 ~ sodimm.io_m1     # pin54  M1
+    j_dbg.dbg2 ~ sodimm.io_n2     # pin58  N2
+    j_dbg.dbg3 ~ sodimm.io_n3     # pin60  N3
+    j_dbg.dbg4 ~ sodimm.io_t2     # pin62  T2
+    j_dbg.dbg5 ~ sodimm.io_m3     # pin64  M3
+    j_dbg.dbg6 ~ sodimm.io_t3     # pin66  T3
+    j_dbg.dbg7 ~ sodimm.io_r3     # pin68  R3
+    j_dbg.dbg8 ~ sodimm.io_n4     # pin70  N4
+    j_dbg.dbg9 ~ sodimm.io_m4     # pin72  M4
+    j_dbg.dbg10 ~ sodimm.io_l4    # pin74  L4
+    j_dbg.dbg11 ~ sodimm.io_l5    # pin76  L5
+    j_dbg.dbg12 ~ sodimm.io_p16   # pin78  P16
+    j_dbg.dbg13 ~ sodimm.io_j16   # pin80  J16
+    j_dbg.dbg14 ~ sodimm.io_j18   # pin82  J18 = GR_PCLK2_0(クロック対応)
+    j_dbg.dbg15 ~ sodimm.io_j17   # pin84  J17
+    j_dbg.dbg16 ~ sodimm.io_h18   # pin86  H18
+    j_dbg.dbg17 ~ sodimm.io_h17   # pin88  H17
+    j_dbg.dbg18 ~ sodimm.io_g18   # pin90  G18
+    j_dbg.dbg19 ~ sodimm.io_h16   # pin92  H16
+    j_dbg.dbg20 ~ sodimm.io_f18   # pin94  F18
+
     # --- 音声入力(3系統: DSUB15音声 / LINE入力 / S/PDIF光) ---
     # クロック系: 12.288MHz XO(=256fs@48kHz)を両ADCのSCKIとFPGA(F1=PCLKC6_1)へ。
     # BCK(64fs)/LRCK(fs)はFPGAがMCLKから分周して両ADCへ共通供給。DOUTのみ個別
@@ -1234,10 +1476,41 @@ module App:
     eth.led_g_drive2 ~ sodimm.io_u1   # ETH1 緑LED (P6 pin46)
     eth.led_y_drive2 ~ sodimm.io_y2   # ETH1 黄LED (P6 pin48)
     # LED駆動ネットに読める名前を付与(自動名が pin番号 50/52 等になるのを回避)
-    eth.led_g_drive.override_net_name = "eth2_led_g"
-    eth.led_y_drive.override_net_name = "eth2_led_y"
-    eth.led_g_drive2.override_net_name = "eth1_led_g"
-    eth.led_y_drive2.override_net_name = "eth1_led_y"
+    eth.led_g_drive.override_net_name = "eth2_led_g_gpio"
+    eth.led_y_drive.override_net_name = "eth2_led_y_gpio"
+    eth.led_g_drive2.override_net_name = "eth1_led_g_gpio"
+    eth.led_y_drive2.override_net_name = "eth1_led_y_gpio"
+
+    # --- PHY LED タップ: i5モジュール底面のPHY LEDパッドへポゴピンでバネ接触 ---
+    # rainbow-board(Apache-2.0)の実測位置(SO-DIMMソケット原点からの相対):
+    #   JTAG 1×04        (-24.15, -33.30)  ← 本設計の「縦33mm」想定と一致(裏付け)
+    #   ETH1 LEDs 1×02   (-22.08, -29.59)
+    #   ETH2 LEDs 1×02   (-22.15, -15.43)
+    # 上記は rainbow のソケット向き基準。本設計のソケットは回転が違うので、
+    # レイアウト時に「ソケット原点から見た同じ相対位置」へ置き換えること。
+    # 2.54mmピッチで D2/D4 の2本が並ぶ(rainbowのドリルは0.5mm=JTAGの0.9mmより細い)。
+    pogo_eth2_d2 = new PogoPin
+    pogo_eth2_d4 = new PogoPin
+    pogo_eth1_d2 = new PogoPin
+    pogo_eth1_d4 = new PogoPin
+    pogo_eth2_d2.pad ~ eth.phy_led_g
+    pogo_eth2_d4.pad ~ eth.phy_led_y
+    pogo_eth1_d2.pad ~ eth.phy_led_g2
+    pogo_eth1_d4.pad ~ eth.phy_led_y2
+    eth.phy_led_g.override_net_name = "eth2_phy_led_d2"
+    eth.phy_led_y.override_net_name = "eth2_phy_led_d4"
+    eth.phy_led_g2.override_net_name = "eth1_phy_led_d2"
+    eth.phy_led_y2.override_net_name = "eth1_phy_led_d4"
+    # LEDアノード(PHY経路とGPIO経路の合流点)と、ジャンパ〜抵抗間の中間ノード。
+    # 放っておくと自動命名で "b" / "eth-b-1" のような追跡不能な名前になる。
+    eth.jack.led_g_a.override_net_name = "eth2_led_g_anode"
+    eth.jack.led_y_a.override_net_name = "eth2_led_y_anode"
+    eth.jack2.led_g_a.override_net_name = "eth1_led_g_anode"
+    eth.jack2.led_y_a.override_net_name = "eth1_led_y_anode"
+    eth.sj_led_g.b.override_net_name = "eth2_led_g_gpio_sj"
+    eth.sj_led_y.b.override_net_name = "eth2_led_y_gpio_sj"
+    eth.sj_led_g2.b.override_net_name = "eth1_led_g_gpio_sj"
+    eth.sj_led_y2.b.override_net_name = "eth1_led_y_gpio_sj"
 
     # =========================================================================
     # ネット名の明示化(PCBレイアウトでの判別性向上)
@@ -1298,6 +1571,44 @@ module App:
     tvp.b4.override_net_name = "vd_b4"
     tvp.b3.override_net_name = "vd_b3"
     tvp.b2.override_net_name = "vd_b2"
+
+    # --- デジタルRGB: コネクタ側(5V TTL)と FPGA側(3.3V) を別名で追跡 ---
+    # drgbi_* = バッファ手前(5V TTL、コネクタ〜ESD〜プルダウン〜バッファ入力)
+    # drgb_*  = バッファ後(3.3V、バッファ出力〜SO-DIMM)
+    drgb.in_r.override_net_name = "drgbi_r"
+    drgb.in_g.override_net_name = "drgbi_g"
+    drgb.in_b.override_net_name = "drgbi_b"
+    drgb.in_i.override_net_name = "drgbi_i"
+    drgb.in_hs.override_net_name = "drgbi_hs"
+    drgb.in_vs.override_net_name = "drgbi_vs"
+    drgb.out_r.override_net_name = "drgb_r"
+    drgb.out_g.override_net_name = "drgb_g"
+    drgb.out_b.override_net_name = "drgb_b"
+    drgb.out_i.override_net_name = "drgb_i"
+    drgb.out_hs.override_net_name = "drgb_hs"
+    drgb.out_vs.override_net_name = "drgb_vs"
+
+    # --- デバッグ端子: dbg01..dbg20(2桁ゼロ詰めでソート順=SO-DIMM順) ---
+    j_dbg.dbg1.override_net_name = "dbg01_m1"
+    j_dbg.dbg2.override_net_name = "dbg02_n2"
+    j_dbg.dbg3.override_net_name = "dbg03_n3"
+    j_dbg.dbg4.override_net_name = "dbg04_t2"
+    j_dbg.dbg5.override_net_name = "dbg05_m3"
+    j_dbg.dbg6.override_net_name = "dbg06_t3"
+    j_dbg.dbg7.override_net_name = "dbg07_r3"
+    j_dbg.dbg8.override_net_name = "dbg08_n4"
+    j_dbg.dbg9.override_net_name = "dbg09_m4"
+    j_dbg.dbg10.override_net_name = "dbg10_l4"
+    j_dbg.dbg11.override_net_name = "dbg11_l5"
+    j_dbg.dbg12.override_net_name = "dbg12_p16"
+    j_dbg.dbg13.override_net_name = "dbg13_j16"
+    j_dbg.dbg14.override_net_name = "dbg14_j18_pclk"
+    j_dbg.dbg15.override_net_name = "dbg15_j17"
+    j_dbg.dbg16.override_net_name = "dbg16_h18"
+    j_dbg.dbg17.override_net_name = "dbg17_h17"
+    j_dbg.dbg18.override_net_name = "dbg18_g18"
+    j_dbg.dbg19.override_net_name = "dbg19_h16"
+    j_dbg.dbg20.override_net_name = "dbg20_f18"
 
     # --- 音声: アナログ入力 / I2S DOUT ---
     adc_dsub.in_l.override_net_name = "aud_dsub_l"

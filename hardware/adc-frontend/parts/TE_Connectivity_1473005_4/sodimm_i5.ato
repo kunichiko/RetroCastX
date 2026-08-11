@@ -1,0 +1,203 @@
+import has_designator_prefix
+import has_part_removed
+import has_part_picked
+import is_atomic_part
+
+# Colorlight i5 (ECP5 LFE5U-25) を載せる DDR2 SO-DIMM 200P ソケット。
+#
+# 【2026-08 修正】以前は JST DM-7D4-H2500(M)(C483268)のフットプリントを流用していたが、
+# これは**モジュールが基板に垂直に立つタイプ**だった(LCSCの品目説明で確認)。
+# 本設計は i5 モジュールを**基板と平行に寝かせる**前提である:
+#   - JTAGはモジュール底面のパッドへポゴピン(PG1-4)でバネ接触させる → 寝かせないと成立しない
+#   - mech.ato の PogoPin は「モジュール裏〜基板間隙2.6mm」を想定している
+# よって水平(right angle module orientation)タイプ用のフットプリント
+# SODIMM_200P_DDR2_RightAngle_Socket.kicad_mod に差し替えた。
+#
+# ランドパターンの出典(2026-08-11 確定):
+#   **TE 1473149-4**(SO-DIMM 200P / 0.6mm / H5.2 / DDR2)の実フットプリントを、
+#   同じ Colorlight i5/i9 を寝かせて載せる実在プロジェクト
+#   **chenzhuoyu/rainbow-board (Apache-2.0)** の ECP5-Breakout.kicad_pcb から取り込んだ。
+#   ライブラリ名 `Connector_TE-Connectivity-Extra:1473149-4_SODIMM_200P_H5.2_DDR2`。
+#
+#   - 信号: 2列 × 100パッド、**列間 8.2mm(y ±4.1mm)**、パッド 0.381 × 2.0574mm
+#   - 列内0.6mmピッチ、列間で0.3mmずれ(モジュール表裏)、span 63.00mm + 切欠4.2mm
+#     → X座標は KiCad標準 SODIMM-200_1.8V_Card_edge (JEDEC MO-224 Var.AB) と完全一致
+#   - **ラッチ(金属爪)の基板保持SMDパッド 4.5212 × 4.699mm を (±32.55, -12.0) に2個**
+#     (pad名 201 = 同一ノード。rainbow-board でもGNDに接続されている)
+#   - **位置決めNPTH: φ1.5 @ (-33.4, 0) と φ1.0 @ (+33.4, 0)**。左右で径が違う
+#     = 向き間違い防止のキーになっている
+#   - ボディ/シルク/コートヤード: F.Fab x±37.5 / y -21.49〜+5.00。
+#     **y の -21.5 側にボディが伸びる = モジュールはその方向へ寝る**
+#
+#   ※以前ここには「列間6.2mm」と書いていたが誤り。TEの仕様表の
+#     "Reihenabstand 6.2mm" は基板ランドの列間ではなかった。実フットプリント2件
+#     (TE 1473149-4 と KiCad標準のDDR4版)がどちらも 8.2mm で一致している。
+#
+# 交差検証(rainbow-board と本設計で一致した点):
+#   - pin1 の位置 (x=-31.65) と 奇数ピン=+y側 の流儀が同一 → ミラーの心配なし
+#   - **pin1=GND / pin2=+5V** も一致 → 本ファイルのピンマップの裏付けになる
+#
+# ★★ 発注前に現物で照合すること ★★
+#   1. **買うソケットが TE 1473149-4 と同じランドパターンか**。汎用品で代替する場合、
+#      列間8.2mm・ラッチパッド位置・NPTH径(φ1.5/φ1.0非対称)を実測で確認する
+#   2. **スタックハイト**: 本フットプリントの元は H5.2mm。ポゴピン(自由長3mm)が
+#      i5モジュール底面に届くかを確認すること(mech.ato は間隙2.6mm想定)。
+#      届かないならポゴピンを長いものに変えるか、ソケットを4.0mm品にする
+#
+# ピン番号は wuxx Colorlight-FPGA-Projects の DDR2-SODIMM-200P 表に一致。
+# 信号名 io_<ball> は ECP5 のボール名(現行 HeaderExtP2/P4 と同一)。
+# ※ディレクトリ名 JST_DM_7D4_H2500_M は流用元の名残(シンボルのみ流用している)。
+component SoDimmI5:
+    trait is_atomic_part<manufacturer="TE Connectivity", partnumber="1473005-4", footprint="SO-DIMM-SMD_200P-P0.60_1473005-4.kicad_mod", symbol="1473005-4.kicad_sym", model="SO-DIMM-SMD_L71.5-W26-H5.2_200P-P0.60_1473005-4.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C428482", manufacturer="TE Connectivity", partno="1473005-4">
+    trait has_designator_prefix<prefix="U">
+
+    # --- 電源/GND ---
+    signal p5v
+    p5v ~ pin 2
+    p5v ~ pin 4
+    p5v ~ pin 6
+    p5v ~ pin 8
+    p5v ~ pin 10
+    p5v ~ pin 12
+    signal gnd
+    # ラッチ(金属爪)の基板保持SMDパッド ×2。実部品では同一ノードで、
+    # rainbow-board(TE 1473149-4 実装例)でもGNDに落としている。
+    # 4.52×4.70mmの大きな銅で機械強度を稼ぐ意味もあるのでGNDに接続する。
+    gnd ~ pin 201
+    gnd ~ pin 1
+    gnd ~ pin 3
+    gnd ~ pin 5
+    gnd ~ pin 7
+    gnd ~ pin 9
+    gnd ~ pin 11
+    gnd ~ pin 39
+    gnd ~ pin 40
+    gnd ~ pin 55
+    gnd ~ pin 56
+    gnd ~ pin 105
+    gnd ~ pin 106
+    gnd ~ pin 107
+    gnd ~ pin 108
+    gnd ~ pin 157
+    gnd ~ pin 158
+    gnd ~ pin 199
+    gnd ~ pin 200
+
+    # --- Ethernet MDI (ETH2=phy0既定, ETH1=phy1) ---
+    signal eth2_1_P ~ pin 16
+    signal eth2_1_N ~ pin 18
+    signal eth2_2_P ~ pin 24
+    signal eth2_2_N ~ pin 22
+    signal eth2_3_P ~ pin 28
+    signal eth2_3_N ~ pin 30
+    signal eth2_4_P ~ pin 36
+    signal eth2_4_N ~ pin 34
+    signal eth1_1_P ~ pin 15
+    signal eth1_1_N ~ pin 17
+    signal eth1_2_P ~ pin 23
+    signal eth1_2_N ~ pin 21
+    signal eth1_3_P ~ pin 27
+    signal eth1_3_N ~ pin 29
+    signal eth1_4_P ~ pin 35
+    signal eth1_4_N ~ pin 33
+
+    # --- FPGA GPIO (io_<ball>): 現行 HeaderExtP2 の RGB 20本 ---
+    signal io_j20 ~ pin 89
+    signal io_g20 ~ pin 95
+    signal io_l18 ~ pin 83
+    signal io_k20 ~ pin 85
+    signal io_m18 ~ pin 79
+    signal io_l20 ~ pin 81
+    signal io_n17 ~ pin 75
+    signal io_n18 ~ pin 77
+    signal io_u17 ~ pin 71
+    signal io_p18 ~ pin 73
+    signal io_t17 ~ pin 67
+    signal io_u18 ~ pin 69
+    signal io_p17 ~ pin 63
+    signal io_m17 ~ pin 65
+    signal io_r18 ~ pin 59
+    signal io_r17 ~ pin 61
+    signal io_c18 ~ pin 51
+    signal io_t18 ~ pin 57
+    signal io_u16 ~ pin 41
+    signal io_k18 ~ pin 49
+
+    # --- FPGA GPIO: HeaderExtP3(映像B2-B9 + TVPタイミング) ---
+    signal io_f20 ~ pin 99
+    signal io_d20 ~ pin 111
+    signal io_b20 ~ pin 117
+    signal io_b19 ~ pin 119
+    signal io_b18 ~ pin 121
+    signal io_a19 ~ pin 123
+    signal io_c17 ~ pin 125
+    signal io_a18 ~ pin 127
+    signal io_d3 ~ pin 129
+    signal io_c4 ~ pin 131
+    signal io_b4 ~ pin 133
+    signal io_c3 ~ pin 135
+    signal io_e3 ~ pin 137
+    signal io_e2 ~ pin 151   # PCLKC7_0: P3唯一のクロック対応ピン(DATACLK用)
+    # 音声系(ADC側の信号はP3に集約)。いずれもクロック非対応ボールだが、データ入力と
+    # 低速出力なので可。XOの受けだけは専用クロックピンが要るのでP4のF1(下記)を使い、
+    # FPGAでバッファした MCLK を 147 から出す。
+    signal io_a3 ~ pin 139   # I2S_DOUT_LINE
+    signal io_c2 ~ pin 141   # I2S_DOUT_DSUB
+    signal io_b1 ~ pin 143   # AUD_BCK
+    signal io_c1 ~ pin 145   # AUD_LRCK
+    signal io_d2 ~ pin 147   # AUD_MCLK (FPGA出力、XOバッファ)
+
+    # --- FPGA GPIO: 現行 HeaderExtP4 のタイミング/I2C/音声 ---
+    signal io_f2 ~ pin 155   # DATACLK (クロック対応ボール)
+    signal io_e1 ~ pin 153
+    signal io_e4 ~ pin 128
+    signal io_h3 ~ pin 136
+    signal io_h5 ~ pin 140
+    signal io_j5 ~ pin 144
+    signal io_a2 ~ pin 154
+    signal io_k4 ~ pin 148
+    signal io_b2 ~ pin 156
+    signal io_k3 ~ pin 146
+    signal io_k5 ~ pin 150
+    signal io_b3 ~ pin 152
+    signal io_f1 ~ pin 130   # 音声MCLK (クロック対応ボール)
+    signal io_g3 ~ pin 134
+    signal io_h4 ~ pin 138
+    signal io_f3 ~ pin 132
+    signal io_j4 ~ pin 142
+    signal io_e19 ~ pin 109
+
+    # --- 将来拡張用デバッグ端子へ出す空きGPIO 20本(偶数側 pin54〜94) ---
+    # 偶数側の pin54〜94 は pin56(GND)を除くと 20本が完全に連続した空きGPIO。
+    # ext基板では P6(54〜82)と P5(84〜94)に出ているピン。ソケット上でも
+    # x方向に0.6mmピッチで一列に並ぶので、2×15ヘッダへ交差無しで引ける。
+    # J18(pin82)は GR_PCLK2_0 = クロック対応ボール → 外部クロック入力に使える。
+    signal io_m1 ~ pin 54    # P6·24
+    signal io_n2 ~ pin 58    # P6·23
+    signal io_n3 ~ pin 60    # P6·18
+    signal io_t2 ~ pin 62    # P6·17
+    signal io_m3 ~ pin 64    # P6·14
+    signal io_t3 ~ pin 66    # P6·13
+    signal io_r3 ~ pin 68    # P6·12
+    signal io_n4 ~ pin 70    # P6·11
+    signal io_m4 ~ pin 72    # P6·10
+    signal io_l4 ~ pin 74    # P6·9
+    signal io_l5 ~ pin 76    # P6·8
+    signal io_p16 ~ pin 78   # P6·7
+    signal io_j16 ~ pin 80   # P6·6
+    signal io_j18 ~ pin 82   # P6·5  GR_PCLK2_0(クロック対応)
+    signal io_j17 ~ pin 84   # P5·30
+    signal io_h18 ~ pin 86   # P5·29
+    signal io_h17 ~ pin 88   # P5·28
+    signal io_g18 ~ pin 90   # P5·27
+    signal io_h16 ~ pin 92   # P5·26
+    signal io_f18 ~ pin 94   # P5·25
+
+    # --- P6クラスタ GPIO: MagJack LED ×4(連続) + i5 UART ×2 ---
+    signal io_r1 ~ pin 42   # ETH2 LED緑
+    signal io_t1 ~ pin 44   # ETH2 LED黄
+    signal io_u1 ~ pin 46   # ETH1 LED緑
+    signal io_y2 ~ pin 48   # ETH1 LED黄
+    signal io_w1 ~ pin 50   # UART: i5 RX (FT2232H TXD)
+    signal io_v1 ~ pin 52   # UART: i5 TX (FT2232H RXD)

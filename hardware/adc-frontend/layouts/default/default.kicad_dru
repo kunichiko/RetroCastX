@@ -32,4 +32,37 @@
 # ネットクラス既定(0.4mm)に加え、非GbEネットが近づく場合は3×線幅=0.6mm確保。
 (rule "GbE_diff to other-net clearance"
 	(constraint clearance (min 0.6mm))
-	(condition "A.NetClass == 'GbE_diff' && B.NetClass != 'GbE_diff'"))
+	(condition "A.NetClass == 'GbE_diff' && B.NetClass != 'GbE_diff' && !A.memberOfFootprint('U11') && !B.memberOfFootprint('U11')"))
+
+# --- SO-DIMM(U11)のブレークアウト部だけクリアランスを緩和 ---
+# **0.6mmピッチのコネクタでGbEのクリアランス(ネットクラス0.4mm/対他ネット0.6mm)は
+#   物理的に満たせない。** パッド幅0.35mm・ピッチ0.6mm なのでパッド端〜端は0.25mmしかなく、
+#   線幅0.2mmで真っ直ぐ引き出しても隣パッドまで0.325mm、線幅0にしても0.425mmが上限。
+#   → ファンアウト区間だけ 0.2mm に緩める(JLC 4層の下限0.09mm・基板最小値0.1mmに対し十分)。
+#   上の 0.6mm ルールにも !memberOfFootprint('U11') を足してあるので、
+#   ルール同士の優先順位に依存せずどちらか一方だけが効く。
+#
+# ★条件の書き方に注意(2026-08-11 実測): KiCad 9 では
+#     A.memberOfFootprint('U11')  → 効く
+#     A.memberOf('U11')           → 構文は通るが**何にもマッチしない**
+#     A.insideCourtyard('U11')    → 同上(フットプリントにF.CrtYdが無かったため。後に追加済み)
+#   構文エラーが出ない = 効いている、ではないので、極端な値を入れて発火を確認すること。
+(rule "SO-DIMM breakout clearance relax"
+	(constraint clearance (min 0.2mm))
+	(condition "A.memberOfFootprint('U11') || B.memberOfFootprint('U11')"))
+
+# =============================================================================
+# JLCPCB 製造能力(4層・標準)由来のルール
+# 根拠 https://jlcpcb.com/capabilities/pcb-capabilities (2026-08 確認)
+# 線幅/間隔/ビア径/銅-外形は .kicad_pro の rules(基板最小値)側で設定済み。
+# ここには「KiCadの基板最小値が1種類しか持てないので分離が必要なもの」を書く。
+# =============================================================================
+
+# --- PTH(部品穴)同士の穴間隔 0.45mm ---
+# JLCは「ビア穴間 0.2mm / パッド穴間 0.45mm」と別基準。基板最小値(min_hole_to_hole)は
+# ビア側の0.2mmに合わせてファンアウトを通せるようにしてあるので、PTH同士だけ
+# ここで0.45mmに戻す。2.54mmピッチのヘッダ類は余裕で通るが、コネクタの
+# 取付穴や手追加した穴が近づいたときに効く。
+(rule "JLC: PTH hole-to-hole 0.45mm"
+	(constraint hole_to_hole (min 0.45mm))
+	(condition "A.Type == 'Pad' && B.Type == 'Pad'"))

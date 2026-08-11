@@ -257,18 +257,18 @@
 		(layers "*.Cu" "*.Mask")
 		(uuid "cf84f099-ecd9-4284-b0e6-bc59086ceb58")
 	)
-	(pad "" thru_hole circle
+	(pad "" np_thru_hole circle
 		(at -2.9 -1.21)
 		(size 0.75 0.75)
 		(drill 0.75)
-		(layers "*.Cu" "*.Mask")
+		(layers "F&B.Cu" "*.Mask")
 		(uuid "e2d9929d-fc76-4c9b-9a4f-ae733157ed0e")
 	)
-	(pad "" thru_hole circle
+	(pad "" np_thru_hole circle
 		(at 2.9 -1.21)
 		(size 0.75 0.75)
 		(drill 0.75)
-		(layers "*.Cu" "*.Mask")
+		(layers "F&B.Cu" "*.Mask")
 		(uuid "44aa5c20-9133-4915-9ff6-4380a5aa481f")
 	)
 	(model "${KIPRJMOD}/../../parts/UNKNOWN_TYPE_C_31_M_12/USB-C_SMD-TYPE-C-31-M-12.step"
