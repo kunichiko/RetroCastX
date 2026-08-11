@@ -14,7 +14,7 @@ from "parts/RICHTEK_RT9013_18GB/RICHTEK_RT9013_18GB.ato" import RICHTEK_RT9013_1
 from "parts/FTDI_FT2232HL_REEL/FTDI_FT2232HL_REEL.ato" import FTDI_FT2232HL_REEL_package
 from "parts/MICROCHIP_93LC56BT_I_SN/MICROCHIP_93LC56BT_I_SN.ato" import MICROCHIP_93LC56BT_I_SN_package
 from "parts/YXC_X322512MSB4SI/YXC_X322512MSB4SI.ato" import YXC_X322512MSB4SI_package
-from "passives.ato" import R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, R10K_0402, R12K_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805, C33pF_0603
+from "passives.ato" import R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, R10K_0402, R12K_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805, C33pF_0603, C33pF_0603_DNP
 
 # =============================================================================
 # RetroCastX ADC front-end: TVP7002 breakout for Colorlight i5 EXT board
@@ -1109,14 +1109,33 @@ module App:
     #  - **絵の品質には効いた。** 交換後、Viewerのノイズ表示が 12〜14.6% → 0.0% に
     #    なった(ただし同時に pll_divide も変えているので容量単独の寄与とは言い切れない)。
     #
-    # グリッチは10〜33MHz帯にある(10MHzのLPFで消え、33MHzでは消えない)。RGB各
-    # チャネルには 220Ω+33pF(fc≈22MHz)のアンチエイリアスRCが入っているのに、
-    # このSOG分岐は結合容量からSOGIN_3へ直結で高域が素通しになっている。
-    # RGBと同じRCをここにも入れれば、チップ内LPFに頼らずに済む(データシートは
-    # 「Excessive filtering can lead to ... increased sample clock jitter」と
-    # 警告しているので、チップ内LPFは軽いほど有利)。→ 要検討
     c_sog3 = new C100nF_0402
-    vga.g ~> c_sog3 ~> tvp.sogin_3
+
+    # SOG分岐のアンチエイリアスRC(シュント側は未実装で出す)
+    #
+    # グリッチは10〜33MHz帯にある(TVP内蔵SOG LPFを10MHzにすると消え、33MHzでは
+    # 消えない)。RGB各チャネルには 220Ω+33pF(fc≈22MHz)が入っているのに、この
+    # SOG分岐は結合容量からSOGIN_3へ直結で高域が素通しだった。
+    #
+    # ただし現状はTVP内蔵のSOG LPF(reg 1Ah)を有効にするだけで解決しており、実測で
+    # 残っている問題は無い(noise 0.0%)。測定できる改善余地が無いのに部品を増やす
+    # 必要は無い。一方でデータシートは
+    #   「Excessive filtering can lead to sync detection issues and increased
+    #    sample clock jitter」
+    # 「it also makes the sync falling edge less sharp」
+    # と警告しており、外部で落とせれば内蔵LPFを軽くできて鮮鋭度に有利になる。
+    # 基板ができてからでは追加できないので、**パターンだけ置いて保険にする**。
+    #
+    # 直列は 0Ω ではなく既存の R220_0402 を実装する。0Ω の実部品がこのプロジェクトに
+    # 無く、BOM行と品番を増やしたくないため。シュント未実装ならTVPの入力容量
+    # (データシート10pF)との時定数は fc≈72MHz で、検証済みの10〜33MHz帯には
+    # 実質効かない。後で33pFを載せればRGBと同じ fc≈16.8MHz になる。
+    r_sog3 = new R220_0402
+    c_sog3_aa = new C33pF_0603_DNP
+    signal sog3_coupled
+    vga.g ~> c_sog3 ~> sog3_coupled
+    sog3_coupled ~> r_sog3 ~> tvp.sogin_3
+    tvp.sogin_3 ~> c_sog3_aa ~> gnd
 
     # D-SUB15のGND(RGB各GND・共通GND・シェル)
     vga.gnd ~ gnd

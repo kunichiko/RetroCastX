@@ -3,6 +3,7 @@ import Capacitor
 import is_atomic_part
 import has_part_picked
 import has_designator_prefix
+import has_part_removed
 
 component R75_0402 from Resistor:
     trait is_atomic_part<manufacturer="UNI-ROYAL", partnumber="0402WGF750JTCE", footprint="parts/UNI_ROYAL_0402WGF750JTCE/R0402.kicad_mod", symbol="parts/UNI_ROYAL_0402WGF750JTCE/0402WGF750JTCE.kicad_sym">
@@ -112,4 +113,15 @@ component C33pF_0603 from Capacitor:
     trait is_atomic_part<manufacturer="SAMSUNG", partnumber="CL10C330JB8NNNC", footprint="parts/SAMSUNG_CL10C330JB8NNNC/C0603.kicad_mod", symbol="parts/SAMSUNG_CL10C330JB8NNNC/CL10C330JB8NNNC.kicad_sym">
     trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C1663", manufacturer="SAMSUNG", partno="CL10C330JB8NNNC">
     trait has_designator_prefix<prefix="C">
+    assert capacitance within 31.35pF to 34.65pF
+
+component C33pF_0603_DNP from Capacitor:
+    """C33pF_0603 と同じフットプリントの未実装(DNP)版。
+
+    「基板ができてからでは追加できないが、実装しない選択は後からできる」ための保険。
+    パターンだけ置いて JLC の実装からは外す(has_part_removed)。必要になったら
+    手で載せるか、次回発注で実装指定に変えればよい。"""
+    trait is_atomic_part<manufacturer="SAMSUNG", partnumber="CL10C330JB8NNNC", footprint="parts/SAMSUNG_CL10C330JB8NNNC/C0603.kicad_mod", symbol="parts/SAMSUNG_CL10C330JB8NNNC/CL10C330JB8NNNC.kicad_sym">
+    trait has_designator_prefix<prefix="C">
+    trait has_part_removed
     assert capacitance within 31.35pF to 34.65pF
