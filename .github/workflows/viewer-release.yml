@@ -351,14 +351,51 @@ jobs:
           Compress-Archive -Path "$stage\*" -DestinationPath "..\dist\$zipName" -Force
           "zip_name=$zipName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
+      # インストーラ版も作る。中身は zip と同じで、違いは**固定パスへ入る**こと。
+      # Windowsのファイアウォール/ローカルネットワークの許可は実行ファイルの
+      # パス単位なので、zipを展開し直すたびに許可を聞かれる(許可するまで映像が
+      # 来ない)。インストーラならそれが起きない。
+      #
+      # 入力は zip と同じステージング(dist\RetroCastX)。中身が食い違わないよう、
+      # 組み立ては上の1か所だけにしてある。
+      - name: Package installer (Inno Setup)
+        id: installer
+        shell: pwsh
+        run: |
+          $version = "${{ needs.prepare.outputs.app_version }}"
+          # windows-latest には Inno Setup 6 が preinstall されている。
+          # 念のため winget などで入る LocalAppData 側も候補に入れる。
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw "ISCC.exe が見つかりません(Inno Setup 6 が必要)" }
+          Write-Host "Using ISCC: $iscc"
+          # ステージングと出力先は絶対パスで渡す(.iss 側の既定はローカルビルド用)
+          $stage = (Resolve-Path "..\dist\RetroCastX").Path
+          $out = (Resolve-Path "..\dist").Path
+          & $iscc "/DMyAppVersion=$version" "/DStageDir=$stage" "/DOutDir=$out" `
+                  packaging\windows\retrocastx.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC が失敗しました (exit $LASTEXITCODE)" }
+          $setupName = "RetroCastX_windows-setup-$version.exe"
+          if (-not (Test-Path "..\dist\$setupName")) {
+            throw "インストーラが出来ていません: ..\dist\$setupName"
+          }
+          "setup_name=$setupName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
       # Windowsは中身をそのまま置く(二重zipを避ける)。exeとテキストに壊れる
       # 属性は無いので、アーティファクトを展開すれば即実行できる。
-      # Release へは zip を添付する(下)。
+      # インストーラは1ファイルなので隣に並べる。
+      # Release へは zip とインストーラを添付する(下)。
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: retrocastx-viewer-windows-${{ needs.prepare.outputs.app_version }}-${{ needs.prepare.outputs.build_number }}
-          path: dist/RetroCastX/*
+          path: |
+            dist/RetroCastX/*
+            dist/${{ steps.installer.outputs.setup_name }}
           retention-days: 14
 
       - name: Upload to GitHub Release
@@ -366,4 +403,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
-        run: gh release upload "$env:GITHUB_REF_NAME" "..\dist\${{ steps.package.outputs.zip_name }}" --clobber
+        run: |
+          gh release upload "$env:GITHUB_REF_NAME" "..\dist\${{ steps.package.outputs.zip_name }}" --clobber
+          gh release upload "$env:GITHUB_REF_NAME" "..\dist\${{ steps.installer.outputs.setup_name }}" --clobber

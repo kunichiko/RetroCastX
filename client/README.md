@@ -68,8 +68,9 @@ PRのため)。ただし**タグからのリリースだけは署名必須**で�
 
 成果物:
 
-    RetroCastX_macos-<version>.zip     「RetroCast X.app」universal(arm64+x86_64)、署名済み
-    RetroCastX_windows-<version>.zip   RetroCastX.exe + README-first.txt
+    RetroCastX_macos-<version>.zip          「RetroCast X.app」universal(arm64+x86_64)、署名済み
+    RetroCastX_windows-<version>.zip        RetroCastX.exe + README-first.txt
+    RetroCastX_windows-setup-<version>.exe  同じ中身のインストーラ(Inno Setup、未署名)
 
 macOSの `.app` は `packaging/macos/bundle.sh` が組み立てる。**CIのYAMLにロジックを
 置かず**スクリプトにしてあるので、手元で同じものを作って試せる:
@@ -79,6 +80,20 @@ cargo build --release
 packaging/macos/bundle.sh target/release/retrocastx-viewer 0.1.0 0 /tmp/out
 open "/tmp/out/RetroCast X.app"
 ```
+
+**Windowsはインストーラ版も作る**(`client/packaging/windows/retrocastx.iss`、
+Inno Setup 6。`windows-latest` に preinstall されている)。中身は zip と同じで、
+違いは**固定パスへ入る**ことだけだが、そこに意味がある:
+
+> Windowsのファイアウォール/ローカルネットワークの許可は**実行ファイルのパス
+> 単位**なので、zip を展開する場所を変えたり exe を置き換えたりするたびに
+> 許可を聞かれ、**許可するまで映像が来ない**(数秒間まったく反応が無いように
+> 見える)。インストーラなら次回以降その入れ替わりが起きない。
+
+zip とインストーラで中身が食い違わないよう、**組み立ては1か所**(ワークフローの
+`Package zip` が作る `dist/RetroCastX`)にして、ISCC はそれをそのまま入れる。
+`AppId` の GUID は**一度決めたら変えない**(アップグレード判定とアンインストール
+の識別が壊れる)。手元で作るときは .iss 冒頭のコメントの手順で。
 
 **macOS はアイコンに角丸マスクをかけない。** 丸みも余白も素材側で作る決まりなので、
 `make-icons.sh` は Apple の配置規則(1024の画布に本体824×824、角丸半径185.4、周囲は
@@ -121,9 +136,6 @@ touch "/path/to/RetroCast X.app" && killall Dock
 
 - **Windowsの署名**: 証明書が無いので未署名。SmartScreenの警告は同梱の
   README-first.txt で案内している
-- **Windowsのインストーラ**: いまはzipのみ。`windows-latest` には Inno Setup が
-  入っているので、固定パスへ入れたくなったら追加できる(実行ファイルのパスが
-  変わるとファイアウォールの許可を再度聞かれるので、その観点では利点がある)
 - **ゲートウェア/Python側のCI**: このワークフローはViewerだけを見る
 
 ## 構成
