@@ -51,6 +51,31 @@
 	(constraint clearance (min 0.2mm))
 	(condition "A.memberOfFootprint('U11') || B.memberOfFootprint('U11')"))
 
+# --- 0.5mmピッチ部品のブレークアウトはさらに緩める(U10 TVP7002 / U13 FT2232H / D* ESD) ---
+# パッド幅0.28mm・ピッチ0.5mm なのでパッド中心から隣パッド端まで **0.360mm** しかない。
+# 真っ直ぐ引き出したときに使える最大線幅は 2×(0.360 − 要求クリアランス):
+#
+#   クラス        要求    既定線幅   使える最大線幅   既定線幅で通るか
+#   Analog_RGB   0.30mm  0.25mm    0.120mm         ✗
+#   Clock        0.25mm  0.25mm    0.220mm         ✗
+#   Power        0.20mm  0.40mm    0.320mm         ✗
+#   Default      0.127mm 0.20mm    0.466mm         ✓
+#
+# → **rin3/gin3/bin3・dataclk・avdd 等が既定の線幅で1本も引き出せない**状態だった。
+# ファンアウト区間だけ **0.127mm(5mil)** に緩める。Default クラスの下限と同じ値なので
+# 説明が一つで済む。これで Power の既定 0.40mm 線でも 0.360−0.200=0.160mm ≥ 0.127mm で
+# 通る(ネックダウン不要)。JLC 4層の下限 0.09mm・基板最小値 0.10mm に対して十分。
+#
+# ★アナログ入力を緩めて大丈夫な根拠(ピン配置を確認済み):
+#   pin9 rin3  の両隣 = pin8 gnd / pin10 rin2_nc(10nF終端)
+#   pin98 gin3 の両隣 = pin97 sogin3 / pin99 sogin2_nc(1nF終端)
+#   pin16 bin3 の両隣 = pin15 gnd / pin17 bin2_nc(10nF終端)
+#   つまり**スイッチングする信号が隣接していない**ので、ここを詰めても
+#   クロストークの加害源は増えない。README に記録のあるチャンネル間クロストークとは別問題。
+(rule "fine-pitch breakout clearance relax"
+	(constraint clearance (min 0.127mm))
+	(condition "A.memberOfFootprint('U10') || B.memberOfFootprint('U10') || A.memberOfFootprint('U13') || B.memberOfFootprint('U13') || A.memberOfFootprint('D*') || B.memberOfFootprint('D*')"))
+
 # =============================================================================
 # JLCPCB 製造能力(4層・標準)由来のルール
 # 根拠 https://jlcpcb.com/capabilities/pcb-capabilities (2026-08 確認)

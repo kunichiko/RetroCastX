@@ -159,6 +159,11 @@ component Tvp7002:
     signal hsync_a ~ pin 81
     signal hsync_b ~ pin 82
 
+    # Exposed thermal pad (EP)。データシート要件で GND ベタへはんだ付けする
+    # (熱・電気の両方)。フットプリント内のサーマルビア9本も同じ pad名 101 なので
+    # ここに繋げばまとめてGNDに落ちる。宣言し忘れると露出パッドが浮いたままになる。
+    signal ep ~ pin 101
+
     # H-PLL loop filter
     signal filt1 ~ pin 87
     signal filt2 ~ pin 88
@@ -1036,6 +1041,7 @@ module App:
     tvp.dgnd ~ gnd
     tvp.iognd ~ gnd
     tvp.nsub ~ gnd
+    tvp.ep ~ gnd       # 露出パッド(EP)+サーマルビア → GND
 
     # デカップリング(各電源ピン群に100nF)
     dec_caps = new C100nF_0402[14]
