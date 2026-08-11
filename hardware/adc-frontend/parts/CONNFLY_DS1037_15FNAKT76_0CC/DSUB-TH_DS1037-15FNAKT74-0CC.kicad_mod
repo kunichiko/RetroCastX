@@ -541,7 +541,7 @@
 	)
 	(model "${KIPRJMOD}/../../parts/CONNFLY_DS1037_15FNAKT76_0CC/DSUB-TH_DMR-15P-F-WI.step"
 		(offset
-			(xyz 0.13 6.7 0)
+			(xyz 0.13 -1.8 0)
 		)
 		(scale
 			(xyz 1 1 1)

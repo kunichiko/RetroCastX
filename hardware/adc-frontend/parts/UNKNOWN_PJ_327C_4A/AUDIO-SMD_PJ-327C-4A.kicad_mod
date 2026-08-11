@@ -269,7 +269,7 @@
 	)
 	(model "${KIPRJMOD}/../../parts/UNKNOWN_PJ_327C_4A/AUDIO-SMD_L11.8-W6.0-H5.0-4P.step"
 		(offset
-			(xyz 0 0 0.5)
+			(xyz 0 4.5 0.5)
 		)
 		(scale
 			(xyz 1 1 1)
