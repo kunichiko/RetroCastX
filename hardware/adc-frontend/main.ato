@@ -1300,15 +1300,22 @@ module App:
     j_drgb.hs ~ drgb.in_hs
     j_drgb.vs ~ drgb.in_vs
 
-    # SO-DIMM 割当(P4クラスタの空き)。HSだけクロック対応ボール F3(PCLKC7_1)に置き、
-    # 将来HSをFPGAのPLL基準に使う余地を残す。残るクロック対応ボール
-    # G3(PCLKT7_1)/H4(GR_PCLK7_1)は未接続のまま予備に残す。
-    sodimm.io_f3 ~ drgb.out_hs   # pin132 (F3=PCLKC7_1, クロック対応)
-    sodimm.io_h3 ~ drgb.out_r    # pin136 (H3)
-    sodimm.io_h5 ~ drgb.out_g    # pin140 (H5)
+    # SO-DIMM 割当(P4クラスタの空き)。ピン昇順で VS/HS/I/B/G/R の並びにしてある
+    # (2026-08-11 変更。レイアウト上の交差を減らすため)。
+    #
+    # ★以前は「HSをクロック対応ボール F3(PCLKC7_1)に置いて、将来FPGAのPLL基準に
+    #   使う余地を残す」としていたが、この並べ替えで VS が F3 に来る。実用上の損失は
+    #   小さい: **ECP5のPLLは入力下限が数MHz級**で、15〜31kHz の HS を直接PLLの
+    #   リファレンスにはできない。ドットクロック再生は結局デジタル(オーバーサンプリング+
+    #   分周/DDS)で行うので、クロック網に載る利点はほとんど無い。
+    #   どうしても必要になったら G3(pin134, PCLKT7_1) / H4(pin138, GR_PCLK7_1) が
+    #   未接続の予備として残っているので、そちらへ移せる。
+    sodimm.io_f3 ~ drgb.out_vs   # pin132 (F3=PCLKC7_1)
+    sodimm.io_h3 ~ drgb.out_hs   # pin136 (H3)
+    sodimm.io_h5 ~ drgb.out_i    # pin140 (H5)
     sodimm.io_j4 ~ drgb.out_b    # pin142 (J4)
-    sodimm.io_j5 ~ drgb.out_i    # pin144 (J5)
-    sodimm.io_k3 ~ drgb.out_vs   # pin146 (K3)
+    sodimm.io_j5 ~ drgb.out_g    # pin144 (J5)
+    sodimm.io_k3 ~ drgb.out_r    # pin146 (K3)
 
     # --- 将来拡張用デバッグ端子: SO-DIMM偶数側の空きGPIO 20本 ---
     # 偶数側 pin54〜94(pin56=GNDのみ除く)= 完全連続の空きGPIO 20本。ソケット上でも
