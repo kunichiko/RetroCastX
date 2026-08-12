@@ -14,7 +14,7 @@ from "parts/RICHTEK_RT9013_18GB/RICHTEK_RT9013_18GB.ato" import RICHTEK_RT9013_1
 from "parts/FTDI_FT2232HL_REEL/FTDI_FT2232HL_REEL.ato" import FTDI_FT2232HL_REEL_package
 from "parts/MICROCHIP_93LC56BT_I_SN/MICROCHIP_93LC56BT_I_SN.ato" import MICROCHIP_93LC56BT_I_SN_package
 from "parts/YXC_X322512MSB4SI/YXC_X322512MSB4SI.ato" import YXC_X322512MSB4SI_package
-from "passives.ato" import R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, R10K_0402, R12K_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805, C33pF_0603, C33pF_0603_DNP
+from "passives.ato" import R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, R10K_0402, R12K_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805, C33pF_0402, C33pF_0402_DNP
 
 # =============================================================================
 # RetroCastX ADC front-end: TVP7002 breakout for Colorlight i5 EXT board
@@ -478,7 +478,7 @@ module VideoInputChannel:
     # r_aa は c_ac の直後で構わない。
     r_aa = new R220_0402
     coupled ~> r_aa ~> output
-    c_aa = new C33pF_0603
+    c_aa = new C33pF_0402
     output ~> c_aa ~> power.lv
 
 
@@ -849,9 +849,9 @@ module Ft2232hProgrammer:
     ft.OSCI ~ xtal.OSC1
     ft.OSCO ~ xtal.OSC2
     xtal.GND ~ gnd
-    c_osci = new C33pF_0603
+    c_osci = new C33pF_0402
     ft.OSCI ~> c_osci ~> gnd
-    c_osco = new C33pF_0603
+    c_osco = new C33pF_0402
     ft.OSCO ~> c_osco ~> gnd
 
     # --- 構成EEPROM 93LC56(x16固定, 'B')---
@@ -1070,7 +1070,7 @@ module App:
     # (データシート10pF)との時定数は fc≈72MHz で、検証済みの10〜33MHz帯には
     # 実質効かない。後で33pFを載せればRGBと同じ fc≈16.8MHz になる。
     r_sog3 = new R220_0402
-    c_sog3_aa = new C33pF_0603_DNP
+    c_sog3_aa = new C33pF_0402_DNP
     signal sog3_coupled
     vga.g ~> c_sog3 ~> sog3_coupled
     sog3_coupled ~> r_sog3 ~> tvp.sogin_3
@@ -1136,7 +1136,7 @@ module App:
     # 「The inputs must be ac coupled. The recommended coupling capacitor is 0.1 uF」)
     c_sog2 = new C100nF_0402
     r_sog2 = new R220_0402
-    c_sog2_aa = new C33pF_0603_DNP
+    c_sog2_aa = new C33pF_0402_DNP
     signal sog2_coupled
     csync_div ~> c_sog2 ~> sog2_coupled
     sog2_coupled ~> r_sog2 ~> tvp.sogin_2
@@ -1216,14 +1216,16 @@ module App:
     osc.vcc ~> c_osc ~> gnd
 
     # --- 未使用アナログ入力の処理(datasheet: video系10nF, SOG系1nFをGNDへ) ---
-    nc_caps = new C10nF_0402[7]
+    #
+    # ★_2 系統(RIN_2/GIN_2/BIN_2/SOGIN_2)は第2入力で**使う**ので、ここに含めては
+    #   いけない。10nF が付くと直列220Ωと組んで fc≈72kHz になり映像が完全に潰れる。
+    #   第2入力を足した時にこれを外し忘れていた(2026-08-12に発見・修正)。
+    #   残るのは _1 系統と GIN_4 のみ。
+    nc_caps = new C10nF_0402[4]
     tvp.rin_1 ~> nc_caps[0] ~> gnd
-    tvp.rin_2 ~> nc_caps[1] ~> gnd
-    tvp.bin_1 ~> nc_caps[2] ~> gnd
-    tvp.bin_2 ~> nc_caps[3] ~> gnd
-    tvp.gin_1 ~> nc_caps[4] ~> gnd
-    tvp.gin_2 ~> nc_caps[5] ~> gnd
-    tvp.gin_4 ~> nc_caps[6] ~> gnd
+    tvp.bin_1 ~> nc_caps[1] ~> gnd
+    tvp.gin_1 ~> nc_caps[2] ~> gnd
+    tvp.gin_4 ~> nc_caps[3] ~> gnd
 
     nc_sog_caps = new C1nF_0402[1]
     tvp.sogin_1 ~> nc_sog_caps[0] ~> gnd
@@ -1604,6 +1606,8 @@ module App:
     ch_g.output.override_net_name = "gin3"
     ch_b.output.override_net_name = "bin3"
     tvp.sogin_3.override_net_name = "sogin3"
+    # SOGIN_3(sync-on-green)の結合後。自動命名だと "lv" になって追えない
+    sog3_coupled.override_net_name = "vin_g3_sog_ac"
 
     # 第2入力(2x5ヘッダ)
     ch_r2.input.override_net_name = "vin_r2"
