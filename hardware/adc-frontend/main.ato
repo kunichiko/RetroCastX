@@ -401,16 +401,6 @@ component DigitalRgbConnector:
     gnd ~ pin 10   # 取付タブ
 
 
-component DcJack:
-    """DC005 barrel jack (5V in)。EXT給電運用時は未実装可。LCSC: C431533"""
-    trait is_atomic_part<manufacturer="SHOU-HAN", partnumber="DC005", footprint="parts/SHOU_HAN_DC005/DC-IN-TH_DC005.kicad_mod", symbol="parts/SHOU_HAN_DC005/DC005_C431533.kicad_sym">
-    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C431533", manufacturer="SHOU-HAN", partno="DC005">
-    trait has_designator_prefix<prefix="J">
-    signal center ~ pin 1
-    signal sleeve ~ pin 2
-    signal switch ~ pin 3
-
-
 component UsbCPowerReceptacle:
     """USB-C レセプタクル(USB2.0 16pin級)、電源入力用。TYPE-C-31-M-12。LCSC: C165948
 
@@ -765,72 +755,38 @@ module EthernetPort:
 
     # --- リンク/アクティビティLED: 2系統を用意し、実装で選べるようにする ---
     #
-    # 経路A(既定): **i5モジュール底面のPHY LEDパッドをポゴピンで直に拾う**。
-    #   Colorlight i5 の各GbE PHY(B50612D)のLED出力はモジュール底面のパッドに
-    #   出ており、JTAGと同じ流儀でバネ接触させられる。実在プロジェクト
-    #   chenzhuoyu/rainbow-board (Apache-2.0) がこの方式で、同じ HR911130A 系
-    #   MagJack の pin11/14(アノード) へ直列抵抗経由で入れている。
-    #   利点:
-    #     - **ゲートウェア不要**。PHYが出す本物のリンク/アクティビティが光る
-    #     - **ビットストリームを焼く前から光る** → 「そもそもリンクしているか」の
-    #       切り分けが実機デバッグで即できる(過去のARP問題の切り分けで欲しかった情報)
-    #     - FPGAのGPIO 4本(io_r1/io_t1/io_u1/io_y2)が解放される
+    # **FPGA の GPIO から駆動する**(2026-08-12にこの一本化へ変更)。
     #
-    # 経路B(代替): 従来どおり FPGA GPIO から駆動し、点灯パターンをゲートウェアで作る。
-    #   **直列にはんだジャンパを入れてあり、既定は開(=経路Aを使う)**。
-    #   ポゴピンの接触が不安定だった/PHYパッドの位置が実機と合わなかった場合に、
-    #   ジャンパを閉じてこちらへ逃げられる。基板改造なしで切り替えられるのが狙い。
+    # 以前は2経路持っていた:
+    #   経路A(既定) i5モジュール底面のPHY LEDパッドをポゴピンで直に拾う
+    #               (chenzhuoyu/rainbow-board と同じ方式)
+    #   経路B(代替) FPGAのGPIOから駆動。直列のはんだジャンパで切り替え
+    # ポゴピンの利点は「ゲートウェア不要でPHYの本物のリンク状態が、ビットストリームを
+    # 焼く前から光る」ことだったが、基板面積と配線の都合で経路Bに一本化した。
+    # ポゴピン4本・PHYタップの抵抗4本・はんだジャンパ4本(計12点)と、それらが
+    # SO-DIMMソケット周辺を横切る配線が無くなる。
     #
-    # ★同時に両方を有効にしないこと。両方生かすとPHY出力とGPIO出力が
-    #   220Ω+220Ω=440Ω 越しに押し合う(3.3V/440Ω≒7.5mA。壊れはしないが表示が濁る)。
-    #   経路Aを使うときはゲートウェア側でGPIOを入力(ハイインピーダンス)にしておく。
-    #
-    # 抵抗値は 220Ω を採用(既存部品と同一でBOM行が増えない)。3.3V・Vf≒2Vで約6mA。
-    # rainbow-board は68Ω(≒19mA)だが、i5モジュール側に直列抵抗が入っている可能性が
-    # あり(モジュール自身のLEDと並列にタップしている疑い)、PHYのLEDピンに流し過ぎる
-    # リスクを避けて安全側にした。暗ければ100Ω→68Ωへ下げる。
+    # 抵抗値は 220Ω(既存部品と同一でBOM行が増えない)。3.3V・Vf≒2Vで約6mA。
+    # 暗ければ100Ω→68Ωへ下げる。
+
     signal led_g_drive    # ETH2 緑LED GPIO (App: sodimm.io_r1)
     signal led_y_drive    # ETH2 黄LED GPIO (App: sodimm.io_t1)
     signal led_g_drive2   # ETH1 緑LED GPIO (App: sodimm.io_u1)
     signal led_y_drive2   # ETH1 黄LED GPIO (App: sodimm.io_y2)
-    # PHYタップ(ポゴピンで受ける。AppでPogoPinへ接続)
-    signal phy_led_g      # ETH2 PHY LED D2 → 緑
-    signal phy_led_y      # ETH2 PHY LED D4 → 黄
-    signal phy_led_g2     # ETH1 PHY LED D2 → 緑
-    signal phy_led_y2     # ETH1 PHY LED D4 → 黄
-
     jack.led_g_k ~ gnd
     jack.led_y_k ~ gnd
     jack2.led_g_k ~ gnd
     jack2.led_y_k ~ gnd
 
-    # 経路A: PHYタップ → 220Ω → アノード
-    r_phy_g = new R220_0402
-    r_phy_y = new R220_0402
-    r_phy_g2 = new R220_0402
-    r_phy_y2 = new R220_0402
-    phy_led_g ~> r_phy_g ~> jack.led_g_a
-    phy_led_y ~> r_phy_y ~> jack.led_y_a
-    phy_led_g2 ~> r_phy_g2 ~> jack2.led_g_a
-    phy_led_y2 ~> r_phy_y2 ~> jack2.led_y_a
-
-    # 経路B: GPIO → はんだジャンパ(既定=開) → 220Ω → アノード
-    sj_led_g = new SolderJumper
-    sj_led_y = new SolderJumper
-    sj_led_g2 = new SolderJumper
-    sj_led_y2 = new SolderJumper
+    # GPIO → 220Ω → アノード
     r_led_g = new R220_0402
     r_led_y = new R220_0402
     r_led_g2 = new R220_0402
     r_led_y2 = new R220_0402
-    led_g_drive ~ sj_led_g.a
-    sj_led_g.b ~> r_led_g ~> jack.led_g_a
-    led_y_drive ~ sj_led_y.a
-    sj_led_y.b ~> r_led_y ~> jack.led_y_a
-    led_g_drive2 ~ sj_led_g2.a
-    sj_led_g2.b ~> r_led_g2 ~> jack2.led_g_a
-    led_y_drive2 ~ sj_led_y2.a
-    sj_led_y2.b ~> r_led_y2 ~> jack2.led_y_a
+    led_g_drive ~> r_led_g ~> jack.led_g_a
+    led_y_drive ~> r_led_y ~> jack.led_y_a
+    led_g_drive2 ~> r_led_g2 ~> jack2.led_g_a
+    led_y_drive2 ~> r_led_y2 ~> jack2.led_y_a
     bridge_caps = new C4nF7_1812_2kV[4]
     chassis ~> bridge_caps[0] ~> gnd
     chassis ~> bridge_caps[1] ~> gnd
@@ -946,7 +902,6 @@ module App:
     vga = new Dsub15X68k
     buf_sync = new Lvc2g17
     osc = new Osc27M
-    jack = new DcJack
     supply = new PowerTree
 
     # 電源レール
@@ -969,7 +924,8 @@ module App:
     #   オンボードFT2232Hへ配線し、USB経由でi5をJTAG書換え + ch.B UART。
     #   FT2232Hは基板3.3V(USB VBUS→LDO由来)で動作=バスパワー等価(USB接続時のみ通電)。
     #   SJ1(閉=既定)でSO-DIMMの5Vピン経由でi5モジュールへ給電。
-    #   代替入力: J7 DCジャック。J10とJ7は同時使用不可。
+    #   ★DCジャック(J7)は削除した(2026-08-12)。USB-Cで足りると判断。
+    #     基板面積が逼迫しており、MSXのDIN-8入力を載せる余地を作るのが目的。
     usbc = new UsbCPowerReceptacle
     usbc.vbus ~ power_5v.hv
     usbc.gnd ~ gnd
@@ -1019,8 +975,6 @@ module App:
     sj_ext5v = new SolderJumperClosed
     p5v_ext ~ sj_ext5v.a
     sj_ext5v.b ~ power_5v.hv
-    jack.center ~ power_5v.hv
-    jack.sleeve ~ gnd
 
     power_5v.voltage = 5V +/- 5%
     p3v3_io.voltage = 3.3V +/- 3%
@@ -1567,36 +1521,11 @@ module App:
     eth.led_g_drive2.override_net_name = "eth1_led_g_gpio"
     eth.led_y_drive2.override_net_name = "eth1_led_y_gpio"
 
-    # --- PHY LED タップ: i5モジュール底面のPHY LEDパッドへポゴピンでバネ接触 ---
-    # rainbow-board(Apache-2.0)の実測位置(SO-DIMMソケット原点からの相対):
-    #   JTAG 1×04        (-24.15, -33.30)  ← 本設計の「縦33mm」想定と一致(裏付け)
-    #   ETH1 LEDs 1×02   (-22.08, -29.59)
-    #   ETH2 LEDs 1×02   (-22.15, -15.43)
-    # 上記は rainbow のソケット向き基準。本設計のソケットは回転が違うので、
-    # レイアウト時に「ソケット原点から見た同じ相対位置」へ置き換えること。
-    # 2.54mmピッチで D2/D4 の2本が並ぶ(rainbowのドリルは0.5mm=JTAGの0.9mmより細い)。
-    pogo_eth2_d2 = new PogoPin
-    pogo_eth2_d4 = new PogoPin
-    pogo_eth1_d2 = new PogoPin
-    pogo_eth1_d4 = new PogoPin
-    pogo_eth2_d2.pad ~ eth.phy_led_g
-    pogo_eth2_d4.pad ~ eth.phy_led_y
-    pogo_eth1_d2.pad ~ eth.phy_led_g2
-    pogo_eth1_d4.pad ~ eth.phy_led_y2
-    eth.phy_led_g.override_net_name = "eth2_phy_led_d2"
-    eth.phy_led_y.override_net_name = "eth2_phy_led_d4"
-    eth.phy_led_g2.override_net_name = "eth1_phy_led_d2"
-    eth.phy_led_y2.override_net_name = "eth1_phy_led_d4"
-    # LEDアノード(PHY経路とGPIO経路の合流点)と、ジャンパ〜抵抗間の中間ノード。
-    # 放っておくと自動命名で "b" / "eth-b-1" のような追跡不能な名前になる。
+    # LEDアノード。放っておくと自動命名で "b" のような追跡不能な名前になる
     eth.jack.led_g_a.override_net_name = "eth2_led_g_anode"
     eth.jack.led_y_a.override_net_name = "eth2_led_y_anode"
     eth.jack2.led_g_a.override_net_name = "eth1_led_g_anode"
     eth.jack2.led_y_a.override_net_name = "eth1_led_y_anode"
-    eth.sj_led_g.b.override_net_name = "eth2_led_g_gpio_sj"
-    eth.sj_led_y.b.override_net_name = "eth2_led_y_gpio_sj"
-    eth.sj_led_g2.b.override_net_name = "eth1_led_g_gpio_sj"
-    eth.sj_led_y2.b.override_net_name = "eth1_led_y_gpio_sj"
 
     # =========================================================================
     # ネット名の明示化(PCBレイアウトでの判別性向上)
