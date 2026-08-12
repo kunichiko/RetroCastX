@@ -266,6 +266,40 @@ component BoxHeader2x8Argus:
     gnd ~ pin 16
     # pin 13(+5V), 15(VBUS) = NC(RetroCastXは自己給電)
 
+component BoxHeaderMsx2x4:
+    """MSXのアナログRGB(8ピンDIN 45326 Type A)を受ける 2x4 ボックスヘッダ
+    (2.54mm, IDCリボン)。手実装/DNP。
+
+    DINコネクタは種類が紛らわしく(同じ8ピンでも 45326/262°/270°/MIDI用180°で
+    ピン配置が違う)、基板に載せると選定を誤ったときに刺さらない。かわりに
+    汎用のボックスヘッダを載せ、**DIN側は各自が短いケーブルを自作する**方針にした。
+
+    ピンは **DIN-8 のピン番号と 1:1** にしてある。ケーブル製作時に
+    「DINのn番 → ヘッダのn番」で済み、間違えにくい。
+      1 GND      2 AUDIO(モノラル)
+      3 AV       4 CSYNC (1.8Vpp)
+      5 YS       6 R  (0.7Vpp)
+      7 G        8 B
+    出典: https://www.msx.org/wiki/RGB_(8-pin_DIN_45326)
+
+    ★pin3 AV は +5V、pin5 YS は +12V/+5V が出る。GNDへ落とさないこと。
+      本基板ではテストパッドへ引き出すだけにしてある(負荷を掛けない)。
+    ★CSYNC は 1.8Vpp(実測 1.8〜2.0Vpp)。TVP7002 のアナログ入力は
+      推奨 0.5〜2Vpp / 絶対最大 2.3V なので、基板側で 1/2 に分圧して受ける。
+    """
+    trait is_atomic_part<manufacturer="", partnumber="BoxHeader_2x4_2.54", footprint="BoxHeader_2x4_P2.54mm.kicad_mod", symbol="BoxHeader_2x4.kicad_sym">
+    trait has_designator_prefix<prefix="J">
+    trait has_part_removed  # 手実装/DNP
+    signal gnd ~ pin 1
+    signal audio ~ pin 2
+    signal av ~ pin 3
+    signal csync ~ pin 4
+    signal ys ~ pin 5
+    signal r ~ pin 6
+    signal g ~ pin 7
+    signal b ~ pin 8
+
+
 component MountingHoleM26:
     """基板固定用ネジ穴 M2.6(GND接続)。
 
