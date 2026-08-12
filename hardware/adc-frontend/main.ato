@@ -14,6 +14,8 @@ from "parts/RICHTEK_RT9013_18GB/RICHTEK_RT9013_18GB.ato" import RICHTEK_RT9013_1
 from "parts/FTDI_FT2232HL_REEL/FTDI_FT2232HL_REEL.ato" import FTDI_FT2232HL_REEL_package
 from "parts/MICROCHIP_93LC56BT_I_SN/MICROCHIP_93LC56BT_I_SN.ato" import MICROCHIP_93LC56BT_I_SN_package
 from "parts/YXC_X322512MSB4SI/YXC_X322512MSB4SI.ato" import YXC_X322512MSB4SI_package
+from "parts/Worldsemi_WS2812B_2020/Worldsemi_WS2812B_2020.ato" import Worldsemi_WS2812B_2020_package
+from "parts/ST_1N4148W/ST_1N4148W.ato" import ST_1N4148W_package
 from "passives.ato" import R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, R10K_0402, R12K_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805, C33pF_0402, C33pF_0402_DNP
 
 # =============================================================================
@@ -1391,6 +1393,48 @@ module App:
     j_dbg.dbg19 ~ sodimm.io_h16   # pin92  H16
     j_dbg.dbg20 ~ sodimm.io_f18   # pin94  F18
 
+    # --- ステータス表示用フルカラーLED (WS2812B-2020) ---
+    #
+    # 2.0×2.0mm のシリアル制御RGB。800kHz の1本線プロトコル(24bit GRB)で
+    # ゲートウェアから任意の色を出せる。リンク状態・モード・エラーの表示に使う。
+    #
+    # ★5V給電 + ダイオード降圧にしてある。理由:
+    #   WS2812B の DIN の入力高レベルは **VIH = 0.7 × VDD**。5V直結だと3.5V必要で、
+    #   i5のGPIOは3.3Vなので規定を満たさない(動くこともあるが個体差・温度で不安定)。
+    #   一方 VDD の定格は 3.7〜5.3V なので 3.3V 直結も定格外(WS2812B-2020 も同じ)。
+    #   ダイオード1個で 5V → 4.2〜4.45V に落とすと:
+    #     消灯時(約1mA)  Vf≈0.55V → VDD 4.45V → VIH 3.11V  < 3.3V ✓
+    #     全白時(約60mA) Vf≈0.80V → VDD 4.20V → VIH 2.94V  < 3.3V ✓
+    #   VDDは定格内に収まり、VIHは全電流域で3.3Vを下回る。
+    #   ※MimicX(atari-joystick)は3.3V直結だが、データシート上は定格外。
+    #
+    # 電源は power_5v(USB VBUS)から取る。音声用の p5v_audio(フェライト分離後)は
+    # 使わない — LEDの電流パルス(最大60mA)を音声レールに乗せたくないため。
+    led_status = new Worldsemi_WS2812B_2020_package
+    d_led = new ST_1N4148W_package
+    signal p_led_4v3
+    power_5v.hv ~ d_led.A
+    d_led.K ~ p_led_4v3
+    led_status.VDD ~ p_led_4v3
+    led_status.GND ~ gnd
+    # データシート推奨の100nF。この基板はアナログ映像を扱うので、LEDの電流パルスを
+    # 5Vレールへ戻さないためにも入れる(MimicXには無い)
+    c_led = new C100nF_0402
+    p_led_4v3 ~> c_led ~> gnd
+
+    # データ線は **デバッグ端子の dbg01(io_m1, pin54)と共用**。
+    # ★dbg01 に外部から何かを繋いで駆動すると、このLEDのデータ線と衝突する。
+    #   デバッグ端子は未実装(DNP)なので通常は問題にならないが、使うときは注意。
+    # 220Ω は源端整合(反射制動)とESD緩衝。**SO-DIMM側に寄せて配置すること**
+    # (送り側に置かないと効果が出ない)。MimicXは470Ωだが、800kHzに対しては
+    # 等価な効果で、220Ωなら既存部品でBOM行が増えない。
+    r_led = new R220_0402
+    sodimm.io_m1 ~> r_led ~> led_status.DI
+    # DO は将来LEDを増やす場合の引き出し口。テストパッドのみ(未実装)
+    tp_led_do = new Tp1Pad
+    led_status.DO ~ tp_led_do.pad
+
+
     # --- 音声入力(3系統: DSUB15音声 / 第2映像入力の音声 / S/PDIF光) ---
     # クロック系: 12.288MHz XO(=256fs@48kHz)を両ADCのSCKIとFPGA(F1=PCLKC6_1)へ。
     # BCK(64fs)/LRCK(fs)はFPGAがMCLKから分周して両ADCへ共通供給。DOUTのみ個別
@@ -1648,6 +1692,9 @@ module App:
     # YS(D-SUB15 pin7 → TP1)。自動命名だと素の "pad" になり追跡できない。
     # 意図的に「コネクタとテストパッドの2点だけ」のネット(未使用・保護なし)。
     tp_ys.pad.override_net_name = "ys"
+    p_led_4v3.override_net_name = "p_led_4v3"
+    led_status.DI.override_net_name = "led_din"
+    tp_led_do.pad.override_net_name = "led_dout"
     vs_delayed.override_net_name = "vsync_delayed"
     tvp.vsync_a.override_net_name = "vsync_a"
 
