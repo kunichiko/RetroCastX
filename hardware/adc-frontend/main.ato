@@ -8,7 +8,7 @@ import is_atomic_part
 import has_part_picked
 import has_designator_prefix
 import has_part_removed
-from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeaderMsx2x4, Tp1Pad, PogoPin, HeaderJtag, HeaderOled, HeaderDebug20, MountingHoleM26, SolderJumperClosed
+from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeaderAux2x5, Tp1Pad, PogoPin, HeaderJtag, HeaderOled, HeaderDebug20, MountingHoleM26, SolderJumperClosed
 from "parts/TE_Connectivity_1473005_4/sodimm_i5.ato" import SoDimmI5
 from "parts/RICHTEK_RT9013_18GB/RICHTEK_RT9013_18GB.ato" import RICHTEK_RT9013_18GB_package
 from "parts/FTDI_FT2232HL_REEL/FTDI_FT2232HL_REEL.ato" import FTDI_FT2232HL_REEL_package
@@ -1098,23 +1098,22 @@ module App:
     vga.b_gnd ~ gnd
     vga.shield ~ gnd
 
-    # --- MSXアナログRGB入力 (2x4ボックスヘッダ、DIN-8と1:1) ---
+    # --- 第2映像入力 (2x5ボックスヘッダ) ---
     #
     # ArgusX向けの2x8ボックスヘッダ(J12)はここにあったが削除した(2026-08-12)。
     # ArgusXは将来作る構想であって現存しないうえ、基板面積が逼迫していたため、
-    # 実在する機種(MSX)の入力に置き換える方が価値が高いと判断した。
+    # 実在する用途に置き換える方が価値が高いと判断した。
     #
-    # MSXは 8ピンDIN 45326 Type A でアナログRGBを出す。DINコネクタは種類が
-    # 紛らわしく選定を誤ると刺さらないので、基板には汎用の2x4ボックスヘッダを
-    # 載せ、DIN側は各自が短いケーブルを自作する方針にした。ピンはDIN-8と1:1。
+    # MSX専用ではなく **2台目のX68000なども繋げる汎用の第2入力** にしてある。
+    # ピン番号=フラットケーブルの導体順。詳細は mech.ato の BoxHeaderAux2x5 参照。
     #
-    # ★D-SUB15とは**別のTVP入力(_2系統)**へ入れる。TVP7002は入力マルチプレクサを
-    #   持つので、レジスタ0x19の1バイトで切り替えられる(アナログスイッチ不要):
-    #     0xAA = SOG/R/G/B すべて _3 = D-SUB15経路
-    #     0x55 = SOG/R/G/B すべて _2 = このMSX経路
-    #   番号を _2 に統一してあるので、切り替えが1バイトで完結する。
-    msx = new BoxHeaderMsx2x4
-    msx.gnd ~ gnd
+    # ★入力の切り替えはTVPの入力セレクタで行う。アナログスイッチもリレーも不要:
+    #     reg 0x19  0xAA = SOG/R/G/B すべて _3 = D-SUB15経路
+    #               0x55 = SOG/R/G/B すべて _2 = この第2入力
+    #     reg 1Ah   bit0 HS SEL / bit2 VS SEL  0=_A(D-SUB) 1=_B(第2入力)
+    #   使わない側は Hi-Z のまま放置できる(アナログ入力インピーダンス 500kΩ)。
+    aux = new BoxHeaderAux2x5
+    aux.gnd ~ gnd
 
     # R/G/B は D-SUB と同じ前段(75Ω終端 + 0.1uF結合 + 220Ω/33pF アンチエイリアス)
     ch_r2 = new VideoInputChannel
@@ -1123,16 +1122,20 @@ module App:
     ch_r2.power ~ p3v3_a
     ch_g2.power ~ p3v3_a
     ch_b2.power ~ p3v3_a
-    msx.r ~ ch_r2.input
-    msx.g ~ ch_g2.input
-    msx.b ~ ch_b2.input
+    aux.r ~ ch_r2.input
+    aux.g ~ ch_g2.input
+    aux.b ~ ch_b2.input
     ch_r2.output ~ tvp.rin_2
     ch_g2.output ~ tvp.gin_2
     ch_b2.output ~ tvp.bin_2
 
-    # CSYNC → SOGIN_2。
+    # 音声L/R。D-SUB と同じADC入力へ並列に入れる(使用は排他=同時に片方のみ接続)
+    aux.audio_l ~ vga.audio_l
+    aux.audio_r ~ vga.audio_r
+
+    # CSYNC(映像レベル) → SOGIN_2。
     #
-    # MSXのCSYNCは 1.8Vpp(実測 1.8〜2.0Vpp)。TVP7002 のアナログ入力は
+    # MSXのCSYNCは 1.8Vpp(オシロ実測 1.8〜2.0Vpp)。TVP7002 のアナログ入力は
     # 推奨 0.5〜2Vpp、絶対最大 2.3V なので、そのままだと余裕が無い。
     # 75Ω終端したうえで 1/2 に分圧し、0.9〜1.0Vpp = 推奨範囲の中央で受ける。
     # 分圧は 1.5kΩ×2(既存部品。合計3kΩで75Ω終端をほとんど乱さない)。
@@ -1141,8 +1144,8 @@ module App:
     r_cs_top = new R1K5_0402
     r_cs_bot = new R1K5_0402
     signal csync_div
-    msx.csync ~> r_cs_term ~> gnd
-    msx.csync ~> r_cs_top ~> csync_div
+    aux.csync ~> r_cs_term ~> gnd
+    aux.csync ~> r_cs_top ~> csync_div
     csync_div ~> r_cs_bot ~> gnd
     # SOGIN_2 へはアナログ入力の規定どおり 0.1uF で結合する(データシート:
     # 「The inputs must be ac coupled. The recommended coupling capacitor is 0.1 uF」)
@@ -1154,21 +1157,24 @@ module App:
     sog2_coupled ~> r_sog2 ~> tvp.sogin_2
     tvp.sogin_2 ~> c_sog2_aa ~> gnd
 
-    # 音声はモノラル1本。
+    # HSYNC/VSYNC(TTL) → HSYNC_B / VSYNC_B。
     #
-    # ★L/R両方へ直結すると、**D-SUB経路のLとRも短絡する**(同じネットになる)。
-    #   MSXとD-SUBは排他使用だが、配線は常に存在するのでD-SUB使用時にステレオが
-    #   崩れる。よってここではLだけに入れる。
-    #   「両chから鳴らす」のはソフト側で行う(AUDIOパケットはL/Rを持つので、
-    #   MSX入力を選んでいるときにL→Rを複製すればよい。部品ゼロで済む)。
-    msx.audio ~ vga.audio_l
-
-    # AV(pin3, +5V) と YS(pin5, +12V/+5V) は用途未定。GNDへ落とさず、
-    # 何かに使えるようテストパッドだけ出しておく(D-SUB の YS と同じ扱い)
-    tp_msx_av = new Tp1Pad
-    tp_msx_ys = new Tp1Pad
-    msx.av ~ tp_msx_av.pad
-    msx.ys ~ tp_msx_ys.pad
+    # X68000などのTTL同期は5Vで、TVPのデジタル入力(IOVDD=3.3V基準)へ直結できない。
+    # D-SUB経路と同じく ESD + 5VトレラントのシュミットバッファSN74LVC2G17 を通す。
+    # TVP側は reg 1Ah の HS SEL/VS SEL で _A(D-SUB) と _B(こちら) を切り替える。
+    esd_sync2 = new EsdArray4
+    esd_sync2.gnd ~ gnd
+    aux.hsync ~ esd_sync2.io1
+    aux.vsync ~ esd_sync2.io2
+    buf_sync2 = new Lvc2g17
+    buf_sync2.vcc ~ p3v3_io.hv
+    buf_sync2.gnd ~ gnd
+    c_buf2 = new C100nF_0402
+    buf_sync2.vcc ~> c_buf2 ~> gnd
+    aux.hsync ~ buf_sync2.in_b
+    aux.vsync ~ buf_sync2.in_a
+    buf_sync2.out_b ~ tvp.hsync_b
+    buf_sync2.out_a ~ tvp.vsync_b
 
     # YS(D-SUB15 pin7): X68000のスーパーインポーズ/イメージユニット関連status。
     # capture用途では未使用だが、将来取り込む場合に備えテストパッドへ引き出す
@@ -1205,9 +1211,7 @@ module App:
     buf_sync.out_b ~ tvp.hsync_a
     buf_sync.out_a ~ tvp.vsync_a
 
-    # 未使用同期入力はGND
-    tvp.hsync_b ~ gnd
-    tvp.vsync_b ~ gnd
+    # HSYNC_B / VSYNC_B は第2入力(2x5ヘッダ)のTTL同期に使う(上記参照)
 
     # --- H-PLL ループフィルタ (FILT1 -> 1.5kΩ + 100nF -> PLL_F, FILT2 -> 4.7nF -> PLL_F) ---
     r_filt = new R1K5_0402
@@ -1616,8 +1620,6 @@ module App:
     # YS(D-SUB15 pin7 → TP1)。自動命名だと素の "pad" になり追跡できない。
     # 意図的に「コネクタとテストパッドの2点だけ」のネット(未使用・保護なし)。
     tp_ys.pad.override_net_name = "ys"
-    tp_msx_av.pad.override_net_name = "msx_av"
-    tp_msx_ys.pad.override_net_name = "msx_ys"
     vs_delayed.override_net_name = "vsync_delayed"
     tvp.vsync_a.override_net_name = "vsync_a"
 

@@ -266,38 +266,42 @@ component BoxHeader2x8Argus:
     gnd ~ pin 16
     # pin 13(+5V), 15(VBUS) = NC(RetroCastXは自己給電)
 
-component BoxHeaderMsx2x4:
-    """MSXのアナログRGB(8ピンDIN 45326 Type A)を受ける 2x4 ボックスヘッダ
-    (2.54mm, IDCリボン)。手実装/DNP。
+component BoxHeaderAux2x5:
+    """第2映像入力の 2x5 ボックスヘッダ(2.54mm, IDCリボン)。手実装/DNP。
 
-    DINコネクタは種類が紛らわしく(同じ8ピンでも 45326/262°/270°/MIDI用180°で
-    ピン配置が違う)、基板に載せると選定を誤ったときに刺さらない。かわりに
-    汎用のボックスヘッダを載せ、**DIN側は各自が短いケーブルを自作する**方針にした。
+    MSX専用ではなく、**2台目のX68000など汎用の第2入力**として使う。
+    ピン番号 = フラットケーブルの導体順にしてあるので、ケーブル自作時に
+    「導体のn本目 → n番ピン」で数えられる(BOXヘッダからは奇数列/偶数列に
+    交互に出る)。
 
-    ピンは **DIN-8 のピン番号と 1:1** にしてある。ケーブル製作時に
-    「DINのn番 → ヘッダのn番」で済み、間違えにくい。
-      1 GND      2 AUDIO(モノラル)
-      3 AV       4 CSYNC (1.8Vpp)
-      5 YS       6 R  (0.7Vpp)
-      7 G        8 B
-    出典: https://www.msx.org/wiki/RGB_(8-pin_DIN_45326)
+      1 R        2 G        3 B        4 GND
+      5 音声L    6 音声R    7 CSYNC    8 GND
+      9 HSYNC   10 VSYNC
 
-    ★pin3 AV は +5V、pin5 YS は +12V/+5V が出る。GNDへ落とさないこと。
-      本基板ではテストパッドへ引き出すだけにしてある(負荷を掛けない)。
-    ★CSYNC は 1.8Vpp(実測 1.8〜2.0Vpp)。TVP7002 のアナログ入力は
-      推奨 0.5〜2Vpp / 絶対最大 2.3V なので、基板側で 1/2 に分圧して受ける。
+    ★sync-on-green は使えない前提。緑は映像専用で、同期は CSYNC(映像レベル、
+      SOGIN_2へ)か HSYNC/VSYNC(TTL、HSYNC_B/VSYNC_Bへ)を使う。
+    ★MSXを繋ぐ場合は 8ピンDIN 45326 Type A から自作ケーブルで変換する:
+        DIN 6=R → 1 / 7=G → 2 / 8=B → 3 / 1=GND → 4,8
+        DIN 2=AUDIO(モノラル) → 5,6 の両方(ケーブル側で分岐)
+        DIN 4=CSYNC → 7
+      DIN の 3=AV(+5V) と 5=YS(+12V/+5V) は繋がないこと。
+      出典: https://www.msx.org/wiki/RGB_(8-pin_DIN_45326)
+    ★CSYNC は映像レベル(MSXで1.8Vpp)を想定。基板側で75Ω終端+1/2分圧してある。
+      TTLのCSYNCを入れる場合は 9(HSYNC)へ入れて4線モード(reg 0Eh=0x53)を使う。
     """
-    trait is_atomic_part<manufacturer="", partnumber="BoxHeader_2x4_2.54", footprint="BoxHeader_2x4_P2.54mm.kicad_mod", symbol="BoxHeader_2x4.kicad_sym">
+    trait is_atomic_part<manufacturer="", partnumber="BoxHeader_2x5_2.54", footprint="BoxHeader_2x5_P2.54mm.kicad_mod", symbol="BoxHeader_2x5.kicad_sym">
     trait has_designator_prefix<prefix="J">
     trait has_part_removed  # 手実装/DNP
-    signal gnd ~ pin 1
-    signal audio ~ pin 2
-    signal av ~ pin 3
-    signal csync ~ pin 4
-    signal ys ~ pin 5
-    signal r ~ pin 6
-    signal g ~ pin 7
-    signal b ~ pin 8
+    signal r ~ pin 1
+    signal g ~ pin 2
+    signal b ~ pin 3
+    signal gnd ~ pin 4
+    signal audio_l ~ pin 5
+    signal audio_r ~ pin 6
+    signal csync ~ pin 7
+    gnd ~ pin 8
+    signal hsync ~ pin 9
+    signal vsync ~ pin 10
 
 
 component MountingHoleM26:
