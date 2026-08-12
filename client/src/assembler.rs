@@ -33,6 +33,17 @@ pub struct FrameAssembler {
     /// 太らせても埋まらなかった行数(診断用)
     pub unfilled_rows: u32,
     decay: f32,           // 欠損ラインの減衰率(1.0=前フレーム保持のまま, 0.8=毎フレーム80%へ暗転)
+    /// インターレース時の減衰率。既定 1.0(=減衰しない)。
+    ///
+    /// インターレースでは「毎フレーム半分の行が来ない」のが正常状態なので、
+    /// パケットロス用の減衰(decay)をそのまま適用すると全行が 100%⇄80% を
+    /// フィールドレートで往復し、面全体がちらつく(実機で確認)。プロトコルの
+    /// 想定も「前フィールドの行が残るため自然に weave 合成になる」なので、
+    /// 既定は減衰なしにする。
+    /// 一方、CRTの残光を模すなら少し減衰させるのが実物に近いという見方もあり、
+    /// プログレッシブ変換的にチラつき無しで見たい人もいる。好みの幅があるので
+    /// 設定で変えられるようにしてある。
+    interlace_decay: f32,
     /// 公開用バッファの使い回し先。UIが使い終わったものを recycle() で戻す。
     /// 毎フレームの確保をなくすためだけのもので、中身に意味は無い。
     spare: Option<Vec<u8>>,
@@ -53,12 +64,18 @@ impl FrameAssembler {
             line_seen: Vec::new(),
             unfilled_rows: 0,
             decay: 0.8,
+            interlace_decay: 1.0,
         }
     }
 
     /// 欠損ライン減衰率を設定(1.0で従来の前フレーム保持)。
     pub fn set_decay(&mut self, d: f32) {
         self.decay = d;
+    }
+
+    /// インターレース時の減衰率を設定(1.0=減衰しない)。
+    pub fn set_interlace_decay(&mut self, d: f32) {
+        self.interlace_decay = d;
     }
 
     fn track_seq(&mut self, seq: u16) {
@@ -233,7 +250,7 @@ impl FrameAssembler {
         // このフレームで受信できなかったライン(=送信側でドロップ)を前値×decayで減衰。
         // 継続的に欠損するラインは 0.8^n で徐々に暗転し「しばらくすると消える」。
         // 1回だけの欠損は80%でほぼ気づかず、次に受信すれば満輝度へ復帰。
-        let (w, h, d) = (self.width, self.height, self.decay);
+        let (w, h) = (self.width, self.height);
         // 行位置は半ライン単位のスロットなので、プログレッシブでは1つ飛びに埋まる。
         // 空くスロットは「次のラインまでの間隔」ぶん太らせて埋める(ビームには
         // 太さがあるので物理的にも正しい)。インターレースでは間隔が1スロットに
@@ -247,6 +264,8 @@ impl FrameAssembler {
         // 複製してしまう(隣のスロットは別フィールド)。実機で「ところどころ開始位置が
         // 他の行と合わない」形で出た。織り込み時は太らせない。
         let interlaced = self.mode.as_ref().map_or(false, |m| m.mflags & 0x0001 != 0);
+        // インターレースでは半分の行が来ないのが正常なので、減衰は別の値を使う
+        let d = if interlaced { self.interlace_decay } else { self.decay };
         if !interlaced {
             let seen: Vec<bool> = self.line_seen.clone();
             for line in 1..h {

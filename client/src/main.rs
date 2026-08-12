@@ -63,6 +63,11 @@ fn main() -> eframe::Result {
     let mut rotate: u32 = u32::MAX;   // 未指定なら設定ファイルの値を使う
     let mut target_mac: Option<[u8; 6]> = None;
     let mut decay = 0.8f32;
+    // インターレース時の減衰率。既定1.0=減衰しない。
+    // インターレースは「毎フレーム半分の行が来ない」のが正常なので、パケットロス用の
+    // 減衰をそのまま掛けると面全体がフィールドレートでちらつく。CRTの残光を模すなら
+    // 少し減衰させたい人もいるので設定にしてある。
+    let mut interlace_decay = 1.0f32;
     // 保存済み設定を読み、CLI引数があればそれで上書きする(その回だけ有効)
     let mut cfg = settings::Settings::load();
     eprintln!("settings: {}", settings::Settings::path().display());
@@ -92,6 +97,10 @@ fn main() -> eframe::Result {
                 };
             }
             // 欠損ライン減衰率(1.0=前フレーム保持のまま, 0.8=毎フレーム80%へ暗転して消える)
+            "--interlace-decay" => {
+                interlace_decay = args.next()
+                    .expect("--interlace-decay needs a value (e.g. 1.0)").parse().unwrap()
+            }
             "--decay" => {
                 decay = args.next().expect("--decay needs a value (e.g. 0.8)").parse().unwrap()
             }
@@ -132,7 +141,7 @@ fn main() -> eframe::Result {
     }
 
     if let Some(secs) = headless_secs {
-        return run_headless(port, subscribe_to, target_mac, secs, decay, audio);
+        return run_headless(port, subscribe_to, target_mac, secs, decay, interlace_decay, audio);
     }
     if fullscreen_mode {
         let rot = if rotate == u32::MAX { cfg.rotate } else { rotate };
@@ -145,7 +154,7 @@ fn main() -> eframe::Result {
             h_size: 1.0, h_pos: 0.0, v_size: 1.0, v_pos: 0.0,
             ..Default::default()
         };
-        fullscreen::run(port, subscribe_to, target_mac, decay, audio, p); // 戻らない
+        fullscreen::run(port, subscribe_to, target_mac, decay, interlace_decay, audio, p); // 戻らない
     }
 
     let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
@@ -172,7 +181,7 @@ fn main() -> eframe::Result {
         "RetroCast X",
         options,
         Box::new(move |cc| {
-            Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, no_vsync, decay,
+            Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, no_vsync, decay, interlace_decay,
                                        audio, cfg.clone())))
         }),
     )
@@ -232,11 +241,12 @@ fn run_headless(
     target_mac: Option<[u8; 6]>,
     secs: u64,
     decay: f32,
+    interlace_decay: f32,
     audio: receiver::AudioOpts,
 ) -> eframe::Result {
     let shared = Arc::new(receiver::Shared::default());
     receiver::spawn(
-        receiver::Config { port, subscribe_to, target_mac, decay, audio },
+        receiver::Config { port, subscribe_to, target_mac, decay, interlace_decay, audio },
         shared.clone(),
         || {},
     )
@@ -434,6 +444,8 @@ struct ViewerApp {
     bezel_tex: Option<(egui::TextureHandle, u32)>,
     /// 補間 0=ニアレスト 1=バイリニア 2=sharp-bilinear
     filter: u32,
+    /// インターレース時の残光(1.0=減衰しない)。設定に保存する
+    interlace_decay: f32,
     /// 管面が映す時間窓 [h0,h1,v0,v1]。CRTのH位置/H幅・V位置/V幅に相当
     window: [f32; 4],
     tube_time_based: bool,
@@ -475,6 +487,7 @@ impl ViewerApp {
         target_mac: Option<[u8; 6]>,
         no_vsync: bool,
         decay: f32,
+    interlace_decay: f32,
         audio: receiver::AudioOpts,
         cfg: settings::Settings,
     ) -> Self {
@@ -488,7 +501,7 @@ impl ViewerApp {
         let shared = Arc::new(receiver::Shared::default());
         let ctx = cc.egui_ctx.clone();
         let rx_error = receiver::spawn(
-            receiver::Config { port, subscribe_to: subscribe_to.clone(), target_mac, decay, audio },
+            receiver::Config { port, subscribe_to: subscribe_to.clone(), target_mac, decay, interlace_decay, audio },
             shared.clone(),
             move || ctx.request_repaint(),
         )
@@ -529,6 +542,7 @@ impl ViewerApp {
             bezel_off: cfg.bezel_off,
             bezel_tex: None,
             filter: cfg.filter,
+            interlace_decay: cfg.interlace_decay,
             window: cfg.window,
             tube_time_based: cfg.tube_time_based,
             mon: cfg.mon,
@@ -631,6 +645,7 @@ impl ViewerApp {
             bezel: self.bezel.clone(),
             bezel_off: self.bezel_off,
             filter: self.filter,
+            interlace_decay: self.interlace_decay,
             window: self.window,
             tube_time_based: self.tube_time_based,
             mon: self.mon,
@@ -2244,6 +2259,28 @@ impl eframe::App for ViewerApp {
                         });
                     if f != self.filter {
                         self.filter = f;
+                        self.mark_settings_dirty();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    // インターレースの残光。
+                    //
+                    // インターレースでは毎フレーム半分の行しか来ないのが正常なので、
+                    // パケットロス用の減衰をそのまま掛けると全行が 100%⇄80% を
+                    // フィールドレートで往復して面全体がちらつく。既定は 1.00 =
+                    // 減衰なし(前フィールドの行をそのまま残す = 素直な weave)。
+                    // 下げるとCRTの残光に近い見え方になる。好みで選べるようにしてある。
+                    ui.monospace("残光");
+                    let mut d = self.interlace_decay;
+                    if ui.add(egui::Slider::new(&mut d, 0.5..=1.0).fixed_decimals(2))
+                        .on_hover_text("インターレース時に、前のフィールドの行を\n\
+                                        次のフィールドでどれだけ残すか。\n\
+                                        1.00 = そのまま残す(チラつき無し)\n\
+                                        下げるとCRTの残光に近づくがチラつく")
+                        .changed()
+                    {
+                        self.interlace_decay = d;
+                        *self.shared.interlace_decay.lock().unwrap() = Some(d);
                         self.mark_settings_dirty();
                     }
                 });

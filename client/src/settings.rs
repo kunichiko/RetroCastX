@@ -56,6 +56,9 @@ pub struct Settings {
     pub bezel_off: bool,
     /// 補間 0=ニアレスト 1=バイリニア 2=sharp-bilinear
     pub filter: u32,
+    /// インターレース時の残光。1.0=前フィールドの行をそのまま残す(既定、チラつき無し)。
+    /// 下げるとCRTの残光に近づくが、面全体がフィールドレートでちらつく。
+    pub interlace_decay: f32,
     /// 表示する切り出し範囲[画素]。w か h が 0 なら切り出さない(全体を表示)
     pub crop_x: u32,
     pub crop_y: u32,
@@ -126,6 +129,7 @@ impl Default for Settings {
             bezel: String::new(),
             bezel_off: false,
             filter: 2,
+            interlace_decay: 1.0,
             crop_x: 0,
             crop_y: 0,
             crop_w: 0,
@@ -247,6 +251,9 @@ impl Settings {
                 "show_panel" => s.show_panel = v != "false",
                 "bezel_off" => s.bezel_off = v == "true",
                 "filter" => { if let Ok(x) = v.parse::<u32>() { s.filter = x.min(2) } }
+                "interlace_decay" => {
+                    if let Ok(x) = v.parse::<f32>() { s.interlace_decay = x.clamp(0.0, 1.0) }
+                }
                 "crop_x" => { if let Ok(x) = v.parse() { s.crop_x = x } }
                 "crop_y" => { if let Ok(x) = v.parse() { s.crop_y = x } }
                 "crop_w" => { if let Ok(x) = v.parse() { s.crop_w = x } }
@@ -303,6 +310,7 @@ impl Settings {
              show_panel = {}\n\
              bezel_off = {}\n\
              filter = {}\n\
+             interlace_decay = {}\n\
              crop_x = {}\n\
              crop_y = {}\n\
              crop_w = {}\n\
@@ -333,6 +341,7 @@ impl Settings {
             self.show_panel,
             self.bezel_off,
             self.filter,
+            self.interlace_decay,
             self.crop_x,
             self.crop_y,
             self.crop_w,

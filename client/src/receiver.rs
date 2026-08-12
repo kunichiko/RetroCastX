@@ -21,6 +21,8 @@ pub struct Config {
     pub target_mac: Option<[u8; 6]>,
     /// 欠損ライン減衰率(1.0=前フレーム保持, 0.8=毎フレーム80%へ暗転)。
     pub decay: f32,
+    /// インターレース時の減衰率(1.0=減衰しない)。既定1.0。
+    pub interlace_decay: f32,
     /// 音声再生の設定。
     pub audio: AudioOpts,
 }
@@ -490,6 +492,9 @@ pub struct Shared {
     /// 指定値そのものではない。ユニキャスト指定で何も返ってこない場合は
     /// ブロードキャストへ切り替えるので、そのときはここが変わる。
     pub sub_dest: Mutex<String>,
+    /// インターレース時の残光(前フィールドの行をどれだけ残すか)。
+    /// UIから実行時に変えられるよう Shared 経由で渡す。None なら起動時の値のまま。
+    pub interlace_decay: Mutex<Option<f32>>,
 }
 
 #[derive(Clone, Default)]
@@ -615,6 +620,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut audio = open_audio(&cfg, &shared, cfg.audio.source, None);
     let mut asm = FrameAssembler::new();
     asm.set_decay(cfg.decay);
+    asm.set_interlace_decay(cfg.interlace_decay);
     let mut sub_seq: u16 = 0;
     let mut last_subscribe: Option<Instant> = None;
     let mut last_geom: Option<Instant> = None;
@@ -837,6 +843,10 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             );
         }
 
+        // UIから残光が変わっていたら取り込む(フレーム完成時だけで十分)
+        if let Some(d) = shared.interlace_decay.lock().unwrap().take() {
+            asm.set_interlace_decay(d);
+        }
         if let Some(frame) = asm.feed(&buf[..n]) {
             frames_since += 1;
             noise.feed(&frame.rgba);
