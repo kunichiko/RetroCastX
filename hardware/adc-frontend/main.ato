@@ -1590,13 +1590,45 @@ module App:
     # =========================================================================
 
     # --- アナログRGB: 入力(コネクタ側)/ 出力(TVP AC結合後)/ SOG ---
-    ch_r.input.override_net_name = "vin_r"
-    ch_g.input.override_net_name = "vin_g"
-    ch_b.input.override_net_name = "vin_b"
+    # 映像入力のネット名は **TVPの入力番号に揃える**。
+    #   _3 系統 = D-SUB15、_2 系統 = 第2入力(2x5ヘッダ)。
+    #   コネクタ側(vin_*) / 結合後(*_ac) / TVPピン(rin3 等)の3段で名前を分けておくと、
+    #   レイアウトで「どの段の配線を見ているか」が一目で分かる。
+    ch_r.input.override_net_name = "vin_r3"
+    ch_g.input.override_net_name = "vin_g3"
+    ch_b.input.override_net_name = "vin_b3"
+    ch_r.coupled.override_net_name = "vin_r3_ac"
+    ch_g.coupled.override_net_name = "vin_g3_ac"
+    ch_b.coupled.override_net_name = "vin_b3_ac"
     ch_r.output.override_net_name = "rin3"
     ch_g.output.override_net_name = "gin3"
     ch_b.output.override_net_name = "bin3"
     tvp.sogin_3.override_net_name = "sogin3"
+
+    # 第2入力(2x5ヘッダ)
+    ch_r2.input.override_net_name = "vin_r2"
+    ch_g2.input.override_net_name = "vin_g2"
+    ch_b2.input.override_net_name = "vin_b2"
+    ch_r2.coupled.override_net_name = "vin_r2_ac"
+    ch_g2.coupled.override_net_name = "vin_g2_ac"
+    ch_b2.coupled.override_net_name = "vin_b2_ac"
+    ch_r2.output.override_net_name = "rin2"
+    ch_g2.output.override_net_name = "gin2"
+    ch_b2.output.override_net_name = "bin2"
+    # 第2入力のCSYNC: コネクタ → 分圧後 → 結合後 → SOGIN_2
+    aux.csync.override_net_name = "vin_csync2"
+    csync_div.override_net_name = "vin_csync2_div"
+    sog2_coupled.override_net_name = "vin_csync2_ac"
+    # 第2入力のTTL同期: コネクタ → シュミット後(TVPピン)
+    aux.hsync.override_net_name = "vin_hsync2"
+    aux.vsync.override_net_name = "vin_vsync2"
+    tvp.hsync_b.override_net_name = "hsync_b"
+    tvp.vsync_b.override_net_name = "vsync_b"
+
+    # FT2232H の内部1.8V をフェライトで分けた枝。自動命名だと "hv" や
+    # "c_vpll-power-hv" になって追えないので明示する
+    ft2232.ft.VPHY.override_net_name = "ft_vphy_1v8"
+    ft2232.ft.VPLL.override_net_name = "ft_vpll_1v8"
 
     # --- TVP アナログ電源(フェライトビーズ後段: star接続の起点) ---
     tvp.avdd.override_net_name = "avdd"
@@ -1698,14 +1730,11 @@ module App:
 
     # --- 未使用アナログ入力の終端(どのピンの終端かを判別可能に) ---
     tvp.rin_1.override_net_name = "rin1_nc"
-    tvp.rin_2.override_net_name = "rin2_nc"
     tvp.bin_1.override_net_name = "bin1_nc"
-    tvp.bin_2.override_net_name = "bin2_nc"
     tvp.gin_1.override_net_name = "gin1_nc"
-    tvp.gin_2.override_net_name = "gin2_nc"
     tvp.gin_4.override_net_name = "gin4_nc"
     tvp.sogin_1.override_net_name = "sogin1_nc"
-    tvp.sogin_2.override_net_name = "sogin2"        # MSX CSYNC(分圧+0.1uF結合)
+    tvp.sogin_2.override_net_name = "sogin2"        # 第2入力のCSYNC(分圧+0.1uF結合)
 
     # 電源レールは明示命名する。atopileの自動命名は他ネットの命名状況に依存して
     # 揺れ(あるレールに明示名を付けると別のレールが素の "hv" に変わる等)、
