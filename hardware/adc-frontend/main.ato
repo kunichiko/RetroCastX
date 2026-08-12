@@ -320,21 +320,6 @@ component Pcm1808:
     signal vinr ~ pin 14
 
 
-component AudioJack35:
-    """3.5mm ステレオTRSジャック(LINE入力用)。PJ-327C-4A(実4ピン)。LCSC: C145813
-
-    ピン配置はデータシート(datasheets/PJ-327C-4A_HOOYA_3.5mmJack.pdf)回路図・部品表どおり:
-      1=CASE=Sleeve(GND)、2=Tip(L)、3=検出スイッチ(未使用)、4=Ring(R)
-    """
-    trait is_atomic_part<manufacturer="韩国韩荣", partnumber="PJ-327C-4A", footprint="parts/UNKNOWN_PJ_327C_4A/AUDIO-SMD_PJ-327C-4A.kicad_mod", symbol="parts/UNKNOWN_PJ_327C_4A/PJ-327C-4A.kicad_sym">
-    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C145813", manufacturer="韩国韩荣", partno="PJ-327C-4A">
-    trait has_designator_prefix<prefix="J">
-    signal sleeve ~ pin 1  # GND(シェル/CASE)
-    signal tip ~ pin 2     # L
-    signal switch ~ pin 3  # 検出スイッチ(NC)
-    signal ring ~ pin 4    # R
-
-
 component Xo12M288:
     """12.288MHz 3.3V CMOS オシレータ(=256fs @48kHz)、SMD3225-4P。LCSC: 要選定。"""
     trait is_atomic_part<manufacturer="YXC", partnumber="OT2JI-111-12.288M", footprint="parts/YXC_OT2JI_111_12_288M/OSC-SMD_4P-L3.2-W2.5-BL.kicad_mod", symbol="parts/YXC_OT2JI_111_12_288M/OT2JI-111-12.288M.kicad_sym">
@@ -1129,9 +1114,9 @@ module App:
     ch_g2.output ~ tvp.gin_2
     ch_b2.output ~ tvp.bin_2
 
-    # 音声L/R。D-SUB と同じADC入力へ並列に入れる(使用は排他=同時に片方のみ接続)
-    aux.audio_l ~ vga.audio_l
-    aux.audio_r ~ vga.audio_r
+    # 音声L/R は **専用のADC(旧LINE入力用)** へ入れる。下の音声セクション参照。
+    # D-SUBと同じネットへ並列に入れると、D-SUB側のL/Rが短絡する(排他使用でも
+    # 配線は常に存在する)ので、ADCを分ける。
 
     # CSYNC(映像レベル) → SOGIN_2。
     #
@@ -1404,7 +1389,7 @@ module App:
     j_dbg.dbg19 ~ sodimm.io_h16   # pin92  H16
     j_dbg.dbg20 ~ sodimm.io_f18   # pin94  F18
 
-    # --- 音声入力(3系統: DSUB15音声 / LINE入力 / S/PDIF光) ---
+    # --- 音声入力(3系統: DSUB15音声 / 第2映像入力の音声 / S/PDIF光) ---
     # クロック系: 12.288MHz XO(=256fs@48kHz)を両ADCのSCKIとFPGA(F1=PCLKC6_1)へ。
     # BCK(64fs)/LRCK(fs)はFPGAがMCLKから分周して両ADCへ共通供給。DOUTのみ個別
     # → 2系統のアナログ音声を同時キャプチャ可能。S/PDIFはゲートウェアでデコード。
@@ -1448,31 +1433,38 @@ module App:
     vga.audio_l ~ adc_dsub.in_l   # DSUB15 pin10
     vga.audio_r ~ adc_dsub.in_r   # DSUB15 pin11
 
-    # ADC B: 基板上の3.5mmステレオLINE入力
-    adc_line = new AudioAdc
-    adc_line.gnd ~ gnd
-    adc_line.power_5va ~ p5v_audio
-    adc_line.power_3v3 ~ p3v3_io
-    jack_line = new AudioJack35
-    jack_line.sleeve ~ gnd
-    jack_line.tip ~ adc_line.in_l
-    jack_line.ring ~ adc_line.in_r
+    # ADC B: 第2映像入力(2x5ヘッダ)の音声。
+    #
+    # ★以前は基板上の3.5mmステレオLINEジャックに繋いでいたが、そのジャックは
+    #   削除した(2026-08-12)。第2映像入力を足すにあたり音声も2系統必要になり、
+    #   D-SUBと同じADCへ並列に入れるとL/Rが短絡してしまう。LINE入力は
+    #   「映像と無関係な音を混ぜる」ための機能で優先度が低く、基板面積も逼迫して
+    #   いたので、空いたADCを第2入力へ振り替えるのが最も無駄がないと判断した。
+    #   ADCは元から2個独立(U1=D-SUB / U2=こちら)でDOUTも別なので、
+    #   **2系統の音声を同時に取り込める**(排他ではない)。
+    #   AUDIOパケットの source=1 の意味が「LINE入力」から「第2入力」に変わる。
+    adc_aux = new AudioAdc
+    adc_aux.gnd ~ gnd
+    adc_aux.power_5va ~ p5v_audio
+    adc_aux.power_3v3 ~ p3v3_io
+    aux.audio_l ~ adc_aux.in_l
+    aux.audio_r ~ adc_aux.in_r
 
-    # 音声入力のESD(4ライン: DSUB音声L/R + LINE L/R)
+    # 音声入力のESD(4ライン: D-SUB音声L/R + 第2入力音声L/R)
     esd_audio = new EsdArray4
     esd_audio.gnd ~ gnd
     adc_dsub.in_l ~ esd_audio.io1
     adc_dsub.in_r ~ esd_audio.io2
-    jack_line.tip ~ esd_audio.io3
-    jack_line.ring ~ esd_audio.io4
+    adc_aux.in_l ~ esd_audio.io3
+    adc_aux.in_r ~ esd_audio.io4
 
     # I2S共有バス
     audio_mclk ~ adc_dsub.adc.scki
-    audio_mclk ~ adc_line.adc.scki
+    audio_mclk ~ adc_aux.adc.scki
     audio_bck ~ adc_dsub.adc.bck
-    audio_bck ~ adc_line.adc.bck
+    audio_bck ~ adc_aux.adc.bck
     audio_lrck ~ adc_dsub.adc.lrc
-    audio_lrck ~ adc_line.adc.lrc
+    audio_lrck ~ adc_aux.adc.lrc
 
     # S/PDIF光受信(デコードはFPGA内)
     spdif = new SpdifRxModule
@@ -1488,7 +1480,7 @@ module App:
     # XOを直接P3で受けることはできないため、この経路にしている。
     sodimm.io_e4 ~ spdif.out            # pin128 (E4) S/PDIFビットストリーム
     sodimm.io_f1 ~ audio_mclk_in        # pin130 (F1=PCLKC6_1) XO 12.288MHz 入力
-    sodimm.io_a3 ~ adc_line.adc.dout    # pin139 (A3) I2S DOUT(LINE入力)
+    sodimm.io_a3 ~ adc_aux.adc.dout    # pin139 (A3) I2S DOUT(第2映像入力の音声)
     sodimm.io_c2 ~ adc_dsub.adc.dout    # pin141 (C2) I2S DOUT(DSUB音声)
     sodimm.io_b1 ~ audio_bck            # pin143 (B1) FPGA出力
     sodimm.io_c1 ~ audio_lrck           # pin145 (C1) FPGA出力
@@ -1692,17 +1684,17 @@ module App:
     # --- 音声: アナログ入力 / I2S DOUT ---
     adc_dsub.in_l.override_net_name = "aud_dsub_l"
     adc_dsub.in_r.override_net_name = "aud_dsub_r"
-    adc_line.in_l.override_net_name = "aud_line_l"
-    adc_line.in_r.override_net_name = "aud_line_r"
+    adc_aux.in_l.override_net_name = "aud_aux_l"
+    adc_aux.in_r.override_net_name = "aud_aux_r"
     adc_dsub.adc.vinl.override_net_name = "aud_dsub_l_ac"
     adc_dsub.adc.vinr.override_net_name = "aud_dsub_r_ac"
-    adc_line.adc.vinl.override_net_name = "aud_line_l_ac"
-    adc_line.adc.vinr.override_net_name = "aud_line_r_ac"
+    adc_aux.adc.vinl.override_net_name = "aud_aux_l_ac"
+    adc_aux.adc.vinr.override_net_name = "aud_aux_r_ac"
     adc_dsub.adc.dout.override_net_name = "i2s_dout_dsub"
-    adc_line.adc.dout.override_net_name = "i2s_dout_line"
+    adc_aux.adc.dout.override_net_name = "i2s_dout_line"
     spdif.out.override_net_name = "spdif"
     adc_dsub.adc.vref.override_net_name = "aud_vref_dsub"
-    adc_line.adc.vref.override_net_name = "aud_vref_line"
+    adc_aux.adc.vref.override_net_name = "aud_vref_line"
 
     # --- 未使用アナログ入力の終端(どのピンの終端かを判別可能に) ---
     tvp.rin_1.override_net_name = "rin1_nc"
