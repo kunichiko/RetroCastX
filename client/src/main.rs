@@ -29,6 +29,7 @@ mod audio;
 mod bezel;
 mod fullscreen;
 mod keytap;
+mod netcheck;
 mod profiles;
 mod remote_input;
 mod render;
@@ -115,6 +116,32 @@ fn main() -> eframe::Result {
             "--mimicx-probe" => std::process::exit(!remote_input::probe() as i32),
             // 受け取った物理キーを stderr へ出す。「そのキーがアプリに届いて
             // いないのか、届いているが転送していないのか」の切り分け用
+            // NIC受信バッファーの確認だけして終了する(GUIは起動しない)。
+            // 実機での切り分け用。IPはボードのアドレス(経路の判定に使う)
+            "--netcheck" => {
+                let ip = args.next().expect("--netcheck needs the board IP");
+                let b = netcheck::probe(&ip);
+                println!("board {ip} への経路の NIC: {b:?}");
+                match &b {
+                    netcheck::Buffers::Known { adapter, value } => {
+                        println!("  アダプタ      : {adapter}");
+                        println!("  ReceiveBuffers: {value} (推奨 {})", netcheck::RECOMMENDED);
+                        if b.should_warn() {
+                            println!("  → 小さすぎます:");
+                            println!("     {}", netcheck::fix_command(Some(adapter)));
+                        } else {
+                            println!("  → 足りています");
+                        }
+                    }
+                    netcheck::Buffers::Unsupported => {
+                        println!("  このドライバは *ReceiveBuffers を公開していません(判定不能)");
+                    }
+                    netcheck::Buffers::Unknown => {
+                        println!("  調べられませんでした(経路が引けない/レジストリが読めない)");
+                    }
+                }
+                std::process::exit(0);
+            }
             "--log-keys" => {
                 remote_input::LOG_KEYS.store(true, Ordering::Relaxed);
             }
@@ -477,6 +504,9 @@ struct ViewerApp {
     /// 物理キーの取り出し口。egui の Key では JIS の ¥/_/かな が落ちるので、
     /// AppKit のイベントを直接見る(keytap.rs)
     keytap: keytap::KeyTap,
+    /// NIC受信バッファーの確認結果。ボードが見つかってから1回だけ調べる
+    /// (レジストリを読むだけなので同期でよい)
+    netcheck: Option<netcheck::Buffers>,
 }
 
 impl ViewerApp {
@@ -560,6 +590,7 @@ impl ViewerApp {
             remote: remote_input::RemoteInput::default(),
             remote_toggle: Default::default(),
             keytap: keytap::KeyTap::install(&cc.egui_ctx),
+            netcheck: None,
         }
     }
 
@@ -1702,6 +1733,74 @@ impl ViewerApp {
     }
 }
 
+/// --- NIC受信バッファーの警告 ---
+impl ViewerApp {
+    /// 受信バッファーが小さすぎないかを知らせる。
+    ///
+    /// **二段構えにしてある。** 設定を読む方は「壊れる前に」警告できて直し方も
+    /// 名指しできるが、`*ReceiveBuffers` を公開しないドライバでは空振りする。
+    /// 実測のロスはどんなNICでも「いま実際に落ちている」ことを言えるが、
+    /// 起きてからしか分からない。どちらかが引っかかれば取りこぼさない。
+    fn netcheck_ui(&mut self, ui: &mut egui::Ui, s: &receiver::StatsSnapshot) {
+        // ボードのアドレスが分かってから1回だけ調べる。経路から NIC を決めるので、
+        // 相手のIPが要る(Wi-Fiと有線が両方生きている機械で誤判定しないため)
+        if self.netcheck.is_none() {
+            let addr = self
+                .shared
+                .boards
+                .lock()
+                .unwrap()
+                .values()
+                .next()
+                .map(|b| b.addr.clone());
+            if let Some(addr) = addr {
+                // ポート番号が付いていることがあるので落とす
+                let ip = addr.split(':').next().unwrap_or(&addr).to_string();
+                self.netcheck = Some(netcheck::probe(&ip));
+            }
+        }
+
+        let warn = egui::Color32::from_rgb(220, 170, 60);
+        let cfg = self.netcheck.clone().unwrap_or(netcheck::Buffers::Unknown);
+        // 実測のロス率。少しだけ受けた段階では判断しない(起動直後の取りこぼしで
+        // 毎回警告が出てしまう)
+        let total = s.packets + s.lost_packets;
+        let ratio = if total > 0 { s.lost_packets as f64 / total as f64 } else { 0.0 };
+        let losing = total > 200_000 && ratio > 0.001;
+
+        if !cfg.should_warn() && !losing {
+            return;
+        }
+        if cfg.should_warn() {
+            ui.colored_label(
+                warn,
+                format!(
+                    "受信バッファーが {} です(推奨 {})",
+                    cfg.value().unwrap_or(0),
+                    netcheck::RECOMMENDED
+                ),
+            )
+            .on_hover_text(
+                "NICドライバの受信リングが小さいと、ソケットに届く前に\n                 パケットが捨てられます。映像に穴が開き音が途切れます",
+            );
+        } else {
+            ui.colored_label(warn, format!("パケットを {:.2}% 落としています", ratio * 100.0))
+                .on_hover_text(
+                    "NICの受信バッファーが小さい可能性があります\n                     (このドライバは設定値を公開していないので確認できません)",
+                );
+        }
+        // 直すには管理者権限が要るので、こちらでは適用せずコマンドを渡す
+        let cmd = netcheck::fix_command(cfg.adapter());
+        ui.horizontal(|ui| {
+            if ui.small_button("コマンドをコピー").clicked() {
+                ui.ctx().copy_text(cmd.clone());
+            }
+            ui.weak("管理者のPowerShellで実行");
+        });
+        ui.add(egui::Label::new(egui::RichText::new(&cmd).monospace().size(10.0)).wrap());
+    }
+}
+
 /// --- MimicX リモート入力 ---
 impl ViewerApp {
     /// 物理キーを MimicX へ転送する。毎フレーム、UIを組む前に呼ぶ
@@ -1988,6 +2087,7 @@ impl eframe::App for ViewerApp {
                 // キューが満杯で捨てた分。分けて出さないとどちらが詰まっているのか
                 // 判断できない
                 ui.monospace(format!("pkts {}  lost {}", s.packets, s.lost_packets));
+                self.netcheck_ui(ui, &s);
                 if s.queue_drops > 0 {
                     ui.monospace(format!("queue drops {}", s.queue_drops))
                         .on_hover_text("組立が追いつかず、受信スレッドのキューが\n\
