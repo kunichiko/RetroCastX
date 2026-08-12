@@ -27,6 +27,7 @@ use crate::render;
 pub fn run(port: u16, subscribe_to: Option<String>, target_mac: Option<[u8; 6]>, decay: f32,
            audio: receiver::AudioOpts, params: render::Params) -> ! {
     let shared = Arc::new(receiver::Shared::default());
+    let subscribe_dest = subscribe_to.clone();
     let (tx, rx): (Sender<()>, Receiver<()>) = std::sync::mpsc::channel();
     receiver::spawn(
         receiver::Config { port, subscribe_to, target_mac, decay, audio },
@@ -36,6 +37,23 @@ pub fn run(port: u16, subscribe_to: Option<String>, target_mac: Option<[u8; 6]>,
         },
     )
     .expect("UDP bind failed");
+
+    // このモードには UI 層が無いので、受信バッファーの警告は stderr にしか出せない。
+    // 起動時に一度だけ。判定できないとき(Unsupported/Unknown)は黙る
+    {
+        let dest = subscribe_dest.unwrap_or_else(|| "255.255.255.255".to_string());
+        let b = crate::netcheck::probe(&dest);
+        if b.should_warn() {
+            eprintln!(
+                "警告: NICの受信バッファーが {} です(推奨 {})。\n\
+                 　　  このままだとパケットを取りこぼし、映像に穴が開き音が途切れます。\n\
+                 　　  管理者のPowerShellで: {}",
+                b.value().unwrap_or(0),
+                crate::netcheck::RECOMMENDED,
+                crate::netcheck::fix_command(b.adapter()),
+            );
+        }
+    }
 
     let event_loop = EventLoop::new().unwrap();
     let mut app = App { shared: Some((shared, rx)), window: None,
