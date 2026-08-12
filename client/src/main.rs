@@ -507,6 +507,11 @@ struct ViewerApp {
     /// NIC受信バッファーの確認結果。ボードが見つかってから1回だけ調べる
     /// (レジストリを読むだけなので同期でよい)
     netcheck: Option<netcheck::Buffers>,
+    /// 起動時のダイアログを出すか。**確度の高い設定チェックのときだけ**立てる
+    /// (ロス率は推定なうえセッション中に発火するので、割り込ませない)
+    netcheck_modal: bool,
+    /// 「今後表示しない」。設定に保存する
+    netcheck_muted: bool,
 }
 
 impl ViewerApp {
@@ -591,6 +596,8 @@ impl ViewerApp {
             remote_toggle: Default::default(),
             keytap: keytap::KeyTap::install(&cc.egui_ctx),
             netcheck: None,
+            netcheck_modal: false,
+            netcheck_muted: cfg.netcheck_muted,
         }
     }
 
@@ -673,6 +680,7 @@ impl ViewerApp {
             rotate: self.rotate,
             tube_aspect: self.tube_aspect,
             show_panel: self.show_panel,
+            netcheck_muted: self.netcheck_muted,
             bezel: self.bezel.clone(),
             bezel_off: self.bezel_off,
             filter: self.filter,
@@ -1752,11 +1760,26 @@ impl ViewerApp {
                 .unwrap()
                 .values()
                 .next()
-                .map(|b| b.addr.clone());
+                .map(|b| b.addr.clone())
+                // ボードが見つかる前でも判定できるように、SUBSCRIBE の宛先で
+                // 代替する。**ボード発見を待つと、新規の機械でいちばん警告が
+                // 要る場面(まだ何も映っていない状態)で黙ってしまう。**
+                // ブロードキャスト宛でも経路は引けるので、送り先の NIC が分かる。
+                // 取り違えても Unsupported / Unknown に落ちるだけで、嘘の警告には
+                // ならない(実機のWi-Fiで確認済み)
+                .or_else(|| {
+                    let d = self.shared.sub_dest.lock().unwrap().clone();
+                    (!d.is_empty()).then_some(d)
+                });
             if let Some(addr) = addr {
                 // ポート番号が付いていることがあるので落とす
                 let ip = addr.split(':').next().unwrap_or(&addr).to_string();
-                self.netcheck = Some(netcheck::probe(&ip));
+                let b = netcheck::probe(&ip);
+                // 起動ごとに1回だけ。パネルは Tab で隠せるうえ --fullscreen には
+                // そもそも無いので、パネル内の表示だけでは「遊ぶときのモード」で
+                // 気付けない
+                self.netcheck_modal = b.should_warn() && !self.netcheck_muted;
+                self.netcheck = Some(b);
             }
         }
 
@@ -1798,6 +1821,69 @@ impl ViewerApp {
             ui.weak("管理者のPowerShellで実行");
         });
         ui.add(egui::Label::new(egui::RichText::new(&cmd).monospace().size(10.0)).wrap());
+    }
+}
+
+/// 受信バッファーが小さいときに起動時へ1回だけ出すダイアログ。
+///
+/// **modal にしてよいのは設定チェックだけ。** 実際に設定を読んでいて、
+/// `Unsupported` / `Unknown` では絶対に出さないので誤警告の経路が無い。しかも
+/// 直せば二度と出ない一度きりの修正で、放置すると確実に映像に穴が開く。
+/// ロス率ベースの警告は推定なうえセッション中に発火するので、割り込ませない
+/// (パネル内の表示だけにしてある)。
+///
+/// 管理者権限が無くて直せない人に毎回出すのは敵対的なので、「今後表示しない」を
+/// 用意して設定に保存する(パネル内の表示は消さない)。
+impl ViewerApp {
+    fn netcheck_modal(&mut self, ctx: &egui::Context) {
+        if !self.netcheck_modal {
+            return;
+        }
+        let cfg = self.netcheck.clone().unwrap_or(netcheck::Buffers::Unknown);
+        let cmd = netcheck::fix_command(cfg.adapter());
+        let mut close = false;
+        let mut mute = false;
+        egui::Modal::new(egui::Id::new("netcheck_modal")).show(ctx, |ui| {
+            ui.set_max_width(520.0);
+            ui.heading("NIC の受信バッファーが小さすぎます");
+            ui.add_space(6.0);
+            ui.label(format!(
+                "このまま使うとパケットを取りこぼし、映像に穴が開いて音が途切れます。\n\
+                 アダプタ「{}」の受信バッファーが {} です(推奨 {})。",
+                cfg.adapter().unwrap_or("(不明)"),
+                cfg.value().unwrap_or(0),
+                netcheck::RECOMMENDED,
+            ));
+            ui.add_space(6.0);
+            ui.label("管理者の PowerShell で次を実行してください:");
+            ui.add(
+                egui::Label::new(egui::RichText::new(&cmd).monospace().size(11.0)).wrap(),
+            );
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.button("コマンドをコピー").clicked() {
+                    ui.ctx().copy_text(cmd.clone());
+                }
+                if ui.button("あとで").clicked() {
+                    close = true;
+                }
+                if ui
+                    .button("今後表示しない")
+                    .on_hover_text("このダイアログだけ出さなくなります。\n                                    右パネルの Stats には表示され続けます")
+                    .clicked()
+                {
+                    mute = true;
+                    close = true;
+                }
+            });
+        });
+        if mute {
+            self.netcheck_muted = true;
+            self.mark_settings_dirty();
+        }
+        if close {
+            self.netcheck_modal = false;
+        }
     }
 }
 
@@ -2541,6 +2627,7 @@ impl eframe::App for ViewerApp {
         }
 
         self.remote_badge(&ctx);
+        self.netcheck_modal(&ctx);
 
         // ストリーム停止中でもUI(統計・発見リスト)を更新し続ける
         ctx.request_repaint_after(std::time::Duration::from_millis(250));

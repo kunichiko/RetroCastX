@@ -50,6 +50,10 @@ pub struct Settings {
     pub tube_aspect: f32,
     /// 右の操作パネルを表示するか
     pub show_panel: bool,
+    /// NIC受信バッファーの警告ダイアログを二度と出さない。
+    /// 管理者権限が無くて直せない人に毎回出すのは敵対的なので、逃げ道を用意する
+    /// (パネル内の表示は消さない)
+    pub netcheck_muted: bool,
     /// モニタの枠(ベゼル)の名前。空文字は枠なし
     pub bezel: String,
     /// 枠を一時的に隠す(bezel の選択は保つ)
@@ -126,6 +130,7 @@ impl Default for Settings {
             modes: BTreeMap::new(),
             tube_aspect: 0.0,
             show_panel: true,
+            netcheck_muted: false,
             bezel: String::new(),
             bezel_off: false,
             filter: 2,
@@ -249,6 +254,7 @@ impl Settings {
                 }
                 "bezel" => s.bezel = v.to_string(),
                 "show_panel" => s.show_panel = v != "false",
+                "netcheck_muted" => s.netcheck_muted = v == "true",
                 "bezel_off" => s.bezel_off = v == "true",
                 "filter" => { if let Ok(x) = v.parse::<u32>() { s.filter = x.min(2) } }
                 "interlace_decay" => {
@@ -308,6 +314,7 @@ impl Settings {
              tube_aspect = {:.4}\n\
              bezel = {}\n\
              show_panel = {}\n\
+             netcheck_muted = {}\n\
              bezel_off = {}\n\
              filter = {}\n\
              interlace_decay = {}\n\
@@ -339,6 +346,7 @@ impl Settings {
             self.tube_aspect,
             self.bezel,
             self.show_panel,
+            self.netcheck_muted,
             self.bezel_off,
             self.filter,
             self.interlace_decay,
