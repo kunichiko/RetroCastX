@@ -372,11 +372,19 @@
     "netclass_patterns": [
       {
         "netclass": "GbE_diff",
-        "pattern": "eth1_*"
+        "pattern": "eth1_?_P"
       },
       {
         "netclass": "GbE_diff",
-        "pattern": "eth2_*"
+        "pattern": "eth1_?_N"
+      },
+      {
+        "netclass": "GbE_diff",
+        "pattern": "eth2_?_P"
+      },
+      {
+        "netclass": "GbE_diff",
+        "pattern": "eth2_?_N"
       },
       {
         "netclass": "Clock",
