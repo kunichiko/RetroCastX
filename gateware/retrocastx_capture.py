@@ -366,6 +366,100 @@ class TvpCapture(Module):
                 raw_ok.eq((hs_len_r > 64) & (hs_len_r < 0xF000)),
             )
 
+        # --- SOGOUT(同期スライサ出力)からコンポジット同期を分離して半ライン位相を測る ---
+        #
+        # C-SYNCしか出ない機種(MSX等)には生HSYNC/生VSYNCが無く、TVP経由の
+        # HSOUT/VSOUTは半ライン位相を失っている(実測: LINEパケットのtsを12フィールド
+        # 見て位相が全て0、フィールド間隔も1368×262と1368×263の整数で262.5にならない)。
+        # SOGOUTは同期処理ブロックを通る前なので位相が残っているはず。
+        #
+        # やることはLM1881と同じ:
+        #   Low期間の長さを測り、長いものを垂直ブロードパルスとみなす。
+        #   その垂直区間の開始が直前の水平エッジから何クロック後かが半ライン位相。
+        #
+        # ここではまず**測定だけ**を入れる。フィールドごとに0と半ラインで交互に
+        # なることを実機で確かめてから位置決めへ繋ぐ。極性もパルス幅も未知なので、
+        # 判定の閾値は実行時に変えられるようにしておく。
+        self.cfg_sog_vth  = Signal(16, reset=400)  # これ以上Lowが続いたら垂直とみなす
+        # SOGOUTから取ったフィールド極性。sogoutが無い構成では常に0/0のまま
+        ph_sog = Signal()      # 位相がライン中央付近(=半ライン下のフィールド)
+        sog_ok = Signal()      # SOGOUTから同期を分離できているか
+        # 極性の向きは実機で決める。ここを1にすると偶奇を入れ替える(key 0x66)
+        self.cfg_field_invert = Signal()
+        self.stat_sog_hlen = Signal(16)   # SOGOUTの水平周期[pixクロック]
+        self.stat_sog_lowmax = Signal(16) # 直近フレームで見た最長Low期間
+        self.stat_sog_vphase = Signal(16) # 垂直区間開始時の、直前水平エッジからの経過
+        self.stat_sog_vlines = Signal(16) # 垂直区間の間隔[水平エッジ数]
+        if hasattr(pads, "sogout"):
+            sg0 = Signal(); sg = Signal(); sg_p = Signal()
+            self.sync.pix += [sg0.eq(pads.sogout), sg.eq(sg0), sg_p.eq(sg)]
+            sg_fall = Signal(); sg_rise = Signal()
+            self.comb += [sg_fall.eq(sg_p & ~sg), sg_rise.eq(~sg_p & sg)]
+
+            xs   = Signal(16)     # SOGOUTの直前の立下りからの経過(診断用)
+            low  = Signal(16)     # 現在のLow期間の長さ
+            lowmax = Signal(16)
+            hlen = Signal(16)     # SOGOUTの立下り間隔(診断用)
+            is_v = Signal()
+            v_seen = Signal()
+            vphase = Signal(16)
+            vlines = Signal(16); vcnt = Signal(16)
+            # 検出時点のライン内位相(ブロードパルス開始まで low ぶん戻す)
+            ph_now = Signal(16)
+            self.comb += ph_now.eq(Mux(x >= low, x - low,
+                                       x + self.cfg_hs_total - low))
+            q_s = Signal(16)
+            self.comb += q_s.eq(self.cfg_hs_total[2:])       # 公称周期/4
+            # ライン格子の基準は **HSOUT** を使う。
+            #
+            # 当初はSOGOUT自身の立下りから格子を作ったが、垂直区間の構造(等化パルスや
+            # 1ラインより長いブロードパルス)に格子が引きずられ、位相が常に0になった
+            # (実機: 最長Low=1502 は1ライン1368より長く、その直後のエッジが
+            #  「通常ライン」と誤認されて格子をリセットしていた)。
+            #
+            # HSOUTはTVPが再生成した水平同期で、1ラインに1発、垂直区間でもH-PLLが
+            # コーストするので途切れない。そして**キャプチャが行位置を決めるのに
+            # 使っている格子そのもの**(x = HSOUTでリセットされるライン内カウンタ)
+            # なので、これを基準にすれば測った位相をそのまま位置決めに使える。
+            #
+            # HSOUTは半ライン位相を失っているが、それは「VSOUTの位置」の話であって
+            # ライン格子としては正しい。位相はSOGOUT側から取る。
+            self.sync.pix += [
+                If(~sg, If(low != 0xFFFF, low.eq(low + 1))),
+                If(sg_fall, xs.eq(0), hlen.eq(xs)),
+                If(xs != 0xFFFF, xs.eq(xs + 1)),
+                If(sg_rise,
+                    If(low > lowmax, lowmax.eq(low)),
+                    low.eq(0),
+                ),
+                # Low期間が閾値を超えた瞬間 = 垂直ブロードパルスの検出。
+                # そのときのライン内位置 x が、HSOUT格子に対する垂直区間の位相。
+                # ブロードパルスは low クロック前に始まっているのでその分戻す。
+                If(~sg & (low == self.cfg_sog_vth) & ~v_seen,
+                    is_v.eq(1), v_seen.eq(1),
+                    vphase.eq(ph_now),
+                    vlines.eq(vcnt), vcnt.eq(0),
+                    # 位相がライン中央付近にあるフィールドは半ライン分あとから
+                    # 始まるので、そのラインは1スロット下へ落ちる。判定の考え方は
+                    # 生同期版(ph_raw)と同じで、1/4〜3/4を「中央付近」とする。
+                    # 実測(MSXインターレース): 661(=中央付近) と 1348(=境界付近)が
+                    # 交互に出た。差は687で半ライン684に一致する。
+                    ph_sog.eq((ph_now > q_s) & (ph_now < (self.cfg_hs_total - q_s))),
+                    # SOGOUTから同期を分離できているか。垂直区間の間隔が
+                    # 妥当な行数あることで見る(配線が無ければ0のまま)
+                    sog_ok.eq((vcnt > 32) & (lowmax > 100)),
+                ),
+                # HSOUT を数えて、垂直区間を抜けたら次に備える
+                If(hs_edge,
+                    If(vcnt != 0xFFFF, vcnt.eq(vcnt + 1)),
+                    If(vcnt == 32, v_seen.eq(0), is_v.eq(0)),
+                ),
+            ]
+            self.specials += MultiReg(hlen, self.stat_sog_hlen, "sys")
+            self.specials += MultiReg(lowmax, self.stat_sog_lowmax, "sys")
+            self.specials += MultiReg(vphase, self.stat_sog_vphase, "sys")
+            self.specials += MultiReg(vlines, self.stat_sog_vlines, "sys")
+
         # 診断用: TVP経由のVSYNC位相とFIDOUT。位置決めには使わない(生同期を使う)
         vs_x   = Signal(16)          # VSYNCエッジ時の行内カウンタ(=位相)
         fid_vs = Signal()            # そのときのFIDOUT
@@ -471,7 +565,12 @@ class TvpCapture(Module):
             If(~il_det,
                 fld_pos.eq(0),
             ).Elif(raw_ok & ~self.cfg_no_raw_phase,
-                fld_pos.eq(~ph_raw),
+                fld_pos.eq(~ph_raw ^ self.cfg_field_invert),
+            ).Elif(sog_ok,
+                # 生同期が無い機種(C-SYNCのみ→SOG)はSOGOUTから取った位相を使う。
+                # TVPのHSOUT/VSOUT/FIDOUTはいずれも半ライン位相を失っている
+                # (実測: VSOUT位相1066固定、FIDOUT=1固定、LINEのtsも全フィールド同位相)。
+                fld_pos.eq(~ph_sog ^ self.cfg_field_invert),
             ).Else(
                 # 生同期が無い環境(旧基板)向けの推測。TVPのVSOUTが2本のVSYNCの
                 # どちらで出るかに依存するので当たらないことがある。現基板では
@@ -823,15 +922,37 @@ class TvpCapture(Module):
         if auto_vtotal:
             v_last = Signal(16)
             v_cnt = Signal(3)
+            # ±1 の違いでは採り直さない。
+            #
+            # インターレースでは1フィールドが 262.5 ラインなので、VSOUT間のHSOUT数は
+            # 262 と 263 を行き来する。どちらに丸まるかは半ライン位相のドリフトで
+            # ゆっくり入れ替わり、実測では「263が24回続いた後262が33回続く」といった
+            # 塊で観測された。そのまま採用すると塊が変わるたびにモードが切り替わり、
+            # スロット割り当てが崩れて未充填523・画面が暗転する(実機で数秒〜十数秒に
+            # 一度「ぐらぐらっと揺れる」形で出た)。
+            #
+            # ±1 は信号の性質であってモード変更ではないので無視する。本物のモード
+            # 変更(例 262→525)は2以上動くので従来どおり追従する。
+            # ただし「大きい方へは1でも追従する」。
+            #
+            # cfg_vtotal はフレーム境界の自走カウンタの一周点でもある。実際の
+            # フィールドが cfg_vtotal より1行長いと、自走が先に一周して余分な
+            # フレーム境界が生まれ、そこに残り1行だけが入った偽フレームができる。
+            # 実機では「262行, 262行, 1行」の3つ組が延々と繰り返し、その1行の
+            # フレームで受信側の未充填が523になって画面全体が暗転していた。
+            # 交互に出る262/263のうち大きい方に張り付けば早回りは起きない。
+            vt_far = Signal()
+            self.comb += vt_far.eq((self.meas_vtotal > self.cfg_vtotal)
+                                   | (self.meas_vtotal < (self.cfg_vtotal - 1)))
             self.sync += [
                 If(self.meas_vtotal != v_last,
                     v_last.eq(self.meas_vtotal), v_cnt.eq(0),
                 ).Elif(v_cnt != 4,
                     v_cnt.eq(v_cnt + 1),
                 ),
-                # 現実的な範囲の値が3回続いたら採用する
+                # 現実的な範囲の値が3回続き、かつ現在値から2以上離れていたら採用する
                 If((v_cnt >= 3) & (self.meas_vtotal >= 100)
-                                & (self.meas_vtotal < 1500),
+                                & (self.meas_vtotal < 1500) & vt_far,
                     self.cfg_vtotal.eq(self.meas_vtotal),
                 ),
             ]

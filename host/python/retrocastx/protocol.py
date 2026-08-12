@@ -71,6 +71,16 @@ CFG_KEY_LPF_MSBS = 0x0057       # レジスタ38h 生値。bit5=P/I detect(0=イ
 CFG_KEY_FH_TVP = 0x0058         # TVP HSOUT周波数 [Hz]
 CFG_KEY_FV_TVP = 0x0059         # TVP VSOUT周波数 [mHz]
 CFG_KEY_LINES_TVP = 0x005A      # VSOUT間のHSOUT数(=vtotal)
+# SOGOUT(同期スライサ直後)から測ったコンポジット同期の内訳(読み取り専用)。
+# TVP経由のHSOUT/VSOUTはインターレースの半ライン位相を失う(実測でLINEのtsが
+# 全フィールド同位相、フィールド間隔も整数ライン)ので、C-SYNCのみの機種で
+# 織り込みを成立させるにはこちらから位相を取るしかない
+CFG_KEY_SOG_HLEN = 0x0060       # SOGOUTの水平周期[pixクロック]
+CFG_KEY_SOG_LOWMAX = 0x0061     # 直近で見た最長Low期間[pixクロック]
+CFG_KEY_SOG_VPHASE = 0x0062     # 垂直区間開始時の、直前水平エッジからの経過 = 半ライン位相
+CFG_KEY_SOG_VLINES = 0x0063     # 垂直区間の間隔[水平エッジ数]
+CFG_KEY_SOG_VTH = 0x0064        # 垂直とみなすLow期間の閾値[pixクロック] 既定400
+CFG_KEY_FIELD_INVERT = 0x0066   # インターレースのフィールド極性を入れ替える(0/1)
 CFG_KEY_SYNC_CTL2 = 0x005B      # レジスタ22h 同期処理制御。bit0=VS Bypass bit1=VS Select
                                 #   bit0=1 で VSOUT を同期セパレータ直結にする。既定0x08 では
                                 #   セパレータ非活動時にハーフライン積算器がVSOUTを作り、

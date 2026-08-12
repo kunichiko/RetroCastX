@@ -74,6 +74,12 @@ KNOWN = [
     (0x005B, "sync_ctl2",         "reg 22h bit0=VS Bypass bit1=VS Select 既定0x08"),
     (0x005C, "sync_bypass",       "reg 36h bit0=HS BP bit1=VS BP 生同期素通し(診断)"),
     (0x005D, "in_mux2",           "reg 1Ah SOG LPF[7:6]/クランプLPF[5:4] 15kHzは0x12"),
+    (0x0060, "sog_hlen",          "SOGOUTの水平周期[pixクロック](読専)"),
+    (0x0061, "sog_lowmax",        "SOGOUTの最長Low期間[pixクロック](読専)"),
+    (0x0062, "sog_vphase",        "垂直区間開始の半ライン位相[pixクロック](読専)"),
+    (0x0063, "sog_vlines",        "垂直区間の間隔[水平エッジ数](読専)"),
+    (0x0064, "sog_vth",           "垂直とみなすLow期間の閾値[pixクロック] 既定400"),
+    (0x0066, "field_invert",      "インターレースのフィールド極性を入れ替える(0/1)"),
 ]
 
 

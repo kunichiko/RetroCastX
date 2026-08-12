@@ -357,6 +357,15 @@ class RetroCastXStreamer(LiteXModule):
         # SOG=2.5MHz / クランプ=0.5MHz(SDTV向け) が適正なので 0x12 を既定にする。
         # 詳細な根拠は retrocastx_i2c.py 側のコメント参照
         self.cfg_in_mux2    = Signal(8, reset=0x12)               # key 0x5D (reg 1Ah)
+        # SOGOUTのLow期間を「垂直ブロードパルス」とみなす閾値[pixクロック]。
+        # MSXの水平同期は約4.7us、垂直ブロードパルスは約27us。DATACLK 21.48MHz なら
+        # それぞれ約101と約580クロックなので、その間の400を既定にする。
+        # 機種で幅が違うので実行時に振れるようにしてある (key 0x64)。
+        self.cfg_sog_vth    = Signal(16, reset=400)               # key 0x64
+        # インターレースのフィールド極性の向き。どちらのフィールドが半ライン下かは
+        # 物理で決まるが、SOGOUTの極性やスライスの都合で逆に出ることがあるので、
+        # 実機で見て入れ替えられるようにしておく (key 0x66)
+        self.cfg_field_invert = Signal()                          # key 0x66
         # TVPのステータス 38h(bit5=P/I detect)。上位から供給される読み出し専用
         self.stat_lpf_hi    = Signal(8)
         # TVP自身が測った値。**キャプチャロジックに依存しない絶対値**なので、
@@ -465,6 +474,12 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x5D),
                         self.cfg_in_mux2.eq(rx.data[:8]),
                     ),
+                    If((cfg_target == 0) & (cfg_key == 0x64),
+                        self.cfg_sog_vth.eq(rx.data[:16]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x66),
+                        self.cfg_field_invert.eq(rx.data[0]),
+                    ),
                     If((cfg_target == 0) & (cfg_key == 0x53),
                         self.cfg_postcoast.eq(rx.data[:8]),
                     ),
@@ -536,6 +551,8 @@ class RetroCastXStreamer(LiteXModule):
             0x5B: reply_mux.eq(self.cfg_sync_ctl2),
             0x5C: reply_mux.eq(self.cfg_sync_bypass),
             0x5D: reply_mux.eq(self.cfg_in_mux2),
+            0x64: reply_mux.eq(self.cfg_sog_vth),
+            0x66: reply_mux.eq(self.cfg_field_invert),
         }
         # 診断用の読み出し(書き込みは無視される読み取り専用)。
         # フィールド極性をどちらから取るべきか、ラインごとのHSYNC周期が揺れて
@@ -568,6 +585,12 @@ class RetroCastXStreamer(LiteXModule):
                 0x58: reply_mux.eq(capture.meas_fh_tvp),
                 0x59: reply_mux.eq(capture.meas_fv_tvp),
                 0x5A: reply_mux.eq(capture.meas_lines_tvp),
+                # SOGOUT(スライサ直後)から測ったコンポジット同期の内訳。
+                # TVP経由の経路が半ライン位相を失うため、これが唯一の手掛かり
+                0x60: reply_mux.eq(capture.stat_sog_hlen),    # 水平周期
+                0x61: reply_mux.eq(capture.stat_sog_lowmax),  # 最長Low期間
+                0x62: reply_mux.eq(capture.stat_sog_vphase),  # ★半ライン位相
+                0x63: reply_mux.eq(capture.stat_sog_vlines),  # 垂直間隔[水平エッジ数]
                 # 指定行の範囲(push時点、pixドメインの生値)と捨てた数
                 0x31: reply_mux.eq(capture.cfg_span_probe_row),
                 0x32: reply_mux.eq(capture.stat_span_probe),
@@ -1059,6 +1082,15 @@ _capture_io = [
         Subsignal("hs",  Pins("B4")),                            # HSOUT
         Subsignal("vs",  Pins("C3")),                            # VSOUT
         Subsignal("fid", Pins("E3")),                            # FIDOUT(未使用)
+        # SOGOUT: 同期スライサの出力そのもの。TVPの同期処理ブロック(H-PLLによる
+        # HSOUT再生成、VSOUTの整数ラインへの丸め)を**通る前**の信号なので、
+        # インターレースの半ライン位相が残っている。
+        # C-SYNCしか出ない機種(MSX等)には生HSYNC/生VSYNCが無く、hs_raw/vs_raw が
+        # 使えない。実測でTVP経由の経路は半ラインを失っており(LINEパケットのts を
+        # 12フィールド見て位相が全て0、フィールド間隔も1368×262と1368×263の整数で
+        # 262.5にならない)、SOGOUTが唯一の手掛かりになる。
+        # 使うには reg 17h bit1(SOG En)=0 が必要(retrocastx_i2c.py で 0x00 を書く)。
+        Subsignal("sogout", Pins("C4")),                          # P4-4 pin131
         # TVPを通さない生の同期。TVPのVSOUTはインターレース入力の半ライン位相を
         # 保たない(24kHz 1024x848 で実測: 生信号はオシロでVSYNCトリガごとにHSYNCが
         # 半ラインずれるのに、VSOUTは931ラインに1パルスしか出さず位相も完全固定。
@@ -1312,6 +1344,8 @@ class RetroCastXStream(SoCMini):
                 # VSOUTがフィールド単位かフレーム単位かの判別に使う
                 self.capture.cfg_lpf_tvp.eq(Cat(self.status.lpf_hi,
                                                 self.status.lpf_lo[0:4])),
+                self.capture.cfg_sog_vth.eq(self.streamer.cfg_sog_vth),
+                self.capture.cfg_field_invert.eq(self.streamer.cfg_field_invert),
                 self.streamer.stat_lpf_hi.eq(self.status.lpf_hi),
                 self.streamer.stat_syncdet.eq(self.status.syncdet),
                 self.streamer.stat_lpf_msbs.eq(self.status.lpf_lo),
