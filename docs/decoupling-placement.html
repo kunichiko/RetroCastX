@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>RetroCastX — パスコン配置先一覧</title>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>RetroCastX — パスコン配置レポート</title>
 <style>
 :root{--bg:#eef2f1;--surface:#fff;--surface2:#f6f9f8;--ink:#132220;--muted:#5c6f6c;--line:#d3dedb;
 --accent:#0e8fa3;--accent-ink:#065c6a;
@@ -93,7 +93,7 @@ footer{margin-top:26px;padding-top:16px;border-top:1px solid var(--line);font-si
 <header class="top">
   <div>
     <p class="eyebrow">RetroCastX · ADC フロントエンド</p>
-    <h1>パスコン配置先一覧</h1>
+    <h1>パスコン配置レポート</h1>
   </div>
   <div style="display:flex;gap:12px;align-items:center">
     <a class="back" href="./">← ドキュメント一覧</a>
@@ -101,17 +101,22 @@ footer{margin-top:26px;padding-top:16px;border-top:1px solid var(--line);font-si
   </div>
 </header>
 
-<p class="sub">コンデンサ 84 個すべてを「どの部品のどのピンの直近に置くか」で引ける表。designator と回路上の役割は <code>default.kicad_pcb</code> の <code>atopile_address</code> プロパティとネットリストから機械的に対応付けてあり、ピン番号は <code>main.ato</code> の部品定義に一致する。<b>ネットリスト上は同じ電源ネットでも、電源ピン群ごとに1個ずつ割り当ててある</b>ので、まとめて置くと片方が無防備になる。</p>
+<p class="sub"><b>このページは <code>default.kicad_pcb</code> から生成している</b>(<code>hardware/adc-frontend/tools/gen_decoupling_html.py</code>)。
+以前は手書きの表だったが、デジグネータを振り直したり部品を足し引きするたびに嘘になったので生成に切り替えた。
+載っているのは「置くべき場所の希望」ではなく<b>実際にどれだけ近く置けたかの実測</b>で、配線後のレビュー用。
+各コンデンサについて、ネットを共有する<b>最も近いIC・コネクタ</b>を対象とし、そのネットに繋がる対象側のピン番号と、
+<b>最も近いピアまでの距離</b>を出してある。距離が大きい順に並べてあるので、上から見ていけば妥協した箇所が分かる。
+設計意図の注記は <code>atopile_address</code> をキーに引いているので、番号を振り直しても壊れない。</p>
 
 <div class="summary" id="summary"></div>
 
 <div class="toolbar">
   <div class="toolbar-in">
-    <input type="search" id="q" placeholder="C33 / U10 / VREF / TVP … で絞り込み（/ でフォーカス）" aria-label="検索">
-    <div class="chips" role="group" aria-label="優先度で絞り込み">
-      <button class="chip c1" data-p="1" aria-pressed="false">最優先</button>
-      <button class="chip c2" data-p="2" aria-pressed="false">直近</button>
-      <button class="chip c3" data-p="3" aria-pressed="false">近傍でよい</button>
+    <input type="search" id="q" placeholder="C26 / U1 / avdd / pll … で絞り込み（/ でフォーカス）" aria-label="検索">
+    <div class="chips" role="group" aria-label="距離で絞り込み">
+      <button class="chip c1" data-p="1" aria-pressed="false">5mm超</button>
+      <button class="chip c2" data-p="2" aria-pressed="false">2〜5mm</button>
+      <button class="chip c3" data-p="3" aria-pressed="false">2mm以内</button>
     </div>
     <span class="count" id="count"></span>
   </div>
@@ -120,225 +125,92 @@ footer{margin-top:26px;padding-top:16px;border-top:1px solid var(--line);font-si
 <main id="out"></main>
 
 <section class="legend">
-  <h2>優先度の意味</h2>
+  <h2>距離の目安</h2>
   <ul>
-    <li><span class="tag s1">最優先</span> ループ面積が効く。<b>2mm 以内・ビアを挟まない</b>。ここを妥協すると実測で症状が出た箇所</li>
-    <li><span class="tag s2">直近</span> 対象ピンの<b>直近（5mm 以内目安）</b>。パッド → コンデンサ → GND の経路を短く、GND ビアはコンデンサ直下に</li>
-    <li><span class="tag s3">近傍でよい</span> レール上のバルクや終端。<b>10mm 程度</b>離れても実害は小さい</li>
+    <li><span class="tag s3">2mm以内</span> ループ面積が効く箇所(PLLループフィルタ、アンチエイリアス、コア電源)はここに入れたい。ビアを挟まないこと</li>
+    <li><span class="tag s2">2〜5mm</span> 通常のパスコンとして妥当。パッド → コンデンサ → GND の経路を短く、GNDビアはコンデンサ直下に</li>
+    <li><b>距離が出るのはパスコン(片側GND)だけ</b>。直列/結合コンデンサは抵抗を挟んだ先のICが拾われて無意味な数字になるので「—」にしてある。GND-シャーシ間のブリッジも同様</li>
+    <li><span class="tag s1">5mm超</span> レール上のバルクや終端なら実害は小さい。<b>コア電源やPLLでこれが出ていたら見直す</b></li>
+  </ul>
+  <h2 style="margin-top:14px">注記の「要確認」について</h2>
+  <ul>
+    <li>旧版に手書きの設計意図があったが、<b>その後に値かパッケージが変わっている</b>ものには <span class="tag s1">要確認</span> を付けて注記を伏せてある。
+        流用すると嘘になるため。書き直したら <code>tools/decoupling_notes.json</code> に <code>atopile_address</code> をキーに追記すること</li>
   </ul>
 </section>
 
 <footer>
-座標は <code>hardware/adc-frontend/layouts/default/default.kicad_pcb</code> の配置（2026-08-11 時点）。部品を動かすと変わる。<br>
+座標・距離・ピン番号はすべて <code>hardware/adc-frontend/layouts/default/default.kicad_pcb</code> から機械的に算出。部品を動かしたら再生成すること。<br>
 典拠: TVP7002 データシート SLES206C / PCM1808 SLES177B の Layout Example / PLR135 データシート / <code>hardware/adc-frontend/docs/layout-guidelines.md</code>
 </footer>
 
 </div>
 
 <script>
-const G = [
- {ref:"U10", name:"TVP7002 (映像ADC)", meta:"HTQFP-100 · 141.00, 70.50",
-  note:"14個の電源デカップリングは<b>電源ピン群ごとに1個ずつ割り当て済み</b>。下表のピン番号どおりに散らすこと。A33VDD が pin 13/14 と 93/94 の二箇所に分かれているように、同じネットでも物理的に離れたピン群がある。",
-  rows:[
-   ["C15","100nF","0402","PLLループフィルタ: FILT1(87)–PLL_F(89) 間",1,"最も敏感な回路。r_filt(1.5k)と合わせて3ピンの間に押し込み、他の信号から隔離する"],
-   ["C16","4.7nF","0402","PLLループフィルタ: FILT2(88)–PLL_F(89) 間",1,"同上。ループを小さく"],
-   ["C81","33pF","0603","RIN_3 (pin 9) の直近",1,"アンチエイリアス。<b>TVPの入力ピン直近でないと効かない</b>。R/G/Bで等条件に"],
-   ["C80","33pF","0603","GIN_3 (pin 98) の直近",1,"同上"],
-   ["C79","33pF","0603","BIN_3 (pin 16) の直近",1,"同上"],
-   ["C25","100nF","0402","A33VDD pin 13/14 の直近",2,"アナログ3.3V"],
-   ["C26","100nF","0402","A33VDD pin 93/94 の直近",2,"アナログ3.3V（反対側の電源ピン群）"],
-   ["C27","100nF","0402","AVDD pin 4 の直近",2,"1.85V アナログコア。FB2(fb_avdd)はTVP側に置く"],
-   ["C28","100nF","0402","AVDD pin 6 の直近",2,""],
-   ["C29","100nF","0402","AVDD pin 7 の直近",2,""],
-   ["C30","100nF","0402","AVDD pin 19 の直近",2,""],
-   ["C31","100nF","0402","PLL_AVDD pin 84 の直近",2,"PLL電源。FB3(fb_pll)もTVP側"],
-   ["C32","100nF","0402","PLL_AVDD pin 85 の直近",2,""],
-   ["C33","100nF","0402","DVDD pin 39 の直近",2,"1.9V デジタルコア"],
-   ["C34","100nF","0402","DVDD pin 69 の直近",2,""],
-   ["C35","100nF","0402","IOVDD pin 26 の直近",2,"3.3V 出力ドライバ。24bit出力が一斉に振れるので効く"],
-   ["C36","100nF","0402","IOVDD pin 41 の直近",2,""],
-   ["C37","100nF","0402","IOVDD pin 53 の直近",2,""],
-   ["C38","100nF","0402","IOVDD pin 66 の直近",2,""],
-   ["C18","1nF","0402","GIN側 → SOGIN_3 (pin 97)",2,"Sync-on-Green 結合。G入力経路の近く"],
-   ["C47","10nF","0402","RIN_1 (pin 11)",3,"未使用アナログ入力の終端（データシート指定）"],
-   ["C48","10nF","0402","RIN_2 (pin 10)",3,"未使用入力の終端"],
-   ["C49","10nF","0402","BIN_1 (pin 18)",3,"未使用入力の終端"],
-   ["C50","10nF","0402","BIN_2 (pin 17)",3,"未使用入力の終端"],
-   ["C51","10nF","0402","GIN_1 (pin 2)",3,"未使用入力の終端"],
-   ["C52","10nF","0402","GIN_2 (pin 100)",3,"未使用入力の終端"],
-   ["C53","10nF","0402","GIN_4 (pin 96)",3,"未使用入力の終端"],
-   ["C54","1nF","0402","SOGIN_1 (pin 1)",3,"未使用SOG入力の終端（SOG系は1nF指定）"],
-   ["C55","1nF","0402","SOGIN_2 (pin 99)",3,"未使用SOG入力の終端"]
-  ]},
-
- {ref:"J10", name:"D-SUB15 映像入力 / アナログ前段", meta:"DS1037-15F · 95.00, 69.00",
-  note:"順序は <b>コネクタ → D2(ESD) → 75Ω終端 → ここの100nF → r_aa(220Ω) → TVP入力ピンの33pF</b>。100nFはコネクタ側、33pFはTVP側に分かれる。",
-  rows:[
-   ["C24","100nF","0402","J10 pin 1 (R) 側、75Ω終端の直後",2,"ACカップリング。R/G/B 3本は等長・並走させる"],
-   ["C23","100nF","0402","J10 pin 3 (G) 側、75Ω終端の直後",2,"ACカップリング"],
-   ["C22","100nF","0402","J10 pin 5 (B) 側、75Ω終端の直後",2,"ACカップリング"]
-  ]},
-
- {ref:"U3", name:"SN74LVC2G17 同期バッファ", meta:"SOT-23-6 · 121.60, 69.42", note:"",
-  rows:[
-   ["C14","100nF","0402","U3 VCC (pin 5) の直近",2,"バッファのVCCデカップリング"],
-   ["C20","1nF","0402","U3 IN_B (pin 3) 側、r_vs(220Ω)とセット",2,"VSYNCのRC遅延。VSYNCエッジがHSYNCと完全一致するのを避ける（データシート推奨）"]
-  ]},
-
- {ref:"X1", name:"27MHz 発振器 (EXT_CLK)", meta:"SMD3225 · 148.25, 58.16", note:"",
-  rows:[["C17","100nF","0402","X1 VCC (pin 4) の直近",2,"発振器の電源デカップリング。TVP EXT_CLK(pin 80)の近くに置く"]]},
-
- {ref:"U1", name:"PCM1808 音声ADC（D-SUB15音声）", meta:"TSSOP-14 · 118.00, 83.00",
-  note:"ΔΣ型でSCKI/BCKに同期した電流パルスを引く。<b>各ピン直近にバルクが無いと共有GNDに L·di/dt が乗り、TVPアナログ入力の基準電位を揺らす</b>（試作でパスコン未実装のとき、映像の暗部に点状ノイズとして実測された）。",
-  rows:[
-   ["C3","10µF","0805","U1 VREF (pin 1) の直近",1,"データシート Layout Example の必須要件。10µF+100nFをペアで"],
-   ["C4","100nF","0402","U1 VREF (pin 1) の直近",1,"C3とペア。ICに最も近い側へ"],
-   ["C75","10µF","0805","U1 VCC (pin 3) の直近",2,"アナログ5V（FB1で分離後）"],
-   ["C5","100nF","0402","U1 VCC (pin 3) の直近",2,"C75とペア"],
-   ["C76","10µF","0805","U1 VDD (pin 4) の直近",2,"デジタル3.3V"],
-   ["C6","100nF","0402","U1 VDD (pin 4) の直近",2,"C76とペア"],
-   ["C1","1µF","0603","U1 VINL (pin 13) の直近",2,"入力ACカップリング。D-SUB15音声のL"],
-   ["C2","1µF","0603","U1 VINR (pin 14) の直近",2,"入力ACカップリング。D-SUB15音声のR"]
-  ]},
-
- {ref:"U2", name:"PCM1808 音声ADC（3.5mm LINE入力）", meta:"TSSOP-14 · 118.00, 91.00", note:"U1 と同じ扱い。",
-  rows:[
-   ["C9","10µF","0805","U2 VREF (pin 1) の直近",1,"データシート Layout Example の必須要件"],
-   ["C10","100nF","0402","U2 VREF (pin 1) の直近",1,"C9とペア"],
-   ["C77","10µF","0805","U2 VCC (pin 3) の直近",2,"アナログ5V"],
-   ["C11","100nF","0402","U2 VCC (pin 3) の直近",2,"C77とペア"],
-   ["C78","10µF","0805","U2 VDD (pin 4) の直近",2,"デジタル3.3V"],
-   ["C12","100nF","0402","U2 VDD (pin 4) の直近",2,"C78とペア"],
-   ["C7","1µF","0603","U2 VINL (pin 13) の直近",2,"入力ACカップリング。J6(3.5mm)のTip"],
-   ["C8","1µF","0603","U2 VINR (pin 14) の直近",2,"入力ACカップリング。J6のRing"]
-  ]},
-
- {ref:"FB1 / X2", name:"音声用アナログ5V と マスタークロック", meta:"FB1 111.52, 83.73 · X2 157.33, 101.81", note:"",
-  rows:[
-   ["C13","10µF","0805","FB1 の出口側（p5v_audio）、U1/U2 寄り",3,"ビーズでデジタル5Vから分離した後のバルク"],
-   ["C21","100nF","0402","X2 (12.288MHz XO) VCC (pin 4) の直近",2,"MCLK源。GbE/映像デジタルから離して配置する"]
-  ]},
-
- {ref:"U13", name:"FT2232H (USB書換え/UART)", meta:"LQFP-64 · 131.88, 141.87",
-  note:"VREGOUT(49) と VCORE(12/37/64) は<b>同一ネット</b>。C74 は pin 49 側、C68 は VCORE ピン側に分けて置く。",
-  rows:[
-   ["C64","100nF","0402","U13 VCCIO pin 20 の直近",2,"4本のVCCIOに1個ずつ"],
-   ["C65","100nF","0402","U13 VCCIO pin 31 の直近",2,""],
-   ["C66","100nF","0402","U13 VCCIO pin 42 の直近",2,""],
-   ["C67","100nF","0402","U13 VCCIO pin 56 の直近",2,""],
-   ["C72","100nF","0402","U13 VREGIN pin 50 の直近",2,"内部1.8V LDOの入力"],
-   ["C71","10µF","0805","U13 VREGIN pin 50 の近く",3,"バルク。C72より外側でよい"],
-   ["C74","100nF","0402","U13 VREGOUT pin 49 の直近",2,"内部LDOの出力"],
-   ["C73","1µF","0603","U13 VREGOUT pin 49 の近く",3,"バルク"],
-   ["C68","100nF","0402","U13 VCORE pin 12/37/64 の直近",2,"コア電源。VREGOUTと同一ネットだがVCOREピン側に置く"],
-   ["C69","100nF","0402","U13 VPHY pin 4 の直近（FB4の後）",2,"USB PHY電源。ビーズで分離済み"],
-   ["C70","100nF","0402","U13 VPLL pin 9 の直近（FB5の後）",2,"PLL電源。ビーズで分離済み"],
-   ["C46","33pF","0603","X3 pin 1 / U13 OSCI (pin 2) の直近",2,"12MHz水晶の負荷容量。水晶とICの間に短く"],
-   ["C63","33pF","0603","X3 pin 3 / U13 OSCO (pin 3) の直近",2,"同上"],
-   ["C45","100nF","0402","U12 (93LC56 EEPROM) VCC (pin 8) の直近",2,"構成EEPROMの電源"]
-  ]},
-
- {ref:"U6-U9", name:"電源レール（LDO 出力バルク）", meta:"U9 109.00,126.00 · U7 133.00,88.00 · U6 142.94,48.44 · U8 146.32,112.92",
-  note:"AZ1117 は出力に <b>≥10µF</b> の ESR 安定性要求がある。各LDOの出力ピン直近に置くこと（レールのどこか、ではない）。",
-  rows:[
-   ["C56","10µF","0805","5V入口（J9 USB-C / J7 DCジャック）と U9/U7 VIN の間",3,"5V入力バルク"],
-   ["C57","10µF","0805","U9 (ldo_io) OUT (pin 2) の直近",2,"3.3V IO レール。安定性要求あり"],
-   ["C58","10µF","0805","U7 (ldo_a33) OUT (pin 2) の直近",2,"3.3V アナログレール。安定性要求あり"],
-   ["C59","10µF","0805","U6 (RT9013-18) VOUT (pin 5) の直近",2,"1.85V アナログ（AVDD/PLL）"],
-   ["C60","10µF","0805","U8 (TLV70019) OUT (pin 5) の直近",2,"1.9V デジタル（DVDD）"]
-  ]},
-
- {ref:"J2 / J11", name:"GbE MagJack ×2", meta:"J2 177.00, 58.00 · J11 177.00, 77.00",
-  note:"<b>磁気部の下は論理GND/電源プレーンをくり抜き</b>、シャーシGNDのアイランドを作る。4.7nF/2kV はその絶縁ギャップを<b>またいで</b>置く（沿面距離を確保）。",
-  rows:[
-   ["C43","100nF","0402","J2 の CT (pin P1) の直近",2,"PHY側センタータップのデカップリング"],
-   ["C44","100nF","0402","J11 の CT (pin P1) の直近",2,"同上"],
-   ["C41","4.7nF/2kV","1812","J2 側、論理GND⇄シャーシGND の絶縁ギャップをまたぐ",2,"HV Yキャップ。ポートごとに2個"],
-   ["C42","4.7nF/2kV","1812","J2 側、同上（2個目）",2,"HV Yキャップ"],
-   ["C61","4.7nF/2kV","1812","J11 側、絶縁ギャップをまたぐ",2,"HV Yキャップ"],
-   ["C62","4.7nF/2kV","1812","J11 側、同上（2個目）",2,"HV Yキャップ"]
-  ]},
-
- {ref:"U14-U16", name:"デジタルRGB入力バッファ", meta:"SOT-23-6 · 100.15,122.55 / 100.00,126.50 / 100.15,130.45", note:"",
-  rows:[
-   ["C82","100nF","0402","U14 VCC (pin 5) の直近",2,"R/G バッファ"],
-   ["C83","100nF","0402","U15 VCC (pin 5) の直近",2,"B/I バッファ"],
-   ["C84","100nF","0402","U16 VCC (pin 5) の直近",2,"HS/VS バッファ"]
-  ]},
-
- {ref:"J8", name:"TOSLINK 受信モジュール", meta:"PLR135/T10 · 94.90, 106.45", note:"",
-  rows:[["C19","100nF","0402","J8 の Vcc(pin 3)–GND(pin 2) 間、<b>7mm 以内</b>",1,"データシートの必須要件。光受信は感度が高いので高速デジタル/スイッチングから離す"]]},
-
- {ref:"U4 / U5", name:"MACアドレス EEPROM ×2", meta:"SOIC-8 · 155.90,111.60 / 165.43,112.23", note:"",
-  rows:[
-   ["C39","100nF","0402","U4 VCC (pin 8) の直近",2,"0x50 = ETH0用"],
-   ["C40","100nF","0402","U5 VCC (pin 8) の直近",2,"0x51 = ETH1用"]
-  ]}
-];
-
-const P={1:"最優先",2:"直近",3:"近傍でよい"};
-const out=document.getElementById('out'),q=document.getElementById('q'),cnt=document.getElementById('count');
-let active=new Set();
+const G = [{"ref": "U1", "name": "tvp", "meta": "HTQFP-100_L14.0-W14.0-P0.50-LS16.0-BL-EP6.2", "rows": [["C27", "100nF ±10%", "C0402", "表", "143.5, 59.5", "pll_avdd", "84,85", 9.06, 2, "旧版の記述: PLL_AVDD pin 85 の直近。", "dec_caps[7]", false, "パスコン"], ["C26", "100nF ±10%", "C0402", "表", "143.5, 60.75", "pll_avdd", "84,85", 7.82, 2, "旧版の記述: PLL_AVDD pin 84 の直近。PLL電源。FB3(fb_pll)もTVP側", "dec_caps[6]", false, "パスコン"], ["C35", "33pF ±5%", "C0402", "裏", "131.5, 74.0", "rin3", "9", 3.31, 0, "", "ch_r.c_aa", true, "パスコン"], ["C47", "33pF ±5%", "C0402", "裏", "131.5, 78.5", "bin2", "17", 3.31, 0, "", "ch_b2.c_aa", false, "パスコン"], ["C39", "33pF ±5%", "C0402", "裏", "131.5, 77.75", "bin3", "16", 3.3, 0, "", "ch_b.c_aa", true, "パスコン"], ["C43", "33pF ±5%", "C0402", "裏", "131.5, 74.75", "rin2", "10", 3.3, 0, "", "ch_r2.c_aa", false, "パスコン"], ["C22", "100nF ±10%", "C0402", "裏", "138.0, 71.75", "avdd", "4,6,7,19", 3.2, 2, "旧版の記述: AVDD pin 4 の直近。1.85V アナログコア。FB2(fb_avdd)はTVP側に置く", "dec_caps[2]", false, "パスコン"], ["C59", "10nF ±10%", "C0402", "裏", "139.25, 65.75", "gin4_nc", "96", 2.9, 3, "旧版の記述: BIN_2 (pin 17)。未使用入力の終端", "nc_caps[3]", false, "パスコン"], ["C41", "33pF ±5%", "C0402", "裏", "138.25, 65.75", "sogin3", "97", 2.81, 0, "", "c_sog3_aa", false, "パスコン"], ["C49", "33pF ±5%", "C0402", "裏", "136.75, 65.75", "sogin2", "99", 2.81, 0, "", "c_sog2_aa", true, "パスコン"], ["C37", "33pF ±5%", "C0402", "裏", "137.5, 65.75", "gin3", "98", 2.8, 0, "", "ch_g.c_aa", true, "パスコン"], ["C58", "10nF ±10%", "C0402", "裏", "137.5, 70.25", "gin1_nc", "2", 2.75, 3, "旧版の記述: BIN_1 (pin 18)。未使用入力の終端", "nc_caps[2]", false, "パスコン"], ["C56", "10nF ±10%", "C0402", "裏", "137.5, 75.5", "rin1_nc", "11", 2.71, 3, "旧版の記述: RIN_1 (pin 11)。未使用アナログ入力の終端（データシート指定）", "nc_caps[0]", false, "パスコン"], ["C20", "100nF ±10%", "C0402", "裏", "137.5, 77.0", "p3v3_a", "13,14,93,94", 2.71, 2, "旧版の記述: A33VDD pin 13/14 の直近。アナログ3.3V", "dec_caps[0]", false, "パスコン"], ["C28", "100nF ±10%", "C0402", "表", "143.5, 86.6", "p1v9_d", "39,69", 2.7, 2, "旧版の記述: DVDD pin 39 の直近。1.9V デジタルコア", "dec_caps[8]", false, "パスコン"], ["C57", "10nF ±10%", "C0402", "裏", "137.5, 78.75", "bin1_nc", "18", 2.7, 3, "旧版の記述: RIN_2 (pin 10)。未使用入力の終端", "nc_caps[1]", false, "パスコン"], ["C30", "100nF ±10%", "C0402", "表", "136.5, 86.5", "p3v3_io", "26,41,53,66", 2.55, 2, "旧版の記述: IOVDD pin 26 の直近。3.3V 出力ドライバ。24bit出力が一斉に振れるので効く", "dec_caps[10]", false, "パスコン"], ["C29", "100nF ±10%", "C0402", "表", "152.5, 73.25", "p1v9_d", "39,69", 2.3, 2, "旧版の記述: DVDD pin 69 の直近。", "dec_caps[9]", false, "パスコン"], ["C33", "100nF ±10%", "C0402", "表", "152.5, 74.75", "p3v3_io", "26,41,53,66", 2.3, 2, "旧版の記述: IOVDD pin 66 の直近。", "dec_caps[13]", false, "パスコン"], ["C60", "1nF ±10%", "C0402", "裏", "132.5, 70.25", "sogin1_nc", "1", 2.3, 3, "旧版の記述: SOGIN_1 (pin 1)。未使用SOG入力の終端（SOG系は1nF指定）", "nc_sog_caps[0]", false, "パスコン"], ["C21", "100nF ±10%", "C0402", "裏", "139.75, 70.75", "p3v3_a", "13,14,93,94", 2.21, 2, "旧版の記述: A33VDD pin 93/94 の直近。アナログ3.3V（反対側の電源ピン群）", "dec_caps[1]", false, "パスコン"], ["C25", "100nF ±10%", "C0402", "裏", "136.75, 80.0", "avdd", "4,6,7,19", 2.09, 2, "旧版の記述: AVDD pin 19 の直近。", "dec_caps[5]", false, "パスコン"], ["C31", "100nF ±10%", "C0402", "表", "144.02, 85.6", "p3v3_io", "26,41,53,66", 1.65, 2, "旧版の記述: IOVDD pin 41 の直近。", "dec_caps[11]", false, "パスコン"], ["C32", "100nF ±10%", "C0402", "表", "151.75, 81.75", "p3v3_io", "26,41,53,66", 1.63, 2, "旧版の記述: IOVDD pin 53 の直近。", "dec_caps[12]", false, "パスコン"], ["C45", "33pF ±5%", "C0402", "裏", "135.0, 68.5", "gin2", "100", 1.5, 0, "", "ch_g2.c_aa", false, "パスコン"], ["C24", "100nF ±10%", "C0402", "裏", "135.0, 73.75", "avdd", "4,6,7,19", 0.54, 2, "旧版の記述: AVDD pin 7 の直近。", "dec_caps[4]", false, "パスコン"], ["C23", "100nF ±10%", "C0402", "裏", "135.0, 72.5", "avdd", "4,6,7,19", 0.32, 2, "旧版の記述: AVDD pin 6 の直近。", "dec_caps[3]", false, "パスコン"]]}, {"ref": "U2", "name": "buf_sync", "meta": "SOT-23-6_L2.9-W1.6-P0.95-LS2.8-BL", "rows": [["C51", "1nF ±10%", "C0402", "表", "112.5, 51.92", "vsync_delayed", "1", 1.89, 2, "旧版の記述: U3 IN_B (pin 3) 側、r_vs(220Ω)とセット。VSYNCのRC遅延。VSYNCエッジがHSYNCと完全一致するのを避ける（データシート推奨）", "c_vs", false, "パスコン"]]}, {"ref": "X1", "name": "osc", "meta": "OSC-SMD_4P-L3.2-W2.5-BL", "rows": [["C55", "100nF ±10%", "C0402", "表", "147.59, 62.47", "p3v3_io", "1,4", 1.89, 2, "旧版の記述: X1 VCC (pin 4) の直近。発振器の電源デカップリング。TVP EXT_CLK(pin 80)の近くに置く", "c_osc", false, "パスコン"]]}, {"ref": "U3", "name": "supply.ldo_io", "meta": "SOT-223-3_L6.5-W3.4-P2.30-LS7.0-BR", "rows": [["C1", "10µF ±10%", "C0805", "表", "108.75, 118.75", "p5v", "3", 4.11, 3, "旧版の記述: 5V入口（J9 USB-C / J7 DCジャック）と U9/U7 VIN の間。5V入力バルク", "supply.bulk_caps[0]", false, "パスコン"], ["C2", "10µF ±10%", "C0805", "表", "100.75, 115.25", "p3v3_io", "2,4", 3.65, 2, "旧版の記述: U9 (ldo_io) OUT (pin 2) の直近。3.3V IO レール。安定性要求あり", "supply.bulk_caps[1]", false, "パスコン"]]}, {"ref": "U4", "name": "supply.ldo_a33", "meta": "SOT-223-3_L6.5-W3.4-P2.30-LS7.0-BR", "rows": [["C3", "10µF ±10%", "C0805", "裏", "127.0, 78.0", "p3v3_a", "2,4", 3.45, 2, "旧版の記述: U7 (ldo_a33) OUT (pin 2) の直近。3.3V アナログレール。安定性要求あり", "supply.bulk_caps[2]", false, "パスコン"]]}, {"ref": "U5", "name": "supply.ldo_a19", "meta": "SOT-23-5_L3.0-W1.7-P0.95-LS2.8-BR", "rows": [["C4", "10µF ±10%", "C0805", "表", "136.25, 57.5", "p1v9_a", "5", 2.43, 2, "旧版の記述: U6 (RT9013-18) VOUT (pin 5) の直近。1.85V アナログ（AVDD/PLL）", "supply.bulk_caps[3]", false, "パスコン"]]}, {"ref": "U6", "name": "supply.ldo_d19", "meta": "SOT-23-5_L2.9-W1.6-P0.95-LS2.8-BR", "rows": [["C5", "10µF ±10%", "C0805", "表", "144.2, 87.95", "p1v9_d", "5", 1.92, 2, "旧版の記述: U8 (TLV70019) OUT (pin 5) の直近。1.9V デジタル（DVDD）", "supply.bulk_caps[4]", false, "パスコン"]]}, {"ref": "U7", "name": "ft2232.ft", "meta": "LQFP-64_L10.0-W10.0-P0.50-LS12.0-TL", "rows": [["C11", "10µF ±10%", "C0805", "表", "117.75, 145.25", "p3v3_io", "20,31,42,50,56", 5.22, 3, "旧版の記述: U13 VREGIN pin 50 の近く。バルク。C72より外側でよい", "ft2232.c_vregin_bulk", false, "パスコン"], ["C8", "100nF ±10%", "C0402", "裏", "108.25, 144.0", "p3v3_io", "20,31,42,50,56", 3.09, 2, "旧版の記述: U13 VCCIO pin 42 の直近。", "ft2232.c_vccio[2]", false, "パスコン"], ["C13", "1µF ±10%", "C0603", "表", "114.5, 147.5", "ft_vcore_1v8", "12,37,49,64", 2.98, 3, "旧版の記述: U13 VREGOUT pin 49 の近く。バルク", "ft2232.c_vregout_bulk", false, "パスコン"], ["C12", "100nF ±10%", "C0402", "表", "114.83, 146.25", "ft_vcore_1v8", "12,37,49,64", 2.49, 2, "旧版の記述: U13 VREGOUT pin 49 の直近。内部LDOの出力", "ft2232.c_vregout", false, "パスコン"], ["C14", "100nF ±10%", "C0402", "表", "105.25, 133.5", "ft_vcore_1v8", "12,37,49,64", 2.45, 2, "旧版の記述: U13 VCORE pin 12/37/64 の直近。コア電源。VREGOUTと同一ネットだがVCOREピン側に置く", "ft2232.c_vcore", false, "パスコン"], ["C10", "100nF ±10%", "C0402", "表", "114.83, 144.75", "p3v3_io", "20,31,42,50,56", 2.28, 2, "旧版の記述: U13 VREGIN pin 50 の直近。内部1.8V LDOの入力", "ft2232.c_vregin", false, "パスコン"], ["C6", "100nF ±10%", "C0402", "表", "99.75, 140.75", "p3v3_io", "20,31,42,50,56", 2.27, 2, "旧版の記述: U13 VCCIO pin 20 の直近。4本のVCCIOに1個ずつ", "ft2232.c_vccio[0]", false, "パスコン"], ["C7", "100nF ±10%", "C0402", "表", "99.25, 144.75", "p3v3_io", "20,31,42,50,56", 2.2, 2, "旧版の記述: U13 VCCIO pin 31 の直近。", "ft2232.c_vccio[1]", false, "パスコン"], ["C9", "100nF ±10%", "C0402", "表", "114.67, 141.5", "p3v3_io", "20,31,42,50,56", 2.13, 2, "旧版の記述: U13 VCCIO pin 56 の直近。", "ft2232.c_vccio[3]", false, "パスコン"], ["C15", "100nF ±10%", "C0402", "裏", "109.5, 135.5", "ft_vphy_1v8", "4", 0.51, 2, "旧版の記述: U13 VPHY pin 4 の直近（FB4の後）。USB PHY電源。ビーズで分離済み", "ft2232.c_vphy", false, "パスコン"], ["C16", "100nF ±10%", "C0402", "裏", "106.75, 135.5", "ft_vpll_1v8", "9", 0.45, 2, "旧版の記述: U13 VPLL pin 9 の直近（FB5の後）。PLL電源。ビーズで分離済み", "ft2232.c_vpll", false, "パスコン"]]}, {"ref": "X2", "name": "ft2232.xtal", "meta": "CRYSTAL-SMD_4P-L3.2-W2.5-BL", "rows": [["C17", "33pF ±5%", "C0402", "表", "108.75, 126.0", "ft_osci", "1", 2.08, 0, "", "ft2232.c_osci", true, "パスコン"], ["C18", "33pF ±5%", "C0402", "表", "108.75, 131.75", "ft_osco", "3", 1.86, 0, "", "ft2232.c_osco", true, "パスコン"]]}, {"ref": "U8", "name": "ft2232.ee", "meta": "SOIC-8_L4.9-W3.9-P1.27-LS6.0-BL", "rows": [["C19", "100nF ±10%", "C0402", "表", "123.5, 138.25", "p3v3_io", "8", 1.46, 2, "旧版の記述: U12 (93LC56 EEPROM) VCC (pin 8) の直近。構成EEPROMの電源", "ft2232.c_ee", false, "パスコン"]]}, {"ref": "U9", "name": "buf_sync2", "meta": "SOT-23-6_L2.9-W1.6-P0.95-LS2.8-BL", "rows": [["C52", "100nF ±10%", "C0402", "表", "115.08, 54.75", "p3v3_io", "5", 2.74, 2, "旧版の記述: U3 VCC (pin 5) の直近。バッファのVCCデカップリング", "c_buf", false, "パスコン"], ["C80", "100nF ±10%", "C0402", "表", "115.08, 59.25", "p3v3_io", "5", 2.74, 0, "", "adc_aux.dec[1]", true, "パスコン"]]}, {"ref": "U11", "name": "drgb.buf[0]", "meta": "SOT-23-6_L2.9-W1.6-P0.95-LS2.8-BL", "rows": [["C61", "100nF ±10%", "C0402", "裏", "100.0, 102.75", "p3v3_io", "5", 1.15, 2, "旧版の記述: U14 VCC (pin 5) の直近。R/G バッファ", "drgb.dec[0]", false, "パスコン"]]}, {"ref": "U12", "name": "drgb.buf[1]", "meta": "SOT-23-6_L2.9-W1.6-P0.95-LS2.8-BL", "rows": [["C62", "100nF ±10%", "C0402", "裏", "100.0, 106.75", "p3v3_io", "5", 1.15, 2, "旧版の記述: U15 VCC (pin 5) の直近。B/I バッファ", "drgb.dec[1]", false, "パスコン"]]}, {"ref": "U13", "name": "drgb.buf[2]", "meta": "SOT-23-6_L2.9-W1.6-P0.95-LS2.8-BL", "rows": [["C63", "100nF ±10%", "C0402", "裏", "100.0, 110.75", "p3v3_io", "5", 1.15, 2, "旧版の記述: U16 VCC (pin 5) の直近。HS/VS バッファ", "drgb.dec[2]", false, "パスコン"]]}, {"ref": "D6", "name": "d_led", "meta": "D_SOD-123", "rows": [["C64", "100nF ±10%", "C0402", "表", "185.33, 132.0", "p_led_4v3", "1", 1.8, 0, "", "c_led", true, "パスコン"]]}, {"ref": "X3", "name": "xo_audio", "meta": "OSC-SMD_4P-L3.2-W2.5-BL", "rows": [["C65", "100nF ±10%", "C0402", "表", "131.0, 140.0", "p3v3_io", "1,4", 2.07, 2, "旧版の記述: X2 (12.288MHz XO) VCC (pin 4) の直近。MCLK源。GbE/映像デジタルから離して配置する", "c_xo_audio", false, "パスコン"]]}, {"ref": "U14", "name": "adc_dsub.adc", "meta": "TSSOP-14_L5.0-W4.4-P0.65-LS6.4-BL", "rows": [["C69", "10µF ±10%", "C0805", "表", "127.0, 92.0", "aud_vref_dsub", "1", 5.12, 1, "旧版の記述: U1 VREF (pin 1) の直近。データシート Layout Example の必須要件。10µF+100nFをペアで", "adc_dsub.c_vref_a", false, "パスコン"], ["C74", "10µF ±10%", "C0805", "表", "127.0, 88.0", "p3v3_io", "4", 5.01, 2, "旧版の記述: U1 VDD (pin 4) の直近。デジタル3.3V", "adc_dsub.bulk[1]", false, "パスコン"], ["C73", "10µF ±10%", "C0805", "表", "127.0, 90.0", "p5v_audio", "3", 4.99, 2, "旧版の記述: U1 VCC (pin 3) の直近。アナログ5V（FB1で分離後）", "adc_dsub.bulk[0]", false, "パスコン"], ["C70", "100nF ±10%", "C0402", "表", "123.8, 92.0", "aud_vref_dsub", "1", 2.18, 1, "旧版の記述: U1 VREF (pin 1) の直近。C3とペア。ICに最も近い側へ", "adc_dsub.c_vref_b", false, "パスコン"], ["C66", "10µF ±10%", "C0805", "裏", "123.75, 88.5", "p5v_audio", "3", 1.92, 3, "旧版の記述: FB1 の出口側（p5v_audio）、U1/U2 寄り。ビーズでデジタル5Vから分離した後のバルク", "c_5va", false, "パスコン"], ["C72", "100nF ±10%", "C0402", "表", "123.8, 88.02", "p3v3_io", "4", 1.9, 2, "旧版の記述: U1 VDD (pin 4) の直近。C76とペア", "adc_dsub.dec[1]", false, "パスコン"], ["C71", "100nF ±10%", "C0402", "表", "123.8, 90.0", "p5v_audio", "3", 1.85, 2, "旧版の記述: U1 VCC (pin 3) の直近。C75とペア", "adc_dsub.dec[0]", false, "パスコン"]]}, {"ref": "U15", "name": "adc_aux.adc", "meta": "TSSOP-14_L5.0-W4.4-P0.65-LS6.4-BL", "rows": [["C82", "10µF ±10%", "C0805", "表", "127.0, 80.5", "p3v3_io", "4", 5.11, 0, "", "adc_aux.bulk[1]", true, "パスコン"], ["C77", "10µF ±10%", "C0805", "表", "127.0, 84.5", "aud_vref_line", "1", 5.01, 0, "", "adc_aux.c_vref_a", true, "パスコン"], ["C81", "10µF ±10%", "C0805", "表", "127.0, 82.5", "p5v_audio", "3", 4.95, 0, "", "adc_aux.bulk[0]", true, "パスコン"], ["C78", "100nF ±10%", "C0402", "表", "123.75, 85.0", "aud_vref_line", "1", 2.14, 2, "旧版の記述: U2 VDD (pin 4) の直近。C78とペア", "adc_aux.c_vref_b", false, "パスコン"], ["C50", "100nF ±10%", "C0402", "表", "123.8, 81.0", "p3v3_io", "4", 1.9, 0, "", "c_buf2", false, "パスコン"], ["C79", "100nF ±10%", "C0402", "表", "123.75, 82.92", "p5v_audio", "3", 1.78, 0, "", "adc_aux.dec[0]", true, "パスコン"]]}, {"ref": "J7", "name": "spdif", "meta": "PLR135_T10", "rows": [["C83", "100nF ±10%", "C0402", "裏", "93.5, 123.08", "p3v3_io", "3", 2.05, 1, "旧版の記述: J8 の Vcc(pin 3)–GND(pin 2) 間、<b>7mm 以内</b>。データシートの必須要件。光受信は感度が高いので高速デジタル/スイッチングから離す", "c_spdif", false, "パスコン"]]}, {"ref": "U16", "name": "eeprom_mac0", "meta": "SOIC-8_L4.9-W3.9-P1.27-LS6.0-BL", "rows": [["C84", "100nF ±10%", "C0402", "表", "153.25, 69.0", "p3v3_io", "8", 3.42, 2, "旧版の記述: U4 VCC (pin 8) の直近。0x50 = ETH0用", "dec_eeprom[0]", false, "パスコン"]]}, {"ref": "U17", "name": "eeprom_mac1", "meta": "SOIC-8_L4.9-W3.9-P1.27-LS6.0-BL", "rows": [["C85", "100nF ±10%", "C0402", "表", "153.25, 62.0", "p3v3_io", "1,8", 3.42, 2, "旧版の記述: U5 VCC (pin 8) の直近。0x51 = ETH1用", "dec_eeprom[1]", false, "パスコン"]]}, {"ref": "J10", "name": "eth.jack", "meta": "RJ45-TH_HR911130A", "rows": [["C86", "100nF ±10%", "C0402", "表", "160.0, 64.25", "eth1_ct", "P1", 10.11, 2, "旧版の記述: J2 の CT (pin P1) の直近。PHY側センタータップのデカップリング", "eth.ct_caps[0]", false, "パスコン"]]}, {"ref": "J11", "name": "eth.jack2", "meta": "RJ45-TH_HR911130A", "rows": [["C87", "100nF ±10%", "C0402", "裏", "170.0, 89.0", "eth2_ct", "P1", 6.28, 2, "旧版の記述: J11 の CT (pin P1) の直近。同上", "eth.ct_caps[1]", false, "パスコン"]]}, {"ref": "(対象不明)", "name": "", "meta": "", "rows": [["C38", "100nF ±10%", "C0402", "表", "125.0, 74.45", "vin_b3, vin_b3_ac", "", null, 2, "旧版の記述: J10 pin 5 (B) 側、75Ω終端の直後。ACカップリング", "ch_b.c_ac", false, "直列/結合"], ["C44", "100nF ±10%", "C0402", "表", "125.0, 68.5", "vin_g2, vin_g2_ac", "", null, 0, "", "ch_g2.c_ac", false, "直列/結合"], ["C54", "4.7nF ±10%", "C0402", "表", "142.39, 66.02", "pll_f, pll_filt2", "", null, 1, "旧版の記述: PLLループフィルタ: FILT2(88)–PLL_F(89) 間。同上。ループを小さく", "c_filt2", false, "直列/結合"], ["C53", "100nF ±10%", "C0402", "表", "142.9, 64.5", "pll_f, pll_filt_mid", "", null, 1, "旧版の記述: PLLループフィルタ: FILT1(87)–PLL_F(89) 間。最も敏感な回路。r_filt(1.5k)と合わせて3ピンの間に押し込み、他の信号から隔離する", "c_filt1", false, "直列/結合"], ["C75", "1µF ±10%", "C0603", "表", "113.5, 83.0", "aud_aux_l, aud_aux_l_ac", "", null, 0, "", "adc_aux.c_in_l", true, "直列/結合"], ["C36", "100nF ±10%", "C0402", "表", "125.0, 66.5", "vin_g3, vin_g3_ac", "", null, 2, "旧版の記述: J10 pin 3 (G) 側、75Ω終端の直後。ACカップリング", "ch_g.c_ac", false, "直列/結合"], ["C68", "1µF ±10%", "C0603", "表", "113.5, 92.75", "aud_dsub_r, aud_dsub_r_ac", "", null, 2, "旧版の記述: U1 VINR (pin 14) の直近。入力ACカップリング。D-SUB15音声のR", "adc_dsub.c_in_r", false, "直列/結合"], ["C46", "100nF ±10%", "C0402", "表", "125.0, 76.5", "vin_b2, vin_b2_ac", "", null, 0, "", "ch_b2.c_ac", false, "直列/結合"], ["C67", "1µF ±10%", "C0603", "表", "113.5, 91.0", "aud_dsub_l, aud_dsub_l_ac", "", null, 2, "旧版の記述: U1 VINL (pin 13) の直近。入力ACカップリング。D-SUB15音声のL", "adc_dsub.c_in_l", false, "直列/結合"], ["C40", "100nF ±10%", "C0402", "表", "125.0, 65.5", "vin_g3, vin_g3_sog_ac", "", null, 0, "", "c_sog3", true, "直列/結合"], ["C48", "100nF ±10%", "C0402", "表", "117.0, 63.5", "vin_csync2_ac, vin_csync2_div", "", null, 0, "", "c_sog2", false, "直列/結合"], ["C76", "1µF ±10%", "C0603", "表", "113.5, 84.75", "aud_aux_r, aud_aux_r_ac", "", null, 0, "", "adc_aux.c_in_r", true, "直列/結合"], ["C42", "100nF ±10%", "C0402", "表", "125.0, 72.5", "vin_r2, vin_r2_ac", "", null, 0, "", "ch_r2.c_ac", false, "直列/結合"], ["C34", "100nF ±10%", "C0402", "表", "125.0, 70.5", "vin_r3, vin_r3_ac", "", null, 2, "旧版の記述: J10 pin 1 (R) 側、75Ω終端の直後。ACカップリング。R/G/B 3本は等長・並走させる", "ch_r.c_ac", false, "直列/結合"], ["C90", "4.7nF ±10%", "C1812", "裏", "160.0, 86.0", "chassis, gnd", "", null, 2, "旧版の記述: J11 側、絶縁ギャップをまたぐ。HV Yキャップ", "eth.bridge_caps[2]", false, "GND-シャーシ ブリッジ"], ["C88", "4.7nF ±10%", "C1812", "裏", "160.0, 69.5", "chassis, gnd", "", null, 2, "旧版の記述: J2 側、論理GND⇄シャーシGND の絶縁ギャップをまたぐ。HV Yキャップ。ポートごとに2個", "eth.bridge_caps[0]", false, "GND-シャーシ ブリッジ"], ["C89", "4.7nF ±10%", "C1812", "裏", "160.0, 61.0", "chassis, gnd", "", null, 2, "旧版の記述: J2 側、同上（2個目）。HV Yキャップ", "eth.bridge_caps[1]", false, "GND-シャーシ ブリッジ"], ["C91", "4.7nF ±10%", "C1812", "裏", "173.0, 89.0", "chassis, gnd", "", null, 2, "旧版の記述: J11 側、同上（2個目）。HV Yキャップ", "eth.bridge_caps[3]", false, "GND-シャーシ ブリッジ"]]}];
+const NCAP=91, NNOTE=67, NSTALE=15;
+const band = d => d===null ? 0 : (d>5?1:(d>2?2:3));
+const BN = {1:"5mm超",2:"2〜5mm",3:"2mm以内",0:"—"};
+const out=document.getElementById('out'), q=document.getElementById('q'), cnt=document.getElementById('count');
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-function hl(html,t){if(!t)return html;return html.replace(new RegExp('('+t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi'),'<mark>$1</mark>');}
+const hl=(s,t)=>!t?esc(s):esc(s).replace(new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi'),m=>'<mark>'+m+'</mark>');
+let on=new Set();
 
 function render(){
-  const t=q.value.trim(),tl=t.toLowerCase();
-  let shown=0,total=0;
-  out.innerHTML=G.map(g=>{
+  const t=q.value.trim(), tl=t.toLowerCase();
+  let n=0; const c={1:0,2:0,3:0}; let html='';
+  for(const g of G){
     const rows=g.rows.filter(r=>{
-      total++;
-      if(active.size&&!active.has(String(r[4])))return false;
-      if(!tl)return true;
-      return (r[0]+' '+r[1]+' '+r[3]+' '+r[5]+' '+g.ref+' '+g.name).toLowerCase().includes(tl);
+      const b=band(r[7]);
+      if(on.size&&!on.has(String(b))) return false;
+      if(!tl) return true;
+      return (r[0]+' '+r[1]+' '+r[2]+' '+r[5]+' '+r[6]+' '+r[9]+' '+r[10]+' '+r[12]+' '+g.ref+' '+g.name).toLowerCase().includes(tl);
     });
-    if(!rows.length)return '';
-    shown+=rows.length;
-    return `<section class="group">
-      <div class="group-head">
-        <span class="group-ref">${esc(g.ref)}</span>
-        <span class="group-name">${esc(g.name)}</span>
-        <span class="group-meta">${esc(g.meta)}</span>
-        <span class="group-n">${rows.length} 個</span>
-      </div>
-      ${g.note?`<div class="group-note">${g.note}</div>`:''}
-      <div class="tw"><table>
-        <thead><tr><th>部品</th><th>値</th><th>置く場所</th><th>優先度</th><th>理由・注意</th></tr></thead>
-        <tbody>${rows.map(r=>`<tr class="s${r[4]}">
-          <td class="ref"><span class="refname">${hl(esc(r[0]),t)}</span><div class="pkg">${esc(r[2])}</div></td>
-          <td class="val">${esc(r[1])}</td>
-          <td class="where">${hl(r[3],t)}</td>
-          <td><span class="tag s${r[4]}">${P[r[4]]}</span></td>
-          <td class="why">${hl(r[5]||'—',t)}</td></tr>`).join('')}</tbody>
-      </table></div>
-    </section>`;
-  }).join('')||`<div class="group"><p class="empty">該当なし</p></div>`;
-  cnt.textContent=`${shown} / ${total} 個を表示`;
-}
-
-(function(){
-  const c={1:0,2:0,3:0};
-  G.forEach(g=>g.rows.forEach(r=>c[r[4]]++));
+    if(!rows.length) continue;
+    n+=rows.length;
+    html+='<div class="group"><div class="group-head">'
+      +'<span class="group-ref">'+hl(g.ref,t)+'</span>'
+      +'<span class="group-name">'+hl(g.name,t)+'</span>'
+      +'<span class="group-meta">'+esc(g.meta)+'</span>'
+      +'<span class="group-n">'+rows.length+' 個</span></div>'
+      +'<div class="tw"><table><thead><tr><th>Ref</th><th>値</th><th>面</th><th>座標</th>'
+      +'<th>種別</th><th>対象ピン</th><th>ネット</th><th>距離</th><th>注記</th></tr></thead><tbody>';
+    for(const r of rows){
+      const b=band(r[7]); c[b]=(c[b]||0)+1;
+      html+='<tr class="s'+b+'"><td class="ref"><span class="refname">'+hl(r[0],t)+'</span><br><span class="pkg">'+esc(r[2])+'</span></td>'
+        +'<td class="val">'+hl(r[1],t)+'</td><td class="pkg">'+esc(r[3])+'</td>'
+        +'<td class="pkg">'+esc(r[4])+'</td>'
+        +'<td class="pkg">'+esc(r[12])+'</td>'
+        +'<td class="where">'+(r[6]?'<span class="refname">'+esc(g.ref)+'</span> pin '+hl(r[6],t):'—')+'</td>'
+        +'<td class="val">'+hl(r[5]||'—',t)+'</td>'
+        +'<td class="val">'+(r[7]===null?'—':'<span class="tag s'+b+'">'+r[7].toFixed(2)+' mm</span>')+'</td>'
+        +'<td class="why">'+(r[11]?'<span class="tag s1">要確認</span> ':'')+(r[9]||'')
+        +'<br><span class="pkg">'+esc(r[10])+'</span></td></tr>';
+    }
+    html+='</tbody></table></div></div>';
+  }
+  out.innerHTML=html||'<div class="group"><p class="empty">該当なし</p></div>';
+  cnt.textContent=n+' / '+NCAP+' 個';
   document.getElementById('summary').innerHTML=
-    `<div class="stat"><b>${c[1]+c[2]+c[3]}</b><span>コンデンサ合計</span></div>`+
-    `<div class="stat s1"><b>${c[1]}</b><span>最優先（2mm以内）</span></div>`+
-    `<div class="stat s2"><b>${c[2]}</b><span>直近（5mm目安）</span></div>`+
-    `<div class="stat s3"><b>${c[3]}</b><span>近傍でよい</span></div>`;
-})();
-
+     '<div class="stat"><b>'+NCAP+'</b><span>コンデンサ</span></div>'
+    +'<div class="stat s1"><b>'+(c[1]||0)+'</b><span>5mm超</span></div>'
+    +'<div class="stat s2"><b>'+(c[2]||0)+'</b><span>2〜5mm</span></div>'
+    +'<div class="stat s3"><b>'+(c[3]||0)+'</b><span>2mm以内</span></div>'
+    +'<div class="stat"><b>'+NNOTE+'</b><span>注記あり</span></div>'
+    +'<div class="stat s1"><b>'+NSTALE+'</b><span>要確認</span></div>';
+}
 q.addEventListener('input',render);
 document.querySelectorAll('.chip').forEach(b=>b.addEventListener('click',()=>{
-  const p=b.dataset.p,on=b.getAttribute('aria-pressed')==='true';
-  b.setAttribute('aria-pressed',String(!on));
-  on?active.delete(p):active.add(p);
-  render();
+  const p=b.dataset.p, cur=b.getAttribute('aria-pressed')==='true';
+  b.setAttribute('aria-pressed',String(!cur)); cur?on.delete(p):on.add(p); render();
 }));
-addEventListener('keydown',e=>{
-  if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}
-  if(e.key==='Escape'&&document.activeElement===q){q.value='';render();q.blur();}
+document.addEventListener('keydown',e=>{if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});
+const tt=document.getElementById('tt');
+tt.addEventListener('click',()=>{
+  const r=document.documentElement, cur=r.getAttribute('data-theme');
+  const dark=cur?cur==='dark':matchMedia('(prefers-color-scheme:dark)').matches;
+  r.setAttribute('data-theme',dark?'light':'dark');
 });
 render();
-
-(function(){var b=document.getElementById("tt");b.addEventListener("click",function(){var r=document.documentElement,c=r.getAttribute("data-theme");if(!c)c=matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light";r.setAttribute("data-theme",c==="dark"?"light":"dark");});})();
 </script>
 </body></html>

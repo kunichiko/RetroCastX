@@ -158,36 +158,51 @@ EEPROMの空き領域(~250B)は個体設定(IP・ボード名等)の保存に使
 - **ストラップ**: PWDN/TMS/CLAMP/COAST/HSYNC_B/VSYNC_B→GND、I2CA→GND(I2Cアドレス0xB8)、
   RESETB は2.2kプルダウン(FPGAがHighで解除)、SDA/SCL 2.2kプルアップ
 
-## 主要部品(2026-07 時点の在庫確認済み)
+## 主要部品
 
-| Ref | 部品 | LCSC | 備考 |
-|---|---|---|---|
-| U1 | TVP7002PZP | C3824085 | DigiKey: TVP7002PZPR ($10.20)。LCSCは5個のみ |
-| U2 | SN74LVC2G17DBVR | C10429 | 同期バッファ |
-| U3,U4 | AZ1117H-3.3TRE1 | C92517 | IO系 / アナログ3.3V |
-| U5 | AZ1117H-ADJTRE1 | C92103 | 1.9V生成(分圧) |
-| U6 | TLV70019DDCR | C2862411 | DVDD 1.9V |
-| FB1,FB2 | MPZ1608S221ATA00 | C76815 | AVDD/PLL分離 |
-| D1,D2 | PESD5V0U4BW | C5182054 | 映像/同期ESD |
-| X1 | X322527MSB4SI | C9008 | 27MHz 3.3V CMOS |
-| J1 | VGA-002 | C138387 | HD-15メス |
-| J2, J4 | 2×15 ピンヘッダ/ソケット 2.54mm | 汎用 | EXT P2/P4ミラー(直挿しハット時はソケット) |
-| J7 | DC005 | C431533 | 5V入力(EXT給電運用時は未実装可) |
-| SJ1 | はんだジャンパ | — | 閉(既定)=ヘッダ5VピンでEXTへ逆給電 / 開=本基板単独給電 |
-| J10 | TYPE-C-31-M-12 | C165948 | USB-C電源入力(Rd 5.1kΩ×2実装、C-C/PD充電器対応) |
-| J8 | 2×15 ピンヘッダ 2.54mm | 汎用 | EXT P1対応(GbE差動ペア受け) |
-| J9 | HanRun HR911130A | C54408 | 1000BASE-T MagJack(トランス内蔵RJ45) |
-| U11,U12 | PCM1808PWR | 要選定 | 音声ADC(RGB端子音声 / LINE入力) |
-| X2 | 12.288MHz XO 3225 | 要選定 | 音声マスタークロック(256fs@48kHz) |
-| J11 | 1×4 ピンヘッダ 2.54mm | 汎用 | ArgusX制御(I2C引き出し) |
-| J12 | 3.5mmステレオジャック | 要選定(PJ-320A系) | LINE入力 |
-| J13 | TOSLINK受信モジュール | 要選定(PLR135/T8等) | 光デジタル入力 |
-| JP3 | はんだジャンパ **既定=閉** | — | SO-DIMMの5Vピンでi5へ給電(切ると本基板単独給電)。銅ブリッジ付きの `SolderJumper_2_Bridged` を使う |
-| U13,U14 | 24AA025E48 | 要選定 | MACアドレスEEPROM(EUI-48)。0x50=ETH0 / 0x51=ETH1(将来) |
+★この表は **`default.kicad_pcb` と `build/builds/default/default.bom.csv` から生成した**
+(2026-08-13)。以前は手書きで、部品番号もデジグネータも実装と食い違っていた
+(X1 が X322527MSB4SI → 実際は OT322527MJBA4SL、U5 が AZ1117H-ADJ → 実際は RT9013-18GB、
+ESD が PESD5V0U4BW → 実際は EMZT6.8ET2R など)。値・在庫は LCSC 品番で確認すること。
 
-抵抗・コンデンサは値・パッケージ指定済み(Atopileのピッカーが実部品を自動選定)。
+★デジグネータは 2026-08-13 に **main.ato の宣言順**へ振り直した。旧番号との対応は
+`docs/designator-map-v1.md`。**手組みの試作機(V0)は旧番号のまま**。
 
-★上表の Ref 列は EXTヘッダ時代のもので、SO-DIMM直挿しへの再設計で振り直されている。
+| Ref | 部品 | メーカー | LCSC | 回路上の位置 |
+|---|---|---|---|---|
+| U1 | TVP7002PZP | TI | C3824085 | `tvp` |
+| J1 | DS1037-15FNAKT76-0CC | CONNFLY | C77836 | `vga` |
+| U2, U9, U11, U12, U13 | SN74LVC2G17DBVR | TI | C10429 | `buf_sync, buf_sync2, drgb.buf[0], drgb.buf[1], drgb.buf[2]` |
+| X1 | OT322527MJBA4SL | YXC | C725995 | `osc` |
+| U3, U4 | AZ1117H-3.3TRE1 | DIODES | C92517 | `supply.ldo_io, supply.ldo_a33` |
+| U5 | RT9013-18GB | RICHTEK | C59969 | `supply.ldo_a19` |
+| U6 | TLV70019DDCR | TI | C2862411 | `supply.ldo_d19` |
+| J2 | TYPE-C-31-M-12 | 韩国韩荣 | C165948 | `usbc` |
+| U7 | FT2232HL-REEL | FTDI | C27882 | `ft2232.ft` |
+| FB1, FB2, FB3, FB4, FB5 | MPZ1608S221ATA00 | TDK | C76815 | `ft2232.fb_phy, ft2232.fb_pll, fb_avdd, fb_pll, fb_audio` |
+| X2 | X322512MSB4SI | YXC | C9002 | `ft2232.xtal` |
+| U8 | 93LC56BT-I/SN | MICROCHIP | C6164 | `ft2232.ee` |
+| PG1, PG2, PG3, PG4 | PogoPin_D1.0mm | — | — | `pogo_tck, pogo_tms, pogo_tdi, pogo_tdo` |
+| J3 | Header_1x6_P2.54mm | — | — | `jtag_hdr` |
+| JP1 | SolderJumper_2_Bridged | — | — | `sj_ext5v` |
+| D1, D2, D3, D4, D5, D7 | EMZT6.8ET2R | ROHM | C510333 | `esd_rgb, esd_sync2, esd_sync, drgb.esd[0], drgb.esd[1], esd_audio` |
+| J4 | BoxHeader_2x5_P2.54mm | — | — | `aux` |
+| TP1, TP2 | TestPoint_TH1 | — | — | `tp_ys, tp_led_do` |
+| U10 | 1473005-4 | TE Connectivity | C428482 | `sodimm` |
+| J5 | YTC-A1251-08ABW | YIYUAN | C7436577 | `j_drgb` |
+| J6 | Header_2x15_P2.54mm | — | — | `j_dbg` |
+| LED1 | WS2812B-2020 | Worldsemi | C965555 | `led_status` |
+| D6 | 1N4148W | ST(Semtech) | C81598 | `d_led` |
+| X3 | OT2JI-111-12.288M | YXC | C20617595 | `xo_audio` |
+| U14, U15 | PCM1808PWR | TI | C55513 | `adc_dsub.adc, adc_aux.adc` |
+| J7 | PLR135_T10 | — | — | `spdif` |
+| J8, J9 | Header_1x4_P2.54mm | — | — | `j11_argus, j_oled` |
+| H1, H2, H3, H4, H5 | MountingHole_2.8mm_M2.6_Pad | — | — | `mount[0], mount[1], mount[2], mount[3], mount[4]` |
+| U16, U17 | 24AA025E48-I/SN | MICROCHIP | C46840 | `eeprom_mac0, eeprom_mac1` |
+| J10, J11 | HR911130A | HANRUN | C54408 | `eth.jack, eth.jack2` |
+
+抵抗・コンデンサは値・パッケージ指定済み(atopileのピッカーが実部品を自動選定)。
+パスコンの実配置レポートは `../../docs/decoupling-placement.html`(基板から生成)。
 **現物の designator は `ato build` 後の `layouts/default/default.kicad_pcb` が正**
 (例: TVP7002=U10、D-SUB15=J10、MagJack=J2/J11、SO-DIMMソケット=U11)。
 

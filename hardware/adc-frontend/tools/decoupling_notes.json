@@ -1,0 +1,494 @@
+{
+ "adc_aux.bulk[0]": {
+  "note": "旧版の記述: U2 VINL (pin 13) の直近。入力ACカップリング。J6(3.5mm)のTip",
+  "pkg": "0603",
+  "pri": 2,
+  "val": "1µF"
+ },
+ "adc_aux.bulk[1]": {
+  "note": "旧版の記述: U2 VINR (pin 14) の直近。入力ACカップリング。J6のRing",
+  "pkg": "0603",
+  "pri": 2,
+  "val": "1µF"
+ },
+ "adc_aux.c_in_l": {
+  "note": "旧版の記述: U2 VREF (pin 1) の直近。データシート Layout Example の必須要件",
+  "pkg": "0805",
+  "pri": 1,
+  "val": "10µF"
+ },
+ "adc_aux.c_in_r": {
+  "note": "旧版の記述: U2 VREF (pin 1) の直近。C9とペア",
+  "pkg": "0402",
+  "pri": 1,
+  "val": "100nF"
+ },
+ "adc_aux.c_vref_a": {
+  "note": "旧版の記述: U2 VCC (pin 3) の直近。C77とペア",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "adc_aux.c_vref_b": {
+  "note": "旧版の記述: U2 VDD (pin 4) の直近。C78とペア",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "adc_aux.dec[0]": {
+  "note": "旧版の記述: U2 VCC (pin 3) の直近。アナログ5V",
+  "pkg": "0805",
+  "pri": 2,
+  "val": "10µF"
+ },
+ "adc_aux.dec[1]": {
+  "note": "旧版の記述: U2 VDD (pin 4) の直近。デジタル3.3V",
+  "pkg": "0805",
+  "pri": 2,
+  "val": "10µF"
+ },
+ "adc_dsub.bulk[0]": {
+  "note": "旧版の記述: U1 VCC (pin 3) の直近。アナログ5V（FB1で分離後）",
+  "pkg": "0805",
+  "pri": 2,
+  "val": "10µF"
+ },
+ "adc_dsub.bulk[1]": {
+  "note": "旧版の記述: U1 VDD (pin 4) の直近。デジタル3.3V",
+  "pkg": "0805",
+  "pri": 2,
+  "val": "10µF"
+ },
+ "adc_dsub.c_in_l": {
+  "note": "旧版の記述: U1 VINL (pin 13) の直近。入力ACカップリング。D-SUB15音声のL",
+  "pkg": "0603",
+  "pri": 2,
+  "val": "1µF"
+ },
+ "adc_dsub.c_in_r": {
+  "note": "旧版の記述: U1 VINR (pin 14) の直近。入力ACカップリング。D-SUB15音声のR",
+  "pkg": "0603",
+  "pri": 2,
+  "val": "1µF"
+ },
+ "adc_dsub.c_vref_a": {
+  "note": "旧版の記述: U1 VREF (pin 1) の直近。データシート Layout Example の必須要件。10µF+100nFをペアで",
+  "pkg": "0805",
+  "pri": 1,
+  "val": "10µF"
+ },
+ "adc_dsub.c_vref_b": {
+  "note": "旧版の記述: U1 VREF (pin 1) の直近。C3とペア。ICに最も近い側へ",
+  "pkg": "0402",
+  "pri": 1,
+  "val": "100nF"
+ },
+ "adc_dsub.dec[0]": {
+  "note": "旧版の記述: U1 VCC (pin 3) の直近。C75とペア",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "adc_dsub.dec[1]": {
+  "note": "旧版の記述: U1 VDD (pin 4) の直近。C76とペア",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "c_5va": {
+  "note": "旧版の記述: FB1 の出口側（p5v_audio）、U1/U2 寄り。ビーズでデジタル5Vから分離した後のバルク",
+  "pkg": "0805",
+  "pri": 3,
+  "val": "10µF"
+ },
+ "c_buf": {
+  "note": "旧版の記述: U3 VCC (pin 5) の直近。バッファのVCCデカップリング",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "c_filt1": {
+  "note": "旧版の記述: PLLループフィルタ: FILT1(87)–PLL_F(89) 間。最も敏感な回路。r_filt(1.5k)と合わせて3ピンの間に押し込み、他の信号から隔離する",
+  "pkg": "0402",
+  "pri": 1,
+  "val": "100nF"
+ },
+ "c_filt2": {
+  "note": "旧版の記述: PLLループフィルタ: FILT2(88)–PLL_F(89) 間。同上。ループを小さく",
+  "pkg": "0402",
+  "pri": 1,
+  "val": "4.7nF"
+ },
+ "c_led": {
+  "note": "旧版の記述: GIN_1 (pin 2)。未使用入力の終端",
+  "pkg": "0402",
+  "pri": 3,
+  "val": "10nF"
+ },
+ "c_osc": {
+  "note": "旧版の記述: X1 VCC (pin 4) の直近。発振器の電源デカップリング。TVP EXT_CLK(pin 80)の近くに置く",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "c_sog2_aa": {
+  "note": "旧版の記述: SOGIN_2 (pin 99)。未使用SOG入力の終端",
+  "pkg": "0402",
+  "pri": 3,
+  "val": "1nF"
+ },
+ "c_sog3": {
+  "note": "旧版の記述: GIN側 → SOGIN_3 (pin 97)。Sync-on-Green 結合。G入力経路の近く",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "1nF"
+ },
+ "c_spdif": {
+  "note": "旧版の記述: J8 の Vcc(pin 3)–GND(pin 2) 間、<b>7mm 以内</b>。データシートの必須要件。光受信は感度が高いので高速デジタル/スイッチングから離す",
+  "pkg": "0402",
+  "pri": 1,
+  "val": "100nF"
+ },
+ "c_vs": {
+  "note": "旧版の記述: U3 IN_B (pin 3) 側、r_vs(220Ω)とセット。VSYNCのRC遅延。VSYNCエッジがHSYNCと完全一致するのを避ける（データシート推奨）",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "1nF"
+ },
+ "c_xo_audio": {
+  "note": "旧版の記述: X2 (12.288MHz XO) VCC (pin 4) の直近。MCLK源。GbE/映像デジタルから離して配置する",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "ch_b.c_aa": {
+  "note": "旧版の記述: BIN_3 (pin 16) の直近。同上",
+  "pkg": "0603",
+  "pri": 1,
+  "val": "33pF"
+ },
+ "ch_b.c_ac": {
+  "note": "旧版の記述: J10 pin 5 (B) 側、75Ω終端の直後。ACカップリング",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "ch_g.c_aa": {
+  "note": "旧版の記述: GIN_3 (pin 98) の直近。同上",
+  "pkg": "0603",
+  "pri": 1,
+  "val": "33pF"
+ },
+ "ch_g.c_ac": {
+  "note": "旧版の記述: J10 pin 3 (G) 側、75Ω終端の直後。ACカップリング",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "ch_r.c_aa": {
+  "note": "旧版の記述: RIN_3 (pin 9) の直近。アンチエイリアス。<b>TVPの入力ピン直近でないと効かない</b>。R/G/Bで等条件に",
+  "pkg": "0603",
+  "pri": 1,
+  "val": "33pF"
+ },
+ "ch_r.c_ac": {
+  "note": "旧版の記述: J10 pin 1 (R) 側、75Ω終端の直後。ACカップリング。R/G/B 3本は等長・並走させる",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_caps[0]": {
+  "note": "旧版の記述: A33VDD pin 13/14 の直近。アナログ3.3V",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_caps[10]": {
+  "note": "旧版の記述: IOVDD pin 26 の直近。3.3V 出力ドライバ。24bit出力が一斉に振れるので効く",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_caps[11]": {
+  "note": "旧版の記述: IOVDD pin 41 の直近。",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_caps[12]": {
+  "note": "旧版の記述: IOVDD pin 53 の直近。",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_caps[13]": {
+  "note": "旧版の記述: IOVDD pin 66 の直近。",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_caps[1]": {
+  "note": "旧版の記述: A33VDD pin 93/94 の直近。アナログ3.3V（反対側の電源ピン群）",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_caps[2]": {
+  "note": "旧版の記述: AVDD pin 4 の直近。1.85V アナログコア。FB2(fb_avdd)はTVP側に置く",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_caps[3]": {
+  "note": "旧版の記述: AVDD pin 6 の直近。",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_caps[4]": {
+  "note": "旧版の記述: AVDD pin 7 の直近。",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_caps[5]": {
+  "note": "旧版の記述: AVDD pin 19 の直近。",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_caps[6]": {
+  "note": "旧版の記述: PLL_AVDD pin 84 の直近。PLL電源。FB3(fb_pll)もTVP側",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_caps[7]": {
+  "note": "旧版の記述: PLL_AVDD pin 85 の直近。",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_caps[8]": {
+  "note": "旧版の記述: DVDD pin 39 の直近。1.9V デジタルコア",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_caps[9]": {
+  "note": "旧版の記述: DVDD pin 69 の直近。",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_eeprom[0]": {
+  "note": "旧版の記述: U4 VCC (pin 8) の直近。0x50 = ETH0用",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "dec_eeprom[1]": {
+  "note": "旧版の記述: U5 VCC (pin 8) の直近。0x51 = ETH1用",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "drgb.dec[0]": {
+  "note": "旧版の記述: U14 VCC (pin 5) の直近。R/G バッファ",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "drgb.dec[1]": {
+  "note": "旧版の記述: U15 VCC (pin 5) の直近。B/I バッファ",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "drgb.dec[2]": {
+  "note": "旧版の記述: U16 VCC (pin 5) の直近。HS/VS バッファ",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "eth.bridge_caps[0]": {
+  "note": "旧版の記述: J2 側、論理GND⇄シャーシGND の絶縁ギャップをまたぐ。HV Yキャップ。ポートごとに2個",
+  "pkg": "1812",
+  "pri": 2,
+  "val": "4.7nF/2kV"
+ },
+ "eth.bridge_caps[1]": {
+  "note": "旧版の記述: J2 側、同上（2個目）。HV Yキャップ",
+  "pkg": "1812",
+  "pri": 2,
+  "val": "4.7nF/2kV"
+ },
+ "eth.bridge_caps[2]": {
+  "note": "旧版の記述: J11 側、絶縁ギャップをまたぐ。HV Yキャップ",
+  "pkg": "1812",
+  "pri": 2,
+  "val": "4.7nF/2kV"
+ },
+ "eth.bridge_caps[3]": {
+  "note": "旧版の記述: J11 側、同上（2個目）。HV Yキャップ",
+  "pkg": "1812",
+  "pri": 2,
+  "val": "4.7nF/2kV"
+ },
+ "eth.ct_caps[0]": {
+  "note": "旧版の記述: J2 の CT (pin P1) の直近。PHY側センタータップのデカップリング",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "eth.ct_caps[1]": {
+  "note": "旧版の記述: J11 の CT (pin P1) の直近。同上",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "ft2232.c_ee": {
+  "note": "旧版の記述: U12 (93LC56 EEPROM) VCC (pin 8) の直近。構成EEPROMの電源",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "ft2232.c_osci": {
+  "note": "旧版の記述: X3 pin 1 / U13 OSCI (pin 2) の直近。12MHz水晶の負荷容量。水晶とICの間に短く",
+  "pkg": "0603",
+  "pri": 2,
+  "val": "33pF"
+ },
+ "ft2232.c_osco": {
+  "note": "旧版の記述: X3 pin 3 / U13 OSCO (pin 3) の直近。同上",
+  "pkg": "0603",
+  "pri": 2,
+  "val": "33pF"
+ },
+ "ft2232.c_vccio[0]": {
+  "note": "旧版の記述: U13 VCCIO pin 20 の直近。4本のVCCIOに1個ずつ",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "ft2232.c_vccio[1]": {
+  "note": "旧版の記述: U13 VCCIO pin 31 の直近。",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "ft2232.c_vccio[2]": {
+  "note": "旧版の記述: U13 VCCIO pin 42 の直近。",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "ft2232.c_vccio[3]": {
+  "note": "旧版の記述: U13 VCCIO pin 56 の直近。",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "ft2232.c_vcore": {
+  "note": "旧版の記述: U13 VCORE pin 12/37/64 の直近。コア電源。VREGOUTと同一ネットだがVCOREピン側に置く",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "ft2232.c_vphy": {
+  "note": "旧版の記述: U13 VPHY pin 4 の直近（FB4の後）。USB PHY電源。ビーズで分離済み",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "ft2232.c_vpll": {
+  "note": "旧版の記述: U13 VPLL pin 9 の直近（FB5の後）。PLL電源。ビーズで分離済み",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "ft2232.c_vregin": {
+  "note": "旧版の記述: U13 VREGIN pin 50 の直近。内部1.8V LDOの入力",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "ft2232.c_vregin_bulk": {
+  "note": "旧版の記述: U13 VREGIN pin 50 の近く。バルク。C72より外側でよい",
+  "pkg": "0805",
+  "pri": 3,
+  "val": "10µF"
+ },
+ "ft2232.c_vregout": {
+  "note": "旧版の記述: U13 VREGOUT pin 49 の直近。内部LDOの出力",
+  "pkg": "0402",
+  "pri": 2,
+  "val": "100nF"
+ },
+ "ft2232.c_vregout_bulk": {
+  "note": "旧版の記述: U13 VREGOUT pin 49 の近く。バルク",
+  "pkg": "0603",
+  "pri": 3,
+  "val": "1µF"
+ },
+ "nc_caps[0]": {
+  "note": "旧版の記述: RIN_1 (pin 11)。未使用アナログ入力の終端（データシート指定）",
+  "pkg": "0402",
+  "pri": 3,
+  "val": "10nF"
+ },
+ "nc_caps[1]": {
+  "note": "旧版の記述: RIN_2 (pin 10)。未使用入力の終端",
+  "pkg": "0402",
+  "pri": 3,
+  "val": "10nF"
+ },
+ "nc_caps[2]": {
+  "note": "旧版の記述: BIN_1 (pin 18)。未使用入力の終端",
+  "pkg": "0402",
+  "pri": 3,
+  "val": "10nF"
+ },
+ "nc_caps[3]": {
+  "note": "旧版の記述: BIN_2 (pin 17)。未使用入力の終端",
+  "pkg": "0402",
+  "pri": 3,
+  "val": "10nF"
+ },
+ "nc_sog_caps[0]": {
+  "note": "旧版の記述: SOGIN_1 (pin 1)。未使用SOG入力の終端（SOG系は1nF指定）",
+  "pkg": "0402",
+  "pri": 3,
+  "val": "1nF"
+ },
+ "supply.bulk_caps[0]": {
+  "note": "旧版の記述: 5V入口（J9 USB-C / J7 DCジャック）と U9/U7 VIN の間。5V入力バルク",
+  "pkg": "0805",
+  "pri": 3,
+  "val": "10µF"
+ },
+ "supply.bulk_caps[1]": {
+  "note": "旧版の記述: U9 (ldo_io) OUT (pin 2) の直近。3.3V IO レール。安定性要求あり",
+  "pkg": "0805",
+  "pri": 2,
+  "val": "10µF"
+ },
+ "supply.bulk_caps[2]": {
+  "note": "旧版の記述: U7 (ldo_a33) OUT (pin 2) の直近。3.3V アナログレール。安定性要求あり",
+  "pkg": "0805",
+  "pri": 2,
+  "val": "10µF"
+ },
+ "supply.bulk_caps[3]": {
+  "note": "旧版の記述: U6 (RT9013-18) VOUT (pin 5) の直近。1.85V アナログ（AVDD/PLL）",
+  "pkg": "0805",
+  "pri": 2,
+  "val": "10µF"
+ },
+ "supply.bulk_caps[4]": {
+  "note": "旧版の記述: U8 (TLV70019) OUT (pin 5) の直近。1.9V デジタル（DVDD）",
+  "pkg": "0805",
+  "pri": 2,
+  "val": "10µF"
+ }
+}
