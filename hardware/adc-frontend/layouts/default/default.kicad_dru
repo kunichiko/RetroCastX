@@ -28,8 +28,24 @@
 #     1.27mm → 7.6ps  ← ベンダ推奨の緩め側(50mil)
 #   出典: TI SNLA387 ほか。「20milを超えるとPHYのエコーキャンセラが適応マージンを
 #   食い、ノイズ耐性が下がる」とされるので、20milを守っておけば説明がつく。
+#
+# ★★ (within_diff_pairs) が必須(2026-08-13)。これが無いと**ペア内の比較にならない**。
+#   KiCad の skew 制約は既定で「ルールにマッチした**全ネットを1グループ**とみなし、
+#   その中の最長ネットとの差」を見る(バスの一括長さ合わせ用の挙動)。GbE_diff には
+#   MDI 16本が入っているので、eth2_4_P(最長 63.37mm)を基準に他の15本すべてが
+#   「-46mm」「-35mm」等と判定され、意味不明な違反が大量に出ていた。
+#   (constraint skew (max 0.5mm) (within_diff_pairs)) と書くと、P/N の組ごとに
+#   別々に評価される。実測で違反 14件 → 3件(本物のペア内スキュー)になった。
+#
+#   ※ 括弧が要る。`within_diff_pairs` と裸で書くと**KiCad はエラーを出さずに
+#     .dru ファイル全体を黙って破棄する**(custom rule が全部無効になり、
+#     ファンアウトの緩和も消えて clearance 違反が 0件→401件に激増して初めて気づく)。
+#     下の 2026-08-11 のメモと同じ罠。必ず DRC の総件数で発火を確認すること。
+#
+#   なお within_diff_pairs 時の「現状」値は P と N の**長さの差そのもの**
+#   (平均からの偏差ではない)なので、max 0.5mm はそのまま P/N 差 0.5mm を意味する。
 (rule "GbE_diff intra-pair skew"
-	(constraint skew (max 0.5mm))
+	(constraint skew (max 0.5mm) (within_diff_pairs))
 	(condition "A.NetClass == 'GbE_diff'"))
 
 # --- GbE MDIペア: 非結合(uncoupled)区間の上限 ---
