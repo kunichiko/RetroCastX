@@ -564,6 +564,10 @@ pub fn spawn(
         Ok(n) => eprintln!("recv buffer: {:.1} MB", n as f64 / (1 << 20) as f64),
         Err(e) => eprintln!("recv buffer: 読めません ({e})"),
     }
+    // ★SO_REUSEPORT で Viewer と `videoin capture` を共存させようとしたが**駄目だった**
+    //   (2026-08-15)。macOS では bind は通るようになるものの、ブロードキャストは
+    //   片方のソケットにしか配られず、capture が無言で0行になる。
+    //   「Viewerを閉じてください」と明示的に失敗する方がまだ良いので、付けない。
     raw.bind(&std::net::SocketAddr::from(([0, 0, 0, 0], cfg.port)).into())?;
     let sock: UdpSocket = raw.into();
     sock.set_read_timeout(Some(Duration::from_millis(200)))?;

@@ -364,6 +364,9 @@ def cmd_capture(c: Cfg, args) -> int:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    # ★SO_REUSEPORT で Viewer と共存させようとしたが**駄目だった**(2026-08-15)。
+    #   macOS では bind は通るがブロードキャストが片方にしか配られず、無言で0行になる。
+    #   下の「Viewerを閉じてから実行する」と明示的に失敗する方がまだ良い。
     try:
         sock.bind(("0.0.0.0", args.port))
     except OSError as e:
@@ -780,6 +783,9 @@ def cmd_probe(c: Cfg, args) -> int:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    # ★SO_REUSEPORT で Viewer と共存させようとしたが**駄目だった**(2026-08-15)。
+    #   macOS では bind は通るがブロードキャストが片方にしか配られず、無言で0行になる。
+    #   下の「Viewerを閉じてから実行する」と明示的に失敗する方がまだ良い。
     try:
         sock.bind(("0.0.0.0", args.port))
     except OSError as e:
