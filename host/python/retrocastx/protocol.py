@@ -89,7 +89,29 @@ CFG_KEY_SYNC_BYPASS = 0x005C    # レジスタ36h bit0=HS BP bit1=VS BP(生同�
 CFG_KEY_IN_MUX2 = 0x005D        # レジスタ1Ah bit[7:6]=SOG LPF bit[5:4]=クランプLPF
                                 #   既定C2hはSOG LPFバイパス+クランプ4.8MHz(HDTV向け)。
                                 #   15kHz機は 0x12 (SOG 2.5MHz + クランプ 0.5MHz) が適正
+# --- コンポジット(緑ピンにCVBS)用のアナログ前段。3つセットで動かす ---
+# ミッドレベルクランプだけ入れると白が飽和する(ブランキングが512に座るので
+# +100 IRE に使えるのが残り512コードだけ)。粗ゲインを必ず一緒に下げる。
+CFG_KEY_CLAMP_SEL = 0x005E      # レジスタ10h bit[2:0] bit2=Blue bit1=Green bit0=Red
+                                #   0=ボトムレベル 1=ミッドレベル
+                                #   RGB入力は 0b000 / CVBSは 0b010(Greenのみミッド)
+CFG_KEY_COARSE_GAIN_GB = 0x005F # レジスタ1Bh [7:4]=Green [3:0]=Blue、Gain=0.5+N/10
+                                #   RGB入力は 0x77(1.2倍) / CVBSは 0x07(Green 0.5倍)
+CFG_KEY_COARSE_OFF_G = 0x0065   # レジスタ1Fh bit[5:0] 粗アナログオフセット Green
+                                #   10h=+64コード(既定) 1Fh=+124コード 3Fh=-124コード
+                                #   ボトムレベルのままバーストを救う逃げ道に使う
+CFG_KEY_COARSE_GAIN_R = 0x0067  # レジスタ1Ch 粗アナログゲイン Red。**1Bhとビット割りが
+                                #   違う**: [7:4]=Reserved [3:0]=N、Gain=0.5+N/10。
+                                #   同じ1.2倍でも 1Bh=0x77 / 1Ch=0x07。S端子のCで使う
+CFG_KEY_COARSE_OFF_R = 0x0068   # レジスタ20h bit[5:0] 粗アナログオフセット Red
+CFG_KEY_IN_MUX1 = 0x0069        # レジスタ19h [7:6]=SOG [5:4]=R [3:2]=G [1:0]=B
+                                #   00=_1 / 01=_2 / 10=_3(Gのみ 11=_4)
+                                #   0xAA=全て_3 / 0x6A=SOGだけ_2(MSXのCSYNC配線)
+                                #   ★入力方式の切替に必須。以前はビルド時定数だった
 CFG_KEY_FRAME_SKIP = 0x0035     # フレーム間引き 0=毎フレーム / 1=2回に1回 …
+CFG_KEY_PIXFMT = 0x0036         # 伝送ピクセル形式。1=RGB555(既定) / 3=YC8(生8bit)
+                                #   YC8にすると「黒でない範囲」の最適化は自動で切れる
+                                #   (ライン全体が中身なので範囲の概念が成立しない)
 # ARP学習の診断(読み取り専用)。gateware/retrocastx_net.py の ArpLearner。
 # 相手がARP要求に応答しない環境(別サブネットのWindows)で、ボードが宛先MACを
 # 受信パケットから学習できているかを見る
@@ -128,8 +150,15 @@ MFLAG_VSYNC_NEG = 0x0004
 PIXFMT_RGB888 = 0
 PIXFMT_RGB555 = 1
 PIXFMT_RGB565 = 2
+# YC8: 2B/px の生ADC値。byte0 = 緑ch 8bit / byte1 = 赤ch 8bit。
+# コンポジットを緑ピンに入れる運用では byte0 が CVBS そのもの(byte1は未使用≒0)、
+# 将来のS-Videoでは byte0=Y / byte1=C になる。RGB555の5bitではカラーバーストが
+# 数コードしか無くて副搬送波の位相を推定できないので、復調用には8bitが要る。
+# 2B/px は RGB555 と同じなので、断片化・MTU計算・受信バッファは共通のまま。
+PIXFMT_YC8 = 3
 
-BYTES_PER_PX = {PIXFMT_RGB888: 3, PIXFMT_RGB555: 2, PIXFMT_RGB565: 2}
+BYTES_PER_PX = {PIXFMT_RGB888: 3, PIXFMT_RGB555: 2, PIXFMT_RGB565: 2,
+                PIXFMT_YC8: 2}
 
 _COMMON = struct.Struct("<BBBBHH")        # magic, version, type, flags, frame, seq
 _LINE = struct.Struct("<HHHBBI")          # line, offset_px, count_px, pixfmt, mode_id, timestamp

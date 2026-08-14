@@ -97,6 +97,12 @@ class FrameAssembler:
         elif pkt.pixfmt == proto.PIXFMT_RGB555:
             packed = np.frombuffer(pkt.pixels, dtype="<u2").reshape(1, -1)
             sl[:] = pattern.rgb555_to_rgb888(packed)[0]
+        elif pkt.pixfmt == proto.PIXFMT_YC8:
+            # 生ADC値。byte0=緑ch(コンポジットならCVBS/S-VideoならY)、byte1=赤ch(C)。
+            # ここでは復調せず、Yをグレースケールに置くだけ。波形をそのまま目で
+            # 見られるようにしておくのが目的(復調はViewer/オフライン解析側)。
+            yc = np.frombuffer(pkt.pixels, dtype=np.uint8).reshape(-1, 2)
+            sl[:] = yc[:, 0:1]
         else:
             return completed
         self.px_filled += pkt.count_px

@@ -46,6 +46,8 @@ client/             ビューアアプリ(Rust + eframe/egui、Mac/Win/Linux)
 ```sh
 cd host/python
 python3 -m retrocastx.tests.test_loopback   # プロトコルのE2E検証
+python3 -m retrocastx.tests.test_videoin    # コンポジットの波形解析(合成波形で検証)
+python3 -m retrocastx.tests.test_ntsc       # NTSC復調(合成6色で真値と照合)
 python3 -m retrocastx.sender_sim &          # テストパターンをUDP送出
 python3 -m retrocastx.receiver --dump out   # 受信して out/frame_NNNN.ppm に保存
 ```

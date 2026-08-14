@@ -213,6 +213,23 @@ impl FrameAssembler {
                             self.fb[o + 2] = ((b5 << 3) | (b5 >> 2)) as u8;
                         }
                     }
+                    proto::PIXFMT_YC8 => {
+                        // 生ADC値。byte0 = 緑ch(コンポジットならCVBSそのもの、
+                        // S-VideoならY)、byte1 = 赤ch(S-VideoならC)。
+                        //
+                        // ここでは復調しない。Yをグレースケールに置くだけで、
+                        // 「同期チップ→ブリーズウェイ→カラーバースト→映像」という
+                        // 1ラインの波形がそのまま絵になる。ミッドレベルクランプが
+                        // 効いているか(ブランキングが中間調に座るか)、バーストが
+                        // 潰れていないかを目で確認できる。副搬送波の復調は
+                        // docs/composite-video-plan.md §4 の別作業。
+                        for (i, px) in l.pixels.chunks_exact(2).enumerate().take(fit) {
+                            let o = base + i * 4;
+                            self.fb[o] = px[0];
+                            self.fb[o + 1] = px[0];
+                            self.fb[o + 2] = px[0];
+                        }
+                    }
                     _ => return completed,
                 }
                 self.px_filled += fit;
@@ -392,5 +409,32 @@ mod tests {
         seq += 1;
         send(&mut asm, pack_line(1, seq, 0, 0, PIXFMT_RGB555, 9, 0, &px));
         assert_eq!(asm.stats.orphan_lines, 1);
+    }
+
+    /// YC8(生8bit)は byte0(緑ch=CVBS/Y)をグレースケールに置く。
+    /// コンポジットの波形をそのまま目で見るための表示なので、Yが3成分に
+    /// 等しく入り、byte1(赤ch=C)は色として混ざらないことを確かめる。
+    #[test]
+    fn yc8_maps_y_to_grayscale() {
+        use crate::protocol::PIXFMT_YC8;
+        let mut asm = FrameAssembler::new();
+        let mut m = test_mode();
+        m.pixfmt = PIXFMT_YC8;
+        assert!(asm.feed(&pack_mode(&m, 0, 0)).is_none());
+
+        // Y = 0, 64, 128, 255 / C は全て 0xFF(混ざったら気づく値)
+        let ys = [0u8, 64, 128, 255];
+        let px: Vec<u8> = ys.iter().flat_map(|&y| [y, 0xFF]).collect();
+        assert!(asm.feed(&pack_line(0, 1, 0, 0, PIXFMT_YC8, 1, 0, &px)).is_none());
+        assert!(asm.feed(&pack_line(0, 2, 1, 0, PIXFMT_YC8, 1, 0, &px)).is_none());
+        // 次フレームの先頭で前フレームが完成する
+        let f = asm
+            .feed(&pack_line(1, 3, 0, 0, PIXFMT_YC8, 1, 0, &px))
+            .expect("frame 0 should complete");
+        assert_eq!(f.fill_ratio, 1.0);
+        for (x, &y) in ys.iter().enumerate() {
+            assert_eq!(&f.rgba[x * 4..x * 4 + 3], &[y, y, y],
+                       "x={x} は Y をそのまま3成分に置く");
+        }
     }
 }

@@ -16,11 +16,19 @@ pub const TYPE_CONFIG: u8 = 5;
 pub const PIXFMT_RGB888: u8 = 0;
 pub const PIXFMT_RGB555: u8 = 1;
 pub const PIXFMT_RGB565: u8 = 2;
+/// 生ADC値 2B/px。byte0 = 緑ch 8bit / byte1 = 赤ch 8bit。
+///
+/// コンポジットを D-SUB の緑ピンに入れる運用では byte0 が CVBS そのもの
+/// (byte1 は未接続の赤chなので≒0)。将来のS-Videoでは byte0=Y / byte1=C。
+/// RGB555 の5bitではカラーバーストが9コードp-pしか無く副搬送波の位相を
+/// 推定できないので、復調するには8bitのまま運ぶ必要がある。
+/// 2B/px は RGB555 と同じなので断片化もバッファ確保も共通。
+pub const PIXFMT_YC8: u8 = 3;
 
 pub fn bytes_per_px(pixfmt: u8) -> Option<usize> {
     match pixfmt {
         PIXFMT_RGB888 => Some(3),
-        PIXFMT_RGB555 | PIXFMT_RGB565 => Some(2),
+        PIXFMT_RGB555 | PIXFMT_RGB565 | PIXFMT_YC8 => Some(2),
         _ => None,
     }
 }
@@ -253,6 +261,10 @@ pub const CFG_KEY_FULL_LINE: u16 = 0x0030;
 /// 間引かないので、同じ受信キューを共有している音声の取りこぼしも減る。
 /// ボード側では push の段階で落とすので、FIFOにも面にも載らない。
 pub const CFG_KEY_FRAME_SKIP: u16 = 0x0035;
+/// 伝送ピクセル形式。1=RGB555(既定) / 3=YC8(生8bit。コンポジット/S-Video用)。
+/// YC8にするとボード側で「黒でない範囲」の最適化が自動的に切れ、
+/// 1ライン=htotal画素まるごと届く(ブランキングもバーストも中身なので)。
+pub const CFG_KEY_PIXFMT: u16 = 0x0036;
 /// H-PLL制御(TVPレジスタ03h)。VCOレンジ[7:6] + チャージポンプ電流[5:3]。
 /// ピクセルクロックとpixels per lineから決まるので、モードごとに計算して送る
 pub const CFG_KEY_PLL_CTL: u16 = 0x0019;

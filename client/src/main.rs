@@ -949,7 +949,29 @@ impl ViewerApp {
     /// pll_divide はドットクロック再生のためのもので描画位置とは無関係でなければ
     /// ならない。いまは hs_offset を常に0で運用しているので実質的な効果は無いが、
     /// 0以外にしたときに壊れないようにしておく。
+    /// pll_divide を Viewer 側が動かしてよいか。
+    ///
+    /// **YC8(生8bit)のときは動かしてはいけない。** コンポジット/S端子の
+    /// サンプルレートは規格で決まっていて(NTSC 8fsc = 227.5×8 = 1820
+    /// サンプル/ライン)、実測で探すものではない。8サンプル/周期という
+    /// 前提が崩れると副搬送波の直交復調が成立しなくなる。
+    ///
+    /// 実際に踏んだ: コンポジットで 1820 を入れた直後に Viewer が
+    /// **帯域ごとの保存値と自動調整の初期値(2304)で上書き**し、
+    /// 10.13サンプル/周期になっていた(絵は出るので気づきにくい)。
+    ///
+    /// 入力方式ごとの値は `retrocastx.videoin` が入れる。Viewer は触らない。
+    fn pll_locked_by_format(&self) -> bool {
+        matches!(self.shared.mode.lock().unwrap().as_ref(),
+                 Some(m) if m.pixfmt == protocol::PIXFMT_YC8)
+    }
+
     fn set_pll(&mut self, new: u32) {
+        // 自動でここへ来る経路(帯域切替の復元など)を1か所で止める。
+        // 手動の pll_div 欄は別経路なので、逃げ道としては残る。
+        if self.pll_locked_by_format() {
+            return;
+        }
         let old = self.tune_pll_divide.max(1) as f32;
         let hs = ((self.tune_hs_offset as f32 * (new as f32 / old)).round() as i32)
             .clamp(0, (new / 2) as i32);
@@ -1205,6 +1227,11 @@ impl ViewerApp {
 
     /// 自動調整を開始する。上限まで過剰サンプルするところから始める
     fn auto_start(&mut self) {
+        // YC8 は pll_divide が規格で決まっているので探索してはいけない
+        if self.pll_locked_by_format() {
+            self.auto_done = Some("YC8では pll_divide は規格値。自動調整しません".into());
+            return;
+        }
         self.send_cfg(protocol::CFG_KEY_PLL_DIVIDE, AUTO_PLL_MAX);
         self.tune_pll_divide = AUTO_PLL_MAX as i32;
         self.auto = Some(AutoTune {
@@ -1481,6 +1508,16 @@ impl ViewerApp {
         };
         row(ui, "pll_div", &mut self.tune_pll_divide, pll_min, 2304,
             protocol::CFG_KEY_PLL_DIVIDE, &mut send);
+        // YC8(コンポジット/S端子)は pll_divide が規格で決まる。Viewerの
+        // 自動経路(帯域ごとの復元・自動調整・send all)を止めていることを示す。
+        let pll_locked = self.pll_locked_by_format();
+        if pll_locked {
+            ui.colored_label(
+                egui::Color32::from_rgb(120, 200, 120),
+                "YC8: pll_div は規格値(NTSC 8fsc=1820)。\n\
+                 自動調整・プロファイル・send all では変更しません",
+            );
+        }
         if self.tune_pll_divide < pll_min {
             ui.colored_label(
                 egui::Color32::from_rgb(220, 170, 60),
@@ -1549,7 +1586,14 @@ impl ViewerApp {
                         over
                     ));
                     let same = c.pll_divide == self.tune_pll_divide;
-                    let btn = ui.add_enabled(!same, egui::Button::new("適用"));
+                    // YC8 では規格値が正なので、プロファイルの推定値で上書きしない
+                    let btn = ui.add_enabled(!same && !pll_locked,
+                                             egui::Button::new("適用"));
+                    if pll_locked {
+                        btn.clone().on_hover_text(
+                            "YC8(コンポジット/S端子)では pll_div は規格値なので\n\
+                             プロファイルからは変更しません");
+                    }
                     if btn
                         .on_hover_text(format!(
                             "{label}: fH {:.3}kHz と {} から htotal {}\n\
@@ -1724,7 +1768,10 @@ impl ViewerApp {
         if ui.button("send all").clicked() {
             send.push((protocol::CFG_KEY_VBP, self.tune_vbp as u32));
             send.push((protocol::CFG_KEY_HS_OFFSET, self.tune_hs_offset as u32));
-            send.push((protocol::CFG_KEY_PLL_DIVIDE, self.tune_pll_divide as u32));
+            // YC8 では pll_divide は規格値。保存してある古い値で上書きしない
+            if !pll_locked {
+                send.push((protocol::CFG_KEY_PLL_DIVIDE, self.tune_pll_divide as u32));
+            }
             send.push((protocol::CFG_KEY_PHASE, self.tune_phase as u32));
             send.push((protocol::CFG_KEY_FULL_LINE,
                        if self.tune_full_line { 1 } else { 0 }));

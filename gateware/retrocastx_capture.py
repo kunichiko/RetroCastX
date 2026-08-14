@@ -284,10 +284,26 @@ class TvpCapture(Module):
             If(vs_meas, vrow_m.eq(0)),
         ]
 
-        pix555 = Signal(16)
-        self.comb += pix555.eq(rgb888_to_555(r, g, b))
+        # --- 1画素(16bit)の詰め方。伝送フォーマットで切り替える ---
+        #
+        # 既定は RGB555。コンポジット/S-Video を扱うときは **8bitのまま**送る必要が
+        # ある(RGB555の5bitではカラーバーストが数コードしか無く、副搬送波の位相を
+        # 推定できない。詳細は docs/composite-video-plan.md §3)。
+        #
+        # YC8 は同じ16bit枠を「下位バイト=緑ch(コンポジットならCVBSそのもの、
+        # S-VideoならY)/ 上位バイト=赤ch(S-VideoならC)」に使う。2B/px のままなので
+        # **断片化もMTU計算も既存と完全に同じ**で、詰め方だけが変わる。
+        # 1B/px の専用形式にすれば帯域は半分になるが、32bit語への詰め方から
+        # 断片長の計算まで全部別系統になるので、まずはこの形で通す。
+        self.cfg_raw_yc = Signal()          # 1 = YC8(生8bit) / 0 = RGB555
+        raw_yc = Signal()                   # pixドメインへ同期した版
+        self.specials += MultiReg(self.cfg_raw_yc, raw_yc, "pix")
+        pixw = Signal(16)
+        self.comb += pixw.eq(Mux(raw_yc, Cat(g, r), rgb888_to_555(r, g, b)))
         # 「黒でない」の判定しきい値(RGB555の各成分, 0..31)。ノイズで真っ暗な所が
         # 0にならないので、少し上げないと範囲が毎ライン全幅に広がってしまう。
+        # ★YC8では意味を持たない(ブランキングもバーストも「中身」なので、
+        #   ライン全体を送る。上位が cfg_full_line 相当を強制する)。
         self.cfg_black_th = Signal(5, reset=2)
 
         # 有効行 row_eff = row - vs_offset(アクティブ行の0起点index)
@@ -634,12 +650,17 @@ class TvpCapture(Module):
         # 送るのはこの範囲だけにする。ライン全体(ブランキング込み)を送ると帯域が
         # 1.4倍になって入らないため。範囲はラインが終わってから push するので、
         # 1ライン分バッファしている今の構造のまま実現できる。
+        #
+        # ★YC8(生8bit)では判定式のビット割りが合わないので結果は無意味になる。
+        #   YC8はブランキングもバーストもライン全体が「中身」なので範囲最適化自体が
+        #   成立しない。上位(retrocastx_stream.py)が cfg_full_line 相当を強制し、
+        #   ここの ln_first/ln_last を使わないようにしてある。
         def _nz(p):
             return ((p[0:5] > self.cfg_black_th)
                     | (p[5:10] > self.cfg_black_th)
                     | (p[10:15] > self.cfg_black_th))
         pair_nz = Signal()
-        self.comb += pair_nz.eq(pix_we & (_nz(pix555) | _nz(pair_lo)))
+        self.comb += pair_nz.eq(pix_we & (_nz(pixw) | _nz(pair_lo)))
         ln_first = Signal(entry_bits, reset=2 ** entry_bits - 1)
         ln_last = Signal(entry_bits)
         ln_any = Signal()
@@ -683,7 +704,7 @@ class TvpCapture(Module):
             wr.adr.eq(Cat(clr_adr[:entry_bits], face)), wr.dat_w.eq(0), wr.we.eq(1),
         ).Else(
             wr.adr.eq(Cat(pix_adr, face)),
-            wr.dat_w.eq(Cat(pair_lo, pix555)),   # {奇数px, 偶数px}
+            wr.dat_w.eq(Cat(pair_lo, pixw)),   # {奇数px, 偶数px}
             wr.we.eq(pix_we),
         )
 
@@ -725,7 +746,7 @@ class TvpCapture(Module):
             If(push & ~meta.sink.ready, drops.eq(drops + 1)),
         ]
         self.sync.pix += [
-            If(active & ~xpix[0], pair_lo.eq(pix555)),  # 偶数x: 低位に保持
+            If(active & ~xpix[0], pair_lo.eq(pixw)),  # 偶数x: 低位に保持
             # 「1画素以上書いたか」。末尾クリアでは立てない。
             # 黒でない画素があったかどうかとは別に持つ。全黒の行を送らない設計に
             # すると、Viewer側が「黒い行」と「届かなかった行」を区別できなくなり、
