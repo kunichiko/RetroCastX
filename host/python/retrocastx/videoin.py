@@ -926,7 +926,7 @@ def report(rows_out, lines, sps, role="cvbs") -> str:
                 % (spc, sps / spc / 1e6, FSC_NTSC / 1e6, len(periods))]
         # 位相はライン毎に180°反転するので中央値に意味が無い。
         # NTSC は 227.5周期/ライン なので**隣接ラインの位相差が180°**になる。
-        # これが出ていれば1Dコムフィルタ(加算でY・減算でC)が成立する。
+        # これが出ていれば2次元コムフィルタ(加算でY・減算でC)が成立する。
         if len(periods) >= 2:
             d = [abs(math.degrees(periods[i + 1][1] - periods[i][1])) % 360
                  for i in range(len(periods) - 1)]
