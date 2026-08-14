@@ -203,32 +203,54 @@ pub fn decode_field(
         locked += chroma_ok as u32;
 
         let (cp, sp) = (cosp[y], sinp[y]);
+        let px = |i: usize, j: usize| raw[(i * w + j) * 2] as f32;
         for n in 0..w {
-            let x = row[n * 2] as f32;
-            // 相手ラインの平均。上下2本を使うのは、片側だけだと Y の重心が
-            // 垂直方向に半ラインずれるため。
+            let x = px(y, n);
+            // --- 輝度はライン内ノッチから作る ---
+            //
+            // ★**コムから作ってはいけない。垂直解像度が落ちる。**
+            //   コムの Y = (x + avg)/2 は垂直方向のLPFで、1本の横棒への応答が
+            //   25% / 50% / 25% に広がる(合成信号で実測)。織り込むと
+            //   y-2 / y / y+2 に出るので**横棒が二重〜三重に見え**、振幅も半分。
+            //   実機で漢字の横棒が二重に見えたのがこれ。
+            //
+            //   Y = x - C_notch = (2x + x[n-4] + x[n+4])/4 は水平方向のLPFで、
+            //   垂直は素通し(1本の応答が100%の1本のまま)。8fsc では
+            //   4サンプル = 副搬送波の半周期なので、x[n±4] は fsc が反転していて
+            //   この形で fsc がちょうど消える。
+            //
+            //   実機で測った鋭さ(1階差分の二乗平均): コム 垂直35/水平5 →
+            //   ノッチ 垂直128/水平2。**垂直が3.7倍。** 適応版(垂直109)は
+            //   純ノッチに勝てなかったので採らない。
+            let xm4 = px(y, n.saturating_sub(4));
+            let xp4 = px(y, (n + 4).min(w - 1));
+            yl[n] = (2.0 * x + xm4 + xp4) * 0.25;
+
+            // --- クロマはコムから作る(こちらはコムが最良) ---
+            //
+            // ノッチのクロマは輝度の漏れ込みが多く、白文字の偽色が増えることを
+            // 別に実測している。「Yはノッチ / Cはコム」は古典的なNTSCデコーダの
+            // 標準的な組み合わせ。
+            //
+            // 上下2本を平均してから引くのは、片側だけだと C の重心が垂直方向に
+            // 半ラインずれるため。
             let mut acc = 0.0f32;
             let mut cnt = 0.0f32;
             if let Some(i) = up {
-                acc += raw[(i * w + n) * 2] as f32;
+                acc += px(i, n);
                 cnt += 1.0;
             }
             if let Some(i) = dn {
-                acc += raw[(i * w + n) * 2] as f32;
+                acc += px(i, n);
                 cnt += 1.0;
             }
             if cnt == 0.0 {
-                yl[n] = x;
                 u[n] = 0.0;
                 v[n] = 0.0;
                 continue;
             }
-            let avg = acc / cnt;
-            // 隣接ラインは副搬送波が180°反転しているので、
-            //   Y = (x + avg)/2   クロマが打ち消える
-            //   C = (x - avg)/2   輝度が打ち消える
-            yl[n] = (x + avg) * 0.5;
-            let c = (x - avg) * 0.5;
+            // 隣接ラインは副搬送波が180°反転しているので、差で輝度が打ち消える
+            let c = (x - acc / cnt) * 0.5;
             // ψ(n) = 2π(n-ba)/8 - φ を加法定理で展開する。cos/sin の値は
             // n mod 8 の8点しかないので、積和2回で済む。
             let k = (n + 8 - (ba & 7)) & 7;
@@ -378,6 +400,53 @@ mod tests {
             60.0 * ((r - g) / d + 4.0)
         };
         (h + 360.0) % 360.0
+    }
+
+    /// **1本の横棒が1本のまま出ること(垂直解像度を落とさないこと)。**
+    ///
+    /// コムから輝度を作ると 25%/50%/25% に広がり、織り込むと横棒が二重〜三重に
+    /// 見える(実機で漢字の横棒がそう見えた)。ノッチなら100%の1本で出る。
+    /// **見た目でしか分からない不具合だったので数値で押さえる。**
+    #[test]
+    fn luma_keeps_vertical_resolution() {
+        let sps = 8.0 * 3_579_545.0f32;
+        let (w, h) = (1820usize, 24usize);
+        let (ba, _) = win(BURST_US, sps, w);
+        let (bs, be) = win(BURST_US, sps, w);
+        let porch = 158.0f32;
+        let cpi = 0.78f32;
+        let sync_end = (4.7e-6 * sps) as usize;
+        let target = h / 2;
+        let mut raw = vec![0u8; w * h * 2];
+        let filled = vec![true; h];
+        for y in 0..h {
+            let flip = std::f32::consts::PI * y as f32;
+            for n in 0..w {
+                let psi = 2.0 * std::f32::consts::PI * (n as f32 - ba as f32) / 8.0 - flip;
+                let mut v = porch;
+                if n < sync_end {
+                    v = porch - 40.0 * cpi;
+                } else if n >= bs && n < be {
+                    v = porch + 20.0 * cpi * psi.cos();
+                } else if n >= (9.6e-6 * sps) as usize && y == target {
+                    v = porch + 80.0 * cpi;      // 1行だけ明るい横棒
+                }
+                raw[(y * w + n) * 2] = v.clamp(0.0, 255.0) as u8;
+            }
+        }
+        let mut fb = vec![255u8; w * h * 4];
+        decode_field(&raw, w, h, &filled, sps as u32, &mut fb);
+        let at = |y: usize| {
+            let n = w - 200;
+            fb[(y * w + n) * 4 + 1] as f32     // G(輝度の代表として)
+        };
+        let peak = at(target);
+        let (above, below) = (at(target - 1), at(target + 1));
+        assert!(peak > 150.0, "横棒が暗すぎる: {peak:.0}");
+        // 上下への漏れが、山の2割未満であること(コムだと5割になる)
+        assert!(above < peak * 0.25 && below < peak * 0.25,
+                "横棒が上下へ漏れている(垂直解像度が落ちている): \
+                 上{above:.0} 山{peak:.0} 下{below:.0}");
     }
 
     /// **クロマLPFが 2fsc をきっちり消すこと。**
