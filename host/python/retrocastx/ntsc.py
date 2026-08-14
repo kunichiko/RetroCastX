@@ -34,6 +34,11 @@ import numpy as np
 
 FSC_NTSC = 3_579_545.0
 
+# フレームコムの位相ズレ補正で受け付ける ε の上限[度]。実測の |ε| は中央値 4.8°、
+# 滑らかに±15°を揺れる程度。これを超える値はバーストの測り損ね(暗い行、欠損行)で、
+# tan(ε/2) が暴れると3次元の枝ごと壊れるので補正を掛けない。
+PHASE_FIX_MAX_DEG = 30.0
+
 # ライン内の区間 [µs]。同期立ち下がりを0とする(キャプチャは HSOUT の
 # 立ち下がりから始まっているので、そのまま使える)
 BURST_US = (5.4, 7.7)
@@ -87,7 +92,7 @@ def _boxcar(x, n):
         :, pad:pad + x.shape[1]]
 
 
-def chroma_comb3d(rows, prev2, prev4, cpi, motion_ire=8.0, step=1):
+def chroma_comb3d(rows, prev2, prev4, cpi, motion_ire=8.0, step=1, tan_half=None):
     """**3次元(動き適応フレームコム)**でクロマを取り出す。
 
     ## 成立の根拠(すべて実測済み、2026-08-14)
@@ -126,9 +131,43 @@ def chroma_comb3d(rows, prev2, prev4, cpi, motion_ire=8.0, step=1):
     2〜4 IRE なので閾値は 8 IRE 程度が妥当。
 
     動いている所ではフレームコムが成立しないので 2次元へ落とす(= 動き適応)。
+
+    ## 副搬送波の位相ドリフトを戻す(`tan_half`)
+
+    ★**「フレームごとに赤黒↔黒赤が入れ替わる縞」の正体**(実測 2026-08-15)。
+
+    DATACLK は HSYNC にロックしていて **副搬送波にはロックしていない**ので、
+    フレームをまたぐと副搬送波とサンプル格子の位相関係が歩く。実測した ε
+    (= 1フレーム前のバースト位相 − 今の位相 − 180°)は |中央値| 4.80° で、
+    行方向に滑らかに ±15° を揺れる(隣接行の相関で「本物のドリフト」と確認)。
+
+    フレームコムは「1フレーム前は厳密に180°反転」を前提にしているので ε ぶん
+    消し残る。残留は C·sin(ε/2)。彩度 38.4 IRE からの予測 1.57 IRE が
+    **実測の残留 1.57 IRE と一致した**(独立な2通りの測り方で同じ値)。
+    副搬送波成分なのでフレームごとに符号が反転する = ドットクロール。
+
+    直し方は c3d の位相を ε/2 戻すこと。8fsc では **2サンプル遅延がちょうど90°**
+    なので、ヒルベルト変換を持ち出さずに積和1回で回せる:
+
+        c3(n)   = K·cos(ψ+θ-ε/2)
+        c3(n-2) = K·cos(ψ+θ-ε/2-90°) = K·sin(ψ+θ-ε/2)
+        K·cos(ψ+θ) = c3(n)·cos(ε/2) - c3(n-2)·sin(ε/2)
+        振幅も戻すので cos(ε/2) で割って  **c3(n) - c3(n-2)·tan(ε/2)**
+
+    実測(静止・平坦・彩度の高い画素で、輝度に残る副搬送波の中央値):
+
+        補正なし 1.57 IRE / 補正あり 1.20 IRE / 符号を逆にすると 2.38 IRE
+
+    信号の無い区間のノイズ床が 1.45 IRE なので、**ここが底**。残りは基板側の
+    アナログノイズ(バックポーチのライン間 σ 3.42 IRE = ハム)。
     """
     x = rows.astype(np.float64)
     c3d = (x - prev2.astype(np.float64)) / 2.0
+    if tan_half is not None:
+        # 後ろの列から回すので c3d[:, n-2] は補正前の値のまま使える
+        t = np.asarray(tan_half, dtype=np.float64)[:, None]
+        prev = np.hstack([c3d[:, :2], c3d[:, :-2]])
+        c3d = c3d - prev * t
     c2d = chroma_comb(rows, step)
     # 動き量。副搬送波1周期(8サンプル)で平均してノイズを落とす
     motion = _boxcar(np.abs(x - prev4.astype(np.float64)), 8)
@@ -249,8 +288,15 @@ def decode(rows, sps, hue_deg=0.0, sat=1.0, chroma_lpf=16, adapt_ire=0.0,
     cpi0 = max(1e-6, (blank0 - tip0) / 40.0)
     # 履歴が揃っていれば3次元(動き適応フレームコム)。無ければ2次元
     motion_frac = None
+    phase_drift_deg = None
     if prev2 is not None and prev4 is not None:
-        c_full, alpha = chroma_comb3d(rows, prev2, prev4, cpi0, motion_ire)
+        # 1フレーム前との副搬送波位相のズレ ε。詳しくは chroma_comb3d の docstring。
+        phi2, mag2, _ = burst_phase(prev2, sps)
+        eps = np.angle(np.exp(1j * (phi2 - phi - math.pi)))
+        ok = (mag > 0) & (mag2 > 0) & (np.abs(eps) <= math.radians(PHASE_FIX_MAX_DEG))
+        phase_drift_deg = float(np.median(np.degrees(np.abs(eps[ok])))) if ok.any() else 0.0
+        c_full, alpha = chroma_comb3d(rows, prev2, prev4, cpi0, motion_ire,
+                                      tan_half=np.where(ok, np.tan(eps / 2.0), 0.0))
         motion_frac = float((alpha >= 0.5).mean())
     else:
         c_full = chroma_comb(rows, 1, adapt_ire * cpi0)
@@ -325,6 +371,9 @@ def decode(rows, sps, hue_deg=0.0, sat=1.0, chroma_lpf=16, adapt_ire=0.0,
         # 3次元を使ったか / そのうち「動いている」と判定した画素の割合
         "comb3d": motion_frac is not None,
         "motion_frac": motion_frac,
+        # 1フレーム前との副搬送波位相のズレ |ε| の中央値[度]。輝度に残る
+        # 副搬送波(= フレームごとに反転するドットクロール)は C·sin(ε/2)。
+        "phase_drift_deg": phase_drift_deg,
     }
     return rgb, info
 

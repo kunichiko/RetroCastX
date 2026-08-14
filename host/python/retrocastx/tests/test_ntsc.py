@@ -210,6 +210,39 @@ def main():
     ok.append(check("動いている所は動きと判定して2次元へ落ちる",
                     im["motion_frac"] > 0.8, "%.1f%%" % (100 * im["motion_frac"])))
 
+    # --- フレームコムは副搬送波の位相ドリフトに耐えること ---
+    #
+    # DATACLK は HSYNC にロックしていて **副搬送波にはロックしていない**ので、
+    # 1フレーム前との位相は実測で |ε| 中央値 4.8°ずれる。補正が無いと
+    # (x+prev2)/2 に C·sin(ε/2) が残り、**フレームごとに符号が反転する
+    # ドットクロール**になる。実機で「赤黒赤黒」と「黒赤黒赤」がフレームごとに
+    # 入れ替わって見えた症状がこれ。詳しくは ntsc.chroma_comb3d の docstring。
+    flat6 = [(0.75, 0.0, 0.0)] * 6          # 一様な赤 = 本来まったく平坦
+    cur_f = make_lines_phase(flat6, 24, 0.0)
+    p4_f = make_lines_phase(flat6, 24, 0.0)
+
+    def fsc_ripple(rgb, li):
+        """行 li の R に残った副搬送波(周期8サンプル)の振幅[0..1]。"""
+        v = rgb[li, 200:600, 0]
+        v = v - v.mean()
+        k = np.arange(len(v)) * 2 * np.pi / 8.0
+        return 2.0 * np.hypot((v * np.cos(k)).sum(), (v * np.sin(k)).sum()) / len(v)
+
+    def run(eps_deg):
+        p2f = make_lines_phase(flat6, 24, math.pi + math.radians(eps_deg))
+        rgb, info = ntsc.decode(cur_f, SPS, prev2=p2f, prev4=p4_f)
+        return fsc_ripple(rgb, 12), info["phase_drift_deg"]
+
+    r0, d0 = run(0.0)
+    r6, d6 = run(6.0)
+    ok.append(check("位相ズレ ε を測れている", abs(d6 - 6.0) < 1.0 and d0 < 1.0,
+                    "ズレ0°で %.1f° / ズレ6°で %.1f° と測った" % (d0, d6)))
+    # **補正を外すと 0.0000 → 0.0144 に増える**ことを確認済み(2026-08-15)。
+    # ここが緩いと回帰を素通しする。
+    ok.append(check("フレームコムが副搬送波の位相ドリフト6°に耐える",
+                    r6 < r0 + 0.004,
+                    "輝度に残る副搬送波 %.4f → %.4f" % (r0, r6)))
+
     # --- クロマLPFが 2fsc をきっちり消すこと ---
     #
     # 直交復調の積には必ず 2fsc(周期4サンプル)が出る。窓長が副搬送波1周期(8)の

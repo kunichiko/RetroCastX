@@ -96,6 +96,11 @@ pub struct StatsSnapshot {
     pub ntsc_lines_3d: u32,
     /// そのうち「動いている」と判定した画素の割合(0..1)
     pub ntsc_motion_frac: f32,
+    /// 1フレーム前との副搬送波位相のズレ |ε| の中央値[度]。DATACLK は HSYNC に
+    /// ロックしていて副搬送波にはロックしていないので歩く。フレームコムの
+    /// 消し残し(= フレームごとに反転するドットクロール)は C·sin(ε/2)。
+    /// 実測で 4.8°、これを補正している。大きくなったら基板側を疑う。
+    pub ntsc_phase_drift_deg: f32,
     /// 測定で「インタレースの1フィールドずつ来ている」と判定しているか。
     /// mflags では判定できないので、埋まる行のパリティの交互性で決めている
     pub interlace_measured: bool,
@@ -950,6 +955,7 @@ fn tick_stats(
         ntsc_phase_deg: asm.ntsc_info.as_ref().map(|i| i.phase_delta_deg).unwrap_or(0.0),
         ntsc_lines_3d: asm.ntsc_info.as_ref().map(|i| i.lines_3d).unwrap_or(0),
         ntsc_motion_frac: asm.ntsc_info.as_ref().map(|i| i.motion_frac).unwrap_or(0.0),
+        ntsc_phase_drift_deg: asm.ntsc_info.as_ref().map(|i| i.phase_drift_deg).unwrap_or(0.0),
         interlace_measured: asm.interlace_measured,
         occ_h: tune.occ,
         tune_n: tune.n,

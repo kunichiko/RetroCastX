@@ -51,6 +51,13 @@ const MOTION_IRE: f32 = 8.0;
 ///   行で色相が230〜300°をふらついた)。無彩色に倒す方が絵として正しい。
 const BURST_MIN: f32 = 60.0;
 
+/// フレームコムの位相ズレ補正で受け付ける ε の上限[度]。
+///
+/// 実測の |ε| は中央値 4.8°、滑らかに±15°を揺れる程度。これを大きく超える値は
+/// バーストの測り損ね(暗い行、欠損行)なので、補正を掛けない方が安全。
+/// tan(ε/2) が暴れると 3次元の枝ごと壊れる。
+const PHASE_FIX_MAX_DEG: f32 = 30.0;
+
 pub struct Info {
     pub lines_locked: u32,
     pub comb_step: usize,
@@ -60,6 +67,10 @@ pub struct Info {
     pub lines_3d: u32,
     /// そのうち「動いている」と判定した画素の割合(0..1)
     pub motion_frac: f32,
+    /// 1 NTSCフレーム前との副搬送波位相のズレ |ε| の中央値[度]。
+    /// これがフレームコムの消し残し(= フレームごとに反転するドットクロール)を
+    /// 決める。残留は C·sin(ε/2)。
+    pub phase_drift_deg: f32,
 }
 
 fn win(us: (f32, f32), sps: f32, w: usize) -> (usize, usize) {
@@ -101,6 +112,25 @@ pub struct History<'a> {
     pub hist_n: &'a [u8],
 }
 
+/// 1ラインのバースト区間から (振幅, cos成分, sin成分) を測る。
+///
+/// バーストが `A·cos(2π(n-ba)/8 - φ)` と表せる φ を `si.atan2(ci)` で得る。
+fn burst(row: &[u8], ba: usize, bb: usize) -> (f32, f32, f32) {
+    let mut mean = 0.0f32;
+    for n in ba..bb {
+        mean += row[n * 2] as f32;
+    }
+    mean /= (bb - ba) as f32;
+    let (mut ci, mut si) = (0.0f32, 0.0f32);
+    for n in ba..bb {
+        let v = row[n * 2] as f32 - mean;
+        let k = (n - ba) & 7;
+        ci += v * COS8[k];
+        si += v * SIN8[k];
+    }
+    ((ci * ci + si * si).sqrt(), ci, si)
+}
+
 pub fn decode_field(
     raw: &[u8],
     w: usize,
@@ -114,7 +144,8 @@ pub fn decode_field(
     let (ba, bb) = win(BURST_US, sps, w);
     if sps <= 0.0 || bb <= ba + 8 || w < 16 {
         return Info { lines_locked: 0, comb_step: 0, phase_delta_deg: 0.0,
-                      code_per_ire: 0.0, lines_3d: 0, motion_frac: 0.0 };
+                      code_per_ire: 0.0, lines_3d: 0, motion_frac: 0.0,
+                      phase_drift_deg: 0.0 };
     }
 
     // --- 1. ラインごとのバースト位相 ---
@@ -130,23 +161,11 @@ pub fn decode_field(
         if !filled.get(y).copied().unwrap_or(false) {
             continue;
         }
-        let row = &raw[y * w * 2..(y + 1) * w * 2];
-        let mut mean = 0.0f32;
-        for n in ba..bb {
-            mean += row[n * 2] as f32;
-        }
-        mean /= (bb - ba) as f32;
-        let (mut ci, mut si) = (0.0f32, 0.0f32);
-        for n in ba..bb {
-            let v = row[n * 2] as f32 - mean;
-            let k = (n - ba) & 7;
-            ci += v * COS8[k];
-            si += v * SIN8[k];
-        }
-        mag[y] = (ci * ci + si * si).sqrt();
+        let (m, ci, si) = burst(&raw[y * w * 2..(y + 1) * w * 2], ba, bb);
+        mag[y] = m;
         phase[y] = si.atan2(ci);
         // 復調で使うのは φ の cos/sin だけなので、正規化して持つ
-        let m = mag[y].max(1e-6);
+        let m = m.max(1e-6);
         cosp[y] = ci / m;
         sinp[y] = si / m;
     }
@@ -176,7 +195,8 @@ pub fn decode_field(
         // 180°になるペアが見つからない = バーストが取れていない。
         // 何もしないで戻る(呼び出し側のグレースケール表示が残る)。
         return Info { lines_locked: 0, comb_step: 0, phase_delta_deg: 0.0,
-                      code_per_ire: 0.0, lines_3d: 0, motion_frac: 0.0 };
+                      code_per_ire: 0.0, lines_3d: 0, motion_frac: 0.0,
+                      phase_drift_deg: 0.0 };
     }
 
     // --- 3. レベル校正。同期チップ(-40 IRE)とバックポーチ(0 IRE)から求める ---
@@ -206,11 +226,62 @@ pub fn decode_field(
     let code_per_ire = ((porch - tip) / 40.0).max(0.05);
     let inv_100ire = 1.0 / (code_per_ire * 100.0);
 
+    // --- 3b. 1フレーム前との副搬送波位相のズレ ε を測る ---
+    //
+    // ★**フレームごとに入れ替わる縞の正体はこれ**(実測 2026-08-15)。
+    //
+    // DATACLK は HSYNC にロックしていて **副搬送波にはロックしていない**ので、
+    // フレームをまたぐと副搬送波とサンプル格子の位相関係が歩く。実測した ε は
+    // |中央値| 4.80°で、行方向に滑らかに ±15° を揺れる(= 測定ノイズではなく
+    // 本物のドリフト。隣接行との相関で確認した)。
+    //
+    // フレームコムは「1フレーム前は厳密に180°反転」を前提にしているので ε ぶん
+    // 消し残る。残留は C·sin(ε/2) で、彩度 38.4 IRE のときの予測 1.57 IRE が
+    // **実測の残留 1.57 IRE と一致した**(独立な2通りの測り方で同じ値)。
+    // 副搬送波成分なのでフレームごとに符号が反転し、「赤黒赤黒」が「黒赤黒赤」に
+    // 入れ替わって見える。
+    //
+    // 直し方は c3 の位相を ε/2 戻すこと。8fsc では **2サンプル遅延がちょうど90°**
+    // なので、ヒルベルト変換を持ち出さずに1サンプルあたり積和1回で回せる:
+    //
+    //     c3(n)   = K·cos(ψ+θ-ε/2)
+    //     c3(n-2) = K·cos(ψ+θ-ε/2 - 90°) = K·sin(ψ+θ-ε/2)
+    //     K·cos(ψ+θ) = c3(n)·cos(ε/2) - c3(n-2)·sin(ε/2)
+    //     振幅も戻すので cos(ε/2) で割って  **c3(n) - c3(n-2)·tan(ε/2)**
+    //
+    // 実測(静止・平坦・彩度の高い画素で、輝度に残る副搬送波の中央値):
+    //     補正なし 1.57 IRE / 補正あり 1.20 IRE / 符号を逆にすると 2.38 IRE
+    // 信号の無い区間のノイズ床が 1.45 IRE なので、ここが底。**残りは基板側。**
+    let mut tan_half = vec![0.0f32; h];
+    let mut drifts = Vec::new();
+    if let Some(hh) = hist.as_ref() {
+        if hh.p2.len() == raw.len() {
+            for y in 0..h {
+                if !filled.get(y).copied().unwrap_or(false) || mag[y] <= BURST_MIN {
+                    continue;
+                }
+                let (m2, ci, si) = burst(&hh.p2[y * w * 2..(y + 1) * w * 2], ba, bb);
+                if m2 <= BURST_MIN {
+                    continue;
+                }
+                let e = ang_diff(si.atan2(ci).to_degrees(), phase[y].to_degrees() + 180.0);
+                drifts.push(e.abs());
+                // 外れ値(暗い行でバーストを測り損ねた等)では補正を掛けない。
+                // tan(ε/2) が暴れると3次元の枝ごと壊れる方が高くつく。
+                if e.abs() <= PHASE_FIX_MAX_DEG {
+                    tan_half[y] = (e.to_radians() * 0.5).tan();
+                }
+            }
+        }
+    }
+    let phase_drift_deg = median(&mut drifts);
+
     // --- 4. コム → 直交復調 → RGB ---
     let mut u = vec![0.0f32; w];
     let mut v = vec![0.0f32; w];
     let mut yl = vec![0.0f32; w];
     let mut mot = vec![0.0f32; w];
+    let mut c3buf = vec![0.0f32; w];
     let mut locked = 0u32;
     let mut lines_3d = 0u32;
     let (mut moving, mut n3) = (0u32, 0u32);
@@ -219,7 +290,6 @@ pub fn decode_field(
         if !filled.get(y).copied().unwrap_or(false) {
             continue;
         }
-        let row = &raw[y * w * 2..(y + 1) * w * 2];
         // 上下の相手。片方しか無ければそれだけを使う(端の行)。
         let up = y.checked_sub(comb_step)
             .filter(|&i| filled.get(i).copied().unwrap_or(false));
@@ -236,10 +306,6 @@ pub fn decode_field(
             hh.hist_n.get(y).copied().unwrap_or(0) >= 3
                 && hh.p2.len() == raw.len() && hh.p4.len() == raw.len()
         });
-        let p2v = |i: usize, j: usize| match hist.as_ref() {
-            Some(hh) => hh.p2[(i * w + j) * 2] as f32,
-            None => 0.0,
-        };
         if use3d {
             lines_3d += 1;
             // 動き検出は **2 NTSCフレーム前**(位相0°)との差。1フレーム前だと
@@ -251,6 +317,17 @@ pub fn decode_field(
             }
             // 副搬送波1周期(8サンプル)で平均してノイズを落とす
             boxcar(&mut mot, 8);
+            // フレームコムのクロマ。位相ズレ ε を 2サンプル遅延で戻す(3b参照)。
+            for n in 0..w {
+                c3buf[n] = (px(y, n) - hh.p2[(y * w + n) * 2] as f32) * 0.5;
+            }
+            let t = tan_half[y];
+            if t != 0.0 {
+                // 後ろから回すので c3buf[n-2] は**補正前の値**のまま使える
+                for n in (2..w).rev() {
+                    c3buf[n] -= c3buf[n - 2] * t;
+                }
+            }
         }
         // ψ(n) = 2π(n-ba)/8 - φ を加法定理で展開する。cos/sin の値は
         // n mod 8 の8点しかないので、積和2回で済む(8fsc の利点)。
@@ -294,8 +371,7 @@ pub fn decode_field(
             //
             // 動いている所は成立しないので 2次元へ落とす(= 動き適応)。
             if use3d {
-                let x = px(y, n);
-                let c3 = (x - p2v(y, n)) * 0.5;
+                let c3 = c3buf[n];
                 // 動き量は mot[] に入れてある(2フレーム前との差を平滑したもの)
                 let a = (mot[n] / motion_th.max(1e-6)).clamp(0.0, 1.0);
                 if a >= 0.5 { moving += 1; }
@@ -361,6 +437,7 @@ pub fn decode_field(
         code_per_ire,
         lines_3d,
         motion_frac: if n3 > 0 { moving as f32 / n3 as f32 } else { 0.0 },
+        phase_drift_deg,
     }
 }
 
@@ -630,6 +707,57 @@ mod tests {
             }
         }
         raw
+    }
+
+    /// 副搬送波1周期(8サンプル)ぶんの振幅を測る。**輝度に残った副搬送波**の量。
+    fn fsc_ripple(fb: &[u8], w: usize, y: usize, x0: usize, x1: usize) -> f32 {
+        let v: Vec<f32> = (x0..x1).map(|n| fb[(y * w + n) * 4] as f32).collect();
+        let mean = v.iter().sum::<f32>() / v.len() as f32;
+        let (mut c, mut s) = (0.0f32, 0.0f32);
+        for (i, val) in v.iter().enumerate() {
+            let p = 2.0 * std::f32::consts::PI * i as f32 / 8.0;
+            c += (val - mean) * p.cos();
+            s += (val - mean) * p.sin();
+        }
+        2.0 * (c * c + s * s).sqrt() / v.len() as f32
+    }
+
+    /// **フレームコムは副搬送波の位相ドリフトに耐えること。**
+    ///
+    /// DATACLK は HSYNC にロックしていて副搬送波にはロックしていないので、
+    /// 1フレーム前との位相は実測で |ε| 中央値 4.8°ずれる(行方向に滑らかに
+    /// ±15°を揺れる本物のドリフト)。補正が無いと (x+p2)/2 に C·sin(ε/2) が
+    /// 残り、**フレームごとに符号が反転するドットクロール**になる。実機で
+    /// 「赤黒赤黒」と「黒赤黒赤」がフレームごとに入れ替わって見えた症状がこれ。
+    #[test]
+    fn frame_comb_survives_subcarrier_phase_drift() {
+        let sps = 8.0 * 3_579_545.0f32;
+        let (w, h) = (1820usize, 24usize);
+        let colors = [(0.75, 0.0, 0.0); 6];   // 一様な赤 = 本来まったく平坦
+        let cur = synth_alt(&colors, w, h, sps, 0.0, 0.0);
+        let p4 = synth_alt(&colors, w, h, sps, 0.0, 0.0);
+        let filled = vec![true; h];
+        let hn = vec![3u8; h];
+        let (aa, _) = win((9.6, 62.0), sps, w);
+        let (x0, x1) = (aa + 200, aa + 600);
+
+        let run = |eps_deg: f32| {
+            let p2 = synth_alt(&colors, w, h, sps,
+                               std::f32::consts::PI + eps_deg.to_radians(), 0.0);
+            let mut fb = vec![255u8; w * h * 4];
+            let info = decode_field(&cur, w, h, &filled, sps as u32, &mut fb,
+                                    Some(History { p2: &p2, p4: &p4, hist_n: &hn }));
+            (fsc_ripple(&fb, w, 12, x0, x1), info.phase_drift_deg)
+        };
+        let (r0, d0) = run(0.0);
+        let (r6, d6) = run(6.0);
+        // ε を測れていること(測れなければ補正のしようがない)
+        assert!(d0 < 1.0, "ズレが無いのに ε={d0:.1}° と測った");
+        assert!((d6 - 6.0).abs() < 1.0, "ε を 6° と測れていない: {d6:.1}°");
+        // 補正が効いていること。**補正を消すと 0.15 → 2.84 コードに増える**ことを
+        // 確認済み(2026-08-15)。ここが緩いと回帰を素通しする。
+        assert!(r6 < r0 + 1.0,
+                "位相が6°ずれると輝度の副搬送波が増える: {r0:.2} → {r6:.2} コード");
     }
 
     #[test]

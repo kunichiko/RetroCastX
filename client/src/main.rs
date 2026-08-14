@@ -354,8 +354,9 @@ fn run_headless(
         if s.ntsc_comb_step > 0 {
             println!("   NTSC復調: {}行ロック  コム間隔{}  位相差{:.0}°(180°が正常)",
                      s.ntsc_locked, s.ntsc_comb_step, s.ntsc_phase_deg);
-            println!("   3次元コム: {}行  動きと判定 {:.1}%",
-                     s.ntsc_lines_3d, 100.0 * s.ntsc_motion_frac);
+            println!("   3次元コム: {}行  動きと判定 {:.1}%  1フレーム前との位相ズレ {:.1}°",
+                     s.ntsc_lines_3d, 100.0 * s.ntsc_motion_frac,
+                     s.ntsc_phase_drift_deg);
         }
         println!("   インタレース判定(測定): {}  未充填の行 {}",
                  if s.interlace_measured { "1フィールドずつ来ている(太らせ停止・減衰なし)" }
@@ -2336,9 +2337,10 @@ impl eframe::App for ViewerApp {
                     ui.colored_label(
                         egui::Color32::from_rgb(120, 200, 120),
                         format!("NTSC復調 {}行 コム間隔{} 位相差{:.0}°\n\
-                                 3次元コム {}行 動き {:.1}%",
+                                 3次元コム {}行 動き {:.1}% 位相ズレ{:.1}°",
                                 s.ntsc_locked, s.ntsc_comb_step, s.ntsc_phase_deg,
-                                s.ntsc_lines_3d, 100.0 * s.ntsc_motion_frac),
+                                s.ntsc_lines_3d, 100.0 * s.ntsc_motion_frac,
+                                s.ntsc_phase_drift_deg),
                     );
                 } else if matches!(self.shared.mode.lock().unwrap().as_ref(),
                                    Some(m) if m.pixfmt == protocol::PIXFMT_YC8) {
