@@ -503,6 +503,8 @@ struct ViewerApp {
     tune_frame_skip: u8,
     /// 復調を止めて生のYを見る(切り分け用。設定には保存しない)
     raw_view: bool,
+    /// 表示するフィールド 0=織り込み / 1=偶数 / 2=奇数(同上)
+    field_view: u8,
     /// 直近で入力設定を書き込んだソース(ラベル, 件数)。パネルの確認表示用。
     input_regs_sent: Option<(&'static str, usize)>,
     /// 映像ソースのプロファイル名(profiles::PROFILES の key)。空文字は「自動」。
@@ -634,6 +636,7 @@ impl ViewerApp {
             tune_frame_skip: cfg.tune_frame_skip,
             tune_phase: cfg.tune_phase,
             raw_view: false,
+            field_view: 0,
             input_regs_sent: None,
             source_profile: cfg.source_profile.clone(),
             tune_pending: Default::default(),
@@ -1719,6 +1722,22 @@ impl ViewerApp {
                 *self.shared.raw_view.lock().unwrap() = Some(v);
             }
         }
+        // 片方のフィールドだけ見る。**織り込みの影響を外すための道具。**
+        // 縦線が二重に見えるとき、2枚のフィールドがずれているのか、1枚の中で
+        // 既に二重なのかを分けられる。選んだ側を隣のスロットへ複製して全高で出す
+        // (黒で間引くとスキャンラインが乗って、かえって見分けにくい)。
+        ui.horizontal(|ui| {
+            ui.monospace("フィールド");
+            let mut v = self.field_view;
+            let mut ch = false;
+            ch |= ui.selectable_value(&mut v, 0u8, "織り込み").changed();
+            ch |= ui.selectable_value(&mut v, 1u8, "偶数のみ").changed();
+            ch |= ui.selectable_value(&mut v, 2u8, "奇数のみ").changed();
+            if ch {
+                self.field_view = v;
+                *self.shared.field_view.lock().unwrap() = Some(v);
+            }
+        });
         // 選んだプロファイル(空なら全部試す)での答え
         let pick = if self.source_profile.is_empty() {
             profiles::best_over_all(fh_hz).map(|(p, c)| (p.label, c))

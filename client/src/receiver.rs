@@ -517,6 +517,9 @@ pub struct Shared {
     /// **切り分けの道具。** 「二重に見える」等がデコーダ由来か、それより前(信号や
     /// 送出側)かを、絵を見るだけで分けられる。None なら変更なし。
     pub raw_view: Mutex<Option<bool>>,
+    /// 表示するフィールド。0=織り込み / 1=偶数スロット / 2=奇数スロット。
+    /// 織り込みの影響を外して1枚だけ見るための切り分け用。None なら変更なし。
+    pub field_view: Mutex<Option<u8>>,
 }
 
 #[derive(Clone, Default)]
@@ -875,6 +878,9 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         }
         if let Some(v) = shared.raw_view.lock().unwrap().take() {
             asm.set_raw_view(v);
+        }
+        if let Some(v) = shared.field_view.lock().unwrap().take() {
+            asm.set_field_view(v);
         }
         if let Some(frame) = asm.feed(&buf[..n]) {
             frames_since += 1;

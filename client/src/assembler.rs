@@ -70,6 +70,9 @@ pub struct FrameAssembler {
     interlace_decay: f32,
     /// 復調を止めて生のYをそのまま見る(切り分け用)
     raw_view: bool,
+    /// 表示するフィールド。0=織り込み(通常) / 1=偶数スロットのみ / 2=奇数スロットのみ。
+    /// 選んだ側の行を隣のスロットへ複製して全高で出す(=ラインダブラ)。
+    field_view: u8,
     /// 公開用バッファの使い回し先。UIが使い終わったものを recycle() で戻す。
     /// 毎フレームの確保をなくすためだけのもので、中身に意味は無い。
     spare: Option<Vec<u8>>,
@@ -100,6 +103,7 @@ impl FrameAssembler {
             decay: 0.8,
             interlace_decay: 1.0,
             raw_view: false,
+            field_view: 0,
         }
     }
 
@@ -164,6 +168,16 @@ impl FrameAssembler {
     /// ライン受信時に fb へ書いているグレースケールがそのまま残る。
     pub fn set_raw_view(&mut self, v: bool) {
         self.raw_view = v;
+    }
+
+    /// 片方のフィールドだけを見る。0=織り込み / 1=偶数スロット / 2=奇数スロット。
+    ///
+    /// **織り込みの影響を外して見るための道具。** 縦線が二重に見えるとき、
+    /// 2枚のフィールドがずれているのか、1枚の中で既に二重なのかを分けられる。
+    /// 選んだ側を隣のスロットへ複製するので、縦解像度は半分だが全高で出る
+    /// (黒で間引くとスキャンラインが乗って、かえって見分けにくい)。
+    pub fn set_field_view(&mut self, v: u8) {
+        self.field_view = v;
     }
 
     pub fn set_interlace_decay(&mut self, d: f32) {
@@ -457,6 +471,20 @@ impl FrameAssembler {
                         // alpha(px[3])は不変
                     }
                 }
+            }
+        }
+        // 片方のフィールドだけを見る(切り分け用)。選んだパリティの行を
+        // 隣のスロットへ複製する = ラインダブラ。
+        if self.field_view != 0 {
+            let par = (self.field_view - 1) as usize;   // 1→0(偶数) / 2→1(奇数)
+            let mut line = par;
+            while line < h {
+                let dst = line ^ 1;                     // 隣のスロット
+                if dst < h {
+                    let s = line * w * 4;
+                    self.fb.copy_within(s..s + w * 4, dst * w * 4);
+                }
+                line += 2;
             }
         }
         // 太らせても埋まらなかった行を数える。0でないと前フレームの残りが減衰して
