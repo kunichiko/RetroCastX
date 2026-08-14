@@ -79,3 +79,63 @@ def build_mapping(fps):
     assert len(set(mapping.values())) == len(mapping), "新デジグネータが重複"
     assert len(mapping) == len(fps), "取りこぼし"
     return mapping, rows
+
+
+def _load_pcb(pcb):
+    """pcbnew で .kicad_pcb を読み、フットプリントの Reference と atopile_address を返す。"""
+    import pcbnew
+    b = pcbnew.LoadBoard(str(pcb))
+    out = []
+    for f in b.GetFootprints():
+        a = f.GetFieldByName("atopile_address").GetText() if f.HasFieldByName("atopile_address") else ""
+        out.append({"ref": f.GetReference(), "addr": a, "val": f.GetValue()})
+    return out
+
+
+def apply_to_pcb(pcb, mapping):
+    """.kicad_pcb の footprint の Reference プロパティだけを書き換える。
+    配線・ビア・ゾーン・atopile_address には触らない。"""
+    s = pcb.read_text()
+    starts = [m.start() for m in re.finditer(r'^\t\(footprint ', s, re.M)]
+    out, prev, n, seen = [], 0, 0, set()
+    for a in starts:
+        d, j = 0, a
+        while True:
+            if s[j] == '(':
+                d += 1
+            elif s[j] == ')':
+                d -= 1
+                if d == 0:
+                    break
+            j += 1
+        blk = s[a:j + 1]
+        m = re.search(r'\(property "Reference" "([^"]+)"', blk)
+        assert m, "Reference の無いフットプリント"
+        old = m.group(1)
+        assert old in mapping, f"対応表に無い: {old}"
+        assert old not in seen, f"Reference が重複: {old}"
+        seen.add(old)
+        out.append(s[prev:a])
+        out.append(blk[:m.start(1)] + mapping[old] + blk[m.end(1):])
+        prev, n = j + 1, n + 1
+    out.append(s[prev:])
+    pcb.write_text("".join(out))
+    return n
+
+
+def main():
+    pcb = ROOT / "layouts/default/default.kicad_pcb"
+    fps = _load_pcb(pcb)
+    mapping, rows = build_mapping(fps)
+    changed = [(a, b) for a, b in mapping.items() if a != b]
+    n = apply_to_pcb(pcb, mapping)
+    print(f"{n} 個の Reference を書き換えた(変更 {len(changed)} / 不変 {len(mapping) - len(changed)})")
+    for r in rows:
+        if r["ref"] != r["new"]:
+            print(f"   {r['ref']:>5s} → {r['new']:<5s} {r['addr']}")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())

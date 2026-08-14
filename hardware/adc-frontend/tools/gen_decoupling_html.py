@@ -41,6 +41,14 @@ GND = {"gnd", "chassis"}
 
 def collect():
     b = pcbnew.LoadBoard(str(PCB))
+    # 基板外形の外に居る = まだ配置していない部品。距離を出しても意味が無いので分ける
+    bb = b.GetBoardEdgesBoundingBox()
+    bx0, by0 = bb.GetX(), bb.GetY()
+    bx1, by1 = bx0 + bb.GetWidth(), by0 + bb.GetHeight()
+
+    def placed(f):
+        q = f.GetPosition()
+        return bx0 <= q.x <= bx1 and by0 <= q.y <= by1
     net2pads = collections.defaultdict(list)
     for f in b.GetFootprints():
         for p in f.Pads():
@@ -61,7 +69,9 @@ def collect():
         # 「対象ピンまでの距離」が意味を持つのはパスコン(片側GND・反対側が電源/信号)だけ。
         # 直列コンデンサは抵抗を挟んだ先のICが拾われて無意味な距離になるので分けて扱う。
         # GND-シャーシ間のブリッジも同様。
-        if not sig:
+        if not placed(f):
+            kind = "★未配置"
+        elif not sig:
             kind = "GND-シャーシ ブリッジ"
         elif nets & GND and len(sig) == 1:
             kind = "パスコン"

@@ -166,7 +166,7 @@ EEPROMの空き領域(~250B)は個体設定(IP・ボード名等)の保存に使
 ESD が PESD5V0U4BW → 実際は EMZT6.8ET2R など)。値・在庫は LCSC 品番で確認すること。
 
 ★デジグネータは 2026-08-13 に **main.ato の宣言順**へ振り直した。旧番号との対応は
-`docs/designator-map-v1.md`。**手組みの試作機(V0)は旧番号のまま**。
+`docs/designator-map.md`。**手組みの試作機(V0)は旧番号のまま**。
 
 | Ref | 部品 | メーカー | LCSC | 回路上の位置 |
 |---|---|---|---|---|
@@ -185,26 +185,27 @@ ESD が PESD5V0U4BW → 実際は EMZT6.8ET2R など)。値・在庫は LCSC 品
 | PG1, PG2, PG3, PG4 | PogoPin_D1.0mm | — | — | `pogo_tck, pogo_tms, pogo_tdi, pogo_tdo` |
 | J3 | Header_1x6_P2.54mm | — | — | `jtag_hdr` |
 | JP1 | SolderJumper_2_Bridged | — | — | `sj_ext5v` |
-| D1, D2, D3, D4, D5, D7 | EMZT6.8ET2R | ROHM | C510333 | `esd_rgb, esd_sync2, esd_sync, drgb.esd[0], drgb.esd[1], esd_audio` |
+| D1, D2, D3, D4, D5, D6, D8 | EMZT6.8ET2R | ROHM | C510333 | `esd_rgb, esd_sync2, esd_sync, esd_svideo, drgb.esd[0], drgb.esd[1], esd_audio` |
 | J4 | BoxHeader_2x5_P2.54mm | — | — | `aux` |
 | TP1, TP2 | TestPoint_TH1 | — | — | `tp_ys, tp_led_do` |
+| J5, J9, J10 | Header_1x4_P2.54mm | — | — | `svideo, j11_argus, j_oled` |
 | U10 | 1473005-4 | TE Connectivity | C428482 | `sodimm` |
-| J5 | YTC-A1251-08ABW | YIYUAN | C7436577 | `j_drgb` |
-| J6 | Header_2x15_P2.54mm | — | — | `j_dbg` |
+| J6 | YTC-A1251-08ABW | YIYUAN | C7436577 | `j_drgb` |
+| J7 | Header_2x15_P2.54mm | — | — | `j_dbg` |
 | LED1 | WS2812B-2020 | Worldsemi | C965555 | `led_status` |
-| D6 | 1N4148W | ST(Semtech) | C81598 | `d_led` |
+| D7 | 1N4148W | ST(Semtech) | C81598 | `d_led` |
 | X3 | OT2JI-111-12.288M | YXC | C20617595 | `xo_audio` |
 | U14, U15 | PCM1808PWR | TI | C55513 | `adc_dsub.adc, adc_aux.adc` |
-| J7 | PLR135_T10 | — | — | `spdif` |
-| J8, J9 | Header_1x4_P2.54mm | — | — | `j11_argus, j_oled` |
+| J8 | PLR135_T10 | — | — | `spdif` |
 | H1, H2, H3, H4, H5 | MountingHole_2.8mm_M2.6_Pad | — | — | `mount[0], mount[1], mount[2], mount[3], mount[4]` |
 | U16, U17 | 24AA025E48-I/SN | MICROCHIP | C46840 | `eeprom_mac0, eeprom_mac1` |
-| J10, J11 | HR911130A | HANRUN | C54408 | `eth.jack, eth.jack2` |
+| J11, J12 | HR911130A | HANRUN | C54408 | `eth.jack, eth.jack2` |
 
 抵抗・コンデンサは値・パッケージ指定済み(atopileのピッカーが実部品を自動選定)。
 パスコンの実配置レポートは `../../docs/decoupling-placement.html`(基板から生成)。
-**現物の designator は `ato build` 後の `layouts/default/default.kicad_pcb` が正**
-(例: TVP7002=U10、D-SUB15=J10、MagJack=J2/J11、SO-DIMMソケット=U11)。
+**現物の designator は `ato build` 後の `layouts/default/default.kicad_pcb` が正。**
+番号は **main.ato の宣言順**に振ってあり(`tools/renumber_designators.py`)、
+V0試作機の旧番号との対応は `docs/designator-map.md`。
 
 ## Ethernet LED: PHY直結 / GPIO の二経路(2026-08-11)
 
@@ -284,15 +285,11 @@ BOMに載せている**(JLCの実装ライブラリ収載は未確認)。
 
 詳細と発注前チェック項目は `docs/layout-guidelines.md` §0.5 を参照。
 
-### 2026-08 追加分(デジタルRGB / デバッグ端子)
+### 2026-08 追加分
 
-| Ref | 部品 | LCSC | 備考 |
-|---|---|---|---|
-| J13 | YTC-A1251-08ABW | C7436577 | デジタルRGB入力(1.25mmピッチ 単列8極、右アングルSMD)。在庫1680・$0.04。JLC実装ライブラリ収載は未確認(手はんだ可) |
-| U14,U15,U16 | SN74LVC2G17DBVR | C10429 | デジタルRGBの5Vトレラント シュミットバッファ(dual×3=6ch)。U3(同期用)と同一型番 |
-| D4,D5 | EMZT6.8ET2R | C510333 | デジタルRGB入力のESD(4ライン×2、うち6ライン使用) |
-| J4 | 2×15 ピンヘッダ 2.54mm | 汎用 | 将来拡張用デバッグ端子(空きGPIO 20本 + GND + 3V3)。手実装/DNP |
-| — | 10kΩ 0402 ×6 | — | デジタルRGB入力のプルダウン |
+デジタルRGB入力・デバッグ端子・ステータスLED・S-Video/コンポジット入力を追加した。
+**部品と designator は上の「主要部品」表(基板から生成)を見ること。**
+以前ここに手書きの表があったが、旧番号のまま残って上の表と食い違っていたので削除した。
 
 ## ビルド状態
 

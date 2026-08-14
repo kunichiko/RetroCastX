@@ -304,6 +304,38 @@ component BoxHeaderAux2x5:
     signal vsync ~ pin 10
 
 
+component HeaderSVideo:
+    """S-Video / コンポジット映像入力の 1×4 ヘッダ(2.54mm)。手実装/DNP。
+
+    TVP7002 の**1番系統**(GIN_1 / RIN_1 / SOGIN_1、他は未使用)に繋ぐ。
+    ピン: 1=Y  2=GND  3=C  4=GND
+
+    ★TVP7002はコンポジットをデコードできない(digitizerであってdecoderで、
+      副搬送波PLL・直交復調・Y/C分離が無い)。この端子は**8fsc線同期サンプラー**
+      として使い、復調はViewer側で行う前提。詳細は docs/composite-video-plan.md。
+
+    ★コネクタを基板に載せず1×4ヘッダにしてあるのは、**発注時点でコネクタを
+      決め打ちしないため**。後からピグテールを自作して RCA でも 4ピンmini-DIN でも
+      付けられる。mini-DIN 4 は Y ピンにコンポジットを流す変換ケーブルが安く
+      手に入るので、コネクタ1個で S-Video とコンポジットの両方をカバーできる。
+
+    使い方:
+      S-Video    Y → pin1 / C → pin3 / シールド → pin2,4
+      コンポジット  芯線 → pin1 / シールド → pin2  (pin3のCは未使用)
+
+    ★S-Video なら Y/C 分離(コムフィルタ)が不要になり、さらに C チャンネルが
+      独立ゲインで8bitを使い切れる(コンポジットは140 IRE を輝度と分け合う)ので
+      クロマ分解能が約4倍になる。
+    """
+    trait is_atomic_part<manufacturer="", partnumber="PinHeader_1x4_2.54", footprint="Header_1x4_P2.54mm.kicad_mod", symbol="Header_1x4.kicad_sym">
+    trait has_designator_prefix<prefix="J">
+    trait has_part_removed  # 手実装/DNP
+    signal y ~ pin 1
+    signal gnd ~ pin 2
+    signal c ~ pin 3
+    gnd ~ pin 4
+
+
 component MountingHoleM26:
     """基板固定用ネジ穴 M2.6(GND接続)。
 

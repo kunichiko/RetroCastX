@@ -8,7 +8,7 @@ import is_atomic_part
 import has_part_picked
 import has_designator_prefix
 import has_part_removed
-from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeaderAux2x5, Tp1Pad, PogoPin, HeaderJtag, HeaderOled, HeaderDebug20, MountingHoleM26, SolderJumperClosed
+from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeaderAux2x5, Tp1Pad, PogoPin, HeaderJtag, HeaderOled, HeaderDebug20, MountingHoleM26, SolderJumperClosed, HeaderSVideo
 from "parts/TE_Connectivity_1473005_4/sodimm_i5.ato" import SoDimmI5
 from "parts/RICHTEK_RT9013_18GB/RICHTEK_RT9013_18GB.ato" import RICHTEK_RT9013_18GB_package
 from "parts/FTDI_FT2232HL_REEL/FTDI_FT2232HL_REEL.ato" import FTDI_FT2232HL_REEL_package
@@ -1217,20 +1217,72 @@ module App:
     c_osc = new C100nF_0402
     osc.vcc ~> c_osc ~> gnd
 
+    # --- 第3入力: S-Video / コンポジット(1x4ヘッダ -> GIN_1/RIN_1/SOGIN_1) ---
+    #
+    # ★TVP7002はコンポジットをデコードできない。型名が "VIDEO AND GRAPHICS
+    #   DIGITIZER" で decoder ではなく、データシート全文に NTSC/PAL/SECAM/CVBS/
+    #   subcarrier/comb filter の記述が一度も無い(composite は全部 composite sync)。
+    #   この端子は **8fsc線同期サンプラー**として使い、Y/C分離と復調は Viewer 側で
+    #   行う前提。設計と手順は docs/composite-video-plan.md。
+    #
+    # 1番系統は元々すべて未使用終端(10nF/1nF)だった。そのシュントは
+    # VideoInputChannel が持つ 33pF アンチエイリアスで置き換わるので削除してある。
+    # ★_1 系統に 10nF を残すと直列220Ωと組んで fc≈72kHz になり映像が完全に潰れる。
+    #   第2入力を足した時に _2 系統で同じ間違いをしている(2026-08-12に発見)。
+    #
+    # 定数は D-SUB / 第2入力の RGB チャンネルと**まったく同じ**(75Ω終端 + 100nF結合
+    # + 220Ω + 33pF)。8fscサンプリング(NTSC 1820サンプル/ライン = 28.636MHz、
+    # ナイキスト14.32MHz)に対し、TVP入力容量10pFを含む実効43pFで fc=16.8MHz と
+    # ちょうど合う。4fsc(910)だとナイキストが7.16MHzに下がり、この定数では減衰が
+    # -0.45dBしか無く折り返しに無防備になるので 8fsc を前提にしている。
+    svideo = new HeaderSVideo
+    svideo.gnd ~ gnd
+
+    ch_y = new VideoInputChannel
+    ch_c = new VideoInputChannel
+    ch_y.power ~ p3v3_a
+    ch_c.power ~ p3v3_a
+
+    esd_svideo = new EsdArray4
+    esd_svideo.gnd ~ gnd
+    svideo.y ~ esd_svideo.io1
+    svideo.c ~ esd_svideo.io2
+
+    svideo.y ~ ch_y.input
+    svideo.c ~ ch_c.input
+    ch_y.output ~ tvp.gin_1     # 輝度は Y/G チャンネルへ(ボトムレベルクランプ既定)
+    ch_c.output ~ tvp.rin_1     # 色差は R チャンネルへ(ミッドレベルクランプが既定)
+
+    # Y から SOG を分岐(3番系統の c_sog3 と同じ作り)。同期は輝度側に乗っているので、
+    # S-Video でもコンポジットでもこの1本で足りる。C 側には同期が無い。
+    # ★シュント33pFはDNPで出す。3番系統と同じ判断で、TVP内蔵のSOG LPF(reg 1Ah、
+    #   既定0x12 = 2.5MHz)だけで足りる見込みだが、基板ができてからでは追加できない。
+    #   2.5MHz は 3.58MHz のカラーバーストを落とすので、SOGスライサがバーストで
+    #   誤トリガするのを防ぐ意味でも既定値のまま使える。
+    c_sog1 = new C100nF_0402
+    r_sog1 = new R220_0402
+    c_sog1_aa = new C33pF_0402_DNP
+    signal sog1_coupled
+    svideo.y ~> c_sog1 ~> sog1_coupled
+    sog1_coupled ~> r_sog1 ~> tvp.sogin_1
+    tvp.sogin_1 ~> c_sog1_aa ~> gnd
+
     # --- 未使用アナログ入力の処理(datasheet: video系10nF, SOG系1nFをGNDへ) ---
     #
-    # ★_2 系統(RIN_2/GIN_2/BIN_2/SOGIN_2)は第2入力で**使う**ので、ここに含めては
+    # ★_2 系統(第2入力)と _1 系統(S-Video/コンポジット)は**使う**のでここに含めては
     #   いけない。10nF が付くと直列220Ωと組んで fc≈72kHz になり映像が完全に潰れる。
     #   第2入力を足した時にこれを外し忘れていた(2026-08-12に発見・修正)。
-    #   残るのは _1 系統と GIN_4 のみ。
-    nc_caps = new C10nF_0402[4]
-    tvp.rin_1 ~> nc_caps[0] ~> gnd
-    tvp.bin_1 ~> nc_caps[1] ~> gnd
-    tvp.gin_1 ~> nc_caps[2] ~> gnd
-    tvp.gin_4 ~> nc_caps[3] ~> gnd
-
-    nc_sog_caps = new C1nF_0402[1]
-    tvp.sogin_1 ~> nc_sog_caps[0] ~> gnd
+    #   残るのは BIN_1 と GIN_4 のみ。SOGIN_1 も使うので nc_sog_caps は無くなった。
+    # ★配列ではなく個別の名前にしてある。**配列の添字は atopile_address になるので、
+    #   要素を減らすと残った部品のネットだけが入れ替わる。** 以前は
+    #   [0]=rin_1 [1]=bin_1 [2]=gin_1 [3]=gin_4 だったので、_1系統を使い始めた時に
+    #   2要素へ減らしたら nc_caps[0] が rin_1 から bin_1 に変わり、**フットプリントと
+    #   既存配線はそのままネットだけが変わって rin1 と bin1_nc を短絡した**
+    #   (2026-08-14に発見)。名前を固定しておけばこの事故は起きない。
+    nc_bin1 = new C10nF_0402
+    tvp.bin_1 ~> nc_bin1 ~> gnd
+    nc_gin4 = new C10nF_0402
+    tvp.gin_4 ~> nc_gin4 ~> gnd
 
     # --- 制御ピンのストラップ ---
     tvp.pwdn ~ gnd     # 常時動作
@@ -1780,11 +1832,18 @@ module App:
     adc_aux.adc.vref.override_net_name = "aud_vref_line"
 
     # --- 未使用アナログ入力の終端(どのピンの終端かを判別可能に) ---
-    tvp.rin_1.override_net_name = "rin1_nc"
+    # 第3入力(S-Video / コンポジット、1x4ヘッダ)
+    ch_y.input.override_net_name = "vin_y1"
+    ch_c.input.override_net_name = "vin_c1"
+    ch_y.coupled.override_net_name = "vin_y1_ac"
+    ch_c.coupled.override_net_name = "vin_c1_ac"
+    ch_y.output.override_net_name = "gin1"          # 輝度 -> GIN_1
+    ch_c.output.override_net_name = "rin1"          # 色差 -> RIN_1
+    tvp.sogin_1.override_net_name = "sogin1"        # Yから分岐した同期
+    sog1_coupled.override_net_name = "vin_y1_sog_ac"
+
     tvp.bin_1.override_net_name = "bin1_nc"
-    tvp.gin_1.override_net_name = "gin1_nc"
     tvp.gin_4.override_net_name = "gin4_nc"
-    tvp.sogin_1.override_net_name = "sogin1_nc"
     tvp.sogin_2.override_net_name = "sogin2"        # 第2入力のCSYNC(分圧+0.1uF結合)
 
     # 電源レールは明示命名する。atopileの自動命名は他ネットの命名状況に依存して

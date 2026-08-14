@@ -1,26 +1,33 @@
-# デジグネータ対応表 (V1発注時のリネーム)
+# デジグネータ対応表
 
-2026-08-13に、デジグネータを **main.ato の宣言順** へ振り直した。上から下へ読むと
-ほぼ機能ブロック順に番号が並ぶ。
+デジグネータは **main.ato の宣言順**に振ってある。上から下へ読むとほぼ機能ブロック順に
+番号が並ぶ。振り直しは `tools/renumber_designators.py` を実行するだけ
+(`ato build` 後に走らせる。`keep_designators`が既定trueなので以後は維持される)。
 
-**手組みの試作機(V0)は旧番号のまま**なので、実機の写真やオシロのメモを読むときは
-この表で読み替えること。
+**手組みの試作機(V0)は「V0」列の番号**なので、実機の写真やオシロのメモを読むときは
+この表で読み替えること。V0列が空欄のものは後から追加した部品。
 
 ## 仕組み
 
 atopile は `keep_designators`(既定 true)のとき、`.kicad_pcb` の Reference プロパティを
 正典としてデジグネータを読み込む(`faebryk/libs/app/designators.py` の
-`load_kicad_pcb_designators`)。**つまり PCB 側でリネームすれば `ato build` はそれを維持する。**
+`load_kicad_pcb_designators`)。**PCB側でリネームすれば `ato build` はそれを維持する。**
 重複があると `ato build` がエラーで止まるので安全側に倒れている。
 
-対応表の生成は `tools/renumber_designators.py`。各フットプリントの `atopile_address`
-(例 `ft2232.c_osci`, `dec_caps[6]`, `ch_g2.r_term`)のパスを辿り、各段の宣言行番号を
-並べたタプルをソートキーにしている。配列は添字を数値で見る。
+各フットプリントの `atopile_address`(例 `ft2232.c_osci`, `dec_caps[6]`, `ch_g2.r_term`)の
+パスを辿り、各段の宣言行番号を並べたタプルをソートキーにしている。配列は添字を数値で見る。
 
-★**`.kicad_dru` の `memberOfFootprint` はデジグネータ直書き**なので、番号を振り直したら
-  必ず追随させること。忘れると微細ピッチのファンアウト緩和が黙って効かなくなる。
+★**`.kicad_dru` の `memberOfFootprint` はデジグネータ直書き**なので、振り直したら
+  必ず確認すること。現在の参照は `U1`(TVP7002) / `U7`(FT2232H) / `U10`(SO-DIMM) /
+  `JP1`(5V給電ジャンパ) / `D*`(ESDアレイ、ワイルドカード)。忘れると微細ピッチの
+  ファンアウト緩和が黙って無効になり clearance 違反が激増する(実測 0→401件)。
 
-| 旧 | 新 | 回路上の位置 | 値 |
+★**配列(`new X[n]`)の要素を減らすと、残った部品のネットだけが入れ替わる。**
+  添字が `atopile_address` になるため、フットプリントと既存配線はそのままネットが
+  変わって短絡する。実際に `nc_caps` で起きた(2026-08-14)。要素数が変わりうる
+  ものは個別の名前にしておくこと。
+
+| V0 | 現在 | 回路上の位置 | 値 |
 |---|---|---|---|
 | U10 | **U1** | `tvp` | — |
 | J10 | **J1** | `vga` | — |
@@ -128,84 +135,94 @@ atopile は `keep_designators`(既定 true)のとき、`.kicad_pcb` の Referenc
 | C15 | **C53** | `c_filt1` | 100nF ±10% |
 | C16 | **C54** | `c_filt2` | 4.7nF ±10% |
 | C17 | **C55** | `c_osc` | 100nF ±10% |
-| C47 | **C56** | `nc_caps[0]` | 10nF ±10% |
-| C48 | **C57** | `nc_caps[1]` | 10nF ±10% |
-| C49 | **C58** | `nc_caps[2]` | 10nF ±10% |
-| C50 | **C59** | `nc_caps[3]` | 10nF ±10% |
-| C54 | **C60** | `nc_sog_caps[0]` | 1nF ±10% |
-| R7 | **R24** | `r_i2ca` | 2.2kΩ ±1% |
-| R10 | **R25** | `r_sda` | 2.2kΩ ±1% |
-| R9 | **R26** | `r_scl` | 2.2kΩ ±1% |
-| R8 | **R27** | `r_rst` | 2.2kΩ ±1% |
+| — | **J5** | `svideo` | — |
+| — | **R24** | `ch_y.r_term` | 75Ω ±1% |
+| — | **C56** | `ch_y.c_ac` | 100nF ±10% |
+| — | **R25** | `ch_y.r_aa` | 220Ω ±1% |
+| — | **C57** | `ch_y.c_aa` | 33pF ±5% |
+| — | **R26** | `ch_c.r_term` | 75Ω ±1% |
+| — | **C58** | `ch_c.c_ac` | 100nF ±10% |
+| — | **R27** | `ch_c.r_aa` | 220Ω ±1% |
+| — | **C59** | `ch_c.c_aa` | 33pF ±5% |
+| — | **D4** | `esd_svideo` | — |
+| — | **C60** | `c_sog1` | 100nF ±10% |
+| — | **R28** | `r_sog1` | 220Ω ±1% |
+| — | **C61** | `c_sog1_aa` | 33pF ±5% |
+| — | **C62** | `nc_bin1` | 10nF ±10% |
+| — | **C63** | `nc_gin4` | 10nF ±10% |
+| R7 | **R29** | `r_i2ca` | 2.2kΩ ±1% |
+| R10 | **R30** | `r_sda` | 2.2kΩ ±1% |
+| R9 | **R31** | `r_scl` | 2.2kΩ ±1% |
+| R8 | **R32** | `r_rst` | 2.2kΩ ±1% |
 | U11 | **U10** | `sodimm` | — |
-| D4 | **D4** | `drgb.esd[0]` | — |
-| D5 | **D5** | `drgb.esd[1]` | — |
-| R21 | **R28** | `drgb.pd[0]` | 10kΩ ±1% |
-| R22 | **R29** | `drgb.pd[1]` | 10kΩ ±1% |
-| R23 | **R30** | `drgb.pd[2]` | 10kΩ ±1% |
-| R24 | **R31** | `drgb.pd[3]` | 10kΩ ±1% |
-| R25 | **R32** | `drgb.pd[4]` | 10kΩ ±1% |
-| R26 | **R33** | `drgb.pd[5]` | 10kΩ ±1% |
+| D4 | **D5** | `drgb.esd[0]` | — |
+| D5 | **D6** | `drgb.esd[1]` | — |
+| R21 | **R33** | `drgb.pd[0]` | 10kΩ ±1% |
+| R22 | **R34** | `drgb.pd[1]` | 10kΩ ±1% |
+| R23 | **R35** | `drgb.pd[2]` | 10kΩ ±1% |
+| R24 | **R36** | `drgb.pd[3]` | 10kΩ ±1% |
+| R25 | **R37** | `drgb.pd[4]` | 10kΩ ±1% |
+| R26 | **R38** | `drgb.pd[5]` | 10kΩ ±1% |
 | U14 | **U11** | `drgb.buf[0]` | — |
 | U15 | **U12** | `drgb.buf[1]` | — |
 | U16 | **U13** | `drgb.buf[2]` | — |
-| C82 | **C61** | `drgb.dec[0]` | 100nF ±10% |
-| C83 | **C62** | `drgb.dec[1]` | 100nF ±10% |
-| C84 | **C63** | `drgb.dec[2]` | 100nF ±10% |
-| J13 | **J5** | `j_drgb` | — |
-| J4 | **J6** | `j_dbg` | — |
+| C82 | **C64** | `drgb.dec[0]` | 100nF ±10% |
+| C83 | **C65** | `drgb.dec[1]` | 100nF ±10% |
+| C84 | **C66** | `drgb.dec[2]` | 100nF ±10% |
+| J13 | **J6** | `j_drgb` | — |
+| J4 | **J7** | `j_dbg` | — |
 | LED1 | **LED1** | `led_status` | — |
-| D7 | **D6** | `d_led` | — |
-| C51 | **C64** | `c_led` | 100nF ±10% |
-| R38 | **R34** | `r_led` | 220Ω ±1% |
+| D7 | **D7** | `d_led` | — |
+| C51 | **C67** | `c_led` | 100nF ±10% |
+| R38 | **R39** | `r_led` | 220Ω ±1% |
 | TP2 | **TP2** | `tp_led_do` | — |
 | X2 | **X3** | `xo_audio` | — |
-| C21 | **C65** | `c_xo_audio` | 100nF ±10% |
+| C21 | **C68** | `c_xo_audio` | 100nF ±10% |
 | FB1 | **FB5** | `fb_audio` | — |
-| C13 | **C66** | `c_5va` | 10µF ±10% |
+| C13 | **C69** | `c_5va` | 10µF ±10% |
 | U1 | **U14** | `adc_dsub.adc` | — |
-| C1 | **C67** | `adc_dsub.c_in_l` | 1µF ±10% |
-| C2 | **C68** | `adc_dsub.c_in_r` | 1µF ±10% |
-| C3 | **C69** | `adc_dsub.c_vref_a` | 10µF ±10% |
-| C4 | **C70** | `adc_dsub.c_vref_b` | 100nF ±10% |
-| C5 | **C71** | `adc_dsub.dec[0]` | 100nF ±10% |
-| C6 | **C72** | `adc_dsub.dec[1]` | 100nF ±10% |
-| C75 | **C73** | `adc_dsub.bulk[0]` | 10µF ±10% |
-| C76 | **C74** | `adc_dsub.bulk[1]` | 10µF ±10% |
+| C1 | **C70** | `adc_dsub.c_in_l` | 1µF ±10% |
+| C2 | **C71** | `adc_dsub.c_in_r` | 1µF ±10% |
+| C3 | **C72** | `adc_dsub.c_vref_a` | 10µF ±10% |
+| C4 | **C73** | `adc_dsub.c_vref_b` | 100nF ±10% |
+| C5 | **C74** | `adc_dsub.dec[0]` | 100nF ±10% |
+| C6 | **C75** | `adc_dsub.dec[1]` | 100nF ±10% |
+| C75 | **C76** | `adc_dsub.bulk[0]` | 10µF ±10% |
+| C76 | **C77** | `adc_dsub.bulk[1]` | 10µF ±10% |
 | U2 | **U15** | `adc_aux.adc` | — |
-| C9 | **C75** | `adc_aux.c_in_l` | 1µF ±10% |
-| C10 | **C76** | `adc_aux.c_in_r` | 1µF ±10% |
-| C11 | **C77** | `adc_aux.c_vref_a` | 10µF ±10% |
-| C12 | **C78** | `adc_aux.c_vref_b` | 100nF ±10% |
-| C77 | **C79** | `adc_aux.dec[0]` | 100nF ±10% |
-| C78 | **C80** | `adc_aux.dec[1]` | 100nF ±10% |
-| C7 | **C81** | `adc_aux.bulk[0]` | 10µF ±10% |
-| C8 | **C82** | `adc_aux.bulk[1]` | 10µF ±10% |
-| D1 | **D7** | `esd_audio` | — |
-| J8 | **J7** | `spdif` | — |
-| C19 | **C83** | `c_spdif` | 100nF ±10% |
-| J5 | **J8** | `j11_argus` | — |
+| C9 | **C78** | `adc_aux.c_in_l` | 1µF ±10% |
+| C10 | **C79** | `adc_aux.c_in_r` | 1µF ±10% |
+| C11 | **C80** | `adc_aux.c_vref_a` | 10µF ±10% |
+| C12 | **C81** | `adc_aux.c_vref_b` | 100nF ±10% |
+| C77 | **C82** | `adc_aux.dec[0]` | 100nF ±10% |
+| C78 | **C83** | `adc_aux.dec[1]` | 100nF ±10% |
+| C7 | **C84** | `adc_aux.bulk[0]` | 10µF ±10% |
+| C8 | **C85** | `adc_aux.bulk[1]` | 10µF ±10% |
+| D1 | **D8** | `esd_audio` | — |
+| J8 | **J8** | `spdif` | — |
+| C19 | **C86** | `c_spdif` | 100nF ±10% |
+| J5 | **J9** | `j11_argus` | — |
 | H1 | **H1** | `mount[0]` | — |
 | H2 | **H2** | `mount[1]` | — |
 | H3 | **H3** | `mount[2]` | — |
 | H4 | **H4** | `mount[3]` | — |
 | H5 | **H5** | `mount[4]` | — |
-| J3 | **J9** | `j_oled` | — |
+| J3 | **J10** | `j_oled` | — |
 | U4 | **U16** | `eeprom_mac0` | — |
 | U5 | **U17** | `eeprom_mac1` | — |
-| C39 | **C84** | `dec_eeprom[0]` | 100nF ±10% |
-| C40 | **C85** | `dec_eeprom[1]` | 100nF ±10% |
-| J2 | **J10** | `eth.jack` | — |
-| J11 | **J11** | `eth.jack2` | — |
-| C43 | **C86** | `eth.ct_caps[0]` | 100nF ±10% |
-| C44 | **C87** | `eth.ct_caps[1]` | 100nF ±10% |
-| R16 | **R35** | `eth.r_led_g` | 220Ω ±1% |
-| R17 | **R36** | `eth.r_led_y` | 220Ω ±1% |
-| R18 | **R37** | `eth.r_led_g2` | 220Ω ±1% |
-| R19 | **R38** | `eth.r_led_y2` | 220Ω ±1% |
-| C41 | **C88** | `eth.bridge_caps[0]` | 4.7nF ±10% |
-| C42 | **C89** | `eth.bridge_caps[1]` | 4.7nF ±10% |
-| C61 | **C90** | `eth.bridge_caps[2]` | 4.7nF ±10% |
-| C62 | **C91** | `eth.bridge_caps[3]` | 4.7nF ±10% |
+| C39 | **C87** | `dec_eeprom[0]` | 100nF ±10% |
+| C40 | **C88** | `dec_eeprom[1]` | 100nF ±10% |
+| J2 | **J11** | `eth.jack` | — |
+| J11 | **J12** | `eth.jack2` | — |
+| C43 | **C89** | `eth.ct_caps[0]` | 100nF ±10% |
+| C44 | **C90** | `eth.ct_caps[1]` | 100nF ±10% |
+| R16 | **R40** | `eth.r_led_g` | 220Ω ±1% |
+| R17 | **R41** | `eth.r_led_y` | 220Ω ±1% |
+| R18 | **R42** | `eth.r_led_g2` | 220Ω ±1% |
+| R19 | **R43** | `eth.r_led_y2` | 220Ω ±1% |
+| C41 | **C91** | `eth.bridge_caps[0]` | 4.7nF ±10% |
+| C42 | **C92** | `eth.bridge_caps[1]` | 4.7nF ±10% |
+| C61 | **C93** | `eth.bridge_caps[2]` | 4.7nF ±10% |
+| C62 | **C94** | `eth.bridge_caps[3]` | 4.7nF ±10% |
 
-合計 185個。番号が変わったもの 171個、変わらなかったもの 14個。
+合計 195個。V0から番号が変わったもの 167個、変わらなかったもの 13個、V0に無かった追加部品 15個。
