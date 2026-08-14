@@ -51605,7 +51605,7 @@
 		(uuid "2196d48b-fafa-490f-a9b0-d7c479dcb239")
 	)
 	(gr_rect
-		(start 87.454 49)
+		(start 87.5 49)
 		(end 187.5 149)
 		(stroke
 			(width 0.15)
