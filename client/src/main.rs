@@ -1538,11 +1538,22 @@ impl ViewerApp {
             }
             _ => 200,
         };
-        row(ui, "pll_div", &mut self.tune_pll_divide, pll_min, 2304,
-            protocol::CFG_KEY_PLL_DIVIDE, &mut send);
         // YC8(コンポジット/S端子)は pll_divide が規格で決まる。Viewerの
         // 自動経路(帯域ごとの復元・自動調整・send all)を止めていることを示す。
         let pll_locked = self.pll_locked_by_format();
+        // ★送るのを止めたら**表示もボードの実値に合わせる**。片方だけ直すと、
+        //   欄に古い値(自動調整が入れた2304など)が残ってボードの実値(1820)と
+        //   食い違い、「効いていない」ように見える(実際そう見えた)。
+        //   MODE の htotal はボードの pll_divide そのものなので、それを映す。
+        if pll_locked {
+            if let Some(ht) = self.shared.mode.lock().unwrap().as_ref()
+                .map(|m| m.htotal as i32).filter(|h| *h > 0)
+            {
+                self.tune_pll_divide = ht;
+            }
+        }
+        row(ui, "pll_div", &mut self.tune_pll_divide, pll_min, 2304,
+            protocol::CFG_KEY_PLL_DIVIDE, &mut send);
         if pll_locked {
             ui.colored_label(
                 egui::Color32::from_rgb(120, 200, 120),

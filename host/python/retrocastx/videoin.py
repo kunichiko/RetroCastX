@@ -105,7 +105,21 @@ SYNC_SOG   = 0x5B       # H も V も SOG から取る(MSXのCSYNC / コンポ�
 #              バーストの後ろ(7.9〜9.3µs = 226〜266クロック)に置く
 #   clamp_sel  bit2=Blue bit1=Green bit0=Red、1=ミッドレベル
 
-_RGB_ANALOG = [
+# ファインゲイン(reg 08h/09h/0Ah)。Gain = 1 + N/256 で、**下げられない**(N=0が1.0倍)。
+# 既定 35/33/39 は RGB入力で白のチャネル間バランスを取った実測値。
+#
+# ★コンポジットでは **G を 0(1.000倍)にする**。粗ゲインが既に最小(0.5倍)なのに
+#   ファインゲインが 1.129倍 掛かっていて、**白が 4.6% クリップしていた**
+#   (実測 2026-08-14: ブランキング167 / 1 IRE = 1.00コード → 白100 IREが267)。
+#   0 にすると 250 に収まりクリップ 0.00%。バーストは 38→33コードに減るが
+#   設計値36の近くで、合格下限24より十分上。
+_FINE_GAIN_RGB = [
+    (proto.CFG_KEY_GAIN_B, 35, "青ファインゲイン(RGB入力で実測した値)"),
+    (proto.CFG_KEY_GAIN_G, 33, "緑ファインゲイン(同)"),
+    (proto.CFG_KEY_GAIN_R, 39, "赤ファインゲイン(同)"),
+]
+
+_RGB_ANALOG = _FINE_GAIN_RGB + [
     (proto.CFG_KEY_CLAMP_SEL,      0b000, "R/G/B全てボトムレベルクランプ"),
     (proto.CFG_KEY_COARSE_GAIN_GB,  0x77, "G/B粗ゲイン1.2倍(TVP既定)"),
     (proto.CFG_KEY_COARSE_GAIN_R,   0x07, "R粗ゲイン1.2倍(TVP既定。1Bhとビット割りが違う)"),
@@ -169,8 +183,12 @@ MODES = {
             (proto.CFG_KEY_COARSE_GAIN_GB, 0x07,
              "★Green粗ゲイン0.5倍。ミッドレベルのヘッドルーム半減を吸収する"),
             (proto.CFG_KEY_COARSE_GAIN_R, 0x07, "Redは未使用(既定)"),
-            (proto.CFG_KEY_COARSE_OFF_G, 0x10, "G粗オフセット既定"),
+            (proto.CFG_KEY_COARSE_OFF_G, 0x10, "G粗オフセット既定(ファインクランプ下では効かない)"),
             (proto.CFG_KEY_COARSE_OFF_R, 0x10, "R粗オフセット既定"),
+            (proto.CFG_KEY_GAIN_B, 35, "青は未使用(RGBの既定)"),
+            (proto.CFG_KEY_GAIN_G, 0,
+             "★緑ファインゲイン1.000倍。33(=1.129倍)だと白が4.6%クリップした"),
+            (proto.CFG_KEY_GAIN_R, 39, "赤は未使用(RGBの既定)"),
         ],
     },
     "svideo": {
@@ -184,6 +202,10 @@ MODES = {
             (proto.CFG_KEY_COARSE_GAIN_R, 0x07, "C も既定1.2倍。余裕があれば0x08/0x09へ"),
             (proto.CFG_KEY_COARSE_OFF_G, 0x10, "G粗オフセット既定"),
             (proto.CFG_KEY_COARSE_OFF_R, 0x10, "R粗オフセット既定"),
+            # 配線したら probe で飽和を見て詰める(コンポジットではGを0にした)
+            (proto.CFG_KEY_GAIN_B, 35, "青は未使用(RGBの既定)"),
+            (proto.CFG_KEY_GAIN_G, 0, "Yのファインゲイン1.000倍(実測後に詰める)"),
+            (proto.CFG_KEY_GAIN_R, 0, "Cのファインゲイン1.000倍(同)"),
         ],
     },
 }
