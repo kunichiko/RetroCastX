@@ -513,6 +513,10 @@ pub struct Shared {
     /// インターレース時の残光(前フィールドの行をどれだけ残すか)。
     /// UIから実行時に変えられるよう Shared 経由で渡す。None なら起動時の値のまま。
     pub interlace_decay: Mutex<Option<f32>>,
+    /// 復調せず、生のY(緑ch=CVBSそのもの)をグレースケールで見る。
+    /// **切り分けの道具。** 「二重に見える」等がデコーダ由来か、それより前(信号や
+    /// 送出側)かを、絵を見るだけで分けられる。None なら変更なし。
+    pub raw_view: Mutex<Option<bool>>,
 }
 
 #[derive(Clone, Default)]
@@ -864,6 +868,9 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         // UIから残光が変わっていたら取り込む(フレーム完成時だけで十分)
         if let Some(d) = shared.interlace_decay.lock().unwrap().take() {
             asm.set_interlace_decay(d);
+        }
+        if let Some(v) = shared.raw_view.lock().unwrap().take() {
+            asm.set_raw_view(v);
         }
         if let Some(frame) = asm.feed(&buf[..n]) {
             frames_since += 1;

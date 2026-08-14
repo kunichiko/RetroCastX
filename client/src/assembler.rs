@@ -68,6 +68,8 @@ pub struct FrameAssembler {
     /// プログレッシブ変換的にチラつき無しで見たい人もいる。好みの幅があるので
     /// 設定で変えられるようにしてある。
     interlace_decay: f32,
+    /// 復調を止めて生のYをそのまま見る(切り分け用)
+    raw_view: bool,
     /// 公開用バッファの使い回し先。UIが使い終わったものを recycle() で戻す。
     /// 毎フレームの確保をなくすためだけのもので、中身に意味は無い。
     spare: Option<Vec<u8>>,
@@ -97,6 +99,7 @@ impl FrameAssembler {
             interlace_measured: false,
             decay: 0.8,
             interlace_decay: 1.0,
+            raw_view: false,
         }
     }
 
@@ -157,6 +160,12 @@ impl FrameAssembler {
     }
 
     /// インターレース時の減衰率を設定(1.0=減衰しない)。
+    /// 復調を止めて生のYを見るか。**artefactの出所を分けるための道具。**
+    /// ライン受信時に fb へ書いているグレースケールがそのまま残る。
+    pub fn set_raw_view(&mut self, v: bool) {
+        self.raw_view = v;
+    }
+
     pub fn set_interlace_decay(&mut self, d: f32) {
         self.interlace_decay = d;
     }
@@ -390,7 +399,7 @@ impl FrameAssembler {
         //
         // ロックしなかったとき(バーストが無い信号など)は fb を触らないので、
         // ライン受信時に書いてあるYのグレースケールがそのまま残る。
-        if !self.raw.is_empty() {
+        if !self.raw.is_empty() && !self.raw_view {
             let dotclk = self.mode.as_ref().map(|m| m.dotclk_hz).unwrap_or(0);
             let hist = ntsc::History {
                 p2: &self.raw_p2, p4: &self.raw_p4, hist_n: &self.hist_n,

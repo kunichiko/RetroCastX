@@ -501,6 +501,8 @@ struct ViewerApp {
     /// フレーム間引き。0=毎フレーム / 1=2フレームに1回 …
     /// 受信が追いつかない機械での保険。音声は間引かない
     tune_frame_skip: u8,
+    /// 復調を止めて生のYを見る(切り分け用。設定には保存しない)
+    raw_view: bool,
     /// 直近で入力設定を書き込んだソース(ラベル, 件数)。パネルの確認表示用。
     input_regs_sent: Option<(&'static str, usize)>,
     /// 映像ソースのプロファイル名(profiles::PROFILES の key)。空文字は「自動」。
@@ -631,6 +633,7 @@ impl ViewerApp {
             tune_full_line: cfg.tune_full_line,
             tune_frame_skip: cfg.tune_frame_skip,
             tune_phase: cfg.tune_phase,
+            raw_view: false,
             input_regs_sent: None,
             source_profile: cfg.source_profile.clone(),
             tune_pending: Default::default(),
@@ -1696,6 +1699,25 @@ impl ViewerApp {
         }
         if let Some((label, n)) = self.input_regs_sent {
             ui.monospace(format!("入力設定を書いた: {label} ({n}件)"));
+        }
+        // 復調前の生Yをそのまま見る。**artefactの出所を分ける道具。**
+        //
+        // 「線が二重に見える」「縞が出る」が復調由来なのか、それより前(信号そのもの、
+        // 送出側のフィルタ、アナログ経路)なのかは、絵を見比べれば一発で分かる。
+        // 生では副搬送波が8サンプル周期の細かい市松模様として見えるのが正常。
+        // 設定には保存しない(次に開いたとき灰色で驚くので)。
+        {
+            let mut v = self.raw_view;
+            if ui.checkbox(&mut v, "復調しない(生のYを見る)")
+                .on_hover_text(
+                    "NTSC復調を止めて、緑ch(CVBSそのもの)をグレースケールで出す。\n\
+                     色は出ないが、二重像や縞が復調より前にあるかを目で分けられる。\n\
+                     細かい市松模様は副搬送波(8サンプル周期)で、これは正常")
+                .changed()
+            {
+                self.raw_view = v;
+                *self.shared.raw_view.lock().unwrap() = Some(v);
+            }
         }
         // 選んだプロファイル(空なら全部試す)での答え
         let pick = if self.source_profile.is_empty() {
