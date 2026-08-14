@@ -65,6 +65,45 @@ def make_lines(colors, n_lines=24, v_sign=1.0):
     return out
 
 
+def make_lines_phase(colors, n_lines=24, phase_off=0.0, alternate_rows=False):
+    """`make_lines` の位相オフセット付き版。3次元コムの試験に使う。
+
+    同じライン番号の履歴は、NTSCフレーム差で位相が 180°×n ずれる:
+        prev2 (1 NTSCフレーム前) → +180°
+        prev4 (2 NTSCフレーム前) → +360° = 0°
+
+    `alternate_rows=True` にすると**行ごとに色を交互**にする。これは
+    「上下のラインの色が同じ」という2次元コムの前提を壊す形で、2次元コムが
+    原理的に失敗し、3次元コムなら正しく出る。差が出ることを確かめるための形。
+    """
+    n = int(round(H_US * 1e-6 * SPS))
+    a = int(5.4e-6 * SPS)
+    out = np.zeros((n_lines, n), dtype=np.uint8)
+    aa = int(ntsc.ACTIVE_US[0] * 1e-6 * SPS)
+    for li in range(n_lines):
+        flip = math.pi * li + phase_off
+        row = np.full(n, BLANK)
+        k = np.arange(n)
+        psi = 2 * np.pi * (k - a) / 8.0 - flip
+        row[: int(4.7e-6 * SPS)] = BLANK - 40.0 * CPI
+        b0, b1 = a, int(7.7e-6 * SPS)
+        row[b0:b1] = BLANK + 20.0 * CPI * np.cos(psi[b0:b1])
+        per = (n - aa) // len(colors)
+        for ci in range(len(colors)):
+            pick = (ci + li) % len(colors) if alternate_rows else ci
+            r, g, b = colors[pick]
+            s = aa + ci * per
+            e = aa + (ci + 1) * per if ci < len(colors) - 1 else n
+            yy = 0.299 * r + 0.587 * g + 0.114 * b
+            u = 0.493 * (b - yy)
+            v = 0.877 * (r - yy)
+            pp = psi[s:e]
+            c = (-u * np.cos(pp) + v * np.sin(pp)) / 2.0
+            row[s:e] = BLANK + (yy * 100.0 + c * 100.0) * CPI
+        out[li] = np.clip(np.round(row), 0, 255)
+    return out
+
+
 def hue_of(rgb, x0, x1, y0, y1):
     import colorsys
     p = rgb[y0:y1, x0:x1].reshape(-1, 3)
@@ -123,6 +162,53 @@ def main():
         ok.append(check("1本の%sが1本のまま出る" % nm, abs(pk) > 20 and leak < 0.2,
                         "山 %.1f  隣への漏れ %.0f%%(3本に広がっていれば50%%)"
                         % (pk, 100 * leak)))
+
+    # --- 3次元(動き適応フレームコム) ---
+    #
+    # 2次元コムは「上下のラインの色が同じ」を前提にしている。**行ごとに色が
+    # 交互する模様**はその前提を壊すので原理的に失敗する。3次元は同じライン番号の
+    # 1フレーム前(位相180°)と引くので、静止していれば**垂直方向を一切見ない**。
+    #
+    # 履歴の位相: prev2 = +180° (1 NTSCフレーム前) / prev4 = 0° (2フレーム前)。
+    # 実測で 175.8° / 4.2° を確認してある。
+    c6 = [(0.75, 0.0, 0.0), (0.0, 0.75, 0.0), (0.0, 0.0, 0.75),
+          (0.75, 0.75, 0.0), (0.0, 0.75, 0.75), (0.75, 0.0, 0.75)]
+    import colorsys as _cs
+    w6 = [_cs.rgb_to_hsv(*c)[0] * 360.0 for c in c6]
+    cur = make_lines_phase(c6, 24, 0.0, alternate_rows=True)
+    p2 = make_lines_phase(c6, 24, math.pi, alternate_rows=True)
+    p4 = make_lines_phase(c6, 24, 0.0, alternate_rows=True)
+
+    def hue_err(rgb, li):
+        """行 li の6色それぞれの色相誤差の最大値。"""
+        wd = rgb.shape[1]
+        per = wd // len(c6)
+        e = []
+        for i in range(len(c6)):
+            h, _ = hue_of(rgb, i * per + per // 4, i * per + per * 3 // 4, li, li + 1)
+            e.append(abs(ang(h, w6[(i + li) % len(c6)])))
+        return max(e)
+
+    r2d, _ = ntsc.decode(cur, SPS)
+    r3d, i3 = ntsc.decode(cur, SPS, prev2=p2, prev4=p4)
+    li = 12
+    e2, e3 = hue_err(r2d, li), hue_err(r3d, li)
+    ok.append(check("3次元が使われたと報告する", i3["comb3d"] is True))
+    ok.append(check("静止なら動き判定はほぼ0", i3["motion_frac"] < 0.02,
+                    "%.1f%%" % (100 * i3["motion_frac"])))
+    ok.append(check("行ごとに色が交互する模様: 2次元コムは失敗する", e2 > 20.0,
+                    "2次元でも誤差 %.1f° しか出ない = 試験になっていない" % e2))
+    ok.append(check("  3次元なら正しく復調できる(誤差<8°)", e3 < 8.0,
+                    "誤差 %.1f°(2次元は %.1f°)" % (e3, e2)))
+
+    # 動いている所ではフレームコムが成立しないので2次元へ落ちること。
+    # prev2 の輝度を大きくずらして「動いた」状態を作る
+    p2m = p2.astype(np.int16) + 40
+    p2m = np.clip(p2m, 0, 255).astype(np.uint8)
+    _, im = ntsc.decode(cur, SPS, prev2=p2m, prev4=np.clip(
+        p4.astype(np.int16) + 40, 0, 255).astype(np.uint8))
+    ok.append(check("動いている所は動きと判定して2次元へ落ちる",
+                    im["motion_frac"] > 0.8, "%.1f%%" % (100 * im["motion_frac"])))
 
     # --- クロマLPFが 2fsc をきっちり消すこと ---
     #

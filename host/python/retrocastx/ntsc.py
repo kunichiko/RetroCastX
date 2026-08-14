@@ -87,6 +87,55 @@ def _boxcar(x, n):
         :, pad:pad + x.shape[1]]
 
 
+def chroma_comb3d(rows, prev2, prev4, cpi, motion_ire=8.0, step=1):
+    """**3次元(動き適応フレームコム)**でクロマを取り出す。
+
+    ## 成立の根拠(すべて実測済み、2026-08-14)
+
+    NTSCは1フレームあたり 525×227.5 = 119437.5 周期で端数0.5周期なので、
+    **1フレームで副搬送波の位相が180°反転する**。ボードの「フレーム」は
+    1フィールドなので、同じライン番号は2フレームおきに来る:
+
+        ボードのフレーム差 2 (NTSCフレーム差 1) : 位相差 175.8°  (n=4576)
+        ボードのフレーム差 4 (NTSCフレーム差 2) : 位相差   4.2°
+
+    映像域の副搬送波成分で見ても筋が通る:
+
+        X                        4768
+        X - P2 (1フレーム差)      9315   位相180° → クロマが2倍  → **C が取れる**
+        X + P2                   1021   クロマが消える          → Y が取れる
+        X - P4 (2フレーム差)       388   クロマが消える          → **純粋な動き**
+
+    ## なぜ 3次元が効くか
+
+    **静止部分ではフレームコムが原理的に正解**(輝度がフレーム間で同一なので
+    X - P2 が厳密に 2C になる)。垂直方向を一切見ないので、2次元コムのように
+    垂直detailで崩れない。それを基準に2次元コムの誤差を測ると:
+
+        垂直detailが小さい所(下位50%)  0.79 IRE  ← ノイズ床(約4 IRE)以下
+        垂直detailが大きい所(上位10%)  9.47 IRE  ← **12倍**
+
+    文字や細い横構造の縁で 9.5 IRE の色ずれが出ていた。そこが直る。
+
+    ## 動き検出に P4 を使う理由
+
+    **`|X - P2|` は動き検出に使えない。** 位相が180°なのでクロマがそのまま
+    差に出て、色のある所が全部「動いている」ことになる(上の表の9315)。
+    `|X - P4|` は位相が同じなのでクロマが消え、**純粋な輝度の時間差**になる。
+    実測の分布は 中央値 2.3 IRE / 90%点 4.7 / 最大 52.3 で、ノイズ床が
+    2〜4 IRE なので閾値は 8 IRE 程度が妥当。
+
+    動いている所ではフレームコムが成立しないので 2次元へ落とす(= 動き適応)。
+    """
+    x = rows.astype(np.float64)
+    c3d = (x - prev2.astype(np.float64)) / 2.0
+    c2d = chroma_comb(rows, step)
+    # 動き量。副搬送波1周期(8サンプル)で平均してノイズを落とす
+    motion = _boxcar(np.abs(x - prev4.astype(np.float64)), 8)
+    a = np.clip(motion / max(motion_ire * cpi, 1e-6), 0.0, 1.0)
+    return (1.0 - a) * c3d + a * c2d, a
+
+
 def chroma_comb(rows, step=1, adapt_ire=0.0):
     """クロマ C を取り出す。`adapt_ire > 0` なら **2次元適応コム**(既定は使わない)。
 
@@ -182,7 +231,8 @@ def chroma_comb(rows, step=1, adapt_ire=0.0):
     return (1.0 - a) * c_comb + a * c_notch
 
 
-def decode(rows, sps, hue_deg=0.0, sat=1.0, chroma_lpf=16, adapt_ire=0.0):
+def decode(rows, sps, hue_deg=0.0, sat=1.0, chroma_lpf=16, adapt_ire=0.0,
+           prev2=None, prev4=None, motion_ire=8.0):
     """1フィールドぶんの生サンプルを RGB(float, 0..1)にする。
 
     `adapt_ire` は2次元適応コムの閾値[IRE]。**既定0(=2次元コム)。実測で悪化した**
@@ -197,7 +247,13 @@ def decode(rows, sps, hue_deg=0.0, sat=1.0, chroma_lpf=16, adapt_ire=0.0):
     tip0 = np.median(rows[:, ta:tb])
     blank0 = np.median(rows[:, ba2:bb2])
     cpi0 = max(1e-6, (blank0 - tip0) / 40.0)
-    c_full = chroma_comb(rows, 1, adapt_ire * cpi0)
+    # 履歴が揃っていれば3次元(動き適応フレームコム)。無ければ2次元
+    motion_frac = None
+    if prev2 is not None and prev4 is not None:
+        c_full, alpha = chroma_comb3d(rows, prev2, prev4, cpi0, motion_ire)
+        motion_frac = float((alpha >= 0.5).mean())
+    else:
+        c_full = chroma_comb(rows, 1, adapt_ire * cpi0)
 
     n = np.arange(rows.shape[1])
     # ψ(n) = 2π(n-a)/8 - φ   … この位相でバーストが cos の山になる
@@ -266,22 +322,51 @@ def decode(rows, sps, hue_deg=0.0, sat=1.0, chroma_lpf=16, adapt_ire=0.0):
         "burst_mag": mag,
         "tip": tip, "blank": blank, "code_per_ire": code_per_ire,
         "active": (aa, ab),
+        # 3次元を使ったか / そのうち「動いている」と判定した画素の割合
+        "comb3d": motion_frac is not None,
+        "motion_frac": motion_frac,
     }
     return rgb, info
 
 
-def load_field(path, frame=None):
-    """.npz から1フレーム(=1フィールド)ぶんをライン番号順に取り出す。"""
+def load_field(path, frame=None, history=False):
+    """.npz から1フレーム(=1フィールド)ぶんをライン番号順に取り出す。
+
+    `history=True` なら **3次元コム用の履歴も返す**:
+    `(rows, prev2, prev4, lines, meta, frame)`。
+
+    prev2 は「同じライン番号の2ボードフレーム前」= 1 NTSCフレーム前(位相180°)、
+    prev4 は 4ボードフレーム前 = 2 NTSCフレーム前(位相0°、動き検出用)。
+    **同じライン番号は2ボードフレームおきにしか来ない**(フィールドごとに
+    パリティが反転する)ので、差は 2 と 4 になる。
+    """
     d = np.load(path, allow_pickle=True)
     y, ln, fr = d["y"], d["line"], d["frame"]
     meta = d["meta"].item()
-    if frame is None:
-        # 行数が最も揃っているフレームを選ぶ(端のフレームは欠けやすい)
-        u, cnt = np.unique(fr, return_counts=True)
-        frame = int(u[np.argmax(cnt)])
-    m = fr == frame
-    o = np.argsort(ln[m])
-    return y[m][o], ln[m][o], meta, frame
+    if not history:
+        if frame is None:
+            # 行数が最も揃っているフレームを選ぶ(端のフレームは欠けやすい)
+            u, cnt = np.unique(fr, return_counts=True)
+            frame = int(u[np.argmax(cnt)])
+        m = fr == frame
+        o = np.argsort(ln[m])
+        return y[m][o], ln[m][o], meta, frame
+
+    idx = {}
+    for i in range(len(y)):
+        idx.setdefault(int(fr[i]), {})[int(ln[i])] = i
+    cand = [f for f in sorted(idx)
+            if f - 2 in idx and f - 4 in idx and len(idx[f]) > 200]
+    if not cand:
+        raise SystemExit("履歴(F-2, F-4)が揃うフレームが無い。--seconds を増やす")
+    frame = cand[len(cand) // 2] if frame is None else frame
+    if frame not in cand:
+        raise SystemExit("フレーム %d は履歴が揃っていない。候補: %s"
+                         % (frame, cand[:8]))
+    common = sorted(set(idx[frame]) & set(idx[frame - 2]) & set(idx[frame - 4]))
+    pick = lambda f: y[[idx[f][L] for L in common]]
+    return pick(frame), pick(frame - 2), pick(frame - 4), \
+        np.array(common), meta, frame
 
 
 def to_png(rgb, path, width=720):
@@ -320,18 +405,30 @@ def main():
     ap.add_argument("--lpf", type=int, default=16,
                     help="クロマの移動平均長[サンプル]。8の倍数にすること")
     ap.add_argument("--width", type=int, default=720)
+    ap.add_argument("--3d", dest="use3d", action="store_true",
+                    help="3次元(動き適応フレームコム)を使う。履歴が要るので "
+                         "capture の --seconds を長めに")
+    ap.add_argument("--motion-ire", type=float, default=8.0,
+                    help="動き判定の閾値[IRE]。ノイズ床(約4)より上にする")
     ap.add_argument("--adapt-ire", type=float, default=0.0,
                     help="2次元適応コムの閾値[IRE]。0=2次元コム(既定)。"
                          "実測では偽色が悪化したので通常は使わない")
     args = ap.parse_args()
 
-    rows, ln, meta, frame = load_field(args.inp, args.frame)
+    p2 = p4 = None
+    if args.use3d:
+        rows, p2, p4, ln, meta, frame = load_field(args.inp, args.frame, True)
+    else:
+        rows, ln, meta, frame = load_field(args.inp, args.frame)
     sps = meta["dotclk_hz"]
     print("frame %d: %d行 × %dサンプル  dotclk=%.4fMHz  fH=%.1fHz"
           % (frame, rows.shape[0], rows.shape[1], sps / 1e6, meta["fh_hz"]))
     print("副搬送波 %.2f サンプル/周期" % (sps / FSC_NTSC))
 
-    rgb, info = decode(rows, sps, args.hue, args.sat, args.lpf, args.adapt_ire)
+    rgb, info = decode(rows, sps, args.hue, args.sat, args.lpf, args.adapt_ire,
+                       p2, p4, args.motion_ire)
+    if info["comb3d"]:
+        print("3次元コム: 動いていると判定した画素 %.1f%%" % (100*info["motion_frac"]))
     ok = info["burst_mag"] > 200
     print("同期チップ %.0f / ブランキング %.0f → 1 IRE = %.2f コード"
           % (info["tip"], info["blank"], info["code_per_ire"]))

@@ -92,6 +92,10 @@ pub struct StatsSnapshot {
     pub ntsc_comb_step: u8,
     /// 隣接ライン(コム間隔ぶん)の位相差[度]。180°付近が正常
     pub ntsc_phase_deg: f32,
+    /// 3次元(動き適応フレームコム)を使えた行数
+    pub ntsc_lines_3d: u32,
+    /// そのうち「動いている」と判定した画素の割合(0..1)
+    pub ntsc_motion_frac: f32,
     /// 測定で「インタレースの1フィールドずつ来ている」と判定しているか。
     /// mflags では判定できないので、埋まる行のパリティの交互性で決めている
     pub interlace_measured: bool,
@@ -944,6 +948,8 @@ fn tick_stats(
         ntsc_locked: asm.ntsc_info.as_ref().map(|i| i.lines_locked).unwrap_or(0),
         ntsc_comb_step: asm.ntsc_info.as_ref().map(|i| i.comb_step as u8).unwrap_or(0),
         ntsc_phase_deg: asm.ntsc_info.as_ref().map(|i| i.phase_delta_deg).unwrap_or(0.0),
+        ntsc_lines_3d: asm.ntsc_info.as_ref().map(|i| i.lines_3d).unwrap_or(0),
+        ntsc_motion_frac: asm.ntsc_info.as_ref().map(|i| i.motion_frac).unwrap_or(0.0),
         interlace_measured: asm.interlace_measured,
         occ_h: tune.occ,
         tune_n: tune.n,

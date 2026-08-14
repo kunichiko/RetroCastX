@@ -35,6 +35,16 @@ const PORCH_US: (f32, f32) = (7.9, 9.3);
 /// ぶん入って完全に消える。適当な窓長だと色に細かい縞が残る。
 const CHROMA_LPF: usize = 16;
 
+/// 3次元コムで「動いている」と判定する輝度の時間差[IRE]。
+///
+/// 動き検出には **2 NTSCフレーム前**(位相0°でクロマが消える)を使う。
+/// 1フレーム前は位相180°なのでクロマがそのまま差に出て、**色のある所が全部
+/// 「動いている」ことになる**(実測で副搬送波成分が 388 対 9315)。
+///
+/// 実測の動き量の分布は 中央値 2.3 IRE / 90%点 4.7 / 最大 52.3 で、ノイズ床が
+/// 2〜4 IRE。閾値をノイズ床より下にすると常に2次元へ落ちて意味が無くなる。
+const MOTION_IRE: f32 = 8.0;
+
 /// バーストが取れたと判定する相関の下限。これ未満の行は無彩色にする。
 ///
 /// ★真っ黒な領域では相関が雑音になり、**色相が乱数になる**(実測: 彩度0.03〜0.09の
@@ -46,6 +56,10 @@ pub struct Info {
     pub comb_step: usize,
     pub phase_delta_deg: f32,
     pub code_per_ire: f32,
+    /// 3次元(動き適応フレームコム)を使えた行数
+    pub lines_3d: u32,
+    /// そのうち「動いている」と判定した画素の割合(0..1)
+    pub motion_frac: f32,
 }
 
 fn win(us: (f32, f32), sps: f32, w: usize) -> (usize, usize) {
@@ -79,6 +93,14 @@ fn ang_diff(a: f32, b: f32) -> f32 {
 /// `raw` は 2バイト/サンプル(下位=緑ch=CVBS、上位=赤ch。コンポジットでは赤は未使用)。
 /// `filled[y]` がそのラインを受信したか。受信していない行は触らない
 /// (呼び出し側の欠損補間・減衰に任せる)。
+/// 3次元コム用の履歴。`p2` は1 NTSCフレーム前(位相180°)、`p4` は2フレーム前
+/// (位相0°、動き検出用)。`hist_n[y] >= 3` の行だけ3次元を使う。
+pub struct History<'a> {
+    pub p2: &'a [u8],
+    pub p4: &'a [u8],
+    pub hist_n: &'a [u8],
+}
+
 pub fn decode_field(
     raw: &[u8],
     w: usize,
@@ -86,12 +108,13 @@ pub fn decode_field(
     filled: &[bool],
     dotclk_hz: u32,
     fb: &mut [u8],
+    hist: Option<History<'_>>,
 ) -> Info {
     let sps = dotclk_hz as f32;
     let (ba, bb) = win(BURST_US, sps, w);
     if sps <= 0.0 || bb <= ba + 8 || w < 16 {
         return Info { lines_locked: 0, comb_step: 0, phase_delta_deg: 0.0,
-                      code_per_ire: 0.0 };
+                      code_per_ire: 0.0, lines_3d: 0, motion_frac: 0.0 };
     }
 
     // --- 1. ラインごとのバースト位相 ---
@@ -153,7 +176,7 @@ pub fn decode_field(
         // 180°になるペアが見つからない = バーストが取れていない。
         // 何もしないで戻る(呼び出し側のグレースケール表示が残る)。
         return Info { lines_locked: 0, comb_step: 0, phase_delta_deg: 0.0,
-                      code_per_ire: 0.0 };
+                      code_per_ire: 0.0, lines_3d: 0, motion_frac: 0.0 };
     }
 
     // --- 3. レベル校正。同期チップ(-40 IRE)とバックポーチ(0 IRE)から求める ---
@@ -187,7 +210,11 @@ pub fn decode_field(
     let mut u = vec![0.0f32; w];
     let mut v = vec![0.0f32; w];
     let mut yl = vec![0.0f32; w];
+    let mut mot = vec![0.0f32; w];
     let mut locked = 0u32;
+    let mut lines_3d = 0u32;
+    let (mut moving, mut n3) = (0u32, 0u32);
+    let motion_th = MOTION_IRE * code_per_ire;
     for y in 0..h {
         if !filled.get(y).copied().unwrap_or(false) {
             continue;
@@ -204,6 +231,27 @@ pub fn decode_field(
 
         let (cp, sp) = (cosp[y], sinp[y]);
         let px = |i: usize, j: usize| raw[(i * w + j) * 2] as f32;
+        // この行で3次元が使えるか。履歴が3回以上書かれている行だけ
+        let use3d = hist.as_ref().map_or(false, |hh| {
+            hh.hist_n.get(y).copied().unwrap_or(0) >= 3
+                && hh.p2.len() == raw.len() && hh.p4.len() == raw.len()
+        });
+        let p2v = |i: usize, j: usize| match hist.as_ref() {
+            Some(hh) => hh.p2[(i * w + j) * 2] as f32,
+            None => 0.0,
+        };
+        if use3d {
+            lines_3d += 1;
+            // 動き検出は **2 NTSCフレーム前**(位相0°)との差。1フレーム前だと
+            // 位相180°でクロマが差に出てしまい、色のある所が全部「動いている」
+            // ことになる(実測で副搬送波成分が 388 対 9315)。
+            let hh = hist.as_ref().unwrap();
+            for n in 0..w {
+                mot[n] = (px(y, n) - hh.p4[(y * w + n) * 2] as f32).abs();
+            }
+            // 副搬送波1周期(8サンプル)で平均してノイズを落とす
+            boxcar(&mut mot, 8);
+        }
         // ψ(n) = 2π(n-ba)/8 - φ を加法定理で展開する。cos/sin の値は
         // n mod 8 の8点しかないので、積和2回で済む(8fsc の利点)。
         let psi = |n: usize| {
@@ -232,7 +280,28 @@ pub fn decode_field(
                 v[n] = 0.0;
                 continue;
             }
-            let c = (px(y, n) - acc / cnt) * 0.5;
+            let mut c = (px(y, n) - acc / cnt) * 0.5;
+            // --- 3次元(動き適応フレームコム) ---
+            //
+            // 静止部分では **フレームコムが原理的に正解**。同じライン番号の
+            // 1 NTSCフレーム前は副搬送波が180°反転しているので、差が厳密に 2C に
+            // なる(輝度がフレーム間で同一だから)。垂直方向を一切見ないので、
+            // 2次元コムのように垂直detailで崩れない。
+            //
+            // 実測(静止部分でフレームコムを正解としたときの2次元コムの誤差):
+            //     垂直detailが小さい所(下位50%)  0.79 IRE  ← ノイズ床以下
+            //     垂直detailが大きい所(上位10%)  9.47 IRE  ← **12倍**
+            //
+            // 動いている所は成立しないので 2次元へ落とす(= 動き適応)。
+            if use3d {
+                let x = px(y, n);
+                let c3 = (x - p2v(y, n)) * 0.5;
+                // 動き量は mot[] に入れてある(2フレーム前との差を平滑したもの)
+                let a = (mot[n] / motion_th.max(1e-6)).clamp(0.0, 1.0);
+                if a >= 0.5 { moving += 1; }
+                n3 += 1;
+                c = (1.0 - a) * c3 + a * c;
+            }
             let (cos_psi, sin_psi) = psi(n);
             // バーストは -(B-Y) 軸(位相180°)。V の符号は実測で決めた
             // (既知の2色が回転では合わず、V反転で合った。ntsc.py のコメント参照)
@@ -290,6 +359,8 @@ pub fn decode_field(
         comb_step,
         phase_delta_deg: phase_delta,
         code_per_ire,
+        lines_3d,
+        motion_frac: if n3 > 0 { moving as f32 / n3 as f32 } else { 0.0 },
     }
 }
 
@@ -441,7 +512,7 @@ mod tests {
             }
         }
         let mut fb = vec![255u8; w * h * 4];
-        decode_field(&raw, w, h, &filled, sps as u32, &mut fb);
+        decode_field(&raw, w, h, &filled, sps as u32, &mut fb, None);
         // 輝度の代表として G を見る
         let at = |y: usize, n: usize| fb[(y * w + n) * 4 + 1] as f32;
         let (peak, base, side) = if vertical {
@@ -520,6 +591,96 @@ mod tests {
         }
     }
 
+    /// **3次元(動き適応フレームコム)**。
+    ///
+    /// 2次元コムは「上下のラインの色が同じ」を前提にしている。**行ごとに色が
+    /// 交互する模様**はその前提を壊すので原理的に失敗する。3次元は同じライン番号の
+    /// 1 NTSCフレーム前(位相180°)と引くので、静止していれば垂直方向を見ない。
+    ///
+    /// 履歴の位相は実測済み: 2ボードフレーム差 175.8° / 4ボードフレーム差 4.2°。
+    fn synth_alt(colors: &[(f32, f32, f32)], w: usize, h: usize, sps: f32,
+                 phase_off: f32, lum_shift: f32) -> Vec<u8> {
+        let (ba, _) = win(BURST_US, sps, w);
+        let (bs, be) = win(BURST_US, sps, w);
+        let (porch, cpi) = (158.0f32, 0.78f32);
+        let sync_end = (4.7e-6 * sps) as usize;
+        let (aa, _) = win((9.6, 62.0), sps, w);
+        let per = (w - aa) / colors.len();
+        let mut raw = vec![0u8; w * h * 2];
+        for y in 0..h {
+            let flip = std::f32::consts::PI * y as f32 + phase_off;
+            for n in 0..w {
+                let psi = 2.0 * std::f32::consts::PI * (n as f32 - ba as f32) / 8.0 - flip;
+                let mut val = porch;
+                if n < sync_end {
+                    val = porch - 40.0 * cpi;
+                } else if n >= bs && n < be {
+                    val = porch + 20.0 * cpi * psi.cos();
+                } else if n >= aa {
+                    let ci = ((n - aa) / per).min(colors.len() - 1);
+                    // 行ごとに色をずらす = 垂直方向に色が交互になる
+                    let (r, g, b) = colors[(ci + y) % colors.len()];
+                    let yy = 0.299 * r + 0.587 * g + 0.114 * b;
+                    let uu = 0.493 * (b - yy);
+                    let vv = 0.877 * (r - yy);
+                    let c = (-uu * psi.cos() + vv * psi.sin()) * 0.5;
+                    val = porch + (yy * 100.0 + c * 100.0) * cpi + lum_shift;
+                }
+                raw[(y * w + n) * 2] = val.clamp(0.0, 255.0) as u8;
+            }
+        }
+        raw
+    }
+
+    #[test]
+    fn comb3d_fixes_vertical_chroma_detail() {
+        let sps = 8.0 * 3_579_545.0f32;
+        let (w, h) = (1820usize, 24usize);
+        let colors = [(0.75, 0.0, 0.0), (0.0, 0.75, 0.0), (0.0, 0.0, 0.75),
+                      (0.75, 0.75, 0.0), (0.0, 0.75, 0.75), (0.75, 0.0, 0.75)];
+        let want = [0.0f32, 120.0, 240.0, 60.0, 180.0, 300.0];
+        let cur = synth_alt(&colors, w, h, sps, 0.0, 0.0);
+        // prev2 は1 NTSCフレーム前 → 位相180° / prev4 は2フレーム前 → 位相0°
+        let p2 = synth_alt(&colors, w, h, sps, std::f32::consts::PI, 0.0);
+        let p4 = synth_alt(&colors, w, h, sps, 0.0, 0.0);
+        let filled = vec![true; h];
+        let hn = vec![3u8; h];
+        let (aa, _) = win((9.6, 62.0), sps, w);
+        let per = (w - aa) / colors.len();
+        let y = 12usize;
+
+        let worst = |fb: &[u8]| {
+            let mut m = 0.0f32;
+            for i in 0..colors.len() {
+                let h0 = hue_of(fb, w, y, aa + i * per + per / 4, aa + i * per + per * 3 / 4);
+                m = m.max(ang_diff(h0, want[(i + y) % colors.len()]).abs());
+            }
+            m
+        };
+        let mut fb2 = vec![255u8; w * h * 4];
+        decode_field(&cur, w, h, &filled, sps as u32, &mut fb2, None);
+        let e2 = worst(&fb2);
+        let mut fb3 = vec![255u8; w * h * 4];
+        let i3 = decode_field(&cur, w, h, &filled, sps as u32, &mut fb3,
+                              Some(History { p2: &p2, p4: &p4, hist_n: &hn }));
+        let e3 = worst(&fb3);
+        assert_eq!(i3.lines_3d, h as u32, "3次元を使えた行数が足りない");
+        assert!(i3.motion_frac < 0.02, "静止なのに動きと判定した: {:.1}%",
+                100.0 * i3.motion_frac);
+        assert!(e2 > 20.0,
+                "2次元コムでも誤差 {e2:.1}° しか出ない = 試験になっていない");
+        assert!(e3 < 8.0, "3次元でも誤差 {e3:.1}°(2次元は {e2:.1}°)");
+
+        // 動いている所は2次元へ落ちること(輝度を大きくずらして「動き」を作る)
+        let p2m = synth_alt(&colors, w, h, sps, std::f32::consts::PI, 40.0);
+        let p4m = synth_alt(&colors, w, h, sps, 0.0, 40.0);
+        let mut fbm = vec![255u8; w * h * 4];
+        let im = decode_field(&cur, w, h, &filled, sps as u32, &mut fbm,
+                              Some(History { p2: &p2m, p4: &p4m, hist_n: &hn }));
+        assert!(im.motion_frac > 0.8, "動きを検出できていない: {:.1}%",
+                100.0 * im.motion_frac);
+    }
+
     /// 実寸(1820×526、1フィールド263行)での所要時間を測る。
     ///
     /// 常時走らせる試験ではない(機械の速さに依存するので落ちる)。
@@ -532,18 +693,25 @@ mod tests {
         let colors = [(0.75, 0.0, 0.0), (0.0, 0.75, 0.0), (0.0, 0.0, 0.75)];
         let (raw, filled) = synth(&colors, w, h, sps, 2);
         let mut fb = vec![255u8; w * h * 4];
-        // 1回目は warm-up
-        decode_field(&raw, w, h, &filled, sps as u32, &mut fb);
-        let n = 120;
-        let t0 = std::time::Instant::now();
-        for _ in 0..n {
-            decode_field(&raw, w, h, &filled, sps as u32, &mut fb);
-        }
-        let per = t0.elapsed().as_secs_f64() / n as f64;
+        let p2 = raw.clone();
+        let p4 = raw.clone();
+        let hn = vec![3u8; h];
         let samples = (w * h / 2) as f64;      // 1フィールドで埋まるのは半分の行
-        println!("1フィールド {:.3} ms  ({:.1} MSa/s 相当)  \
-                  59.94フィールド/秒なら1コアの {:.1}%",
-                 per * 1e3, samples / per / 1e6, per * 59.94 * 100.0);
+        for (tag, use3) in [("2次元", false), ("3次元", true)] {
+            let mk = || if use3 {
+                Some(History { p2: &p2, p4: &p4, hist_n: &hn })
+            } else { None };
+            decode_field(&raw, w, h, &filled, sps as u32, &mut fb, mk());  // warm-up
+            let n = 120;
+            let t0 = std::time::Instant::now();
+            for _ in 0..n {
+                decode_field(&raw, w, h, &filled, sps as u32, &mut fb, mk());
+            }
+            let per = t0.elapsed().as_secs_f64() / n as f64;
+            println!("{tag}: 1フィールド {:.3} ms  ({:.1} MSa/s 相当)  \
+                      59.94フィールド/秒なら1コアの {:.1}%",
+                     per * 1e3, samples / per / 1e6, per * 59.94 * 100.0);
+        }
     }
 
     /// 6色の色相が真値に戻り、コムのペアも自力で当てられること
@@ -556,7 +724,7 @@ mod tests {
         let want = [0.0f32, 120.0, 240.0, 60.0, 180.0, 300.0];
         let (raw, filled) = synth(&colors, w, h, sps, step);
         let mut fb = vec![255u8; w * h * 4];
-        let info = decode_field(&raw, w, h, &filled, (sps as u32), &mut fb);
+        let info = decode_field(&raw, w, h, &filled, sps as u32, &mut fb, None);
         assert_eq!(info.comb_step, step,
                    "コムのペアを自力で当てられていない (測定した位相差 {:.1}°)",
                    info.phase_delta_deg);
@@ -621,7 +789,7 @@ mod tests {
             }
         }
         let mut fb = vec![255u8; w * h * 4];
-        decode_field(&raw, w, h, &filled, sps as u32, &mut fb);
+        decode_field(&raw, w, h, &filled, sps as u32, &mut fb, None);
         let (aa, _) = win((9.6, 62.0), sps, w);
         let per = (w - aa) / colors.len();
         let mut best = f32::MAX;

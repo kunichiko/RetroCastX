@@ -31,6 +31,15 @@ pub struct FrameAssembler {
     /// 使うので、フィールドが揃うまで待つ必要がある。フレーム完成時に
     /// まとめて復調して fb へ書く。
     raw: Vec<u8>,
+    /// 3次元(フレームコム)用の履歴。**同じライン番号は2ボードフレームおきに
+    /// しか来ない**(フィールドごとにパリティが反転する)ので、
+    ///   `raw_p2` = 2ボードフレーム前 = 1 NTSCフレーム前 → 副搬送波の位相が180°
+    ///   `raw_p4` = 4ボードフレーム前 = 2 NTSCフレーム前 → 位相が0°
+    /// になる(実測 175.8° / 4.2°)。前者でフレームコム、後者で動き検出。
+    raw_p2: Vec<u8>,
+    raw_p4: Vec<u8>,
+    /// 行ごとに「何回書かれたか」。3(=p2とp4の両方が実データ)で3次元が使える
+    hist_n: Vec<u8>,
     /// 復調の結果(パネル表示と診断用)
     pub ntsc_info: Option<ntsc::Info>,
     width: usize,
@@ -71,6 +80,9 @@ impl FrameAssembler {
             stats: Stats::default(),
             fb: Vec::new(),
             raw: Vec::new(),
+            raw_p2: Vec::new(),
+            raw_p4: Vec::new(),
+            hist_n: Vec::new(),
             ntsc_info: None,
             spare: None,
             width: 0,
@@ -208,11 +220,16 @@ impl FrameAssembler {
                     }
                     // YC8のときだけ生サンプルを溜める(2B/px)。他の形式では
                     // 使わないので確保しない(1820×526×2 = 1.9MB)
-                    self.raw = if m.pixfmt == proto::PIXFMT_YC8 {
-                        vec![0u8; self.width * self.height * 2]
+                    let need = if m.pixfmt == proto::PIXFMT_YC8 {
+                        self.width * self.height * 2
                     } else {
-                        Vec::new()
+                        0
                     };
+                    self.raw = vec![0u8; need];
+                    // 3次元コム用の履歴2面。1820×526×2 = 1.9MB ずつ
+                    self.raw_p2 = vec![0u8; need];
+                    self.raw_p4 = vec![0u8; need];
+                    self.hist_n = vec![0u8; if need > 0 { self.height } else { 0 }];
                     self.ntsc_info = None;
                     self.line_seen = vec![false; self.height];
                     self.cur_frame = None;
@@ -303,6 +320,22 @@ impl FrameAssembler {
                         // 同時にYをグレースケールで fb にも置く。復調がロックする
                         // 前や、バーストが無い信号(モノクロ/同期だけ)でも波形が
                         // そのまま絵になり、クランプとゲインを目で確認できる。
+                        // この行のこのフレームでの**最初の断片**なら、履歴を1段ずらす。
+                        // いま raw[row] に入っているのは2ボードフレーム前の内容
+                        // (同じ行は2フレームおきにしか書かれない)。
+                        // line_seen はフレーム頭で false に戻るので、これで
+                        // 「フレーム内の初回」を判定できる。
+                        let row = l.line as usize;
+                        if !self.raw.is_empty() && row < self.height
+                            && !self.line_seen.get(row).copied().unwrap_or(true)
+                        {
+                            let (a, b) = (row * self.width * 2, (row + 1) * self.width * 2);
+                            self.raw_p4[a..b].copy_from_slice(&self.raw_p2[a..b]);
+                            self.raw_p2[a..b].copy_from_slice(&self.raw[a..b]);
+                            if let Some(n) = self.hist_n.get_mut(row) {
+                                *n = (*n + 1).min(3);
+                            }
+                        }
                         let rowbase = (l.line as usize * self.width + off) * 2;
                         for (i, px) in l.pixels.chunks_exact(2).enumerate().take(fit) {
                             if rowbase + i * 2 + 1 < self.raw.len() {
@@ -359,9 +392,12 @@ impl FrameAssembler {
         // ライン受信時に書いてあるYのグレースケールがそのまま残る。
         if !self.raw.is_empty() {
             let dotclk = self.mode.as_ref().map(|m| m.dotclk_hz).unwrap_or(0);
+            let hist = ntsc::History {
+                p2: &self.raw_p2, p4: &self.raw_p4, hist_n: &self.hist_n,
+            };
             let info = ntsc::decode_field(
                 &self.raw, self.width, self.height, &self.line_seen, dotclk,
-                &mut self.fb);
+                &mut self.fb, Some(hist));
             self.ntsc_info = Some(info);
         }
         // このフレームで受信できなかったライン(=送信側でドロップ)を前値×decayで減衰。
