@@ -87,37 +87,117 @@ def _boxcar(x, n):
         :, pad:pad + x.shape[1]]
 
 
-def comb_separate(rows):
-    """1Dコムで Y と C に分ける。
+def comb_separate(rows, step=1, adapt_ire=0.0):
+    """Y と C に分ける。`adapt_ire > 0` なら **2D適応コム**。
+
+    ## 1Dコム(基本)
 
     隣接ラインの副搬送波は180°反転しているので、
 
-        Y = (x[i]  +  (x[i-1] + x[i+1]) / 2) / 2     クロマが打ち消える
-        C = (x[i]  -  (x[i-1] + x[i+1]) / 2) / 2     輝度が打ち消える
+        C = (x  -  (up + dn) / 2) / 2     輝度が打ち消える
+        Y = x - C                        (= (x + (up+dn)/2)/2 と同値)
 
     上下の2本を平均してから使うのは、片側だけだと**垂直方向に半ラインずれる**
     ため(前の行だけを引くとYの重心が上へ寄る)。
 
-    端の行は相手がいないので、そのままY=x・C=0にする(色が出ないだけで壊れない)。
+    ## 適応を試した動機(と、それが外れだったこと)
+
+    1Dコムは「上下のラインの色が同じ」を前提にしているので、原理的には小さく
+    孤立した図形や水平エッジで崩れ、輝度差が色に化ける。実機で △本体設定 の
+    色相が +25.5° ずれていたのはこれだろうと考えて適応コムを書いた。
+
+    **が、実測では △ の誤差は変わらなかった**(25.5° → 25.9°)。つまりあの
+    ずれの原因はコムではない。**期待値の120°の方が推測だった**可能性が高い
+    (PS2の△の緑が本当に色相120°かは確かめていない。○=赤の0°は安全な仮定で、
+    そちらは誤差 -1.0° に収まっている)。仮説を実測で否定できた形。
+
+    ## 切り替えの判定に何を使うか
+
+    **`up - dn` を使う。** upとdnはどちらもxから180°ずれているので、
+    **互いには同位相** → 差を取るとクロマが消え、**純粋な垂直輝度差**が残る。
+    実測(2026-08-14)で副搬送波成分が 412 → 49 になることを確認した。
+    「クロマを含まない垂直detail検出器」がタダで手に入るのがNTSCの都合の良い所。
+
+    ## 崩れているときの代替
+
+    ライン内だけで副搬送波を抜くノッチに逃げる:
+
+        C_notch = (2·x[n] - x[n-4] - x[n+4]) / 4
+
+    8fsc では4サンプル = 副搬送波の半周期 = 180°なので、x[n±4] は fsc 成分が
+    反転している。よって fsc は利得1で通り、DC は (2-1-1)/4 = 0 で消える。
+    左右対称なので位相もずれない。垂直方向を一切見ないので図形で崩れない
+    (代わりに輝度と色の混ざりが残る = ドットクロールが出る)。
+
+    `adapt_ire` は「この輝度差[IRE]でノッチへ全振り」の閾値。
+
+    ## ★既定はオフ。実測で**悪化した**(2026-08-14)
+
+    PS2起動画面で測ったところ、期待に反して良くならなかった:
+
+        白文字「システム設定」に出る偽色(無彩色なので出たら全部偽色)
+            1Dコム        平均彩度 0.0260   上位1% 0.0681   ← 最良
+            適応 4 IRE            0.0428          0.1065
+            適応 8 IRE            0.0400          0.1025
+            適応 64 IRE           0.0279          0.0705   ← 閾値を上げて1Dへ戻る
+
+        既知の色の色相誤差:  1Dコム 最大25.5° / 適応8 最大25.9°(変わらない)
+
+    ノッチ自体は正しい(合成6色で1Dコムと同じ誤差2.1°になることを確認済み)。
+    悪化の理由は**素材側**: 白い文字は細い縦棒=水平方向の高い周波数を持つので、
+    輝度エネルギーが副搬送波の近くにある。ノッチは垂直方向を一切見ないので
+    それをクロマへ通してしまう。1Dコムは上下の行が似ているので弾ける。
+    つまり垂直detail検出器が**文字の水平エッジで反応して、より悪いフィルタへ
+    切り替えていた**。
+
+    まともな2D適応にするには「垂直detailが大きく**かつ**水平方向のfscエネルギーが
+    小さい」ときだけノッチへ行く必要がある。本筋は時間方向を見る3Dコム。
+    このコードは検証済みの出発点として残すが、**既定では使わない**。
     """
     x = rows.astype(np.float64)
-    up = np.vstack([x[:1], x[:-1]])
-    dn = np.vstack([x[1:], x[-1:]])
-    avg = (up + dn) / 2.0
-    y = (x + avg) / 2.0
-    c = (x - avg) / 2.0
-    y[0] = x[0]; y[-1] = x[-1]
-    c[0] = 0.0;  c[-1] = 0.0
-    return y, c
+
+    def shift(a, k):
+        """行方向に k 行ずらす(端は複製)。"""
+        if k == 0:
+            return a
+        if k > 0:
+            return np.vstack([a[k:], np.repeat(a[-1:], k, axis=0)])
+        return np.vstack([np.repeat(a[:1], -k, axis=0), a[:k]])
+
+    up, dn = shift(x, -step), shift(x, step)
+    c_comb = (x - (up + dn) / 2.0) / 2.0
+    if adapt_ire <= 0.0:
+        c = c_comb
+    else:
+        # ライン内ノッチ。4サンプル = 副搬送波の半周期
+        xm = np.roll(x, 4, axis=1)
+        xp = np.roll(x, -4, axis=1)
+        c_notch = (2.0 * x - xm - xp) / 4.0
+        # 垂直輝度差。副搬送波1周期(8サンプル)で平均してノイズを落とす
+        vd = _boxcar(np.abs(up - dn), 8)
+        a = np.clip(vd / adapt_ire, 0.0, 1.0)
+        c = (1.0 - a) * c_comb + a * c_notch
+    # Y は「残り」。こうすると 1Dコム側は (x+avg)/2 と一致し、
+    # 混ぜた場合も Y と C が必ず整合する(別々に作ると足して x に戻らない)
+    return x - c, c
 
 
-def decode(rows, sps, hue_deg=0.0, sat=1.0, chroma_lpf=16):
+def decode(rows, sps, hue_deg=0.0, sat=1.0, chroma_lpf=16, adapt_ire=0.0):
     """1フィールドぶんの生サンプルを RGB(float, 0..1)にする。
+
+    `adapt_ire` は2D適応コムの閾値[IRE]。**既定0(=1Dコム)。実測で悪化した**
+    ので使わない。理由は comb_separate のコメント参照。
 
     戻り値は (rgb[n_lines, n_active, 3], info)。
     """
     phi, mag, a = burst_phase(rows, sps)
-    y_full, c_full = comb_separate(rows)
+    # 閾値はIREで受けてコードへ直す。レベル校正は下でやるので先に軽く求める
+    ta, tb = _win((0.7, 4.2), sps)
+    ba2, bb2 = _win((7.9, 9.3), sps)
+    tip0 = np.median(rows[:, ta:tb])
+    blank0 = np.median(rows[:, ba2:bb2])
+    cpi0 = max(1e-6, (blank0 - tip0) / 40.0)
+    y_full, c_full = comb_separate(rows, 1, adapt_ire * cpi0)
 
     n = np.arange(rows.shape[1])
     # ψ(n) = 2π(n-a)/8 - φ   … この位相でバーストが cos の山になる
@@ -215,6 +295,9 @@ def main():
     ap.add_argument("--lpf", type=int, default=16,
                     help="クロマの移動平均長[サンプル]。8の倍数にすること")
     ap.add_argument("--width", type=int, default=720)
+    ap.add_argument("--adapt-ire", type=float, default=0.0,
+                    help="2D適応コムの閾値[IRE]。0=1Dコム(既定)。"
+                         "実測では偽色が悪化したので通常は使わない")
     args = ap.parse_args()
 
     rows, ln, meta, frame = load_field(args.inp, args.frame)
@@ -223,7 +306,7 @@ def main():
           % (frame, rows.shape[0], rows.shape[1], sps / 1e6, meta["fh_hz"]))
     print("副搬送波 %.2f サンプル/周期" % (sps / FSC_NTSC))
 
-    rgb, info = decode(rows, sps, args.hue, args.sat, args.lpf)
+    rgb, info = decode(rows, sps, args.hue, args.sat, args.lpf, args.adapt_ire)
     ok = info["burst_mag"] > 200
     print("同期チップ %.0f / ブランキング %.0f → 1 IRE = %.2f コード"
           % (info["tip"], info["blank"], info["code_per_ire"]))
