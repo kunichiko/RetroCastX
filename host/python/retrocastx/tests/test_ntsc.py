@@ -84,6 +84,26 @@ def check(name, cond, detail=""):
 
 def main():
     ok = []
+
+    # --- クロマLPFが 2fsc をきっちり消すこと ---
+    #
+    # 直交復調の積には必ず 2fsc(周期4サンプル)が出る。窓長が副搬送波1周期(8)の
+    # 倍数なら整数周期ぶん入って完全に消える。**消えないと平坦な色面に周期4サンプルの
+    # 縞が出る**(実機の赤ベタで「赤黒赤黒」に見えた)。Rustへの移植でここを壊して
+    # いたので、両方に同じ試験を置く。
+    nn = 1024
+    b2 = ntsc._boxcar((10.0 + np.cos(np.pi * 0.5 * np.arange(nn)))[None, :], 16)[0]
+    ok.append(check("クロマLPFが2fscを消す",
+                    np.abs(b2[64:-64] - 10.0).max() < 1e-6,
+                    "残留 %.2e" % np.abs(b2[64:-64] - 10.0).max()))
+    bf = ntsc._boxcar(np.sin(np.pi * 0.25 * np.arange(nn))[None, :], 16)[0]
+    ok.append(check("クロマLPFがfscを消す", np.abs(bf[64:-64]).max() < 1e-6,
+                    "残留 %.2e" % np.abs(bf[64:-64]).max()))
+    st = ntsc._boxcar((np.arange(nn) >= nn // 2).astype(float)[None, :], 16)[0]
+    c = nn // 2
+    ok.append(check("クロマLPFの中心がずれていない",
+                    abs(st[c] - 0.5) < 0.02 and abs(st[c - 1] + st[c + 1] - 1.0) < 0.02,
+                    "s[c]=%.4f s[c-1]+s[c+1]=%.4f" % (st[c], st[c - 1] + st[c + 1])))
     # 6色。**1色では符号の誤りを検出できない**ので必ず複数使う
     colors = [(0.75, 0.0, 0.0), (0.0, 0.75, 0.0), (0.0, 0.0, 0.75),
               (0.75, 0.75, 0.0), (0.0, 0.75, 0.75), (0.75, 0.0, 0.75)]

@@ -276,23 +276,30 @@ fn to8(v: f32) -> u8 {
 }
 
 /// 移動平均(その場書き換え)。窓の外は端の値で延長する。
+///
+/// ★**中心を合わせること。そして滑らせる更新で足し引きを取り違えないこと。**
+/// 最初の実装は初期の窓が n/2 ずれていて、更新も既に窓に入っている要素を
+/// 足していた。結果として 2fsc が消えず、**平坦な色面に周期4サンプルの縞**が
+/// 出た(実機の赤ベタで「赤黒赤黒」に見えた)。
+///
+/// この関数は「2fsc をきっちり消す」ために存在する。窓長が副搬送波1周期(8)の
+/// 倍数なら 2fsc は整数周期ぶん入って完全に消えるはずで、消えないなら実装が
+/// 壊れている。回帰試験 `boxcar_nulls_2fsc` がそれを見る。
 fn boxcar(x: &mut [f32], n: usize) {
-    if n <= 1 || x.len() < n {
+    if n <= 1 || x.len() < 2 {
         return;
     }
-    let half = n / 2;
-    let inv = 1.0 / n as f32;
-    // 元の値を持っておく(その場で書くと後続の窓が汚れる)
     let src: Vec<f32> = x.to_vec();
-    let mut sum: f32 = 0.0;
-    for i in 0..n {
-        sum += src[i.min(src.len() - 1)];
-    }
-    for i in 0..x.len() {
-        x[i] = sum * inv;
-        let out = i.saturating_sub(half);
-        let inn = (i + half + 1).min(src.len() - 1);
-        sum += src[inn] - src[out];
+    let len = src.len() as isize;
+    let at = |i: isize| src[i.clamp(0, len - 1) as usize];
+    let half = (n / 2) as isize;
+    let inv = 1.0 / n as f32;
+    // i=0 のときの窓 [-half, -half+n-1] から始める(中心が i に来る)
+    let mut sum: f32 = (0..n as isize).map(|k| at(-half + k)).sum();
+    for i in 0..len {
+        x[i as usize] = sum * inv;
+        // 窓を1つ右へ: 新しく入る要素を足し、出る要素を引く
+        sum += at(i - half + n as isize) - at(i - half);
     }
 }
 
@@ -371,6 +378,50 @@ mod tests {
             60.0 * ((r - g) / d + 4.0)
         };
         (h + 360.0) % 360.0
+    }
+
+    /// **クロマLPFが 2fsc をきっちり消すこと。**
+    ///
+    /// 直交復調の積には必ず 2fsc(周期4サンプル)が出る。窓長が副搬送波1周期(8)の
+    /// 倍数なら整数周期ぶん入って完全に消える — はずだった。最初の実装は窓の中心が
+    /// n/2 ずれていて、滑らせる更新で既に窓にある要素を足していたため 2fsc が残り、
+    /// **平坦な色面に周期4サンプルの縞**が出た(実機の赤ベタで「赤黒赤黒」に見えた)。
+    ///
+    /// 見た目でしか分からない不具合だったので、数値で押さえる。
+    #[test]
+    fn boxcar_nulls_2fsc() {
+        let n = 1024;
+        // 2fsc = 周期4サンプル。DCを乗せて「平均は保つ」ことも一緒に見る
+        let mut x: Vec<f32> = (0..n)
+            .map(|i| 10.0 + (std::f32::consts::PI * 0.5 * i as f32).cos())
+            .collect();
+        boxcar(&mut x, 16);
+        // 端は窓が延長で埋まるので中央だけ見る
+        let mid = &x[64..n - 64];
+        let ripple = mid.iter().fold(0.0f32, |a, v| a.max((v - 10.0).abs()));
+        assert!(ripple < 1e-3, "2fscが残っている: 振幅 {ripple:.4} (元は1.0)");
+
+        // 副搬送波そのもの(周期8)も窓長16なら消える
+        let mut y: Vec<f32> = (0..n)
+            .map(|i| (std::f32::consts::PI * 0.25 * i as f32).sin())
+            .collect();
+        boxcar(&mut y, 16);
+        let r2 = y[64..n - 64].iter().fold(0.0f32, |a, v| a.max(v.abs()));
+        assert!(r2 < 1e-3, "fscが残っている: 振幅 {r2:.4}");
+
+        // 位相がずれていないこと。ステップ応答が段の位置 c を中心に対称になる
+        // (s[c-k] + s[c+k] = 1)。窓が n/2 ずれていると崩れる。
+        // 偶数長の窓は中心が半サンプルずれるが、**c を挟んだ対称性は保たれる**
+        // (窓 [i-8, i+7] で s[c]=0.5 / s[c-1]=7/16 / s[c+1]=9/16)。
+        let mut s: Vec<f32> = (0..n).map(|i| if i < n / 2 { 0.0 } else { 1.0 }).collect();
+        boxcar(&mut s, 16);
+        let c = n / 2;
+        assert!((s[c] - 0.5).abs() < 0.02, "段の位置で0.5にならない: {:.3}", s[c]);
+        for k in 1..7 {
+            let (a, b) = (s[c - k], s[c + k]);
+            assert!((a + b - 1.0).abs() < 0.02,
+                    "ステップ応答が非対称(中心がずれている): k={k} {a:.3}+{b:.3}");
+        }
     }
 
     /// 実寸(1820×526、1フィールド263行)での所要時間を測る。
