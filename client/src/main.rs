@@ -501,6 +501,8 @@ struct ViewerApp {
     /// フレーム間引き。0=毎フレーム / 1=2フレームに1回 …
     /// 受信が追いつかない機械での保険。音声は間引かない
     tune_frame_skip: u8,
+    /// 直近で入力設定を書き込んだソース(ラベル, 件数)。パネルの確認表示用。
+    input_regs_sent: Option<(&'static str, usize)>,
     /// 映像ソースのプロファイル名(profiles::PROFILES の key)。空文字は「自動」。
     /// pll_divide を絵の内容ではなく fH とドットクロック候補から決めるのに使う
     source_profile: String,
@@ -629,6 +631,7 @@ impl ViewerApp {
             tune_full_line: cfg.tune_full_line,
             tune_frame_skip: cfg.tune_frame_skip,
             tune_phase: cfg.tune_phase,
+            input_regs_sent: None,
             source_profile: cfg.source_profile.clone(),
             tune_pending: Default::default(),
             tune_get_at: None,
@@ -1622,6 +1625,13 @@ impl ViewerApp {
             .as_ref()
             .map(|m| m.hfreq_mhz_x1000 as f64 / 1000.0)
             .unwrap_or(0.0);
+        // 映像ソースは「配線の方式」でもある。選んだらその入力設定をボードへ書く。
+        //
+        // ★**TVPのレジスタは電源で消える。** ビットストリームをSPIフラッシュに
+        //   焼いても、pixfmt・入力MUX・同期の取り方・クランプ・ゲインは
+        //   CONFIG で入れ直す必要がある。以前は毎回
+        //   `python3 -m retrocastx.videoin apply composite` を叩いていた。
+        //   同じ選択を選び直してもコンボは反応しないので、書き直しボタンも要る。
         ui.horizontal(|ui| {
             ui.monospace("映像ソース");
             let cur = self.source_profile.clone();
@@ -1634,7 +1644,7 @@ impl ViewerApp {
                 }
             };
             egui::ComboBox::from_id_salt("srcprof")
-                .width(150.0)
+                .width(190.0)
                 .selected_text(name(&cur))
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut sel, String::new(), "自動");
@@ -1642,11 +1652,51 @@ impl ViewerApp {
                         ui.selectable_value(&mut sel, p.key.to_string(), p.label);
                     }
                 });
-            if sel != cur {
+            let changed = sel != cur;
+            if changed {
                 self.source_profile = sel;
                 self.mark_settings_dirty();
             }
+            let prof = profiles::by_key(&self.source_profile);
+            let has_regs = prof.is_some_and(|p| !p.input_regs.is_empty());
+            let write = ui
+                .add_enabled(has_regs, egui::Button::new("入力設定を書く"))
+                .on_hover_text(
+                    "TVPの入力MUX・同期の取り方・クランプ・ゲイン・伝送形式を書く。\n\
+                     ボードの電源を入れ直すと消えるので、そのときはここを押す\n\
+                     (焼き直しは不要。全部CONFIGで済む)",
+                )
+                .clicked();
+            if let Some(p) = prof {
+                if (changed || write) && !p.input_regs.is_empty() {
+                    for (k, v, _) in p.input_regs {
+                        send.push((*k, *v));
+                    }
+                    self.input_regs_sent = Some((p.label, p.input_regs.len()));
+                }
+            }
         });
+        // ボードの伝送形式が選択と食い違っていたら言う。**電源断でTVPのレジスタが
+        // 消えた状態がこれ**で、絵は出るが復調できない(コンポジットなのにRGB555)。
+        if let Some(p) = profiles::by_key(&self.source_profile) {
+            if let (Some(want), Some(have)) = (
+                p.pixfmt(),
+                self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt),
+            ) {
+                if want != have {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 170, 60),
+                        format!(
+                            "ボードの伝送形式が {have}(このソースは {want})。\
+                             電源を入れ直して設定が消えた可能性 → 「入力設定を書く」"
+                        ),
+                    );
+                }
+            }
+        }
+        if let Some((label, n)) = self.input_regs_sent {
+            ui.monospace(format!("入力設定を書いた: {label} ({n}件)"));
+        }
         // 選んだプロファイル(空なら全部試す)での答え
         let pick = if self.source_profile.is_empty() {
             profiles::best_over_all(fh_hz).map(|(p, c)| (p.label, c))

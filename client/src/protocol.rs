@@ -269,6 +269,42 @@ pub const CFG_KEY_PIXFMT: u16 = 0x0036;
 /// ピクセルクロックとpixels per lineから決まるので、モードごとに計算して送る
 pub const CFG_KEY_PLL_CTL: u16 = 0x0019;
 
+// --- 映像ソース(入力方式)の切替に要るキー。profiles.rs の input_regs で使う ---
+//
+// 値の意味と根拠は host/python/retrocastx/protocol.py と
+// gateware/retrocastx_i2c.py のコメントにある。**あちらが正**。
+
+/// TVPのクランプ開始位置(レジスタ05h)[DATACLK]
+pub const CFG_KEY_CLAMP_START: u16 = 0x001A;
+/// TVPのクランプ幅(レジスタ06h)[DATACLK]
+pub const CFG_KEY_CLAMP_WIDTH: u16 = 0x001B;
+/// 細ゲイン Blue(レジスタ08h)。Gain = 1 + N/256 で**下げられない**
+pub const CFG_KEY_GAIN_B: u16 = 0x001C;
+/// 細ゲイン Green(レジスタ09h)
+pub const CFG_KEY_GAIN_G: u16 = 0x001D;
+/// 細ゲイン Red(レジスタ0Ah)
+pub const CFG_KEY_GAIN_R: u16 = 0x001E;
+/// TVP同期制御(レジスタ0Eh)。0x52=HSYNC/VSYNCを別線で受ける / 0x5B=HもVもSOGから
+pub const CFG_KEY_SYNC_CTL: u16 = 0x0022;
+/// レジスタ1Ah bit[7:6]=SOG LPF bit[5:4]=クランプLPF。
+/// 既定C2hはHDTV向け。15kHz機は 0x12(SOG 2.5MHz + クランプ 0.5MHz)が適正
+pub const CFG_KEY_IN_MUX2: u16 = 0x005D;
+/// レジスタ10h bit[2:0] bit2=Blue bit1=Green bit0=Red。0=ボトム / 1=ミッドレベル。
+/// RGB入力は 0b000 / コンポジットは 0b010(Greenのみミッド=バーストを丸ごと入れる)
+pub const CFG_KEY_CLAMP_SEL: u16 = 0x005E;
+/// レジスタ1Bh [7:4]=Green [3:0]=Blue、Gain = 0.5 + N/10
+pub const CFG_KEY_COARSE_GAIN_GB: u16 = 0x005F;
+/// レジスタ1Fh bit[5:0] 粗アナログオフセット Green
+pub const CFG_KEY_COARSE_OFF_G: u16 = 0x0065;
+/// レジスタ1Ch 粗アナログゲイン Red。**1Bhとビット割りが違う**
+/// ([7:4]=Reserved [3:0]=N)。同じ1.2倍でも 1Bh=0x77 / 1Ch=0x07
+pub const CFG_KEY_COARSE_GAIN_R: u16 = 0x0067;
+/// レジスタ20h bit[5:0] 粗アナログオフセット Red
+pub const CFG_KEY_COARSE_OFF_R: u16 = 0x0068;
+/// レジスタ19h [7:6]=SOG [5:4]=R [3:2]=G [1:0]=B、00=_1 / 01=_2 / 10=_3。
+/// 0xAA=全て_3 / 0x6A=SOGだけ_2(MSXのCSYNC配線)。**入力方式の切替に必須**
+pub const CFG_KEY_IN_MUX1: u16 = 0x0069;
+
 /// SUBSCRIBE(16B): 共通ヘッダ8B + 宛先MAC 6B + 予約2B。
 /// mac で宛先ボードを指名する(WILDCARD_MAC で全ボード)。
 pub fn pack_subscribe(seq: u16, announce_only: bool, mac: &[u8; 6]) -> [u8; 16] {
