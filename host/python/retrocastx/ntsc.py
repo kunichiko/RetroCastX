@@ -76,6 +76,35 @@ def burst_phase(rows, sps):
     return np.arctan2(si, ci), np.hypot(ci, si), a
 
 
+def burst_snr(rows, sps):
+    """バースト区間の fsc 相関を、信号の無いバックポーチのそれと比べた比。
+
+    **S端子かコンポジットかを測って決める**ために使う。S端子では C(赤ch)に
+    バーストが載り、コンポジットでは赤chに何も繋がらない(=雑音だけ)。
+    絶対値で閾値を切るとチャネルのゲイン設定に依存してしまうので、同じチャネルの
+    信号の無い区間を基準にした比で見る。配線と設定が食い違っても絵が出る。
+    """
+    a, b = _win(BURST_US, sps)
+    pa, pb = _win((7.9, 9.3), sps)          # バースト後のバックポーチ = 信号なし
+    n = min(b - a, pb - pa)
+    if n < 16:
+        return 0.0
+    def mag(x0):
+        k = np.arange(n)
+        seg = rows[:, x0:x0 + n].astype(np.float64)
+        seg = seg - seg.mean(axis=1, keepdims=True)
+        with np.errstate(all="ignore"):
+            ci = seg @ np.cos(2 * np.pi * k / 8.0)
+            si = seg @ np.sin(2 * np.pi * k / 8.0)
+        return float(np.median(np.hypot(ci, si)))
+    return mag(a) / max(mag(pa), 1e-6)
+
+
+# S端子と判定する burst_snr の下限。実測(コンポジット、赤ch未接続)で 1.0 前後、
+# バーストが載っていれば数十になるので、間は大きく空いている。
+SVIDEO_SNR_MIN = 6.0
+
+
 def _boxcar(x, n):
     """移動平均。**長さを副搬送波1周期(8サンプル)の倍数にする。**
 
@@ -271,25 +300,54 @@ def chroma_comb(rows, step=1, adapt_ire=0.0):
 
 
 def decode(rows, sps, hue_deg=0.0, sat=1.0, chroma_lpf=16, adapt_ire=0.0,
-           prev2=None, prev4=None, motion_ire=8.0):
+           prev2=None, prev4=None, motion_ire=8.0, c_rows=None):
     """1フィールドぶんの生サンプルを RGB(float, 0..1)にする。
+
+    `rows` は緑ch(コンポジットなら CVBS、S端子なら Y)、`c_rows` は赤ch
+    (S端子の C)。`c_rows` にバーストが載っていれば **S端子として復調する**。
 
     `adapt_ire` は2次元適応コムの閾値[IRE]。**既定0(=2次元コム)。実測で悪化した**
     ので使わない。理由は comb_separate のコメント参照。
 
+    ## S端子はコンポジットより簡単で、かつ確実に良い
+
+        項目            コンポジット              S端子
+        Y               x - Ĉ(コムで色を抜く)   **そのまま**
+        C               3次元コム+動き適応+ε補正  **赤chを直交復調するだけ**
+        クロスカラー     原理的に残る              **原理的に無い**
+        輝度帯域        送出側が2MHzで切る        切る理由が無い
+
+    実測(PS2、2026-08-15): コンポジットでは細い縦罫線が二重になり、オシロで
+    AC結合前を見ると **PS2の出力の時点で谷底に段がある**。同じラインを S端子の
+    Y で見ると単一の深い谷。**コンポジットのエンコーダの輝度処理が原因**で、
+    S端子にすれば消える。だからコムは丸ごと不要になる。
+
     戻り値は (rgb[n_lines, n_active, 3], info)。
     """
-    phi, mag, a = burst_phase(rows, sps)
+    # --- S端子かコンポジットかを**測って**決める ---
+    #
+    # 選択に頼らない。配線と設定が食い違っても絵が出る方が良い(コムの間隔や
+    # インタレースの判定と同じ方針)。赤chにバーストが立っていれば S端子。
+    svideo = c_rows is not None and burst_snr(c_rows, sps) >= SVIDEO_SNR_MIN
+    # 位相基準は「クロマが載っているチャネル」から取る
+    phi, mag, a = burst_phase(c_rows if svideo else rows, sps)
     # 閾値はIREで受けてコードへ直す。レベル校正は下でやるので先に軽く求める
     ta, tb = _win((0.7, 4.2), sps)
     ba2, bb2 = _win((7.9, 9.3), sps)
     tip0 = np.median(rows[:, ta:tb])
     blank0 = np.median(rows[:, ba2:bb2])
     cpi0 = max(1e-6, (blank0 - tip0) / 40.0)
-    # 履歴が揃っていれば3次元(動き適応フレームコム)。無ければ2次元
+    # 履歴が揃っていれば3次元(動き適応フレームコム)。無ければ2次元。
+    # S端子ではそもそもコムが要らない(Yとクロマが最初から別々に来ている)。
     motion_frac = None
     phase_drift_deg = None
-    if prev2 is not None and prev4 is not None:
+    if svideo:
+        # C はミッドレベルクランプなので、バックポーチを0点にする。
+        # (直交復調の積は8の倍数で平均するとDCが消えるので必須ではないが、
+        #  値を小さく保っておくと後段のスケーリングが素直になる)
+        c_blank = np.median(c_rows[:, ba2:bb2], axis=1, keepdims=True)
+        c_full = c_rows.astype(np.float64) - c_blank
+    elif prev2 is not None and prev4 is not None:
         # 1フレーム前との副搬送波位相のズレ ε。詳しくは chroma_comb3d の docstring。
         phi2, mag2, _ = burst_phase(prev2, sps)
         eps = np.angle(np.exp(1j * (phi2 - phi - math.pi)))
@@ -341,7 +399,9 @@ def decode(rows, sps, hue_deg=0.0, sat=1.0, chroma_lpf=16, adapt_ire=0.0,
     #   - 垂直detailの無い縦線は C_comb = 0 なので Ĉ = 0 → Y = x
     #   - fsc成分の無い横棒は 復調+LPF で u,v ≈ 0 → Ĉ ≈ 0 → Y = x
     #   つまり**「色として取り出した分だけ」を引く**ので、余計な広がりが出ない。
-    c_hat = -u * cth + v * sth
+    # S端子では Y が最初から独立に来ているので、**何も引かない**。
+    # コムもノッチも再変調も要らず、輝度は送出されたまま素通しになる。
+    c_hat = 0.0 if svideo else (-u * cth + v * sth)
     y_full = rows.astype(np.float64) - c_hat
 
     # --- レベルをIREに直す。基準は同期チップとブランキング(絵の内容に依存しない)
@@ -351,10 +411,21 @@ def decode(rows, sps, hue_deg=0.0, sat=1.0, chroma_lpf=16, adapt_ire=0.0,
     blank = np.median(rows[:, ba:bb])
     code_per_ire = max(1e-6, (blank - tip) / 40.0)
 
+    # クロマのスケール。**S端子では C 側の校正が別に要る。**
+    # 赤chは粗ゲインもクランプも緑chと別設定なので、Yの code_per_ire は使えない。
+    # バーストは規格で 40 IRE p-p(= 振幅20 IRE)と決まっているので、それを
+    # ものさしにする。チャネル間のゲイン差が自動的に打ち消えるのが利点。
+    if svideo:
+        bw0, bw1 = _win(BURST_US, sps)
+        burst_amp = 2.0 * float(np.median(mag)) / max(bw1 - bw0, 1)   # 振幅[コード]
+        c_per_ire = max(1e-6, burst_amp / 20.0)
+    else:
+        c_per_ire = code_per_ire
+
     aa, ab = _win(ACTIVE_US, sps)
     Y = (y_full[:, aa:ab] - blank) / code_per_ire / 100.0      # 0..1 (100 IRE=1.0)
-    U = u[:, aa:ab] / code_per_ire / 100.0 * sat
-    V = v[:, aa:ab] / code_per_ire / 100.0 * sat
+    U = u[:, aa:ab] / c_per_ire / 100.0 * sat
+    V = v[:, aa:ab] / c_per_ire / 100.0 * sat
 
     # U=0.493(B-Y) / V=0.877(R-Y)
     b_y = U / 0.493
@@ -367,6 +438,9 @@ def decode(rows, sps, hue_deg=0.0, sat=1.0, chroma_lpf=16, adapt_ire=0.0,
         "burst_phase_deg": np.degrees(phi),
         "burst_mag": mag,
         "tip": tip, "blank": blank, "code_per_ire": code_per_ire,
+        # 赤chにバーストが載っていた = S端子として復調した
+        "svideo": svideo,
+        "c_per_ire": c_per_ire,
         "active": (aa, ab),
         # 3次元を使ったか / そのうち「動いている」と判定した画素の割合
         "comb3d": motion_frac is not None,

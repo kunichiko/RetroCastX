@@ -51,6 +51,12 @@ const MOTION_IRE: f32 = 8.0;
 ///   行で色相が230〜300°をふらついた)。無彩色に倒す方が絵として正しい。
 const BURST_MIN: f32 = 60.0;
 
+/// S端子と判定する「Cチャネルのバースト / バックポーチ」比の下限。
+///
+/// 実測(コンポジット、赤ch未接続)で 1.0 前後、バーストが載っていれば数十になる
+/// ので、間は大きく空いている。
+const SVIDEO_SNR_MIN: f32 = 6.0;
+
 /// フレームコムの位相ズレ補正で受け付ける ε の上限[度]。
 ///
 /// 実測の |ε| は中央値 4.8°、滑らかに±15°を揺れる程度。これを大きく超える値は
@@ -67,6 +73,9 @@ pub struct Info {
     pub lines_3d: u32,
     /// そのうち「動いている」と判定した画素の割合(0..1)
     pub motion_frac: f32,
+    /// 赤ch(C)にバーストが載っていた = S端子として復調した。
+    /// このときコムは一切使わない(Y と C が最初から別々に来ているため)。
+    pub svideo: bool,
     /// 1 NTSCフレーム前との副搬送波位相のズレ |ε| の中央値[度]。
     /// これがフレームコムの消し残し(= フレームごとに反転するドットクロール)を
     /// 決める。残留は C·sin(ε/2)。
@@ -112,23 +121,51 @@ pub struct History<'a> {
     pub hist_n: &'a [u8],
 }
 
-/// 1ラインのバースト区間から (振幅, cos成分, sin成分) を測る。
+/// 1ラインの区間 [x0,x1) から (振幅, cos成分, sin成分) を測る。
 ///
-/// バーストが `A·cos(2π(n-ba)/8 - φ)` と表せる φ を `si.atan2(ci)` で得る。
-fn burst(row: &[u8], ba: usize, bb: usize) -> (f32, f32, f32) {
+/// `ch` は 0=緑ch(CVBS または Y) / 1=赤ch(S端子の C)。
+/// バーストが `A·cos(2π(n-x0)/8 - φ)` と表せる φ を `si.atan2(ci)` で得る。
+fn burst(row: &[u8], x0: usize, x1: usize, ch: usize) -> (f32, f32, f32) {
     let mut mean = 0.0f32;
-    for n in ba..bb {
-        mean += row[n * 2] as f32;
+    for n in x0..x1 {
+        mean += row[n * 2 + ch] as f32;
     }
-    mean /= (bb - ba) as f32;
+    mean /= (x1 - x0) as f32;
     let (mut ci, mut si) = (0.0f32, 0.0f32);
-    for n in ba..bb {
-        let v = row[n * 2] as f32 - mean;
-        let k = (n - ba) & 7;
+    for n in x0..x1 {
+        let v = row[n * 2 + ch] as f32 - mean;
+        let k = (n - x0) & 7;
         ci += v * COS8[k];
         si += v * SIN8[k];
     }
     ((ci * ci + si * si).sqrt(), ci, si)
+}
+
+/// 赤ch(C)にバーストが載っているか。バースト区間の fsc 相関を、信号の無い
+/// バックポーチのそれと比べた比で返す。
+///
+/// **S端子かコンポジットかを測って決める**ために使う。絶対値で閾値を切ると
+/// チャネルのゲイン設定に依存するので、同じチャネルの信号の無い区間を基準にする。
+/// 配線と設定が食い違っても絵が出る(コムの間隔やインタレースと同じ方針)。
+fn c_burst_snr(raw: &[u8], w: usize, h: usize, filled: &[bool],
+               ba: usize, bb: usize, pa: usize, pb: usize) -> f32 {
+    let n = (bb - ba).min(pb.saturating_sub(pa));
+    if n < 16 {
+        return 0.0;
+    }
+    let (mut bs, mut ps) = (Vec::new(), Vec::new());
+    for y in 0..h {
+        if !filled.get(y).copied().unwrap_or(false) {
+            continue;
+        }
+        let row = &raw[y * w * 2..(y + 1) * w * 2];
+        bs.push(burst(row, ba, ba + n, 1).0);
+        ps.push(burst(row, pa, pa + n, 1).0);
+    }
+    if bs.len() < 8 {
+        return 0.0;
+    }
+    median(&mut bs) / median(&mut ps).max(1e-6)
 }
 
 pub fn decode_field(
@@ -145,7 +182,7 @@ pub fn decode_field(
     if sps <= 0.0 || bb <= ba + 8 || w < 16 {
         return Info { lines_locked: 0, comb_step: 0, phase_delta_deg: 0.0,
                       code_per_ire: 0.0, lines_3d: 0, motion_frac: 0.0,
-                      phase_drift_deg: 0.0 };
+                      svideo: false, phase_drift_deg: 0.0 };
     }
 
     // --- 1. ラインごとのバースト位相 ---
@@ -153,6 +190,12 @@ pub fn decode_field(
     // バースト区間の先頭 ba を基準に、バーストが A·cos(2π(n-ba)/8 - φ) と
     // 表せる φ を求める。**ライン毎に測るのが要点。** ライン番号のパリティから
     // 予測すると、行が1本落ちただけで以降の色が全部反転する。
+    //
+    // ★どちらのチャネルにクロマが載っているかを**測って**決める。S端子では
+    //   赤ch(C)にバーストが載り、コンポジットでは赤chに何も繋がらない。
+    let (pa0, pb0) = win(PORCH_US, sps, w);
+    let svideo = c_burst_snr(raw, w, h, filled, ba, bb, pa0, pb0) >= SVIDEO_SNR_MIN;
+    let cch = if svideo { 1 } else { 0 };
     let mut cosp = vec![0.0f32; h];
     let mut sinp = vec![0.0f32; h];
     let mut mag = vec![0.0f32; h];
@@ -161,7 +204,7 @@ pub fn decode_field(
         if !filled.get(y).copied().unwrap_or(false) {
             continue;
         }
-        let (m, ci, si) = burst(&raw[y * w * 2..(y + 1) * w * 2], ba, bb);
+        let (m, ci, si) = burst(&raw[y * w * 2..(y + 1) * w * 2], ba, bb, cch);
         mag[y] = m;
         phase[y] = si.atan2(ci);
         // 復調で使うのは φ の cos/sin だけなので、正規化して持つ
@@ -196,7 +239,7 @@ pub fn decode_field(
         // 何もしないで戻る(呼び出し側のグレースケール表示が残る)。
         return Info { lines_locked: 0, comb_step: 0, phase_delta_deg: 0.0,
                       code_per_ire: 0.0, lines_3d: 0, motion_frac: 0.0,
-                      phase_drift_deg: 0.0 };
+                      svideo: false, phase_drift_deg: 0.0 };
     }
 
     // --- 3. レベル校正。同期チップ(-40 IRE)とバックポーチ(0 IRE)から求める ---
@@ -254,13 +297,13 @@ pub fn decode_field(
     // 信号の無い区間のノイズ床が 1.45 IRE なので、ここが底。**残りは基板側。**
     let mut tan_half = vec![0.0f32; h];
     let mut drifts = Vec::new();
-    if let Some(hh) = hist.as_ref() {
+    if let Some(hh) = hist.as_ref().filter(|_| !svideo) {
         if hh.p2.len() == raw.len() {
             for y in 0..h {
                 if !filled.get(y).copied().unwrap_or(false) || mag[y] <= BURST_MIN {
                     continue;
                 }
-                let (m2, ci, si) = burst(&hh.p2[y * w * 2..(y + 1) * w * 2], ba, bb);
+                let (m2, ci, si) = burst(&hh.p2[y * w * 2..(y + 1) * w * 2], ba, bb, cch);
                 if m2 <= BURST_MIN {
                     continue;
                 }
@@ -275,6 +318,25 @@ pub fn decode_field(
         }
     }
     let phase_drift_deg = median(&mut drifts);
+
+    // --- 3c. クロマのスケール ---
+    //
+    // ★S端子では C 側の校正が別に要る。赤chはクランプもゲインも緑chと別設定
+    //   なので、Y の code_per_ire では合わない。バーストは規格で 40 IRE p-p
+    //   (= 振幅 20 IRE)と決まっているので、それをものさしにする。
+    //   チャネル間のゲイン差が自動的に打ち消えるのが利点。
+    let c_per_ire = if svideo {
+        let mut ms: Vec<f32> = (0..h)
+            .filter(|&y| filled.get(y).copied().unwrap_or(false) && mag[y] > BURST_MIN)
+            .map(|y| mag[y])
+            .collect();
+        // 相関 mag = A·N/2 なので 振幅 A = 2·mag/N、それが 20 IRE にあたる
+        let amp = 2.0 * median(&mut ms) / (bb - ba).max(1) as f32;
+        (amp / 20.0).max(0.05)
+    } else {
+        code_per_ire
+    };
+    let inv_100ire_c = 1.0 / (c_per_ire * 100.0);
 
     // --- 4. コム → 直交復調 → RGB ---
     let mut u = vec![0.0f32; w];
@@ -296,13 +358,25 @@ pub fn decode_field(
         let dn = (y + comb_step < h)
             .then(|| y + comb_step)
             .filter(|&i| filled.get(i).copied().unwrap_or(false));
-        let chroma_ok = mag[y] > BURST_MIN && (up.is_some() || dn.is_some());
+        let chroma_ok = mag[y] > BURST_MIN && (svideo || up.is_some() || dn.is_some());
         locked += chroma_ok as u32;
 
         let (cp, sp) = (cosp[y], sinp[y]);
         let px = |i: usize, j: usize| raw[(i * w + j) * 2] as f32;
-        // この行で3次元が使えるか。履歴が3回以上書かれている行だけ
-        let use3d = hist.as_ref().map_or(false, |hh| {
+        // S端子では C(赤ch)がそのままクロマ。ミッドレベルクランプなので
+        // バックポーチを0点にする
+        let c_porch = if svideo {
+            let mut s = 0.0f32;
+            for n in pa..pb {
+                s += raw[(y * w + n) * 2 + 1] as f32;
+            }
+            s / (pb - pa).max(1) as f32
+        } else {
+            0.0
+        };
+        // この行で3次元が使えるか。履歴が3回以上書かれている行だけ。
+        // **S端子ではコムを一切使わない**(Y と C が最初から別々に来ている)
+        let use3d = !svideo && hist.as_ref().map_or(false, |hh| {
             hh.hist_n.get(y).copied().unwrap_or(0) >= 3
                 && hh.p2.len() == raw.len() && hh.p4.len() == raw.len()
         });
@@ -342,6 +416,14 @@ pub fn decode_field(
         // 半ラインずれるため。隣接ラインは副搬送波が180°反転しているので、
         // 差で輝度が打ち消える。
         for n in 0..w {
+            // --- S端子: C(赤ch)がそのままクロマ。コムは一切要らない ---
+            if svideo {
+                let c = raw[(y * w + n) * 2 + 1] as f32 - c_porch;
+                let (cos_psi, sin_psi) = psi(n);
+                u[n] = -2.0 * c * cos_psi;
+                v[n] = 2.0 * c * sin_psi;
+                continue;
+            }
             let mut acc = 0.0f32;
             let mut cnt = 0.0f32;
             if let Some(i) = up {
@@ -411,16 +493,25 @@ pub fn decode_field(
         //   - 垂直detailの無い縦線は C_comb = 0 なので Ĉ = 0 → Y = x
         //   - fsc成分の無い横棒は 復調+LPF で u,v ≈ 0 → Ĉ ≈ 0 → Y = x
         // つまり**「色として取り出した分だけ」を引く**ので、余計な広がりが出ない。
-        for n in 0..w {
-            let (cos_psi, sin_psi) = psi(n);
-            yl[n] = px(y, n) - (-u[n] * cos_psi + v[n] * sin_psi);
+        // ★S端子では **何も引かない**。Y が最初から独立に来ているので、
+        //   コムもノッチも再変調も要らず、輝度は送出されたまま素通しになる。
+        //   (クロスカラーもドットクロールも原理的に発生しない)
+        if svideo {
+            for n in 0..w {
+                yl[n] = px(y, n);
+            }
+        } else {
+            for n in 0..w {
+                let (cos_psi, sin_psi) = psi(n);
+                yl[n] = px(y, n) - (-u[n] * cos_psi + v[n] * sin_psi);
+            }
         }
         // --- 3) YUV → RGB ---
         let o0 = y * w * 4;
         for n in 0..w {
             let yy = (yl[n] - porch) * inv_100ire;
-            let b_y = u[n] * inv_100ire / 0.493;
-            let r_y = v[n] * inv_100ire / 0.877;
+            let b_y = u[n] * inv_100ire_c / 0.493;
+            let r_y = v[n] * inv_100ire_c / 0.877;
             let r = yy + r_y;
             let g = yy - 0.5094 * r_y - 0.1942 * b_y;
             let b = yy + b_y;
@@ -437,6 +528,7 @@ pub fn decode_field(
         code_per_ire,
         lines_3d,
         motion_frac: if n3 > 0 { moving as f32 / n3 as f32 } else { 0.0 },
+        svideo,
         phase_drift_deg,
     }
 }
@@ -523,6 +615,112 @@ mod tests {
             }
         }
         (raw, filled)
+    }
+
+    /// S端子の Y/C を別々に合成する。
+    ///
+    /// Y(byte0)には同期と輝度だけ、C(byte1)にはバーストとクロマだけ。
+    /// **これが S端子の本質**で、コムが要らないのは Y と C が最初から別だから。
+    /// `c_gain` は赤chの粗ゲイン違いを模す(バースト基準の校正の試験に使う)。
+    fn synth_svideo(colors: &[(f32, f32, f32)], w: usize, h: usize, sps: f32,
+                    c_gain: f32) -> (Vec<u8>, Vec<bool>) {
+        let (ba, _) = win(BURST_US, sps, w);
+        let (cpi, porch) = (0.78f32, 158.0f32);
+        let sync_end = (4.7e-6 * sps) as usize;
+        let (bs, be) = win(BURST_US, sps, w);
+        let (aa, _) = win((9.6, 62.0), sps, w);
+        let per = (w - aa) / colors.len();
+        let mut raw = vec![0u8; w * h * 2];
+        let filled = vec![true; h];
+        for y in 0..h {
+            let flip = std::f32::consts::PI * y as f32;
+            for n in 0..w {
+                let psi = 2.0 * std::f32::consts::PI * (n as f32 - ba as f32) / 8.0 - flip;
+                let (mut yv, mut cv) = (porch, porch);   // C はミッドレベルクランプ
+                if n < sync_end {
+                    yv = porch - 40.0 * cpi;             // 同期は Y 側だけ
+                } else if n >= bs && n < be {
+                    cv = porch + c_gain * 20.0 * cpi * psi.cos();
+                } else if n >= aa {
+                    let ci = ((n - aa) / per).min(colors.len() - 1);
+                    let (r, g, b) = colors[ci];
+                    let yy = 0.299 * r + 0.587 * g + 0.114 * b;
+                    let uu = 0.493 * (b - yy);
+                    let vv = 0.877 * (r - yy);
+                    let c = (-uu * psi.cos() + vv * psi.sin()) * 0.5;
+                    yv = porch + yy * 100.0 * cpi;
+                    cv = porch + c_gain * c * 100.0 * cpi;
+                }
+                raw[(y * w + n) * 2] = yv.clamp(0.0, 255.0) as u8;
+                raw[(y * w + n) * 2 + 1] = cv.clamp(0.0, 255.0) as u8;
+            }
+        }
+        (raw, filled)
+    }
+
+    /// **S端子はコムを使わない。** 赤chのバーストで自動判定し、Yは素通しにする。
+    ///
+    /// 実測(PS2、2026-08-15): コンポジットでは細い縦罫線が二重になり、オシロで
+    /// AC結合前を見ると PS2 の出力の時点で谷底に段があった。同じラインを S端子の
+    /// Y で見ると単一の深い谷。**送出側のコンポジット輝度処理が原因**なので、
+    /// S端子にすれば消える。
+    #[test]
+    fn svideo_uses_c_channel_and_passes_luma_through() {
+        let sps = 8.0 * 3_579_545.0f32;
+        let (w, h) = (1820usize, 24usize);
+        let colors = [(0.75, 0.0, 0.0), (0.0, 0.75, 0.0), (0.0, 0.0, 0.75),
+                      (0.75, 0.75, 0.0), (0.0, 0.75, 0.75), (0.75, 0.0, 0.75)];
+        let want = [0.0f32, 120.0, 240.0, 60.0, 180.0, 300.0];
+        let (aa, _) = win((9.6, 62.0), sps, w);
+        let per = (w - aa) / colors.len();
+
+        let (raw, filled) = synth_svideo(&colors, w, h, sps, 1.0);
+        let mut fb = vec![255u8; w * h * 4];
+        let info = decode_field(&raw, w, h, &filled, sps as u32, &mut fb, None);
+        assert!(info.svideo, "赤chのバーストからS端子と判定できていない");
+        let mut worst = 0.0f32;
+        for i in 0..colors.len() {
+            let hh = hue_of(&fb, w, 12, aa + i * per + per / 4, aa + i * per + per * 3 / 4);
+            worst = worst.max(ang_diff(hh, want[i]).abs());
+        }
+        assert!(worst < 8.0, "S端子の色相誤差 {worst:.1}°");
+
+        // ★負の対照。C側が無信号(コンポジット配線)なら誤判定しないこと
+        let (mut cvbs, f2) = synth(&colors, w, h, sps, 1);
+        for n in 0..w * h {
+            cvbs[n * 2 + 1] = 158;
+        }
+        let mut fb2 = vec![255u8; w * h * 4];
+        let i2 = decode_field(&cvbs, w, h, &f2, sps as u32, &mut fb2, None);
+        assert!(!i2.svideo, "C側が無信号なのにS端子と判定した");
+
+        // ★赤chの粗ゲインが違っても同じ絵になること(バースト基準で校正している)
+        let (raw_g, fg) = synth_svideo(&colors, w, h, sps, 0.5);
+        let mut fb3 = vec![255u8; w * h * 4];
+        decode_field(&raw_g, w, h, &fg, sps as u32, &mut fb3, None);
+        let d = fb.iter().zip(fb3.iter())
+            .map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+        assert!(d <= 12, "C側のゲインが半分で絵が変わった: 最大差 {d}");
+
+        // ★輝度が素通しであること。1サンプルの山が隣へ漏れない
+        let (mut raw_i, fi) = synth_svideo(&colors, w, h, sps, 1.0);
+        let tgt = aa + 400;
+        for y in 0..h {
+            let o = (y * w + tgt) * 2;
+            raw_i[o] = (raw_i[o] as u16 + 60).min(255) as u8;
+        }
+        let mut fb4 = vec![255u8; w * h * 4];
+        decode_field(&raw_i, w, h, &fi, sps as u32, &mut fb4, None);
+        let lum = |n: usize| {
+            let o = (12 * w + n) * 4;
+            0.299 * fb4[o] as f32 + 0.587 * fb4[o + 1] as f32 + 0.114 * fb4[o + 2] as f32
+        };
+        let base = lum(tgt - 20);
+        let pk = lum(tgt) - base;
+        let side = [tgt - 1, tgt + 1, tgt - 4, tgt + 4]
+            .iter().map(|&n| (lum(n) - base).abs()).fold(0.0f32, f32::max);
+        assert!(pk > 20.0 && side / pk < 0.05,
+                "輝度が素通しでない: 山 {pk:.1} 隣への漏れ {:.0}%", 100.0 * side / pk);
     }
 
     fn hue_of(fb: &[u8], w: usize, y: usize, x0: usize, x1: usize) -> f32 {

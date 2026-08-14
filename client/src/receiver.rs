@@ -101,6 +101,9 @@ pub struct StatsSnapshot {
     /// 消し残し(= フレームごとに反転するドットクロール)は C·sin(ε/2)。
     /// 実測で 4.8°、これを補正している。大きくなったら基板側を疑う。
     pub ntsc_phase_drift_deg: f32,
+    /// 赤ch(C)にバーストが載っていた = S端子として復調した。
+    /// このときコムは一切使わない(クロスカラーもドットクロールも原理的に無い)
+    pub ntsc_svideo: bool,
     /// 測定で「インタレースの1フィールドずつ来ている」と判定しているか。
     /// mflags では判定できないので、埋まる行のパリティの交互性で決めている
     pub interlace_measured: bool,
@@ -973,6 +976,7 @@ fn tick_stats(
         ntsc_lines_3d: asm.ntsc_info.as_ref().map(|i| i.lines_3d).unwrap_or(0),
         ntsc_motion_frac: asm.ntsc_info.as_ref().map(|i| i.motion_frac).unwrap_or(0.0),
         ntsc_phase_drift_deg: asm.ntsc_info.as_ref().map(|i| i.phase_drift_deg).unwrap_or(0.0),
+        ntsc_svideo: asm.ntsc_info.as_ref().map(|i| i.svideo).unwrap_or(false),
         interlace_measured: asm.interlace_measured,
         occ_h: tune.occ,
         tune_n: tune.n,

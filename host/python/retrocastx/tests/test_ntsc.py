@@ -65,6 +65,46 @@ def make_lines(colors, n_lines=24, v_sign=1.0):
     return out
 
 
+def make_svideo(colors, n_lines=24, c_gain=1.0):
+    """S端子の Y/C を別々に合成する。
+
+    Y には同期チップと輝度だけ(バーストもクロマも載らない)。
+    C にはバーストとクロマだけ(ミッドレベルクランプなので中心はブランキング)。
+    **これが S端子の本質**で、コムが要らないのはYとCが最初から別だから。
+
+    `c_gain` は C チャネルの粗ゲイン違いを模す。Yの code_per_ire では
+    スケールできないこと(=バーストを基準にする必要があること)の試験に使う。
+    """
+    n = int(round(H_US * 1e-6 * SPS))
+    a = int(5.4e-6 * SPS)
+    aa = int(ntsc.ACTIVE_US[0] * 1e-6 * SPS)
+    y_out = np.zeros((n_lines, n), dtype=np.uint8)
+    c_out = np.zeros((n_lines, n), dtype=np.uint8)
+    for li in range(n_lines):
+        flip = math.pi * li
+        k = np.arange(n)
+        psi = 2 * np.pi * (k - a) / 8.0 - flip
+        yrow = np.full(n, BLANK)
+        crow = np.full(n, BLANK)                 # C はミッドレベルクランプ
+        yrow[: int(4.7e-6 * SPS)] = BLANK - 40.0 * CPI     # 同期は Y 側だけ
+        b0, b1 = a, int(7.7e-6 * SPS)
+        crow[b0:b1] = BLANK + c_gain * 20.0 * CPI * np.cos(psi[b0:b1])
+        per = (n - aa) // len(colors)
+        for ci, (r, g, b) in enumerate(colors):
+            s = aa + ci * per
+            e = aa + (ci + 1) * per if ci < len(colors) - 1 else n
+            y = 0.299 * r + 0.587 * g + 0.114 * b
+            u = 0.493 * (b - y)
+            v = 0.877 * (r - y)
+            p = psi[s:e]
+            c = (-u * np.cos(p) + v * np.sin(p)) / 2.0
+            yrow[s:e] = BLANK + y * 100.0 * CPI
+            crow[s:e] = BLANK + c_gain * c * 100.0 * CPI
+        y_out[li] = np.clip(np.round(yrow), 0, 255)
+        c_out[li] = np.clip(np.round(crow), 0, 255)
+    return y_out, c_out
+
+
 def make_lines_phase(colors, n_lines=24, phase_off=0.0, alternate_rows=False):
     """`make_lines` の位相オフセット付き版。3次元コムの試験に使う。
 
@@ -242,6 +282,56 @@ def main():
     ok.append(check("フレームコムが副搬送波の位相ドリフト6°に耐える",
                     r6 < r0 + 0.004,
                     "輝度に残る副搬送波 %.4f → %.4f" % (r0, r6)))
+
+    # --- S端子(Y/Cが最初から別々に来る) ---
+    #
+    # ★実測(PS2、2026-08-15): コンポジットでは細い縦罫線が二重になり、オシロで
+    #   AC結合前を見ると **PS2の出力の時点で谷底に段がある**。同じラインを S端子の
+    #   Y で見ると単一の深い谷だった。コンポジットのエンコーダの輝度処理が原因で、
+    #   S端子ならコムが丸ごと要らなくなる(=クロスカラーもドットクロールも原理的に無い)。
+    yv, cv = make_svideo(c6)
+    rgb_s, info_s = ntsc.decode(yv, SPS, c_rows=cv)
+    ok.append(check("赤chのバーストからS端子と判定する", info_s["svideo"] is True))
+    # C を繋がない(コンポジット)ときは誤判定しないこと。**負の対照**
+    _, info_c = ntsc.decode(make_lines(c6), SPS,
+                            c_rows=np.full_like(yv, int(BLANK)))
+    ok.append(check("C側が無信号ならコンポジットと判定する",
+                    info_c["svideo"] is False))
+    wd = rgb_s.shape[1]
+    per = wd // len(c6)
+    err = []
+    for i in range(len(c6)):
+        h, _ = hue_of(rgb_s, i * per + per // 4, i * per + per * 3 // 4, 4, 20)
+        err.append(abs(ang(h, w6[i])))
+    ok.append(check("S端子で6色すべての色相が合う(誤差<8°)", max(err) < 8.0,
+                    "最大誤差 %.1f°" % max(err)))
+
+    # ★C側の粗ゲインが違っても彩度が変わらないこと。
+    #   赤chはクランプもゲインも緑chと別設定なので、Yの code_per_ire では
+    #   スケールできない。バースト(規格40 IRE p-p)をものさしにしている。
+    yv2, cv2 = make_svideo(c6, c_gain=0.5)
+    rgb_g, _ = ntsc.decode(yv2, SPS, c_rows=cv2)
+    d = np.abs(rgb_g - rgb_s).max() * 255
+    ok.append(check("C側のゲインが半分でも同じ絵になる(バースト基準の校正)",
+                    d < 12.0, "最大差 %.1f コード" % d))
+
+    # ★輝度は素通しであること。**S端子でコムを掛けたら意味が無い。**
+    #   Y に1サンプルの山を立て、隣へ漏れないことを見る。
+    yv3, cv3 = make_svideo(c6)
+    aa3 = int(ntsc.ACTIVE_US[0] * 1e-6 * SPS)
+    tgt = aa3 + 400
+    yv3 = yv3.astype(np.int16)
+    yv3[:, tgt] = np.clip(yv3[:, tgt] + 60, 0, 255)
+    rgb_i, _ = ntsc.decode(yv3.astype(np.uint8), SPS, c_rows=cv3)
+    lum = rgb_i.mean(2) * 255.0
+    c0 = tgt - aa3
+    base = np.median(lum[8])
+    pk = lum[8, c0] - base
+    side = max(abs(lum[8, c0 - 1] - base), abs(lum[8, c0 + 1] - base),
+               abs(lum[8, c0 - 4] - base), abs(lum[8, c0 + 4] - base))
+    ok.append(check("S端子では輝度が素通しになる(隣へ漏れない)",
+                    pk > 20 and side / max(pk, 1e-6) < 0.05,
+                    "山 %.1f  隣への漏れ %.0f%%" % (pk, 100 * side / max(pk, 1e-6))))
 
     # --- クロマLPFが 2fsc をきっちり消すこと ---
     #
