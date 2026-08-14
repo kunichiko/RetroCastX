@@ -41,6 +41,12 @@ pub struct FrameAssembler {
     line_seen: Vec<bool>, // このフレームで各lineを受信したか
     /// 太らせても埋まらなかった行数(診断用)
     pub unfilled_rows: u32,
+    /// 直前のフレームで埋まっていた行のパリティ(None=偏りが無く判定不能)
+    last_parity: Option<usize>,
+    /// パリティが交互になった確度。閾値を超えたらインタレースとみなす
+    parity_alt: i32,
+    /// 測定で「インタレースの1フィールド」と判定しているか(診断用)
+    pub interlace_measured: bool,
     decay: f32,           // 欠損ラインの減衰率(1.0=前フレーム保持のまま, 0.8=毎フレーム80%へ暗転)
     /// インターレース時の減衰率。既定 1.0(=減衰しない)。
     ///
@@ -74,9 +80,63 @@ impl FrameAssembler {
             last_seq: None,
             line_seen: Vec::new(),
             unfilled_rows: 0,
+            last_parity: None,
+            parity_alt: 0,
+            interlace_measured: false,
             decay: 0.8,
             interlace_decay: 1.0,
         }
+    }
+
+    /// このフレームで埋まった行のパリティ。偏りが無ければ None。
+    ///
+    /// ボードは行位置を「フィールド内の行×2 + 極性」で送るので、
+    /// **プログレッシブでもインタレースでも1つ飛びに埋まる**。違うのは:
+    ///
+    ///     プログレッシブ  極性が固定 → パリティが**常に同じ**
+    ///     インタレース    フィールドごとに極性が反転 → パリティが**交互**
+    ///
+    /// なのでパリティ単体では判定できず、フレーム間の変化を見る必要がある。
+    fn filled_parity(&self) -> Option<usize> {
+        let (mut odd, mut even) = (0usize, 0usize);
+        for (i, s) in self.line_seen.iter().enumerate() {
+            if *s {
+                if i & 1 == 1 { odd += 1 } else { even += 1 }
+            }
+        }
+        let total = odd + even;
+        // 片方が全体の1割未満なら「そのパリティに偏っている」とみなす。
+        // 完全一致にすると、1本ドロップや迷子ラインで判定が飛ぶ
+        if total < 16 || odd.min(even) * 10 >= total {
+            return None;
+        }
+        Some(if odd > even { 1 } else { 0 })
+    }
+
+    /// **インタレースかどうかを測定で決める。** mflags では決まらない。
+    ///
+    /// `mflags bit0` は「スロットが vtotal 個(フレーム単位の織り込み)」の意味で、
+    /// **VSYNCがフィールドごとに来る本物のインタレースでは 0** になる。それを
+    /// 「インタレースではない」と読むと2つ壊れる(どちらも実機で出た):
+    ///
+    ///   1. 太らせが動いて、空いているスロット(=別フィールドの行)に**隣の行を
+    ///      複製する**。次のフィールドでは逆向きに上書きされるので、各行が
+    ///      「本物の内容」と「隣の行のコピー」をフィールドレートで往復する。
+    ///      拡大すると同じラインに縞が交互に出てチラチラ見える
+    ///   2. 欠損減衰(0.8)が半分の行に毎フィールド掛かる(1で全行が埋まって
+    ///      しまうので実際には出番が無かったが、太らせを止めると効いてくる)
+    ///
+    /// 判定はパリティの交互性。非対称に増減させて、途切れたら早く抜ける。
+    fn update_interlace_measure(&mut self) {
+        let p = self.filled_parity();
+        if let (Some(cur), Some(last)) = (p, self.last_parity) {
+            self.parity_alt += if cur != last { 1 } else { -2 };
+            self.parity_alt = self.parity_alt.clamp(0, 8);
+        }
+        if p.is_some() {
+            self.last_parity = p;
+        }
+        self.interlace_measured = self.parity_alt >= 3;
     }
 
     /// 欠損ライン減衰率を設定(1.0で従来の前フレーム保持)。
@@ -320,7 +380,13 @@ impl FrameAssembler {
         // 発動しない。ところが1本だけドロップすると発動し、**別フィールドの行**を
         // 複製してしまう(隣のスロットは別フィールド)。実機で「ところどころ開始位置が
         // 他の行と合わない」形で出た。織り込み時は太らせない。
-        let interlaced = self.mode.as_ref().map_or(false, |m| m.mflags & 0x0001 != 0);
+        //
+        // ★判定は mflags ではなく**測定**で行う。mflags bit0 は「フレーム単位の
+        //   織り込み」の意味で、VSYNCがフィールドごとに来る本物のインタレースでは
+        //   0 になる。詳細は update_interlace_measure のコメント。
+        self.update_interlace_measure();
+        let woven = self.mode.as_ref().map_or(false, |m| m.mflags & 0x0001 != 0);
+        let interlaced = woven || self.interlace_measured;
         // インターレースでは半分の行が来ないのが正常なので、減衰は別の値を使う
         let d = if interlaced { self.interlace_decay } else { self.decay };
         if !interlaced {

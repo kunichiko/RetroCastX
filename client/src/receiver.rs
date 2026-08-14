@@ -92,6 +92,9 @@ pub struct StatsSnapshot {
     pub ntsc_comb_step: u8,
     /// 隣接ライン(コム間隔ぶん)の位相差[度]。180°付近が正常
     pub ntsc_phase_deg: f32,
+    /// 測定で「インタレースの1フィールドずつ来ている」と判定しているか。
+    /// mflags では判定できないので、埋まる行のパリティの交互性で決めている
+    pub interlace_measured: bool,
 }
 
 /// pll_divide と位相を自動で決めるための測定器。
@@ -941,6 +944,7 @@ fn tick_stats(
         ntsc_locked: asm.ntsc_info.as_ref().map(|i| i.lines_locked).unwrap_or(0),
         ntsc_comb_step: asm.ntsc_info.as_ref().map(|i| i.comb_step as u8).unwrap_or(0),
         ntsc_phase_deg: asm.ntsc_info.as_ref().map(|i| i.phase_delta_deg).unwrap_or(0.0),
+        interlace_measured: asm.interlace_measured,
         occ_h: tune.occ,
         tune_n: tune.n,
         active_w: abox.w,

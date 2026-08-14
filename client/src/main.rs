@@ -322,6 +322,10 @@ fn run_headless(
             println!("   NTSC復調: {}行ロック  コム間隔{}  位相差{:.0}°(180°が正常)",
                      s.ntsc_locked, s.ntsc_comb_step, s.ntsc_phase_deg);
         }
+        println!("   インタレース判定(測定): {}  未充填の行 {}",
+                 if s.interlace_measured { "1フィールドずつ来ている(太らせ停止・減衰なし)" }
+                 else { "プログレッシブ扱い(太らせ有効)" },
+                 s.unfilled_rows);
         // 何も来ないときに、どの種別が届いていないかを出す。
         // ブロードキャストだけ届いてユニキャストが届かない、などが分かる
         if s.frames == 0 {
@@ -2273,7 +2277,18 @@ impl eframe::App for ViewerApp {
                 ui.monospace(format!("orphan lines {}", s.orphan_lines));
                 // 太らせても埋まらなかった行数。0でないと前フレームの残りが減衰して
                 // 薄い影として見える。プログレッシブでは0になるべき
-                if s.unfilled_rows > 0 {
+                // インタレースかどうかは mflags では決まらないので測定で判定している。
+                // ここが「プログレッシブ扱い」のまま実際はインタレースだと、
+                // 太らせが別フィールドの行を複製して縞が交互にちらつく
+                if s.interlace_measured {
+                    // **インタレースでは半分が未充填なのが正常**(残りは前フィールドの
+                    // 内容 = 織り込み)。ここで警告色にすると毎回不具合に見える
+                    ui.colored_label(
+                        egui::Color32::from_rgb(120, 200, 120),
+                        format!("インタレース(測定): 1フィールドずつ / 太らせ停止・減衰なし\n\
+                                 前フィールド保持 {}行(半分が正常)", s.unfilled_rows),
+                    );
+                } else if s.unfilled_rows > 0 {
                     ui.colored_label(
                         egui::Color32::from_rgb(220, 170, 60),
                         format!("未充填の行 {}", s.unfilled_rows),
