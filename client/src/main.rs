@@ -30,6 +30,7 @@ mod bezel;
 mod fullscreen;
 mod keytap;
 mod netcheck;
+mod ntsc;
 mod profiles;
 mod remote_input;
 mod render;
@@ -290,6 +291,12 @@ fn run_headless(
             s.fps, s.mbps, s.frames, s.packets, s.lost_packets, s.queue_drops,
             s.orphan_lines
         );
+        // NTSC復調の状態。**GUIを開かずに確認できるようにしておく。**
+        // この環境は画面収録の権限が無く、絵で確かめられないので数値で出す
+        if s.ntsc_comb_step > 0 {
+            println!("   NTSC復調: {}行ロック  コム間隔{}  位相差{:.0}°(180°が正常)",
+                     s.ntsc_locked, s.ntsc_comb_step, s.ntsc_phase_deg);
+        }
         // 何も来ないときに、どの種別が届いていないかを出す。
         // ブロードキャストだけ届いてユニキャストが届かない、などが分かる
         if s.frames == 0 {
@@ -2234,6 +2241,22 @@ impl eframe::App for ViewerApp {
                     ui.colored_label(
                         egui::Color32::from_rgb(220, 170, 60),
                         format!("未充填の行 {}", s.unfilled_rows),
+                    );
+                }
+                // NTSC復調(YC8のときだけ)。位相差が180°から離れたらコムが
+                // 効いていない=色が出ない。コム間隔は測って決めているので、
+                // 織り込み設定が変わっても追従する
+                if s.ntsc_comb_step > 0 {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(120, 200, 120),
+                        format!("NTSC復調 {}行 コム間隔{} 位相差{:.0}°",
+                                s.ntsc_locked, s.ntsc_comb_step, s.ntsc_phase_deg),
+                    );
+                } else if matches!(self.shared.mode.lock().unwrap().as_ref(),
+                                   Some(m) if m.pixfmt == protocol::PIXFMT_YC8) {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 170, 60),
+                        "NTSC復調 未ロック(Yのグレースケール表示)",
                     );
                 }
                 // 暗部のフレーム間差分=点状ノイズの量。配線やパスコンの効果を数値で見る

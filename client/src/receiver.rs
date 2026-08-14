@@ -86,6 +86,12 @@ pub struct StatsSnapshot {
     /// 太らせても埋まらなかった行数(前フレームの残りが減衰して見える行)。
     /// 0でないと薄い影が出る
     pub unfilled_rows: u32,
+    /// NTSC復調の状態(YC8のときだけ。0本ならロックしていない)
+    pub ntsc_locked: u32,
+    /// コムに使ったライン間隔(1 or 2)。0ならロックしていない
+    pub ntsc_comb_step: u8,
+    /// 隣接ライン(コム間隔ぶん)の位相差[度]。180°付近が正常
+    pub ntsc_phase_deg: f32,
 }
 
 /// pll_divide と位相を自動で決めるための測定器。
@@ -932,6 +938,9 @@ fn tick_stats(
         span_w: tune.bw,
         span_h: tune.bh,
         unfilled_rows: asm.unfilled_rows,
+        ntsc_locked: asm.ntsc_info.as_ref().map(|i| i.lines_locked).unwrap_or(0),
+        ntsc_comb_step: asm.ntsc_info.as_ref().map(|i| i.comb_step as u8).unwrap_or(0),
+        ntsc_phase_deg: asm.ntsc_info.as_ref().map(|i| i.phase_delta_deg).unwrap_or(0.0),
         occ_h: tune.occ,
         tune_n: tune.n,
         active_w: abox.w,

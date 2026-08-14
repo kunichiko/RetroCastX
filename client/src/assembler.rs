@@ -1,6 +1,7 @@
 //! Frame reassembly (mirror of `host/python/retrocastx/receiver.py` FrameAssembler).
 //! Output is RGBA8 so the frame can go straight to a GPU texture.
 
+use crate::ntsc;
 use crate::protocol::{self as proto, Packet};
 
 pub struct CompletedFrame {
@@ -24,6 +25,14 @@ pub struct FrameAssembler {
     pub mode: Option<proto::Mode>,
     pub stats: Stats,
     fb: Vec<u8>, // RGBA
+    /// YC8のときだけ使う生サンプル(2B/px: 下位=緑ch=CVBS/Y、上位=赤ch=C)。
+    ///
+    /// **1本ずつ復調できないので溜める。** Y/C分離のコムは上下のラインを
+    /// 使うので、フィールドが揃うまで待つ必要がある。フレーム完成時に
+    /// まとめて復調して fb へ書く。
+    raw: Vec<u8>,
+    /// 復調の結果(パネル表示と診断用)
+    pub ntsc_info: Option<ntsc::Info>,
     width: usize,
     height: usize,
     cur_frame: Option<u16>,
@@ -55,6 +64,8 @@ impl FrameAssembler {
             mode: None,
             stats: Stats::default(),
             fb: Vec::new(),
+            raw: Vec::new(),
+            ntsc_info: None,
             spare: None,
             width: 0,
             height: 0,
@@ -135,6 +146,14 @@ impl FrameAssembler {
                     for px in self.fb.chunks_exact_mut(4) {
                         px[3] = 255;
                     }
+                    // YC8のときだけ生サンプルを溜める(2B/px)。他の形式では
+                    // 使わないので確保しない(1820×526×2 = 1.9MB)
+                    self.raw = if m.pixfmt == proto::PIXFMT_YC8 {
+                        vec![0u8; self.width * self.height * 2]
+                    } else {
+                        Vec::new()
+                    };
+                    self.ntsc_info = None;
                     self.line_seen = vec![false; self.height];
                     self.cur_frame = None;
                     self.px_filled = 0;
@@ -217,13 +236,19 @@ impl FrameAssembler {
                         // 生ADC値。byte0 = 緑ch(コンポジットならCVBSそのもの、
                         // S-VideoならY)、byte1 = 赤ch(S-VideoならC)。
                         //
-                        // ここでは復調しない。Yをグレースケールに置くだけで、
-                        // 「同期チップ→ブリーズウェイ→カラーバースト→映像」という
-                        // 1ラインの波形がそのまま絵になる。ミッドレベルクランプが
-                        // 効いているか(ブランキングが中間調に座るか)、バーストが
-                        // 潰れていないかを目で確認できる。副搬送波の復調は
-                        // docs/composite-video-plan.md §4 の別作業。
+                        // **ここでは復調しない。** Y/C分離のコムが上下のラインを
+                        // 使うので、フィールドが揃うまで待つ必要がある。生のまま
+                        // 溜めて、フレーム完成時(emit)にまとめて復調する。
+                        //
+                        // 同時にYをグレースケールで fb にも置く。復調がロックする
+                        // 前や、バーストが無い信号(モノクロ/同期だけ)でも波形が
+                        // そのまま絵になり、クランプとゲインを目で確認できる。
+                        let rowbase = (l.line as usize * self.width + off) * 2;
                         for (i, px) in l.pixels.chunks_exact(2).enumerate().take(fit) {
+                            if rowbase + i * 2 + 1 < self.raw.len() {
+                                self.raw[rowbase + i * 2] = px[0];
+                                self.raw[rowbase + i * 2 + 1] = px[1];
+                            }
                             let o = base + i * 4;
                             self.fb[o] = px[0];
                             self.fb[o + 1] = px[0];
@@ -264,6 +289,21 @@ impl FrameAssembler {
     }
 
     fn emit(&mut self) -> CompletedFrame {
+        // --- YC8 なら、まず復調して fb を RGB に置き換える ---
+        //
+        // ここでやるのは、Y/C分離のコムが上下のラインを要るのでフィールドが
+        // 揃ってからでないと計算できないため。欠損ラインの減衰・太らせは
+        // この後に走るので、復調結果に対して掛かる(順序はこれで正しい)。
+        //
+        // ロックしなかったとき(バーストが無い信号など)は fb を触らないので、
+        // ライン受信時に書いてあるYのグレースケールがそのまま残る。
+        if !self.raw.is_empty() {
+            let dotclk = self.mode.as_ref().map(|m| m.dotclk_hz).unwrap_or(0);
+            let info = ntsc::decode_field(
+                &self.raw, self.width, self.height, &self.line_seen, dotclk,
+                &mut self.fb);
+            self.ntsc_info = Some(info);
+        }
         // このフレームで受信できなかったライン(=送信側でドロップ)を前値×decayで減衰。
         // 継続的に欠損するラインは 0.8^n で徐々に暗転し「しばらくすると消える」。
         // 1回だけの欠損は80%でほぼ気づかず、次に受信すれば満輝度へ復帰。
