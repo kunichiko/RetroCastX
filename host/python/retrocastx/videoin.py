@@ -495,6 +495,26 @@ def cmd_status(c: Cfg, args) -> int:
     if sctl is not None:
         print("sync_ctl (reg 0Eh) = 0x%02X  (0x52=5線 / 0x5B=SOG)" % sctl)
     print("生HSYNC(TTL)       = %s Hz  (0ならTTL同期は来ていない)" % fh_raw)
+
+    # ★「信号が来ているか」を**派生値より先に**言う。
+    #   これを後回しにすると、fH や lines/frame が全部それらしい数字で出てきて
+    #   紛らわしい。実際に踏んだ: 映像ソースの電源が落ちただけなのに
+    #   fH=1578Hz / lines/frame=1 / vtotal=4096 と出て、Viewer や設定の不具合を
+    #   疑って時間を使った。
+    #
+    #   SOGOUT は FPGA が pix ドメインで直接数えている(TVPの内部状態と独立)。
+    #   信号が無いとスライサの出力がLowに張り付き、Low期間のカウンタが飽和する。
+    if sctl is not None and (sctl & 0x08):
+        lowmax = c.get(proto.CFG_KEY_SOG_LOWMAX)
+        hlen = c.get(proto.CFG_KEY_SOG_HLEN)
+        print("SOGOUT             = 水平周期 %s / 最長Low %s [pixクロック]"
+              % (hlen, lowmax))
+        if lowmax is not None and lowmax >= 0xFFFF:
+            print("\n  ★ **SOGOUTがLowに張り付いている(カウンタ飽和)= 信号が来ていない。**")
+            print("     映像ソースの電源とケーブルを確認する。")
+            print("     この状態では fH も lines/frame も当てにならない値が出るので、")
+            print("     以下は表示しない。")
+            return 1
     # reg 14h: bit6=SOGD(SOG検出) bit3=AVS(垂直有効) bit2=AHS(水平有効)
     print("syncdet (reg 14h) = 0x%02X   SOGD=%d AVS=%d AHS=%d"
           % (det, (det >> 6) & 1, (det >> 3) & 1, (det >> 2) & 1))

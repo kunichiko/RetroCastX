@@ -60,6 +60,9 @@ fn main() -> eframe::Result {
     let mut port = protocol::DEFAULT_PORT;
     let mut subscribe_to = Some("255.255.255.255".to_string());
     let mut headless_secs: Option<u64> = None;
+    // --headless のときに完成フレームをPPMへ落とす。絵を目で見られない環境で
+    // 「組立・復調までは合っているのか」を切り分けるため
+    let mut dump_frame: Option<String> = None;
     let mut no_vsync = false;
     let mut fullscreen_mode = false;
     let mut rotate: u32 = u32::MAX;   // 未指定なら設定ファイルの値を使う
@@ -82,6 +85,9 @@ fn main() -> eframe::Result {
             "--mac" => target_mac = Some(parse_mac(&args.next().expect("--mac needs AA:BB:.."))),
             "--port" => port = args.next().expect("--port needs a value").parse().unwrap(),
             "--no-subscribe" => subscribe_to = None,
+            "--dump-frame" => {
+                dump_frame = Some(args.next().expect("--dump-frame needs a path"))
+            }
             "--headless" => {
                 headless_secs = Some(args.next().expect("--headless needs seconds").parse().unwrap())
             }
@@ -169,7 +175,8 @@ fn main() -> eframe::Result {
     }
 
     if let Some(secs) = headless_secs {
-        return run_headless(port, subscribe_to, target_mac, secs, decay, interlace_decay, audio);
+        return run_headless(port, subscribe_to, target_mac, secs, decay, interlace_decay,
+                            audio, dump_frame);
     }
     if fullscreen_mode {
         let rot = if rotate == u32::MAX { cfg.rotate } else { rotate };
@@ -271,6 +278,7 @@ fn run_headless(
     decay: f32,
     interlace_decay: f32,
     audio: receiver::AudioOpts,
+    dump_frame: Option<String>,
 ) -> eframe::Result {
     let shared = Arc::new(receiver::Shared::default());
     receiver::spawn(
@@ -291,6 +299,23 @@ fn run_headless(
             s.fps, s.mbps, s.frames, s.packets, s.lost_packets, s.queue_drops,
             s.orphan_lines
         );
+        // 完成フレームをそのままPPMへ落とす。**GUIを開かずに絵を確かめる唯一の手段。**
+        // 「絵が出ない」を追うとき、組立・復調までは正しいのか、描画側なのかを
+        // ここで切り分けられる(実際にこれで切り分けた)。
+        if let Some(path) = dump_frame.as_ref() {
+            if let Some(f) = shared.frame.lock().unwrap().as_ref() {
+                let mut out = format!("P6\n{} {}\n255\n", f.width, f.height).into_bytes();
+                for px in f.rgba.chunks_exact(4) {
+                    out.extend_from_slice(&px[..3]);
+                }
+                if std::fs::write(path, &out).is_ok() {
+                    let n = f.rgba.chunks_exact(4).filter(|p| p[0] | p[1] | p[2] != 0).count();
+                    println!("   dump: {path} ({}x{}) 非黒画素 {}/{} = {:.1}%",
+                             f.width, f.height, n, f.width * f.height,
+                             n as f32 * 100.0 / (f.width * f.height) as f32);
+                }
+            }
+        }
         // NTSC復調の状態。**GUIを開かずに確認できるようにしておく。**
         // この環境は画面収録の権限が無く、絵で確かめられないので数値で出す
         if s.ntsc_comb_step > 0 {
