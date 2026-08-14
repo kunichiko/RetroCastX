@@ -63,6 +63,8 @@ fn main() -> eframe::Result {
     // --headless のときに完成フレームをPPMへ落とす。絵を目で見られない環境で
     // 「組立・復調までは合っているのか」を切り分けるため
     let mut dump_frame: Option<String> = None;
+    // 連続Nフレームを番号付きで落とす(フレーム間で変わる現象の追跡用)
+    let mut dump_seq: Option<usize> = None;
     let mut no_vsync = false;
     let mut fullscreen_mode = false;
     let mut rotate: u32 = u32::MAX;   // 未指定なら設定ファイルの値を使う
@@ -85,6 +87,10 @@ fn main() -> eframe::Result {
             "--mac" => target_mac = Some(parse_mac(&args.next().expect("--mac needs AA:BB:.."))),
             "--port" => port = args.next().expect("--port needs a value").parse().unwrap(),
             "--no-subscribe" => subscribe_to = None,
+            "--dump-seq" => {
+                dump_seq = Some(args.next().expect("--dump-seq needs a count")
+                                .parse().unwrap())
+            }
             "--dump-frame" => {
                 dump_frame = Some(args.next().expect("--dump-frame needs a path"))
             }
@@ -176,7 +182,7 @@ fn main() -> eframe::Result {
 
     if let Some(secs) = headless_secs {
         return run_headless(port, subscribe_to, target_mac, secs, decay, interlace_decay,
-                            audio, dump_frame);
+                            audio, dump_frame, dump_seq);
     }
     if fullscreen_mode {
         let rot = if rotate == u32::MAX { cfg.rotate } else { rotate };
@@ -279,6 +285,7 @@ fn run_headless(
     interlace_decay: f32,
     audio: receiver::AudioOpts,
     dump_frame: Option<String>,
+    dump_seq: Option<usize>,
 ) -> eframe::Result {
     let shared = Arc::new(receiver::Shared::default());
     receiver::spawn(
@@ -299,6 +306,32 @@ fn run_headless(
             s.fps, s.mbps, s.frames, s.packets, s.lost_packets, s.queue_drops,
             s.orphan_lines
         );
+        // 連続フレームを番号付きで落とす。**フレームごとに入れ替わる縞**のような
+        // 「1枚では分からない」現象を追うのに要る(実際に必要になった)。
+        if let (Some(path), Some(n)) = (dump_frame.as_ref(), dump_seq) {
+            let mut last = 0u64;
+            let mut got = 0usize;
+            let t0 = std::time::Instant::now();
+            while got < n && t0.elapsed() < std::time::Duration::from_secs(10) {
+                let g = shared.frame_gen.load(Ordering::Acquire);
+                if g == last {
+                    std::thread::sleep(std::time::Duration::from_micros(500));
+                    continue;
+                }
+                last = g;
+                if let Some(f) = shared.frame.lock().unwrap().as_ref() {
+                    let mut out = format!("P6\n{} {}\n255\n", f.width, f.height)
+                        .into_bytes();
+                    for px in f.rgba.chunks_exact(4) {
+                        out.extend_from_slice(&px[..3]);
+                    }
+                    let _ = std::fs::write(format!("{path}.{got:04}.ppm"), &out);
+                    got += 1;
+                }
+            }
+            println!("   dump: {path}.0000..{:04}.ppm ({}枚)", got.saturating_sub(1), got);
+            return Ok(());
+        }
         // 完成フレームをそのままPPMへ落とす。**GUIを開かずに絵を確かめる唯一の手段。**
         // 「絵が出ない」を追うとき、組立・復調までは正しいのか、描画側なのかを
         // ここで切り分けられる(実際にこれで切り分けた)。
