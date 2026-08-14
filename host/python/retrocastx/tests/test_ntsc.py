@@ -85,6 +85,45 @@ def check(name, cond, detail=""):
 def main():
     ok = []
 
+    # --- 1本の線が1本のまま出ること(水平も垂直も) ---
+    #
+    # **輝度の作り方を2回間違えた。** どちらも「1本を3本に広げる」形で出た:
+    #     Y = x - C_comb   横棒が 25%/50%/25% に広がる(垂直)
+    #     Y = x - C_notch  縦線が 25%/50%/25% に広がる(水平)
+    # 正解は「帯域制限したU,Vを再変調して引く」= 色として取り出した分だけを引く。
+    # 実機では「漢字の横棒が二重」→(ノッチに変更)→「鼻の縦線が二重」と
+    # artefact が付け替わっただけだった。**両方向を同時に見る試験でないと防げない。**
+    def impulse(vertical):
+        nn2, hh = 1820, 16
+        ba = int(ntsc.BURST_US[0] * 1e-6 * SPS)
+        bb = int(ntsc.BURST_US[1] * 1e-6 * SPS)
+        aa = int(9.6e-6 * SPS)
+        xx = np.full((hh, nn2), BLANK)
+        for yy in range(hh):
+            k = np.arange(nn2)
+            psi = 2 * np.pi * (k - ba) / 8.0 - np.pi * yy
+            xx[yy, :int(4.7e-6 * SPS)] = BLANK - 40 * CPI
+            xx[yy, ba:bb] = BLANK + 20 * CPI * np.cos(psi[ba:bb])
+        tgt = aa + 400
+        if vertical:
+            xx[hh // 2, aa:] += 80.0
+        else:
+            xx[:, tgt] += 80.0
+        rgb, _ = ntsc.decode(xx, SPS)
+        Y = rgb.mean(2) * 255.0
+        line, c = (Y[:, 400], hh // 2) if vertical else (Y[hh // 2], tgt - aa)
+        base = np.median(line)
+        pk = line[c] - base
+        side = max(abs(line[c - 1] - base), abs(line[c + 1] - base),
+                   abs(line[c - 4] - base), abs(line[c + 4] - base))
+        return pk, side / max(abs(pk), 1e-6)
+
+    for vert, nm in ((False, "縦線(水平方向)"), (True, "横棒(垂直方向)")):
+        pk, leak = impulse(vert)
+        ok.append(check("1本の%sが1本のまま出る" % nm, abs(pk) > 20 and leak < 0.2,
+                        "山 %.1f  隣への漏れ %.0f%%(3本に広がっていれば50%%)"
+                        % (pk, 100 * leak)))
+
     # --- クロマLPFが 2fsc をきっちり消すこと ---
     #
     # 直交復調の積には必ず 2fsc(周期4サンプル)が出る。窓長が副搬送波1周期(8)の

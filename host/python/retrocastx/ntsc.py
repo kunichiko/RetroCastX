@@ -87,8 +87,11 @@ def _boxcar(x, n):
         :, pad:pad + x.shape[1]]
 
 
-def comb_separate(rows, step=1, adapt_ire=0.0):
-    """Y と C に分ける。`adapt_ire > 0` なら **2D適応コム**。
+def chroma_comb(rows, step=1, adapt_ire=0.0):
+    """クロマ C を取り出す。`adapt_ire > 0` なら **2D適応コム**(既定は使わない)。
+
+    ★**輝度をここで作らない。** Y は「帯域制限した U,V を再変調して引いた残り」
+    として `decode` で作る。理由は下記。
 
     ## 1Dコム(基本)
 
@@ -166,38 +169,17 @@ def comb_separate(rows, step=1, adapt_ire=0.0):
 
     up, dn = shift(x, -step), shift(x, step)
     c_comb = (x - (up + dn) / 2.0) / 2.0
-    # --- 輝度はノッチから作る。**コムから作ると垂直解像度が落ちる** ---
-    #
-    # コムの Y = x - C_comb = 0.5x + 0.25up + 0.25dn は垂直方向のLPFで、
-    # 1本の横棒への応答が **25% / 50% / 25%** に広がる(合成信号で実測)。
-    # 織り込むと y-2 / y / y+2 に出るので**横棒が二重〜三重に見え**、しかも
-    # 振幅が半分になる。実機で漢字の横棒が二重に見えたのがこれ。
-    #
-    # ノッチの Y = x - C_notch = (2x + x[n-4] + x[n+4])/4 は水平方向のLPFで、
-    # **垂直は素通し**(1本の応答が 100% の1本のまま)。
-    #
-    # 実機(PS2のゲーム画面)で測った鋭さ(1階差分の二乗平均、大きいほど高解像度):
-    #     コム      垂直  35   水平 5
-    #     ノッチ    垂直 128   水平 2      ← 垂直が3.7倍
-    #     適応4IRE  垂直 109   水平 2      ← 純ノッチに勝てないので採らない
-    # 水平が下がるのは、コムのYに残っていたクロマの漏れ込みも数えているため
-    # (無処理は水平67だが、その大半は副搬送波そのもの)。
-    #
-    # **クロマはコムのまま**にする。ノッチのクロマは輝度の漏れ込みが多く、
-    # 白文字の偽色が増えることを別に実測している。
-    # 「Yはノッチ / Cはコム」は古典的なNTSCデコーダの標準的な組み合わせ。
-    xm4 = np.roll(x, 4, axis=1)
-    xp4 = np.roll(x, -4, axis=1)
-    c_notch = (2.0 * x - xm4 - xp4) / 4.0
-    y = x - c_notch
     if adapt_ire <= 0.0:
-        return y, c_comb
+        return c_comb
     # 以下は「クロマ側を適応にする」実験用の経路。**既定では通らない**
     # (実測で白文字の偽色が悪化した。理由は上の docstring)。
     # 垂直輝度差。up と dn は互いに同位相なのでクロマが消え、純粋な垂直detailになる
+    xm4 = np.roll(x, 4, axis=1)
+    xp4 = np.roll(x, -4, axis=1)
+    c_notch = (2.0 * x - xm4 - xp4) / 4.0
     vd = _boxcar(np.abs(up - dn), 8)
     a = np.clip(vd / adapt_ire, 0.0, 1.0)
-    return y, (1.0 - a) * c_comb + a * c_notch
+    return (1.0 - a) * c_comb + a * c_notch
 
 
 def decode(rows, sps, hue_deg=0.0, sat=1.0, chroma_lpf=16, adapt_ire=0.0):
@@ -215,7 +197,7 @@ def decode(rows, sps, hue_deg=0.0, sat=1.0, chroma_lpf=16, adapt_ire=0.0):
     tip0 = np.median(rows[:, ta:tb])
     blank0 = np.median(rows[:, ba2:bb2])
     cpi0 = max(1e-6, (blank0 - tip0) / 40.0)
-    y_full, c_full = comb_separate(rows, 1, adapt_ire * cpi0)
+    c_full = chroma_comb(rows, 1, adapt_ire * cpi0)
 
     n = np.arange(rows.shape[1])
     # ψ(n) = 2π(n-a)/8 - φ   … この位相でバーストが cos の山になる
@@ -230,10 +212,35 @@ def decode(rows, sps, hue_deg=0.0, sat=1.0, chroma_lpf=16, adapt_ire=0.0):
     #   -85.7° → -7° に落ちた。**1色だけで合わせていたら気づけない誤り。**
     #   既知の色を2つ使うと、回転では消せない食い違いとして出る。
     th = psi + math.radians(hue_deg)
-    u = -2.0 * c_full * np.cos(th)
-    v = +2.0 * c_full * np.sin(th)
-    u = _boxcar(u, chroma_lpf)
-    v = _boxcar(v, chroma_lpf)
+    cth, sth = np.cos(th), np.sin(th)
+    u = _boxcar(-2.0 * c_full * cth, chroma_lpf)
+    v = _boxcar(+2.0 * c_full * sth, chroma_lpf)
+
+    # --- 輝度は「帯域制限した U,V を再変調して引いた残り」にする ---
+    #
+    # ★**コムでもノッチでも駄目だった。** どちらも1本の線を3本に広げる:
+    #
+    #     C の作り方        縦線への水平応答     横棒への垂直応答
+    #     Y = x - C_comb    100% の1本  ○       25%/50%/25%  ×
+    #     Y = x - C_notch   25%/50%/25% ×       100% の1本   ○
+    #     Y = x - Ĉ (これ)  100% の1本  ○       100% の1本   ○
+    #
+    #   実機で最初に横棒の二重化が出て、ノッチにしたら今度は**縦線が二重**になった
+    #   (鼻の縦線が二重に見えた)。artefact を垂直から水平へ付け替えただけだった。
+    #
+    # C = a·cos(th) + b·sin(th) と書けるとき、復調とLPFで a = -u, b = v が出る。
+    # そこから **同じ基底で再変調** すれば、実際に色として使う帯域制限された
+    # クロマだけが引かれる:
+    #
+    #     Ĉ = a·cos(th) + b·sin(th) = -u·cos(th) + v·sin(th)
+    #     Y = x - Ĉ
+    #
+    # これが素通しになる理由:
+    #   - 垂直detailの無い縦線は C_comb = 0 なので Ĉ = 0 → Y = x
+    #   - fsc成分の無い横棒は 復調+LPF で u,v ≈ 0 → Ĉ ≈ 0 → Y = x
+    #   つまり**「色として取り出した分だけ」を引く**ので、余計な広がりが出ない。
+    c_hat = -u * cth + v * sth
+    y_full = rows.astype(np.float64) - c_hat
 
     # --- レベルをIREに直す。基準は同期チップとブランキング(絵の内容に依存しない)
     ta, tb = _win((0.7, 4.2), sps)
