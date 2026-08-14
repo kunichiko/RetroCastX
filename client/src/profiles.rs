@@ -155,18 +155,24 @@ const REGS_SVIDEO: InputRegs = &[
     (proto::CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz"),
     (proto::CFG_KEY_PLL_DIVIDE, 1820, "PLL分周 = 8fsc NTSC"),
     (proto::CFG_KEY_PLL_CTL, 0x10, "VCO=UltraLow + チャージポンプ2"),
-    // Y はボトムレベル(輝度専用でバースト用ヘッドルームが不要)、
-    // C はミッドレベル(搬送波抑圧でブランキング中心に振れる)
-    (proto::CFG_KEY_CLAMP_SEL, 0b001, "Redだけミッドレベル(C)。Green(Y)はボトム"),
-    (proto::CFG_KEY_COARSE_GAIN_GB, 0x77, "Y は既定1.2倍でよい(飽和しない)"),
-    (proto::CFG_KEY_COARSE_GAIN_R, 0x07, "C も既定1.2倍。余裕があれば上げる"),
+    // ★**YもCもミッドレベル。** 当初 Y をボトムレベルにしていたが**理由を
+    //   取り違えていた**(実機で判明、2026-08-15)。ヘッドルームが要るのは
+    //   バーストではなく**同期**。S端子のYは同期を含む1Vppなので、バックポーチを
+    //   底に置くと、その40 IRE下の同期が必ずはみ出す。ゲインを下げても直らない。
+    //   実測: 同期チップが0に張り付き、ブランキング18・白242 → 1 IRE=2.24コード
+    //   なのに、デコーダは (18-0)/40=0.45 と誤認して**輝度が5倍**になり白飛びした。
+    (proto::CFG_KEY_CLAMP_SEL, 0b011, "★YもCもミッドレベル(Yは同期を含む1Vpp)"),
+    (proto::CFG_KEY_COARSE_GAIN_GB, 0x07,
+     "★Y粗ゲイン0.5倍。ミッドレベルのヘッドルーム半減を吸収する(コンポジットと同じ)"),
+    (proto::CFG_KEY_COARSE_GAIN_R, 0x07,
+     "C粗ゲイン1.2倍。実測でバースト88.5コード=設計値ちょうどだった"),
     (proto::CFG_KEY_COARSE_OFF_G, 0x10, "G粗オフセット既定"),
     (proto::CFG_KEY_COARSE_OFF_R, 0x10, "R粗オフセット既定"),
     (proto::CFG_KEY_CLAMP_START, 230, "クランプ開始をバーストの後ろへ"),
     (proto::CFG_KEY_CLAMP_WIDTH, 30, "クランプ幅"),
     (proto::CFG_KEY_GAIN_B, 35, "青は未使用(RGBの既定)"),
-    (proto::CFG_KEY_GAIN_G, 0, "Yのファインゲイン1.000倍(配線後に probe で詰める)"),
-    (proto::CFG_KEY_GAIN_R, 0, "Cのファインゲイン1.000倍(同)"),
+    (proto::CFG_KEY_GAIN_G, 0, "Yのファインゲイン1.000倍(コンポジットと同じ)"),
+    (proto::CFG_KEY_GAIN_R, 0, "Cのファインゲイン1.000倍(実測後に詰める)"),
     (proto::CFG_KEY_PIXFMT, proto::PIXFMT_YC8 as u32, "生8bit伝送(復調に必要)"),
 ];
 
