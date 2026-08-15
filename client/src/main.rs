@@ -3085,8 +3085,29 @@ impl eframe::App for ViewerApp {
         self.remote_badge(&ctx);
         self.netcheck_modal(&ctx);
 
-        // ストリーム停止中でもUI(統計・発見リスト)を更新し続ける
-        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        // ★**映像が来ている間は連続で描画する。**
+        //
+        //   以前は受信側が1フレームごとに request_repaint() を呼ぶだけだったので、
+        //   描画レートがフレーム到着レート(59.8Hz)に一致していた。**同じレートで
+        //   取りに行くと、到着の揺らぎで必ず衝突して取りこぼす。** 実測:
+        //
+        //       描画  60.0Hz → 新フレーム間隔 52.6〜53.9Hz(8%落とす)
+        //       描画 119.8Hz → 新フレーム間隔 59.5〜59.7Hz(ほぼ全部拾う)
+        //
+        //   120Hz になっていたのは、マウス操作で入力イベント由来の再描画が増え、
+        //   たまたまディスプレイの上限(ProMotion)まで上がったとき。狙って
+        //   そうする。ディスプレイの refresh より速くは回らないので上限は勝手に
+        //   決まるし、CPUは UI 0.4〜0.8ms なので倍になっても余裕がある。
+        //
+        //   ★**同期する先が違う。** 揃えるべきは「フレームの到着」ではなく
+        //     「表示のタイミング」で、そこは我々が決められない。だから
+        //     細かく見に行くしかない。
+        if self.shared.mode.lock().unwrap().is_some() {
+            ctx.request_repaint();
+        } else {
+            // 映像が無いときはUI(統計・発見リスト)の更新だけでよい
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
         self.pace.note_ui(t_ui.elapsed());
     }
 }
