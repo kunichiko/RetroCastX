@@ -3103,7 +3103,12 @@ impl eframe::App for ViewerApp {
         //     「表示のタイミング」で、そこは我々が決められない。だから
         //     細かく見に行くしかない。
         if self.shared.mode.lock().unwrap().is_some() {
-            ctx.request_repaint();
+            // ★**上限を掛ける。** 無制限にすると no-vsync では240Hzまで回り、
+            //   CPUだけで 0.33ms × 240 = 1コアの8% を使う(presentも同じ回数)。
+            //   必要なのは「到着の揺らぎより細かく見に行く」ことだけで、実測では
+            //   120Hz(間隔8.3ms)で 59.5〜59.7Hz が出ていた。8msで頭打ちにする。
+            //   vsync有効なら present 側で60Hzに制限されるので、この値は効かない。
+            ctx.request_repaint_after(std::time::Duration::from_millis(8));
         } else {
             // 映像が無いときはUI(統計・発見リスト)の更新だけでよい
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
