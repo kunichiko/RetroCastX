@@ -542,12 +542,26 @@ def cmd_status(c: Cfg, args) -> int:
         hlen = c.get(proto.CFG_KEY_SOG_HLEN)
         print("SOGOUT             = 水平周期 %s / 最長Low %s [pixクロック]"
               % (hlen, lowmax))
+        # ★**カウンタの飽和だけで「信号なし」と断じてはいけない**(2026-08-15)。
+        #   S端子の配線で、fH 15734 / vtotal 263 / lines/frame 525 が全部正常で
+        #   絵も出ているのに lowmax が 65535 に張り付く状態を実測した。
+        #   この判定を信じて2回とも「信号が来ていない」と誤診し、その間に実機の
+        #   本当の症状(断続的な同期外れ)を追えなかった。
+        #
+        #   **TVP自身の測定を裏取りに使う。** lines/frame(reg 37h:38h)は
+        #   セパレータが数えた値で、SOGOUTの波形とは独立に読める。ここが
+        #   NTSC/PALとして筋の通る値なら、信号は来ている。
         if lowmax is not None and lowmax >= 0xFFFF:
-            print("\n  ★ **SOGOUTがLowに張り付いている(カウンタ飽和)= 信号が来ていない。**")
-            print("     映像ソースの電源とケーブルを確認する。")
-            print("     この状態では fH も lines/frame も当てにならない値が出るので、")
-            print("     以下は表示しない。")
-            return 1
+            sane = lpf is not None and (250 <= lpf <= 270 or 500 <= lpf <= 540)
+            if not sane:
+                print("\n  ★ **SOGOUTがLowに張り付いていて、TVPのlines/frame(%s)も"
+                      "筋が通らない = 信号が来ていない。**" % lpf)
+                print("     映像ソースの電源とケーブルを確認する。")
+                print("     この状態では fH も lines/frame も当てにならない値が出るので、")
+                print("     以下は表示しない。")
+                return 1
+            print("  (最長Lowが飽和しているが、TVPのlines/frame=%s は正常なので"
+                  "信号は来ている。SOGOUTの測定はこの配線では当てにならない)" % lpf)
     # reg 14h: bit6=SOGD(SOG検出) bit3=AVS(垂直有効) bit2=AHS(水平有効)
     print("syncdet (reg 14h) = 0x%02X   SOGD=%d AVS=%d AHS=%d"
           % (det, (det >> 6) & 1, (det >> 3) & 1, (det >> 2) & 1))
