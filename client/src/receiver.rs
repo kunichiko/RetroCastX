@@ -12,6 +12,26 @@ use crate::assembler::{CompletedFrame, FrameAssembler};
 use crate::audio::AudioPlayer;
 use crate::protocol::{self as proto, Packet};
 
+/// スケジューラに「これは対話的な処理だ」と伝える。
+///
+/// ★実機で、**Macを操作している間だけ**フレームが落ちた(マウス移動やアプリ
+///   切り替え)。描画は60Hz出ていてCPU側も0.7msなのに、受信〜組立のスレッドが
+///   横取りされてキューが溢れる(queue drops 2007 / orphan lines 54049)。
+///   既定のQoSだと、UI操作中の window server や他アプリに負ける。
+///
+/// 48000パケット/秒を落とさず捌くのは実質リアルタイム処理なので、
+/// USER_INTERACTIVE を要求する。効かない環境では単に無視される。
+#[cfg(target_os = "macos")]
+fn raise_thread_qos() {
+    // QOS_CLASS_USER_INTERACTIVE
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn raise_thread_qos() {}
+
 pub struct Config {
     pub port: u16,
     /// SUBSCRIBE keepalive の宛先。None なら購読しない(sender_sim等の受け専用)。
@@ -86,6 +106,31 @@ pub struct StatsSnapshot {
     /// 太らせても埋まらなかった行数(前フレームの残りが減衰して見える行)。
     /// 0でないと薄い影が出る
     pub unfilled_rows: u32,
+    /// NTSC復調の状態(YC8のときだけ。0本ならロックしていない)
+    pub ntsc_locked: u32,
+    /// コムに使ったライン間隔(1 or 2)。0ならロックしていない
+    pub ntsc_comb_step: u8,
+    /// 隣接ライン(コム間隔ぶん)の位相差[度]。180°付近が正常
+    pub ntsc_phase_deg: f32,
+    /// 3次元(動き適応フレームコム)を使えた行数
+    pub ntsc_lines_3d: u32,
+    /// そのうち「動いている」と判定した画素の割合(0..1)
+    pub ntsc_motion_frac: f32,
+    /// 1フレーム前との副搬送波位相のズレ |ε| の中央値[度]。DATACLK は HSYNC に
+    /// ロックしていて副搬送波にはロックしていないので歩く。フレームコムの
+    /// 消し残し(= フレームごとに反転するドットクロール)は C·sin(ε/2)。
+    /// 実測で 4.8°、これを補正している。大きくなったら基板側を疑う。
+    pub ntsc_phase_drift_deg: f32,
+    /// 赤ch(C)にバーストが載っていた = S端子として復調した。
+    /// このときコムは一切使わない(クロスカラーもドットクロールも原理的に無い)
+    pub ntsc_svideo: bool,
+    /// フレーム差し替えでUIを待った時間の、直近区間での合計[ms]と最大[ms]。
+    /// **落ちる原因の切り分け用。** ここが長いと生産側が詰まる
+    pub publish_wait_ms: f32,
+    pub publish_wait_max_ms: f32,
+    /// 測定で「インタレースの1フィールドずつ来ている」と判定しているか。
+    /// mflags では判定できないので、埋まる行のパリティの交互性で決めている
+    pub interlace_measured: bool,
 }
 
 /// pll_divide と位相を自動で決めるための測定器。
@@ -495,6 +540,15 @@ pub struct Shared {
     /// インターレース時の残光(前フィールドの行をどれだけ残すか)。
     /// UIから実行時に変えられるよう Shared 経由で渡す。None なら起動時の値のまま。
     pub interlace_decay: Mutex<Option<f32>>,
+    /// 復調せず、生のY(緑ch=CVBSそのもの)をグレースケールで見る。
+    /// **切り分けの道具。** 「二重に見える」等がデコーダ由来か、それより前(信号や
+    /// 送出側)かを、絵を見るだけで分けられる。None なら変更なし。
+    pub raw_view: Mutex<Option<bool>>,
+    /// 表示するフィールド。0=織り込み / 1=偶数スロット / 2=奇数スロット。
+    /// 織り込みの影響を外して1枚だけ見るための切り分け用。None なら変更なし。
+    pub field_view: Mutex<Option<u8>>,
+    /// 見た目の調整(彩度・明るさ・コントラスト・色相)。None なら変更なし。
+    pub adjust: Mutex<Option<crate::ntsc::Adjust>>,
 }
 
 #[derive(Clone, Default)]
@@ -542,6 +596,10 @@ pub fn spawn(
         Ok(n) => eprintln!("recv buffer: {:.1} MB", n as f64 / (1 << 20) as f64),
         Err(e) => eprintln!("recv buffer: 読めません ({e})"),
     }
+    // ★SO_REUSEPORT で Viewer と `videoin capture` を共存させようとしたが**駄目だった**
+    //   (2026-08-15)。macOS では bind は通るようになるものの、ブロードキャストは
+    //   片方のソケットにしか配られず、capture が無言で0行になる。
+    //   「Viewerを閉じてください」と明示的に失敗する方がまだ良いので、付けない。
     raw.bind(&std::net::SocketAddr::from(([0, 0, 0, 0], cfg.port)).into())?;
     let sock: UdpSocket = raw.into();
     sock.set_read_timeout(Some(Duration::from_millis(200)))?;
@@ -607,13 +665,22 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             return;
         }
     };
-    // 27000パケット/秒に対し8192段 = 約0.3秒ぶん。組立が一瞬詰まっても吸収できる
-    let (tx, rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize, std::net::IpAddr)>(8192);
+    // ★深さは**実測のパケットレート**で決めること。コメントが古くなっていた。
+    //   YC8(全ライン)では実測 48000パケット/秒 なので、8192段では 0.17秒しか
+    //   吸収できない(「27000/秒に対し0.3秒」と書いてあった)。
+    //   実機で、Macを操作している間だけ組立が横取りされてここが溢れた
+    //   (queue drops 2007 / orphan lines 54049)。16384段 = 約0.34秒にする。
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize, std::net::IpAddr)>(16384);
     let (free_tx, free_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     {
         let shared = shared.clone();
-        std::thread::spawn(move || rx_thread(sock, shared, tx, free_rx));
+        std::thread::spawn(move || {
+            raise_thread_qos();
+            rx_thread(sock, shared, tx, free_rx)
+        });
     }
+    // 組立スレッド(この関数)も上げる
+    raise_thread_qos();
 
     // 音声再生器(デバイスが開けなければ再生なしで続行)
     let mut audio_dev: Option<String> = None;
@@ -627,6 +694,9 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut last_report = Instant::now();
     let mut bytes_since = 0u64;
     let mut frames_since = 0u32;
+    // フレーム差し替えでUIを待った時間(合計と最大)。統計で出す
+    let mut publish_wait_us = 0u64;
+    let mut publish_wait_max_us = 0u64;
     let mut noise = NoiseMeter::default();
     let mut abox = ActiveBox::default();
     let mut tune = TuneMeter::default();
@@ -740,7 +810,9 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 v
             }
             Err(_) => {
-                tick_stats(&shared, &asm, &noise, &abox, &tune, &weave, &mut last_report, &mut bytes_since, &mut frames_since);
+                tick_stats(&shared, &asm, &noise, &abox, &tune, &weave, &mut last_report,
+                   &mut bytes_since, &mut frames_since,
+                   &mut publish_wait_us, &mut publish_wait_max_us);
                 continue;
             }
         };
@@ -847,6 +919,15 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         if let Some(d) = shared.interlace_decay.lock().unwrap().take() {
             asm.set_interlace_decay(d);
         }
+        if let Some(v) = shared.raw_view.lock().unwrap().take() {
+            asm.set_raw_view(v);
+        }
+        if let Some(v) = shared.field_view.lock().unwrap().take() {
+            asm.set_field_view(v);
+        }
+        if let Some(a) = shared.adjust.lock().unwrap().take() {
+            asm.set_adjust(a);
+        }
         if let Some(frame) = asm.feed(&buf[..n]) {
             frames_since += 1;
             noise.feed(&frame.rgba);
@@ -857,7 +938,13 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             // 差し替えて、UIが使い終わった前のバッファを組立側へ返す。
             // ロックはUIがテクスチャ転送を終えるまで取れないので、返した時点で
             // もう誰も参照していない。これで毎フレームの4.8MB確保が消える。
+            // 生産側がUIを待った時間。**落ちる原因を切り分けるために測る。**
+            // ここが長いと、その間フレームを差し替えられず受信側が詰まる。
+            let t_wait = Instant::now();
             let old = shared.frame.lock().unwrap().replace(frame);
+            let us = t_wait.elapsed().as_micros() as u64;
+            publish_wait_us = publish_wait_us.saturating_add(us);
+            if us > publish_wait_max_us { publish_wait_max_us = us; }
             if let Some(old) = old {
                 asm.recycle(old.rgba);
             }
@@ -869,7 +956,9 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         // 受信スレッドが終了していて送れなくても、単に落とすだけで害はない。
         let _ = free_tx.send(buf);
 
-        tick_stats(&shared, &asm, &noise, &abox, &tune, &weave, &mut last_report, &mut bytes_since, &mut frames_since);
+        tick_stats(&shared, &asm, &noise, &abox, &tune, &weave, &mut last_report,
+                   &mut bytes_since, &mut frames_since,
+                   &mut publish_wait_us, &mut publish_wait_max_us);
     }
 }
 
@@ -905,6 +994,8 @@ fn tick_stats(
     last_report: &mut Instant,
     bytes_since: &mut u64,
     frames_since: &mut u32,
+    publish_wait_us: &mut u64,
+    publish_wait_max_us: &mut u64,
 ) {
     let dt = last_report.elapsed();
     if dt < Duration::from_millis(500) {
@@ -932,6 +1023,16 @@ fn tick_stats(
         span_w: tune.bw,
         span_h: tune.bh,
         unfilled_rows: asm.unfilled_rows,
+        ntsc_locked: asm.ntsc_info.as_ref().map(|i| i.lines_locked).unwrap_or(0),
+        ntsc_comb_step: asm.ntsc_info.as_ref().map(|i| i.comb_step as u8).unwrap_or(0),
+        ntsc_phase_deg: asm.ntsc_info.as_ref().map(|i| i.phase_delta_deg).unwrap_or(0.0),
+        ntsc_lines_3d: asm.ntsc_info.as_ref().map(|i| i.lines_3d).unwrap_or(0),
+        ntsc_motion_frac: asm.ntsc_info.as_ref().map(|i| i.motion_frac).unwrap_or(0.0),
+        ntsc_phase_drift_deg: asm.ntsc_info.as_ref().map(|i| i.phase_drift_deg).unwrap_or(0.0),
+        ntsc_svideo: asm.ntsc_info.as_ref().map(|i| i.svideo).unwrap_or(false),
+        publish_wait_ms: *publish_wait_us as f32 / 1000.0,
+        publish_wait_max_ms: *publish_wait_max_us as f32 / 1000.0,
+        interlace_measured: asm.interlace_measured,
         occ_h: tune.occ,
         tune_n: tune.n,
         active_w: abox.w,
@@ -940,4 +1041,6 @@ fn tick_stats(
     *last_report = Instant::now();
     *bytes_since = 0;
     *frames_since = 0;
+    *publish_wait_us = 0;
+    *publish_wait_max_us = 0;
 }

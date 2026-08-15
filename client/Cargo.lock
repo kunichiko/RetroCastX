@@ -2980,6 +2980,7 @@ dependencies = [
  "block2 0.6.2",
  "cpal",
  "eframe",
+ "libc",
  "midir",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",

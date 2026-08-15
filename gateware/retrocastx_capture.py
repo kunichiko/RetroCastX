@@ -284,10 +284,26 @@ class TvpCapture(Module):
             If(vs_meas, vrow_m.eq(0)),
         ]
 
-        pix555 = Signal(16)
-        self.comb += pix555.eq(rgb888_to_555(r, g, b))
+        # --- 1画素(16bit)の詰め方。伝送フォーマットで切り替える ---
+        #
+        # 既定は RGB555。コンポジット/S-Video を扱うときは **8bitのまま**送る必要が
+        # ある(RGB555の5bitではカラーバーストが数コードしか無く、副搬送波の位相を
+        # 推定できない。詳細は docs/composite-video-plan.md §3)。
+        #
+        # YC8 は同じ16bit枠を「下位バイト=緑ch(コンポジットならCVBSそのもの、
+        # S-VideoならY)/ 上位バイト=赤ch(S-VideoならC)」に使う。2B/px のままなので
+        # **断片化もMTU計算も既存と完全に同じ**で、詰め方だけが変わる。
+        # 1B/px の専用形式にすれば帯域は半分になるが、32bit語への詰め方から
+        # 断片長の計算まで全部別系統になるので、まずはこの形で通す。
+        self.cfg_raw_yc = Signal()          # 1 = YC8(生8bit) / 0 = RGB555
+        raw_yc = Signal()                   # pixドメインへ同期した版
+        self.specials += MultiReg(self.cfg_raw_yc, raw_yc, "pix")
+        pixw = Signal(16)
+        self.comb += pixw.eq(Mux(raw_yc, Cat(g, r), rgb888_to_555(r, g, b)))
         # 「黒でない」の判定しきい値(RGB555の各成分, 0..31)。ノイズで真っ暗な所が
         # 0にならないので、少し上げないと範囲が毎ライン全幅に広がってしまう。
+        # ★YC8では意味を持たない(ブランキングもバーストも「中身」なので、
+        #   ライン全体を送る。上位が cfg_full_line 相当を強制する)。
         self.cfg_black_th = Signal(5, reset=2)
 
         # 有効行 row_eff = row - vs_offset(アクティブ行の0起点index)
@@ -398,7 +414,17 @@ class TvpCapture(Module):
 
             xs   = Signal(16)     # SOGOUTの直前の立下りからの経過(診断用)
             low  = Signal(16)     # 現在のLow期間の長さ
-            lowmax = Signal(16)
+            # ★**最大値ホールドには必ずリセット経路を付ける。**
+            #   以前は lowmax にリセットが無く、一度 0xFFFF に飽和すると二度と
+            #   下がらなかった。sog_ok がその飽和値を「使える」と通してしまうので、
+            #   壊れた位相を使い続け、**電源を入れ直すまで復帰しなかった**
+            #   (実機のS端子で、絵が半ライン上下に震える形で出た。閾値を何に
+            #    振っても値が1つも動かないので、信号ではなく測定が凍っていると
+            #    分かった)。HSOUTを数えた固定窓で必ず作り直す。
+            lowmax_acc = Signal(16)   # 現在の窓での最大
+            lowmax = Signal(16)       # 直前の窓の結果(こちらを外へ出す)
+            win = Signal(9)           # 512 HSOUT ≒ 2フィールド
+            win_v = Signal()          # この窓で垂直検出があったか
             hlen = Signal(16)     # SOGOUTの立下り間隔(診断用)
             is_v = Signal()
             v_seen = Signal()
@@ -429,7 +455,7 @@ class TvpCapture(Module):
                 If(sg_fall, xs.eq(0), hlen.eq(xs)),
                 If(xs != 0xFFFF, xs.eq(xs + 1)),
                 If(sg_rise,
-                    If(low > lowmax, lowmax.eq(low)),
+                    If(low > lowmax_acc, lowmax_acc.eq(low)),
                     low.eq(0),
                 ),
                 # Low期間が閾値を超えた瞬間 = 垂直ブロードパルスの検出。
@@ -445,14 +471,32 @@ class TvpCapture(Module):
                     # 実測(MSXインターレース): 661(=中央付近) と 1348(=境界付近)が
                     # 交互に出た。差は687で半ライン684に一致する。
                     ph_sog.eq((ph_now > q_s) & (ph_now < (self.cfg_hs_total - q_s))),
-                    # SOGOUTから同期を分離できているか。垂直区間の間隔が
-                    # 妥当な行数あることで見る(配線が無ければ0のまま)
-                    sog_ok.eq((vcnt > 32) & (lowmax > 100)),
+                    win_v.eq(1),
+                    # SOGOUTから同期を分離できているか。
+                    #
+                    # ★**上限も見る。** 以前は `(vcnt > 32) & (lowmax > 100)` で、
+                    #   下限しか見ていなかった。ところが vcnt>32 は下の
+                    #   「vcnt==32 で v_seen を戻す」ゲートが作る値(=33)でそのまま
+                    #   通り、lowmax>100 は飽和値 65535 でも通る。つまり**測定が
+                    #   壊れているときほど通ってしまう**判定だった。
+                    #   垂直区間の間隔はフィールド単位262前後/フレーム単位525前後
+                    #   なので、その範囲に入っていることを見る。
+                    sog_ok.eq((vcnt > 200) & (vcnt < 600)
+                              & (lowmax > 100) & (lowmax < 0x8000)),
                 ),
                 # HSOUT を数えて、垂直区間を抜けたら次に備える
                 If(hs_edge,
                     If(vcnt != 0xFFFF, vcnt.eq(vcnt + 1)),
                     If(vcnt == 32, v_seen.eq(0), is_v.eq(0)),
+                    # 固定窓で lowmax を作り直す。垂直検出が来なくなっても
+                    # ここは回るので、**壊れた状態から自力で復帰できる**。
+                    win.eq(win + 1),
+                    If(win == 511,
+                        lowmax.eq(lowmax_acc), lowmax_acc.eq(0),
+                        # この窓で垂直検出が1度も無ければ「使えない」に倒す
+                        If(~win_v, sog_ok.eq(0)),
+                        win_v.eq(0),
+                    ),
                 ),
             ]
             self.specials += MultiReg(hlen, self.stat_sog_hlen, "sys")
@@ -634,12 +678,17 @@ class TvpCapture(Module):
         # 送るのはこの範囲だけにする。ライン全体(ブランキング込み)を送ると帯域が
         # 1.4倍になって入らないため。範囲はラインが終わってから push するので、
         # 1ライン分バッファしている今の構造のまま実現できる。
+        #
+        # ★YC8(生8bit)では判定式のビット割りが合わないので結果は無意味になる。
+        #   YC8はブランキングもバーストもライン全体が「中身」なので範囲最適化自体が
+        #   成立しない。上位(retrocastx_stream.py)が cfg_full_line 相当を強制し、
+        #   ここの ln_first/ln_last を使わないようにしてある。
         def _nz(p):
             return ((p[0:5] > self.cfg_black_th)
                     | (p[5:10] > self.cfg_black_th)
                     | (p[10:15] > self.cfg_black_th))
         pair_nz = Signal()
-        self.comb += pair_nz.eq(pix_we & (_nz(pix555) | _nz(pair_lo)))
+        self.comb += pair_nz.eq(pix_we & (_nz(pixw) | _nz(pair_lo)))
         ln_first = Signal(entry_bits, reset=2 ** entry_bits - 1)
         ln_last = Signal(entry_bits)
         ln_any = Signal()
@@ -683,7 +732,7 @@ class TvpCapture(Module):
             wr.adr.eq(Cat(clr_adr[:entry_bits], face)), wr.dat_w.eq(0), wr.we.eq(1),
         ).Else(
             wr.adr.eq(Cat(pix_adr, face)),
-            wr.dat_w.eq(Cat(pair_lo, pix555)),   # {奇数px, 偶数px}
+            wr.dat_w.eq(Cat(pair_lo, pixw)),   # {奇数px, 偶数px}
             wr.we.eq(pix_we),
         )
 
@@ -725,7 +774,7 @@ class TvpCapture(Module):
             If(push & ~meta.sink.ready, drops.eq(drops + 1)),
         ]
         self.sync.pix += [
-            If(active & ~xpix[0], pair_lo.eq(pix555)),  # 偶数x: 低位に保持
+            If(active & ~xpix[0], pair_lo.eq(pixw)),  # 偶数x: 低位に保持
             # 「1画素以上書いたか」。末尾クリアでは立てない。
             # 黒でない画素があったかどうかとは別に持つ。全黒の行を送らない設計に
             # すると、Viewer側が「黒い行」と「届かなかった行」を区別できなくなり、

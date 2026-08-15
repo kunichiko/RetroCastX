@@ -30,6 +30,7 @@ mod bezel;
 mod fullscreen;
 mod keytap;
 mod netcheck;
+mod ntsc;
 mod profiles;
 mod remote_input;
 mod render;
@@ -59,6 +60,11 @@ fn main() -> eframe::Result {
     let mut port = protocol::DEFAULT_PORT;
     let mut subscribe_to = Some("255.255.255.255".to_string());
     let mut headless_secs: Option<u64> = None;
+    // --headless のときに完成フレームをPPMへ落とす。絵を目で見られない環境で
+    // 「組立・復調までは合っているのか」を切り分けるため
+    let mut dump_frame: Option<String> = None;
+    // 連続Nフレームを番号付きで落とす(フレーム間で変わる現象の追跡用)
+    let mut dump_seq: Option<usize> = None;
     let mut no_vsync = false;
     let mut fullscreen_mode = false;
     let mut rotate: u32 = u32::MAX;   // 未指定なら設定ファイルの値を使う
@@ -81,6 +87,13 @@ fn main() -> eframe::Result {
             "--mac" => target_mac = Some(parse_mac(&args.next().expect("--mac needs AA:BB:.."))),
             "--port" => port = args.next().expect("--port needs a value").parse().unwrap(),
             "--no-subscribe" => subscribe_to = None,
+            "--dump-seq" => {
+                dump_seq = Some(args.next().expect("--dump-seq needs a count")
+                                .parse().unwrap())
+            }
+            "--dump-frame" => {
+                dump_frame = Some(args.next().expect("--dump-frame needs a path"))
+            }
             "--headless" => {
                 headless_secs = Some(args.next().expect("--headless needs seconds").parse().unwrap())
             }
@@ -168,7 +181,8 @@ fn main() -> eframe::Result {
     }
 
     if let Some(secs) = headless_secs {
-        return run_headless(port, subscribe_to, target_mac, secs, decay, interlace_decay, audio);
+        return run_headless(port, subscribe_to, target_mac, secs, decay, interlace_decay,
+                            audio, dump_frame, dump_seq);
     }
     if fullscreen_mode {
         let rot = if rotate == u32::MAX { cfg.rotate } else { rotate };
@@ -270,6 +284,8 @@ fn run_headless(
     decay: f32,
     interlace_decay: f32,
     audio: receiver::AudioOpts,
+    dump_frame: Option<String>,
+    dump_seq: Option<usize>,
 ) -> eframe::Result {
     let shared = Arc::new(receiver::Shared::default());
     receiver::spawn(
@@ -290,6 +306,71 @@ fn run_headless(
             s.fps, s.mbps, s.frames, s.packets, s.lost_packets, s.queue_drops,
             s.orphan_lines
         );
+        // 連続フレームを番号付きで落とす。**フレームごとに入れ替わる縞**のような
+        // 「1枚では分からない」現象を追うのに要る(実際に必要になった)。
+        if let (Some(path), Some(n)) = (dump_frame.as_ref(), dump_seq) {
+            let mut last = 0u64;
+            let mut got = 0usize;
+            let t0 = std::time::Instant::now();
+            while got < n && t0.elapsed() < std::time::Duration::from_secs(10) {
+                let g = shared.frame_gen.load(Ordering::Acquire);
+                if g == last {
+                    std::thread::sleep(std::time::Duration::from_micros(500));
+                    continue;
+                }
+                last = g;
+                if let Some(f) = shared.frame.lock().unwrap().as_ref() {
+                    let mut out = format!("P6\n{} {}\n255\n", f.width, f.height)
+                        .into_bytes();
+                    for px in f.rgba.chunks_exact(4) {
+                        out.extend_from_slice(&px[..3]);
+                    }
+                    let _ = std::fs::write(format!("{path}.{got:04}.ppm"), &out);
+                    got += 1;
+                }
+            }
+            println!("   dump: {path}.0000..{:04}.ppm ({}枚)", got.saturating_sub(1), got);
+            return Ok(());
+        }
+        // 完成フレームをそのままPPMへ落とす。**GUIを開かずに絵を確かめる唯一の手段。**
+        // 「絵が出ない」を追うとき、組立・復調までは正しいのか、描画側なのかを
+        // ここで切り分けられる(実際にこれで切り分けた)。
+        if let Some(path) = dump_frame.as_ref() {
+            if let Some(f) = shared.frame.lock().unwrap().as_ref() {
+                let mut out = format!("P6\n{} {}\n255\n", f.width, f.height).into_bytes();
+                for px in f.rgba.chunks_exact(4) {
+                    out.extend_from_slice(&px[..3]);
+                }
+                if std::fs::write(path, &out).is_ok() {
+                    let n = f.rgba.chunks_exact(4).filter(|p| p[0] | p[1] | p[2] != 0).count();
+                    println!("   dump: {path} ({}x{}) 非黒画素 {}/{} = {:.1}%",
+                             f.width, f.height, n, f.width * f.height,
+                             n as f32 * 100.0 / (f.width * f.height) as f32);
+                }
+            }
+        }
+        // NTSC復調の状態。**GUIを開かずに確認できるようにしておく。**
+        // この環境は画面収録の権限が無く、絵で確かめられないので数値で出す
+        if s.ntsc_comb_step > 0 {
+            println!("   NTSC復調: {}行ロック  コム間隔{}  位相差{:.0}°(180°が正常)",
+                     s.ntsc_locked, s.ntsc_comb_step, s.ntsc_phase_deg);
+            if s.ntsc_svideo {
+                println!("   S端子(赤chのバーストで判定): コムは使わない/輝度は素通し");
+            } else {
+                println!("   3次元コム: {}行  動きと判定 {:.1}%  1フレーム前との位相ズレ {:.1}°",
+                         s.ntsc_lines_3d, 100.0 * s.ntsc_motion_frac,
+                         s.ntsc_phase_drift_deg);
+            }
+        }
+        // 生産側がUIを待った時間。**GUIのときだけパケットが落ちる**を切り分ける
+        if s.publish_wait_max_ms > 0.05 {
+            println!("   フレーム差し替えのUI待ち: 合計{:.1}ms 最大{:.1}ms /区間",
+                     s.publish_wait_ms, s.publish_wait_max_ms);
+        }
+        println!("   インタレース判定(測定): {}  未充填の行 {}",
+                 if s.interlace_measured { "1フィールドずつ来ている(太らせ停止・減衰なし)" }
+                 else { "プログレッシブ扱い(太らせ有効)" },
+                 s.unfilled_rows);
         // 何も来ないときに、どの種別が届いていないかを出す。
         // ブロードキャストだけ届いてユニキャストが届かない、などが分かる
         if s.frames == 0 {
@@ -311,14 +392,36 @@ fn run_headless(
     Ok(())
 }
 
-/// 新フレームpaint間隔の計測(vsync量子化の検出用)。
-/// present完了時刻そのものはwgpu経由では取れないため、paint cadenceを代理指標にする
+/// **新しいフレームが画面に出る間隔**の計測(vsync量子化の検出用)。
+///
+/// ★**描画にかかった時間ではない。** `refresh_texture` は新フレームが無ければ
+///   即 return するので、ここに来るのは「中身が変わったpaint」だけ。だから
+///   ボードが59.8fps送っているのにここが54.9Hzなら、**8%のフレームが表示されずに
+///   置き換わっている**という意味になる。以前は "paint" と表示していて
+///   「描画に18msかかっている」と読めてしまった。
+///
+/// present完了時刻そのものはwgpu経由では取れないため、この間隔を代理指標にする
 /// (FIFOではスワップチェーンのバックプレッシャでvsync周期に量子化される)。
+/// CPU側で実際にかかった時間は `cpu_summary` に別に出す。
 struct PaceMeter {
     last_paint: Option<std::time::Instant>,
     intervals_ms: std::collections::VecDeque<f32>,
     last_log: std::time::Instant,
     summary: String,
+    /// ★**間隔と処理時間は別物。** 上の intervals_ms は「新フレームが画面に出る
+    ///   間隔」で、FIFOのvsync待ちを含む。こちらはCPU側で実際にかかった時間で、
+    ///   間隔が伸びたときに「我々が遅いのか、待たされているのか」を分ける。
+    ui_ms: std::collections::VecDeque<f32>,
+    upload_ms: std::collections::VecDeque<f32>,
+    cpu_summary: String,
+    /// ★**描画そのものの回数。** 新フレームの有無に関わらず数える。
+    ///   これが60Hz出ているのに新フレーム間隔が54Hzなら「描画は回っているが
+    ///   フレームが置き換わっている」、こちらも54Hzなら「描画が回っていない」。
+    ui_calls: u32,
+    ui_rate_hz: f32,
+    ui_since: std::time::Instant,
+    /// 表示できた新フレームのレート[Hz]。受信レートと並べて出す
+    pub new_frame_hz: f32,
 }
 
 impl PaceMeter {
@@ -328,9 +431,46 @@ impl PaceMeter {
             intervals_ms: std::collections::VecDeque::with_capacity(256),
             last_log: std::time::Instant::now(),
             summary: String::new(),
+            ui_ms: std::collections::VecDeque::with_capacity(256),
+            upload_ms: std::collections::VecDeque::with_capacity(256),
+            cpu_summary: String::new(),
+            ui_calls: 0,
+            ui_rate_hz: 0.0,
+            ui_since: std::time::Instant::now(),
+            new_frame_hz: 0.0,
         }
     }
 
+    fn note_upload(&mut self, d: std::time::Duration) {
+        if self.upload_ms.len() >= 256 { self.upload_ms.pop_front(); }
+        self.upload_ms.push_back(d.as_secs_f32() * 1000.0);
+    }
+
+    fn note_ui(&mut self, d: std::time::Duration) {
+        if self.ui_ms.len() >= 256 { self.ui_ms.pop_front(); }
+        self.ui_ms.push_back(d.as_secs_f32() * 1000.0);
+        self.ui_calls += 1;
+        let el = self.ui_since.elapsed().as_secs_f32();
+        if el >= 1.0 {
+            self.ui_rate_hz = self.ui_calls as f32 / el;
+            self.ui_calls = 0;
+            self.ui_since = std::time::Instant::now();
+        }
+        let f = |v: &std::collections::VecDeque<f32>| -> (f32, f32) {
+            if v.is_empty() { return (0.0, 0.0); }
+            let n = v.len() as f32;
+            let mean = v.iter().sum::<f32>() / n;
+            let max = v.iter().cloned().fold(0.0f32, f32::max);
+            (mean, max)
+        };
+        let (um, ux) = f(&self.ui_ms);
+        let (tm, tx) = f(&self.upload_ms);
+        self.cpu_summary = format!(
+            "描画 {:.1}Hz / CPU: UI {um:.2}ms(最大{ux:.2}) 転送 {tm:.2}ms(最大{tx:.2})",
+            self.ui_rate_hz);
+    }
+
+    /// 新フレームを受け取った(= 中身が変わるpaint)
     fn on_new_frame(&mut self) {
         let now = std::time::Instant::now();
         if let Some(prev) = self.last_paint {
@@ -345,13 +485,17 @@ impl PaceMeter {
             let n = self.intervals_ms.len() as f32;
             let mean = self.intervals_ms.iter().sum::<f32>() / n;
             let var = self.intervals_ms.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / n;
+            self.new_frame_hz = 1000.0 / mean;
             self.summary = format!(
-                "paint {:.2}ms σ{:.2} → {:.2}Hz",
+                "新フレーム間隔 {:.2}ms σ{:.2} → {:.2}Hz",
                 mean,
                 var.sqrt(),
-                1000.0 / mean
+                self.new_frame_hz
             );
-            eprintln!("pace: {}", self.summary);
+            // ★CPU側の内訳も一緒に出す。パネルはマウスを止めないと読めないので、
+            //   「マウスを動かしている最中」の数字はログでしか取れない
+            //   (実機で「ウィンドウ上でマウスを動かすとレートが下がる」を追うのに要った)
+            eprintln!("pace: {} | {}", self.summary, self.cpu_summary);
             self.last_log = std::time::Instant::now();
         }
     }
@@ -429,6 +573,25 @@ struct ViewerApp {
     /// フレーム間引き。0=毎フレーム / 1=2フレームに1回 …
     /// 受信が追いつかない機械での保険。音声は間引かない
     tune_frame_skip: u8,
+    /// 復調を止めて生のYを見る(切り分け用。設定には保存しない)
+    raw_view: bool,
+    /// 表示するフィールド 0=織り込み / 1=偶数 / 2=奇数(同上)
+    field_view: u8,
+    /// 見た目の調整(彩度・明るさ・コントラスト・色相)。設定に保存する
+    adjust: ntsc::Adjust,
+    /// 管面の幾何に使う vtotal(スロット数)を平滑した値。**整数のまま使わない。**
+    ///
+    /// ★インターレースは 262.5 ライン/フィールドなので、ボードが測る vtotal は
+    ///   262 と 263 を交互に返すのが正常。瞬間値を幾何に使うと縦のスケールが
+    ///   フレームごとに 0.38% 変わり、絵が上下に震える(実機で「横線の縦位置が
+    ///   フレームごとに動いて二重線に見える」形で出た。片フィールド表示でも
+    ///   残ったので、織り込みではなく幾何側だと切り分けられた)。
+    /// (描画中に更新するので Cell。paint_tube を &mut self にすると波及が大きい)
+    vtotal_smooth: std::cell::Cell<f32>,
+    /// 平滑をリセットする判定用。モードが変わったら追従を待たずに飛ばす
+    vtotal_mode_id: std::cell::Cell<u16>,
+    /// 直近で入力設定を書き込んだソース(ラベル, 件数)。パネルの確認表示用。
+    input_regs_sent: Option<(&'static str, usize)>,
     /// 映像ソースのプロファイル名(profiles::PROFILES の key)。空文字は「自動」。
     /// pll_divide を絵の内容ではなく fH とドットクロック候補から決めるのに使う
     source_profile: String,
@@ -530,6 +693,10 @@ impl ViewerApp {
         install_cjk_font(&cc.egui_ctx);
         // 通常モードもフルスクリーンと同じシェーダで描く。見え方が食い違わないように。
         if let Some(rs) = cc.wgpu_render_state.as_ref() {
+            // ★描画先の色空間を出す。**ここが sRGB でないと中間調が暗くなる。**
+            //   テクスチャは Rgba8UnormSrgb なのでサンプラがリニアへ復号する。
+            //   出力先が非sRGBだとリニアのまま書かれ、ガンマ2.2ぶん暗く出る。
+            eprintln!("render target format: {:?}", rs.target_format);
             let blit = render::EguiBlit::new(&rs.device, rs.target_format);
             rs.renderer.write().callback_resources.insert(blit);
         }
@@ -557,6 +724,18 @@ impl ViewerApp {
             tune_full_line: cfg.tune_full_line,
             tune_frame_skip: cfg.tune_frame_skip,
             tune_phase: cfg.tune_phase,
+            raw_view: false,
+            field_view: 0,
+            adjust: ntsc::Adjust {
+                hue_deg: cfg.adj_hue_deg,
+                saturation: cfg.adj_saturation,
+                brightness: cfg.adj_brightness,
+                contrast: cfg.adj_contrast,
+                gamma: if cfg.adj_gamma > 0.0 { cfg.adj_gamma } else { 1.0 },
+            },
+            vtotal_smooth: std::cell::Cell::new(0.0),
+            vtotal_mode_id: std::cell::Cell::new(u16::MAX),
+            input_regs_sent: None,
             source_profile: cfg.source_profile.clone(),
             tune_pending: Default::default(),
             tune_get_at: None,
@@ -608,14 +787,25 @@ impl ViewerApp {
         }
         self.seen_gen = generation;
         self.pace.on_new_frame();
-        let guard = self.shared.frame.lock().unwrap();
-        let Some(frame) = guard.as_ref() else { return };
-        self.frame_size = (frame.width as u32, frame.height as u32);
+        // ★**ロックの順序が逆だった。** 以前はフレームのロックを持ったまま
+        //   `rs.renderer.write()` を取りに行っていた。描画中はレンダラのロックが
+        //   取れないので、paint が 19ms かかる間ずっとフレームのロックを握り続け、
+        //   受信側の `shared.frame.lock()` がその間ブロックされていた。
+        //   レンダラを先に取れば、フレームのロックはGPU転送の間だけで済む。
+        //   (両方を取るのはここだけなので、順序を入れ替えても行き詰まらない)
         if let Some(rs) = self.render_state.as_ref() {
             let mut w = rs.renderer.write();
+            let guard = self.shared.frame.lock().unwrap();
+            let Some(frame) = guard.as_ref() else { return };
+            self.frame_size = (frame.width as u32, frame.height as u32);
             if let Some(b) = w.callback_resources.get_mut::<render::EguiBlit>() {
                 b.upload(&rs.device, &rs.queue, &frame.rgba,
                          frame.width as u32, frame.height as u32);
+            }
+        } else {
+            let guard = self.shared.frame.lock().unwrap();
+            if let Some(frame) = guard.as_ref() {
+                self.frame_size = (frame.width as u32, frame.height as u32);
             }
         }
         let _ = ctx;
@@ -685,6 +875,11 @@ impl ViewerApp {
             bezel_off: self.bezel_off,
             filter: self.filter,
             interlace_decay: self.interlace_decay,
+            adj_hue_deg: self.adjust.hue_deg,
+            adj_saturation: self.adjust.saturation,
+            adj_brightness: self.adjust.brightness,
+            adj_contrast: self.adjust.contrast,
+            adj_gamma: self.adjust.gamma,
             window: self.window,
             tube_time_based: self.tube_time_based,
             mon: self.mon,
@@ -837,6 +1032,18 @@ impl ViewerApp {
             Some(m) if m.mflags & 0x0001 != 0 => 1,
             _ => 2,
         };
+        // vtotal を平滑する。**262/263 の交互は正常なので、その平均(262.5)を使う。**
+        // モードが変わったときだけ即座に飛ばす(追従を待つと一瞬絵が伸びる)。
+        {
+            let raw = m.as_ref().map_or(0.0, |m| (m.vtotal as u32 * slot_k) as f32);
+            let id = m.as_ref().map_or(u16::MAX, |m| m.mode_id as u16);
+            let reset = id != self.vtotal_mode_id.get();
+            self.vtotal_smooth
+                .set(render::smooth_vtotal(self.vtotal_smooth.get(), raw, reset));
+            if raw > 0.0 {
+                self.vtotal_mode_id.set(id);
+            }
+        }
         let act = {
             let st = self.shared.stats.lock().unwrap();
             // span_* は「明るい画素が1つでもある行/列」の外接矩形。active_* は
@@ -861,7 +1068,7 @@ impl ViewerApp {
             //   インターレース  折り返して2フィールドが  → vtotal
             //                   交互に入るので1ラインが1スロット
             // これを間違えると縦が2倍に引き伸ばされる(実機で絵が上半分に収まった)。
-            vtotal: m.as_ref().map_or(0, |m| m.vtotal as u32 * slot_k),
+            vtotal: self.vtotal_smooth.get(),
             // offset_px はライン内の絶対位置で来るので、ここでずらす必要はない。
             // pll_divide を変えても絵が動かないのはこのため(hs_offset は取り込み
             // 窓の設定であって、描画位置とは無関係になった)
@@ -949,7 +1156,29 @@ impl ViewerApp {
     /// pll_divide はドットクロック再生のためのもので描画位置とは無関係でなければ
     /// ならない。いまは hs_offset を常に0で運用しているので実質的な効果は無いが、
     /// 0以外にしたときに壊れないようにしておく。
+    /// pll_divide を Viewer 側が動かしてよいか。
+    ///
+    /// **YC8(生8bit)のときは動かしてはいけない。** コンポジット/S端子の
+    /// サンプルレートは規格で決まっていて(NTSC 8fsc = 227.5×8 = 1820
+    /// サンプル/ライン)、実測で探すものではない。8サンプル/周期という
+    /// 前提が崩れると副搬送波の直交復調が成立しなくなる。
+    ///
+    /// 実際に踏んだ: コンポジットで 1820 を入れた直後に Viewer が
+    /// **帯域ごとの保存値と自動調整の初期値(2304)で上書き**し、
+    /// 10.13サンプル/周期になっていた(絵は出るので気づきにくい)。
+    ///
+    /// 入力方式ごとの値は `retrocastx.videoin` が入れる。Viewer は触らない。
+    fn pll_locked_by_format(&self) -> bool {
+        matches!(self.shared.mode.lock().unwrap().as_ref(),
+                 Some(m) if m.pixfmt == protocol::PIXFMT_YC8)
+    }
+
     fn set_pll(&mut self, new: u32) {
+        // 自動でここへ来る経路(帯域切替の復元など)を1か所で止める。
+        // 手動の pll_div 欄は別経路なので、逃げ道としては残る。
+        if self.pll_locked_by_format() {
+            return;
+        }
         let old = self.tune_pll_divide.max(1) as f32;
         let hs = ((self.tune_hs_offset as f32 * (new as f32 / old)).round() as i32)
             .clamp(0, (new / 2) as i32);
@@ -1205,6 +1434,11 @@ impl ViewerApp {
 
     /// 自動調整を開始する。上限まで過剰サンプルするところから始める
     fn auto_start(&mut self) {
+        // YC8 は pll_divide が規格で決まっているので探索してはいけない
+        if self.pll_locked_by_format() {
+            self.auto_done = Some("YC8では pll_divide は規格値。自動調整しません".into());
+            return;
+        }
         self.send_cfg(protocol::CFG_KEY_PLL_DIVIDE, AUTO_PLL_MAX);
         self.tune_pll_divide = AUTO_PLL_MAX as i32;
         self.auto = Some(AutoTune {
@@ -1479,8 +1713,29 @@ impl ViewerApp {
             }
             _ => 200,
         };
+        // YC8(コンポジット/S端子)は pll_divide が規格で決まる。Viewerの
+        // 自動経路(帯域ごとの復元・自動調整・send all)を止めていることを示す。
+        let pll_locked = self.pll_locked_by_format();
+        // ★送るのを止めたら**表示もボードの実値に合わせる**。片方だけ直すと、
+        //   欄に古い値(自動調整が入れた2304など)が残ってボードの実値(1820)と
+        //   食い違い、「効いていない」ように見える(実際そう見えた)。
+        //   MODE の htotal はボードの pll_divide そのものなので、それを映す。
+        if pll_locked {
+            if let Some(ht) = self.shared.mode.lock().unwrap().as_ref()
+                .map(|m| m.htotal as i32).filter(|h| *h > 0)
+            {
+                self.tune_pll_divide = ht;
+            }
+        }
         row(ui, "pll_div", &mut self.tune_pll_divide, pll_min, 2304,
             protocol::CFG_KEY_PLL_DIVIDE, &mut send);
+        if pll_locked {
+            ui.colored_label(
+                egui::Color32::from_rgb(120, 200, 120),
+                "YC8: pll_div は規格値(NTSC 8fsc=1820)。\n\
+                 自動調整・プロファイル・send all では変更しません",
+            );
+        }
         if self.tune_pll_divide < pll_min {
             ui.colored_label(
                 egui::Color32::from_rgb(220, 170, 60),
@@ -1502,6 +1757,13 @@ impl ViewerApp {
             .as_ref()
             .map(|m| m.hfreq_mhz_x1000 as f64 / 1000.0)
             .unwrap_or(0.0);
+        // 映像ソースは「配線の方式」でもある。選んだらその入力設定をボードへ書く。
+        //
+        // ★**TVPのレジスタは電源で消える。** ビットストリームをSPIフラッシュに
+        //   焼いても、pixfmt・入力MUX・同期の取り方・クランプ・ゲインは
+        //   CONFIG で入れ直す必要がある。以前は毎回
+        //   `python3 -m retrocastx.videoin apply composite` を叩いていた。
+        //   同じ選択を選び直してもコンボは反応しないので、書き直しボタンも要る。
         ui.horizontal(|ui| {
             ui.monospace("映像ソース");
             let cur = self.source_profile.clone();
@@ -1514,7 +1776,7 @@ impl ViewerApp {
                 }
             };
             egui::ComboBox::from_id_salt("srcprof")
-                .width(150.0)
+                .width(190.0)
                 .selected_text(name(&cur))
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut sel, String::new(), "自動");
@@ -1522,9 +1784,149 @@ impl ViewerApp {
                         ui.selectable_value(&mut sel, p.key.to_string(), p.label);
                     }
                 });
-            if sel != cur {
+            let changed = sel != cur;
+            if changed {
                 self.source_profile = sel;
                 self.mark_settings_dirty();
+            }
+            let prof = profiles::by_key(&self.source_profile);
+            let has_regs = prof.is_some_and(|p| !p.input_regs.is_empty());
+            let write = ui
+                .add_enabled(has_regs, egui::Button::new("入力設定を書く"))
+                .on_hover_text(
+                    "TVPの入力MUX・同期の取り方・クランプ・ゲイン・伝送形式を書く。\n\
+                     ボードの電源を入れ直すと消えるので、そのときはここを押す\n\
+                     (焼き直しは不要。全部CONFIGで済む)",
+                )
+                .clicked();
+            if let Some(p) = prof {
+                if (changed || write) && !p.input_regs.is_empty() {
+                    for (k, v, _) in p.input_regs {
+                        send.push((*k, *v));
+                    }
+                    self.input_regs_sent = Some((p.label, p.input_regs.len()));
+                }
+            }
+        });
+        // ボードの伝送形式が選択と食い違っていたら言う。**電源断でTVPのレジスタが
+        // 消えた状態がこれ**で、絵は出るが復調できない(コンポジットなのにRGB555)。
+        if let Some(p) = profiles::by_key(&self.source_profile) {
+            if let (Some(want), Some(have)) = (
+                p.pixfmt(),
+                self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt),
+            ) {
+                if want != have {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 170, 60),
+                        format!(
+                            "ボードの伝送形式が {have}(このソースは {want})。\
+                             電源を入れ直して設定が消えた可能性 → 「入力設定を書く」"
+                        ),
+                    );
+                }
+            }
+        }
+        if let Some((label, n)) = self.input_regs_sent {
+            ui.monospace(format!("入力設定を書いた: {label} ({n}件)"));
+        }
+        // 見た目の調整。**復調の校正とは別に持つ。**
+        //
+        // 信号内の基準(同期40 IRE / バースト40 IRE p-p)に合わせた結果が「正しい」絵で、
+        // 既定値はそこを指す。ここはその上に載せる好みの調整。校正の方を歪めると
+        // 「どこまでが信号でどこからが好みか」が分からなくなり、後で数値で追えない。
+        ui.horizontal(|ui| {
+            ui.monospace("画調");
+            if ui.small_button("既定へ").on_hover_text(
+                "信号どおり(彩度1.00 明るさ0 コントラスト1.00 色相0°)へ戻す")
+                .clicked()
+            {
+                self.adjust = ntsc::Adjust::default();
+                *self.shared.adjust.lock().unwrap() = Some(self.adjust);
+                self.mark_settings_dirty();
+            }
+            if self.adjust != ntsc::Adjust::default() {
+                ui.colored_label(egui::Color32::from_rgb(220, 170, 60), "信号どおりではない");
+            }
+        });
+        {
+            let mut a = self.adjust;
+            let mut ch = false;
+            let mut row = |ui: &mut egui::Ui, label: &str, v: &mut f32,
+                           lo: f32, hi: f32, dec: usize, tip: &str, ch: &mut bool| {
+                ui.horizontal(|ui| {
+                    ui.monospace(format!("{label:<6}"));
+                    *ch |= ui.add(egui::Slider::new(v, lo..=hi).fixed_decimals(dec))
+                        .on_hover_text(tip)
+                        .changed();
+                });
+            };
+            row(ui, "彩度", &mut a.saturation, 0.0, 2.0, 2,
+                "色の濃さ。1.00 = バースト(40 IRE p-p)基準の信号どおり", &mut ch);
+            row(ui, "明るさ", &mut a.brightness, -20.0, 20.0, 1,
+                "黒レベルを上下する[IRE]。0 = 信号どおり", &mut ch);
+            row(ui, "コントラスト", &mut a.contrast, 0.5, 1.5, 2,
+                "1.00 = 信号どおり。色差にも掛かるので色が薄くならない", &mut ch);
+            row(ui, "色相", &mut a.hue_deg, -30.0, 30.0, 0,
+                "NTSCのtint。復調の位相基準をずらす[度]。0 = バーストどおり", &mut ch);
+            row(ui, "ガンマ", &mut a.gamma, 0.6, 3.0, 2,
+                "1.00 = 信号どおり。**これが正しい。**\n\
+                 信号は既にガンマ符号化済みで、それはブラウン管のガンマを見越した\n\
+                 ものなので、受け側で補正するものではない。sRGB液晶も同じ復号を\n\
+                 するので、そのまま出せばブラウン管と同じ絵になる。\n\
+                 \n\
+                 上げると中間調が持ち上がる(端点は動かない)。明るい部屋で暗部が\n\
+                 潰れて見えるときの対処。1.2〜1.6 あたりが実用的。\n\
+                 2.20 は同じ画面のYouTube版と分位9点が平均誤差1.8コードで一致する値\n\
+                 (あちらは符号化済みの値を二重符号化した絵。正しいわけではない)",
+                &mut ch);
+            if ch {
+                self.adjust = a;
+                *self.shared.adjust.lock().unwrap() = Some(a);
+                self.mark_settings_dirty();
+            }
+        }
+        // 復調前の生Yをそのまま見る。**artefactの出所を分ける道具。**
+        //
+        // 「線が二重に見える」「縞が出る」が復調由来なのか、それより前(信号そのもの、
+        // 送出側のフィルタ、アナログ経路)なのかは、絵を見比べれば一発で分かる。
+        // 生では副搬送波が8サンプル周期の細かい市松模様として見えるのが正常。
+        // 設定には保存しない(次に開いたとき灰色で驚くので)。
+        {
+            let mut v = self.raw_view;
+            if ui.checkbox(&mut v, "復調しない(生のYを見る)")
+                .on_hover_text(
+                    "NTSC復調を止めて、緑ch(CVBSそのもの)をグレースケールで出す。\n\
+                     色は出ないが、二重像や縞が復調より前にあるかを目で分けられる。\n\
+                     細かい市松模様は副搬送波(8サンプル周期)で、これは正常")
+                .changed()
+            {
+                self.raw_view = v;
+                *self.shared.raw_view.lock().unwrap() = Some(v);
+            }
+        }
+        // 片方のフィールドだけ見る。**織り込みの影響を外すための道具。**
+        // 縦線が二重に見えるとき、2枚のフィールドがずれているのか、1枚の中で
+        // 既に二重なのかを分けられる。選んだ側を隣のスロットへ複製して全高で出す
+        // (黒で間引くとスキャンラインが乗って、かえって見分けにくい)。
+        ui.horizontal(|ui| {
+            ui.monospace("フィールド");
+            let mut v = self.field_view;
+            let mut ch = false;
+            // ★片フィールド表示は**ラインダブラ**。横線が2行ぶんの太さになるのは
+            //   仕様。これを知らないと「横線が二重になった」と読めてしまうので、
+            //   ホバーで明示する(実機で実際に紛らわしかった)。
+            let tip = "偶数/奇数は片方のフィールドだけを見る切り分け用。\n\
+                       ★選んだ側の行を隣へ複製するので、**横線は2行ぶんの太さになる**\n\
+                       (縦線の二重化を見るための道具。横方向の判断は「織り込み」で)";
+            ch |= ui.selectable_value(&mut v, 0u8, "織り込み")
+                .on_hover_text(tip).changed();
+            ch |= ui.selectable_value(&mut v, 1u8, "偶数のみ")
+                .on_hover_text(tip).changed();
+            ch |= ui.selectable_value(&mut v, 2u8, "奇数のみ")
+                .on_hover_text(tip).changed();
+            if ch {
+                self.field_view = v;
+                *self.shared.field_view.lock().unwrap() = Some(v);
             }
         });
         // 選んだプロファイル(空なら全部試す)での答え
@@ -1549,7 +1951,14 @@ impl ViewerApp {
                         over
                     ));
                     let same = c.pll_divide == self.tune_pll_divide;
-                    let btn = ui.add_enabled(!same, egui::Button::new("適用"));
+                    // YC8 では規格値が正なので、プロファイルの推定値で上書きしない
+                    let btn = ui.add_enabled(!same && !pll_locked,
+                                             egui::Button::new("適用"));
+                    if pll_locked {
+                        btn.clone().on_hover_text(
+                            "YC8(コンポジット/S端子)では pll_div は規格値なので\n\
+                             プロファイルからは変更しません");
+                    }
                     if btn
                         .on_hover_text(format!(
                             "{label}: fH {:.3}kHz と {} から htotal {}\n\
@@ -1724,7 +2133,10 @@ impl ViewerApp {
         if ui.button("send all").clicked() {
             send.push((protocol::CFG_KEY_VBP, self.tune_vbp as u32));
             send.push((protocol::CFG_KEY_HS_OFFSET, self.tune_hs_offset as u32));
-            send.push((protocol::CFG_KEY_PLL_DIVIDE, self.tune_pll_divide as u32));
+            // YC8 では pll_divide は規格値。保存してある古い値で上書きしない
+            if !pll_locked {
+                send.push((protocol::CFG_KEY_PLL_DIVIDE, self.tune_pll_divide as u32));
+            }
             send.push((protocol::CFG_KEY_PHASE, self.tune_phase as u32));
             send.push((protocol::CFG_KEY_FULL_LINE,
                        if self.tune_full_line { 1 } else { 0 }));
@@ -2080,8 +2492,11 @@ impl eframe::App for ViewerApp {
     }
 
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let t_ui = std::time::Instant::now();
         let ctx = root.ctx().clone();
+        let t_tex = std::time::Instant::now();
         self.refresh_texture(&ctx);
+        self.pace.note_upload(t_tex.elapsed());
         // ウィンドウ内寸を覚えておき、次回起動時に復元する
         if let Some(r) = ctx.input(|i| i.viewport().inner_rect) {
             let sz = r.size();
@@ -2163,10 +2578,35 @@ impl eframe::App for ViewerApp {
 
                 ui.strong("Stats");
                 ui.label(if self.no_vsync { "present: no-vsync" } else { "present: vsync (FIFO)" });
-                if !self.pace.summary.is_empty() {
-                    ui.monospace(&self.pace.summary);
-                }
                 let s = self.shared.stats.lock().unwrap().clone();
+                if !self.pace.summary.is_empty() {
+                    // ★**「53Hz」だけ出すと「12%描画できていない」と読める。**
+                    //   実際には publish を取りこぼしても**絵の情報は失われない**
+                    //   (フレームバッファは累積で、各publishはその全体のコピー。
+                    //    次のpublishが上位互換)。効くのは動きの滑らかさだけ。
+                    //   受信レートと並べ、意味はホバーで説明する。
+                    let disp = self.pace.new_frame_hz;
+                    let pct = if s.fps > 1.0 { 100.0 * disp / s.fps } else { 0.0 };
+                    ui.monospace(format!("表示 {disp:.1}Hz / 受信 {:.1}Hz ({pct:.0}%)",
+                                         s.fps))
+                        .on_hover_text(
+                            "画面に出せた新フレームの割合。\n\
+                             ★**取りこぼしても絵の情報は失われない。** フレーム\n\
+                             バッファは累積で、各フレームはその全体のコピーなので、\n\
+                             次のフレームが前のものを含んでいる。効くのは動きの\n\
+                             滑らかさだけ。\n\
+                             \n\
+                             そもそもソース59.75Hzに対しディスプレイは60Hzなので、\n\
+                             完璧に拾っても4秒に1回は重複か欠落が出る(原理的)。");
+                    if !self.pace.cpu_summary.is_empty() {
+                        ui.monospace(&self.pace.cpu_summary)
+                            .on_hover_text(
+                                "描画=ui()の呼び出し回数(=新フレームを見に行った\n\
+                                 回数)。**画面の更新回数ではない。** 画面は\n\
+                                 ディスプレイのrefresh(60Hz)で更新される。\n\
+                                 到着の揺らぎより細かく見に行くために多めに回す。");
+                    }
+                }
                 ui.monospace(format!("{:.1} fps  {:.1} Mbps", s.fps, s.mbps));
                 ui.monospace(format!("frames {}", s.frames));
                 // lost はOSのUDPバッファ溢れ、qdrop は組立が追いつかず受信スレッドの
@@ -2183,10 +2623,52 @@ impl eframe::App for ViewerApp {
                 ui.monospace(format!("orphan lines {}", s.orphan_lines));
                 // 太らせても埋まらなかった行数。0でないと前フレームの残りが減衰して
                 // 薄い影として見える。プログレッシブでは0になるべき
-                if s.unfilled_rows > 0 {
+                // インタレースかどうかは mflags では決まらないので測定で判定している。
+                // ここが「プログレッシブ扱い」のまま実際はインタレースだと、
+                // 太らせが別フィールドの行を複製して縞が交互にちらつく
+                if s.interlace_measured {
+                    // **インタレースでは半分が未充填なのが正常**(残りは前フィールドの
+                    // 内容 = 織り込み)。ここで警告色にすると毎回不具合に見える
+                    ui.colored_label(
+                        egui::Color32::from_rgb(120, 200, 120),
+                        format!("インタレース(測定): 1フィールドずつ / 太らせ停止・減衰なし\n\
+                                 前フィールド保持 {}行(半分が正常)", s.unfilled_rows),
+                    );
+                } else if s.unfilled_rows > 0 {
                     ui.colored_label(
                         egui::Color32::from_rgb(220, 170, 60),
                         format!("未充填の行 {}", s.unfilled_rows),
+                    );
+                }
+                // NTSC復調(YC8のときだけ)。位相差が180°から離れたらコムが
+                // 効いていない=色が出ない。コム間隔は測って決めているので、
+                // 織り込み設定が変わっても追従する
+                if s.ntsc_comb_step > 0 {
+                    if s.publish_wait_max_ms > 1.0 {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 170, 60),
+                            format!("フレーム差し替えのUI待ち 合計{:.0}ms 最大{:.0}ms",
+                                    s.publish_wait_ms, s.publish_wait_max_ms));
+                    }
+                    ui.colored_label(
+                        egui::Color32::from_rgb(120, 200, 120),
+                        if s.ntsc_svideo {
+                            format!("NTSC復調 {}行 コム間隔{} 位相差{:.0}°\n\
+                                     S端子(赤chのバースト検出) コム未使用",
+                                    s.ntsc_locked, s.ntsc_comb_step, s.ntsc_phase_deg)
+                        } else {
+                            format!("NTSC復調 {}行 コム間隔{} 位相差{:.0}°\n\
+                                     3次元コム {}行 動き {:.1}% 位相ズレ{:.1}°",
+                                    s.ntsc_locked, s.ntsc_comb_step, s.ntsc_phase_deg,
+                                    s.ntsc_lines_3d, 100.0 * s.ntsc_motion_frac,
+                                    s.ntsc_phase_drift_deg)
+                        },
+                    );
+                } else if matches!(self.shared.mode.lock().unwrap().as_ref(),
+                                   Some(m) if m.pixfmt == protocol::PIXFMT_YC8) {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 170, 60),
+                        "NTSC復調 未ロック(Yのグレースケール表示)",
                     );
                 }
                 // 暗部のフレーム間差分=点状ノイズの量。配線やパスコンの効果を数値で見る
@@ -2629,8 +3111,35 @@ impl eframe::App for ViewerApp {
         self.remote_badge(&ctx);
         self.netcheck_modal(&ctx);
 
-        // ストリーム停止中でもUI(統計・発見リスト)を更新し続ける
-        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        // ★**映像が来ている間は連続で描画する。**
+        //
+        //   以前は受信側が1フレームごとに request_repaint() を呼ぶだけだったので、
+        //   描画レートがフレーム到着レート(59.8Hz)に一致していた。**同じレートで
+        //   取りに行くと、到着の揺らぎで必ず衝突して取りこぼす。** 実測:
+        //
+        //       描画  60.0Hz → 新フレーム間隔 52.6〜53.9Hz(8%落とす)
+        //       描画 119.8Hz → 新フレーム間隔 59.5〜59.7Hz(ほぼ全部拾う)
+        //
+        //   120Hz になっていたのは、マウス操作で入力イベント由来の再描画が増え、
+        //   たまたまディスプレイの上限(ProMotion)まで上がったとき。狙って
+        //   そうする。ディスプレイの refresh より速くは回らないので上限は勝手に
+        //   決まるし、CPUは UI 0.4〜0.8ms なので倍になっても余裕がある。
+        //
+        //   ★**同期する先が違う。** 揃えるべきは「フレームの到着」ではなく
+        //     「表示のタイミング」で、そこは我々が決められない。だから
+        //     細かく見に行くしかない。
+        if self.shared.mode.lock().unwrap().is_some() {
+            // ★**上限を掛ける。** 無制限にすると no-vsync では240Hzまで回り、
+            //   CPUだけで 0.33ms × 240 = 1コアの8% を使う(presentも同じ回数)。
+            //   必要なのは「到着の揺らぎより細かく見に行く」ことだけで、実測では
+            //   120Hz(間隔8.3ms)で 59.5〜59.7Hz が出ていた。8msで頭打ちにする。
+            //   vsync有効なら present 側で60Hzに制限されるので、この値は効かない。
+            ctx.request_repaint_after(std::time::Duration::from_millis(8));
+        } else {
+            // 映像が無いときはUI(統計・発見リスト)の更新だけでよい
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        self.pace.note_ui(t_ui.elapsed());
     }
 }
 

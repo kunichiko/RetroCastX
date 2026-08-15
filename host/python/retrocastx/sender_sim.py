@@ -16,7 +16,8 @@ import numpy as np
 
 from . import pattern, protocol as proto
 
-PIXFMT_BY_NAME = {"rgb888": proto.PIXFMT_RGB888, "rgb555": proto.PIXFMT_RGB555}
+PIXFMT_BY_NAME = {"rgb888": proto.PIXFMT_RGB888, "rgb555": proto.PIXFMT_RGB555,
+                  "yc8": proto.PIXFMT_YC8}
 
 
 class Sender:
@@ -64,6 +65,13 @@ class Sender:
         if self.pixfmt == proto.PIXFMT_RGB555:
             packed = pattern.rgb888_to_rgb555(img)
             rows = [packed[y].astype("<u2").tobytes() for y in range(m.vactive)]
+            bpp = 2
+        elif self.pixfmt == proto.PIXFMT_YC8:
+            # ボードと同じ詰め方: byte0 = 緑ch(CVBS/Y) / byte1 = 赤ch(C)。
+            # ゲートウェアは Cat(g, r) を16bitリトルエンディアンで置くので、
+            # 下位バイトが緑になる。
+            yc = np.stack([img[:, :, 1], img[:, :, 0]], axis=2).astype(np.uint8)
+            rows = [yc[y].tobytes() for y in range(m.vactive)]
             bpp = 2
         else:
             rows = [img[y].tobytes() for y in range(m.vactive)]

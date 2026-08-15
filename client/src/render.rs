@@ -33,7 +33,14 @@ pub struct Params {
     /// バッファ先頭サンプルが、HSYNCから何サンプル後か
     pub hs_offset: u32,
     /// 1フレーム当たりのライン数
-    pub vtotal: u32,
+    /// 1VSYNC周期に入る半ラインスロット数。**整数ではなく実数で持つ。**
+    ///
+    /// ★インターレースは 262.5 ライン/フィールドなので、ボードが測る vtotal は
+    ///   262 と 263 を**交互に**返すのが正常。その瞬間値を幾何に使うと縦の
+    ///   スケールがフレームごとに 0.38% 変わり、絵が上下に震える(実機で
+    ///   「横線の縦位置がフレームごとに動いて二重線に見える」形で出た)。
+    ///   呼び出し側で平滑した値を入れること。
+    pub vtotal: f32,
     /// バッファ先頭行が、VSYNCから何行後か
     pub vbp: u32,
     /// 管面が映す時間窓。ラインとフレームに対する割合 [h0, h1, v0, v1]
@@ -81,7 +88,7 @@ impl Params {
     /// 増えるので時間としては同じ場所を指す。ただし hs_offset はサンプル単位
     /// なので、pll_divide を変えたら同じ比で動かす必要がある(Viewer側で行う)。
     pub fn effective_window(&self) -> [f32; 4] {
-        if !self.time_based || self.htotal == 0 || self.vtotal == 0 {
+        if !self.time_based || self.htotal == 0 || self.vtotal <= 0.0 {
             return self.window;
         }
         // 管面は「1周期のうち h_size の割合」を映す。位置は周期の中心からのずれ。
@@ -98,11 +105,33 @@ impl Params {
     }
 }
 
+/// 測定した vtotal(スロット数)を幾何用に平滑する。
+///
+/// ★**瞬間値をそのまま使ってはいけない。** インターレースは 262.5 ライン/
+///   フィールドなので、ボードが測る vtotal は 262 と 263 を**交互に**返すのが
+///   正常。これを幾何に入れると縦のスケールがフレームごとに 0.38% 変わり、
+///   絵が上下に震える。実機では「横線の縦位置がフレームごとに動いて二重線に
+///   見える」形で出た。**片フィールド表示にしても残った**ので、織り込みでは
+///   なく幾何側だと切り分けられた。
+///
+/// `reset` はモードが変わったとき。追従を待つと一瞬絵が伸びるので即座に飛ばす。
+/// 大きく外れた値(8スロット超)も同様に飛ばす。
+pub fn smooth_vtotal(cur: f32, raw: f32, reset: bool) -> f32 {
+    if !(raw > 0.0) {
+        return cur;
+    }
+    if reset || (raw - cur).abs() > 8.0 {
+        raw
+    } else {
+        cur + (raw - cur) * 0.1
+    }
+}
+
 impl Default for Params {
     fn default() -> Self {
         Self {
             rotate: 0, tube: 0.0, filter: FILTER_SHARP,
-            htotal: 0, hs_offset: 0, vtotal: 0, vbp: 0,
+            htotal: 0, hs_offset: 0, vtotal: 0.0, vbp: 0,
             window: [0.22, 0.94, 0.07, 0.98],
             fh_hz: 0, hactive: 0, vactive: 0,
             h_size: 1.0, h_pos: 0.0, v_size: 1.0, v_pos: 0.0,
@@ -120,8 +149,8 @@ impl Default for Params {
 fn uniforms(p: &Params, tex_w: u32, tex_h: u32, dst_w: f32, dst_h: f32) -> [u8; 64] {
     let (tw, th) = (tex_w.max(1) as f32, tex_h.max(1) as f32);
     // htotal/vtotal が無い(MODE未受信など)ときはバッファ全体をそのまま出す
-    let geom = p.htotal > 0 && p.vtotal > 0;
-    let (ht, vt) = (p.htotal.max(1) as f32, p.vtotal.max(1) as f32);
+    let geom = p.htotal > 0 && p.vtotal > 0.0;
+    let (ht, vt) = (p.htotal.max(1) as f32, p.vtotal.max(1.0));
     let w = p.effective_window();
     let (h0, h1, v0, v1) = if geom {
         (w[0], w[1], w[2], w[3])
@@ -449,5 +478,39 @@ impl eframe::egui_wgpu::CallbackTrait for Callback {
                 rp.draw(0..3, 0..1);
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **交互する vtotal で幾何が動かないこと。** これが崩れると絵が上下に震える。
+    #[test]
+    fn smooth_vtotal_averages_the_alternation() {
+        // インターレースの 262.5 ライン/フィールド → スロットでは 524/526 が交互
+        let mut v = 524.0f32;
+        for i in 0..200 {
+            v = smooth_vtotal(v, if i % 2 == 0 { 524.0 } else { 526.0 }, false);
+        }
+        assert!((v - 525.0).abs() < 0.2, "525付近へ収束していない: {v:.2}");
+
+        // 収束後、1サンプルで動く量が「見える」量を大きく下回ること。
+        // 瞬間値をそのまま使うと 2スロット(=0.38%)動いていた。
+        let a = smooth_vtotal(v, 524.0, false);
+        let b = smooth_vtotal(v, 526.0, false);
+        assert!((a - b).abs() < 0.4,
+                "平滑後もフレーム間で {:.2} スロット動く(生の値なら2.0)", (a - b).abs());
+    }
+
+    /// モード切替では待たずに飛ぶこと(追従を待つと一瞬絵が伸びる)
+    #[test]
+    fn smooth_vtotal_jumps_on_mode_change() {
+        assert_eq!(smooth_vtotal(525.0, 1050.0, true), 1050.0);
+        // reset が来なくても、大きく外れたら飛ぶ
+        assert_eq!(smooth_vtotal(525.0, 626.0, false), 626.0);
+        // 0以下は無視(MODE未受信)
+        assert_eq!(smooth_vtotal(525.0, 0.0, false), 525.0);
     }
 }

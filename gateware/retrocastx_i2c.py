@@ -231,8 +231,107 @@ class StatusDisplay(Module):
         # 見ながら合わせる。
         # レジスタ 10h は複合で、bit0=Red CS / bit2=Blue CS のクランプ選択が同居する
         # (0x58 = R/G/B全てbottom-levelクランプ。崩すと背景が紫がかる)。そのため
-        # **閾値だけを5bitで持ち**、書き込み時に下位3bitを付け足す。
+        # **閾値だけを5bitで持ち**、書き込み時に下位3bitを cfg_clamp_sel から足す。
         self.cfg_sog_thresh = Signal(5, reset=0x58 >> 3)
+
+        # ファインクランプの基準レベル選択(レジスタ 10h の bit[2:0])。
+        # データシート 10h: bit2=Blue CS / bit1=Green CS / bit0=Red CS。
+        # 0=ボトムレベル(ブランキングをコード0へ) / 1=ミッドレベル(512へ)。
+        # TVP既定は 5Dh = R/Bがミッドレベル(Pb/Pr向け)だが、**RGB入力では
+        # 全チャネルをボトムレベルにする**(0x58)。崩すと背景が紫がかる実測がある。
+        #
+        # コンポジットを緑に入れるときだけ 0b010(Greenのみミッドレベル)にする。
+        # ボトムレベルだとブランキングが約64コード(粗オフセット1Fhの既定 +64)にしか
+        # 座らないので、それを中心に振れるカラーバースト(±20 IRE)の下半分が
+        # クリップして位相ロックできない。
+        #
+        # ★ミッドレベルにすると**白側のヘッドルームが半分になる**。ブランキングが
+        #   512に座るので +100 IRE(100%白)に使えるのは残り512コードだけ。
+        #   コンポジット1Vpp=140IRE のままでは飽和するので、**粗ゲイン(1Bh)を
+        #   同時に下げること**。データシート1Bh は「Vpp × Gain < 1Vpp」を要求する。
+        #   → cfg_coarse_gain_gb を参照
+        self.cfg_clamp_sel = Signal(3, reset=0x58 & 0x07)
+
+        # 粗アナログゲイン(レジスタ 1Bh。bit[7:4]=Green / bit[3:0]=Blue)。
+        # Gain = 0.5 + N/10(N=0..15)。TVP既定は 77h(N=7 → 1.2倍、700mVpp入力向け)。
+        # ADCフルスケールは 1Vpp なので、入力に許される振幅は 1Vpp / Gain。
+        #
+        # コンポジット(1Vpp = 140 IRE)をミッドレベルクランプで受けるときの必要条件は
+        # 「ブランキング512から上に +131 IRE(100%カラーバーの黄のピーク)が乗る」こと:
+        #
+        #   Gain  ADC FS入力  1 IRE  100%バー黄131IREの行き先  バースト40IRE p-p
+        #   0.5   2.00 Vpp    3.66c  512+479 =  991  ○         146c(10bit) ≈ 36c(8bit)
+        #   0.6   1.67 Vpp    4.39c  512+575 = 1087  ×飽和     176c(10bit) = 44c(8bit)
+        #   0.7   1.43 Vpp    5.11c  512+669 = 1181  ×飽和     204c(10bit) = 51c(8bit)
+        #   1.2   0.83 Vpp    8.77c  そもそも同期チップが飽和   ×
+        #
+        # なので**コンポジットは 1Bh を 0x07(Green=0.5) にする**のが出発点。
+        # RGB入力では既定の 0x77 に戻す(モード固有の設定)。
+        self.cfg_coarse_gain_gb = Signal(8, reset=0x77)
+
+        # 粗アナログオフセット Green(レジスタ 1Fh の bit[5:0]。6bit符号+絶対値)。
+        # データシート: 10h = **+64コード**(既定) / 1Fh = +124コード / 20h = -0 /
+        # 3Fh = -124コード。「10h より小さいとADC入力でボトム側がクリップし得る」。
+        # ALCの手順が「粗オフセットでブランキングを32コードに合わせる」と書いている
+        # ことからも、これはADC出力のブランキング位置を動かすノブである。
+        #
+        # ★つまりボトムレベルクランプでもブランキングはコード0ではなく**約64**にいる。
+        #   ここを 1Fh(+124)まで上げると、ミッドレベルにしなくてもバーストの下半分を
+        #   救える。ミッドレベルより白側ヘッドルームが広いので**粗ゲインを上げられ、
+        #   結果としてバーストの分解能が良くなる**:
+        #
+        #     ボトム + off=1Fh + gain 0.8 : 1 IRE=5.85c, バースト40IRE=234c → 58c(8bit)
+        #     ミッド        + gain 0.5 : 1 IRE=3.66c, バースト40IRE=146c → 36c(8bit)
+        #
+        #   (ボトム側の制約は「バースト下端 20IRE×k ≤ 124」と「白131IRE×k ≤ 1023-124」)
+        # どちらが実際に素直かは実測で決める。両方振れるようにしてある。
+        self.cfg_coarse_off_g = Signal(6, reset=0x10)
+
+        # --- 赤チャネルの粗ゲイン/粗オフセット(レジスタ 1Ch / 20h)---
+        #
+        # **1Bh は Blue と Green しか持っていない。赤は別レジスタ。**
+        # S端子では C(色信号)が RIN_3 に入るので、Y とは独立にゲインを決められないと
+        # S端子にする意味(チャネルごとに振幅へ最適化できること)が出ない。
+        #
+        # ★1Ch のビット割りは 1Bh と違う。[7:4]は Reserved で、**[3:0]だけが赤のN**。
+        #   同じ「1.2倍」でも 1Bh では 0x77、1Ch では 0x07 になる。取り違えやすい。
+        #
+        # S端子の C は搬送波抑圧なのでブランキング(=無彩色)を中心に振れる。
+        # ミッドレベルクランプで512に座らせたとき、飽和させない条件は
+        # 「100%飽和色のクロマ片振幅 0.35V ≤ (1Vpp/Gain)/2」→ **Gain ≤ 1.43**。
+        # つまり TVP既定の 1.2倍(N=7)がそのまま使える:
+        #
+        #   Gain  ADC FS入力  バースト0.286Vpp p-p     クロマ片振幅0.35Vの行き先
+        #   1.2   0.833 Vpp   351c(10bit) ≈ 88c(8bit)  512+430 = 942  ○
+        #   1.4   0.714 Vpp   410c(10bit) ≈ 102c(8bit) 512+502 = 1014 ○(ぎりぎり)
+        #   1.5   0.667 Vpp   439c(10bit) ≈ 110c(8bit) 512+538 = 1050 ×飽和
+        #
+        # バースト88コードはコンポジット(36コード)の約2.4倍。実測して余裕が
+        # あれば 0x08/0x09 まで上げられる。
+        self.cfg_coarse_gain_r = Signal(8, reset=0x07)
+        self.cfg_coarse_off_r = Signal(6, reset=0x10)
+
+        # 入力MUX選択1(レジスタ 19h)。[7:6]=SOG [5:4]=Red [3:2]=Green [1:0]=Blue。
+        # 各 00=_1 / 01=_2 / 10=_3(Greenのみ 11=_4)。
+        #
+        # ★以前はビルド時定数 MUX1 だったが、**実行時に振れないと入力方式を
+        #   切り替えられない**ので CONFIG キーにした(key 0x69)。
+        #   手組みボードの配線で必要になった具体例:
+        #
+        #     コンポジット  Gin3 + SOGin3      → 0xAA (SOG=_3, R/G/B=_3)
+        #     MSX RGB       Rin3/Gin3/Bin3 + SOGin2 → **0x6A** (SOG=_2, R/G/B=_3)
+        #     X68000 RGB    Rin3/Gin3/Bin3 + HSYNC_A/VSYNC_A → 0xAA (SOGは不使用)
+        #
+        #   MSX だけ SOG の入力ピンが違うので、19h が固定だと**ビットストリームを
+        #   焼き直さないと追従できなかった**。
+        #
+        # 同期入力(HSYNC_A/_B, VSYNC_A/_B)の選択は 19h ではなく 1Ah bit0/bit2
+        # (= cfg_in_mux2、key 0x5D)。混同しないこと。
+        #
+        # 初期値はビルド引数から作る(SOGは_3、R/G/Bは引数)。以降はCONFIGで上書き。
+        MUX1 = ((2 << 6) | ((red_input - 1) << 4) |
+                ((green_input - 1) << 2) | (blue_input - 1))
+        self.cfg_in_mux1 = Signal(8, reset=MUX1)
 
         # 同期セパレータ閾値(レジスタ 11h)。**TVPの既定 20h は使わない。**
         # 「内部クロック基準(約6.5MHz)を何周期数えたらH/Vを切り替えるか」= 長いパルスを
@@ -400,23 +499,29 @@ class StatusDisplay(Module):
         #                      while mid-level clamping is required for Pb and Pr inputs"。
         #                     SOG Threshold[7:3]は既定のまま)
         #   read : 0x14(SyncDet) 0x37/0x38(Lines/Frame) 0x39/0x3A(Clocks/Line)
-        # 0x19: SOGは_3固定、R/G/B は引数で選択(全て既定3 → 0xAA)。
-        MUX1 = ((2 << 6) | ((red_input - 1) << 4) |
-                ((green_input - 1) << 2) | (blue_input - 1))
+        # 0x19: cfg_in_mux1(key 0x69)で実行時に振る。WR_VAL の MUX1 は初期値だけ
+        #   (MSXのように SOG だけ別ピンに来る配線があるので、固定にはできない)。
         #          0x3F<-video_bw(アナログ映像帯域。0=最大(既定) 〜 15=最小 約95MHz)
         #                     TVPのアナログ帯域は350〜500MHzある一方、こちらの
         #                     サンプリングは8〜44MHzしかないので、ナイキストより上の
         #                     雑音がそのまま折り返して絵に乗る。最小設定でも50MHz以上
         #                     なので折り返しは残るが、それより上の雑音は減らせる。
         #                     実行時に振って効果を測れるようCONFIGから変えられる。
+        #          0x1B<-coarse_gain_gb(粗アナログゲイン Green/Blue。既定0x77=1.2倍)
+        #          0x1C<-coarse_gain_r (粗アナログゲイン Red。既定0x07=1.2倍)
+        #          0x1F<-coarse_off_g  (粗アナログオフセット Green。既定0x10)
+        #          0x20<-coarse_off_r  (粗アナログオフセット Red。既定0x10)
+        #                     コンポジット(緑にCVBS)とS端子(緑にY/赤にC)で、チャネル
+        #                     ごとに振幅が違うため独立に振れる必要がある。詳細は
+        #                     cfg_coarse_gain_gb / cfg_coarse_gain_r の説明。
         WR_REG = [0x19, 0x0E, 0x17, 0x18, 0x31, 0x10, 0x11, 0x12, 0x13,
                   0x22, 0x36, 0x1A,
                   0x3F, 0x2A, 0x03, 0x05, 0x06,
-                  0x08, 0x09, 0x0A, 0x04]
+                  0x08, 0x09, 0x0A, 0x04, 0x1B, 0x1F, 0x1C, 0x20]
         WR_VAL = [MUX1, 0x52, 0x00, 0x01, 0x18, 0x58, 0x75, 3, 3,
                   0x08, 0x00, 0x12,
                   0x0F, 0x87, 0x18, 0x32, 0x20,
-                  35, 33, 39, 0x80]
+                  35, 33, 39, 0x80, 0x77, 0x10, 0x07, 0x10]
         if pll_divide:
             # 0x01=PLL divide[11:4], 0x02=[7:4]にPLL divide[3:0]。データシート指定どおり
             # MSBs(0x01)を先に書く。
@@ -458,11 +563,27 @@ class StatusDisplay(Module):
             self.comb += If(step == WR_REG.index(0x0E),
                             wval_b.eq(self.cfg_sync_ctl))
         if 0x10 in WR_REG:
-            # 下位3bit(Red CS/Blue CS のクランプ選択)は 0x58 の値を保持し、
-            # SOG Threshold[7:3] だけを差し替える。生の8bitを書くとクランプ修正
-            # (背景が紫がかる問題)を巻き込んで壊す
+            # 10h は SOG Threshold[7:3] とクランプ基準選択[2:0]の相乗り。生の8bitを
+            # 1本のキーで書くと、片方を触るともう片方を巻き込んで壊す(背景が紫がかる
+            # 問題の原因がこれだった)。**別々のキーで持ち、書くときに連結する。**
             self.comb += If(step == WR_REG.index(0x10),
-                            wval_b.eq(Cat(C(0x58 & 0x07, 3), self.cfg_sog_thresh)))
+                            wval_b.eq(Cat(self.cfg_clamp_sel, self.cfg_sog_thresh)))
+        if 0x19 in WR_REG:
+            self.comb += If(step == WR_REG.index(0x19),
+                            wval_b.eq(self.cfg_in_mux1))
+        if 0x1B in WR_REG:
+            self.comb += If(step == WR_REG.index(0x1B),
+                            wval_b.eq(self.cfg_coarse_gain_gb))
+        if 0x1C in WR_REG:
+            # 1Ch は [7:4]=Reserved / [3:0]=Red Gain。1Bh とビット割りが違う
+            self.comb += If(step == WR_REG.index(0x1C),
+                            wval_b.eq(self.cfg_coarse_gain_r))
+        if 0x1F in WR_REG:
+            self.comb += If(step == WR_REG.index(0x1F),
+                            wval_b.eq(Cat(self.cfg_coarse_off_g, C(0, 2))))
+        if 0x20 in WR_REG:
+            self.comb += If(step == WR_REG.index(0x20),
+                            wval_b.eq(Cat(self.cfg_coarse_off_r, C(0, 2))))
         if 0x11 in WR_REG:
             self.comb += If(step == WR_REG.index(0x11),
                             wval_b.eq(self.cfg_sep_thresh))

@@ -1,6 +1,7 @@
 //! Frame reassembly (mirror of `host/python/retrocastx/receiver.py` FrameAssembler).
 //! Output is RGBA8 so the frame can go straight to a GPU texture.
 
+use crate::ntsc;
 use crate::protocol::{self as proto, Packet};
 
 pub struct CompletedFrame {
@@ -24,6 +25,23 @@ pub struct FrameAssembler {
     pub mode: Option<proto::Mode>,
     pub stats: Stats,
     fb: Vec<u8>, // RGBA
+    /// YC8のときだけ使う生サンプル(2B/px: 下位=緑ch=CVBS/Y、上位=赤ch=C)。
+    ///
+    /// **1本ずつ復調できないので溜める。** Y/C分離のコムは上下のラインを
+    /// 使うので、フィールドが揃うまで待つ必要がある。フレーム完成時に
+    /// まとめて復調して fb へ書く。
+    raw: Vec<u8>,
+    /// 3次元(フレームコム)用の履歴。**同じライン番号は2ボードフレームおきに
+    /// しか来ない**(フィールドごとにパリティが反転する)ので、
+    ///   `raw_p2` = 2ボードフレーム前 = 1 NTSCフレーム前 → 副搬送波の位相が180°
+    ///   `raw_p4` = 4ボードフレーム前 = 2 NTSCフレーム前 → 位相が0°
+    /// になる(実測 175.8° / 4.2°)。前者でフレームコム、後者で動き検出。
+    raw_p2: Vec<u8>,
+    raw_p4: Vec<u8>,
+    /// 行ごとに「何回書かれたか」。3(=p2とp4の両方が実データ)で3次元が使える
+    hist_n: Vec<u8>,
+    /// 復調の結果(パネル表示と診断用)
+    pub ntsc_info: Option<ntsc::Info>,
     width: usize,
     height: usize,
     cur_frame: Option<u16>,
@@ -32,6 +50,12 @@ pub struct FrameAssembler {
     line_seen: Vec<bool>, // このフレームで各lineを受信したか
     /// 太らせても埋まらなかった行数(診断用)
     pub unfilled_rows: u32,
+    /// 直前のフレームで埋まっていた行のパリティ(None=偏りが無く判定不能)
+    last_parity: Option<usize>,
+    /// パリティが交互になった確度。閾値を超えたらインタレースとみなす
+    parity_alt: i32,
+    /// 測定で「インタレースの1フィールド」と判定しているか(診断用)
+    pub interlace_measured: bool,
     decay: f32,           // 欠損ラインの減衰率(1.0=前フレーム保持のまま, 0.8=毎フレーム80%へ暗転)
     /// インターレース時の減衰率。既定 1.0(=減衰しない)。
     ///
@@ -44,6 +68,13 @@ pub struct FrameAssembler {
     /// プログレッシブ変換的にチラつき無しで見たい人もいる。好みの幅があるので
     /// 設定で変えられるようにしてある。
     interlace_decay: f32,
+    /// 復調を止めて生のYをそのまま見る(切り分け用)
+    raw_view: bool,
+    /// 見た目の調整(彩度・明るさ・コントラスト・色相)
+    adjust: ntsc::Adjust,
+    /// 表示するフィールド。0=織り込み(通常) / 1=偶数スロットのみ / 2=奇数スロットのみ。
+    /// 選んだ側の行を隣のスロットへ複製して全高で出す(=ラインダブラ)。
+    field_view: u8,
     /// 公開用バッファの使い回し先。UIが使い終わったものを recycle() で戻す。
     /// 毎フレームの確保をなくすためだけのもので、中身に意味は無い。
     spare: Option<Vec<u8>>,
@@ -55,6 +86,11 @@ impl FrameAssembler {
             mode: None,
             stats: Stats::default(),
             fb: Vec::new(),
+            raw: Vec::new(),
+            raw_p2: Vec::new(),
+            raw_p4: Vec::new(),
+            hist_n: Vec::new(),
+            ntsc_info: None,
             spare: None,
             width: 0,
             height: 0,
@@ -63,9 +99,66 @@ impl FrameAssembler {
             last_seq: None,
             line_seen: Vec::new(),
             unfilled_rows: 0,
+            last_parity: None,
+            parity_alt: 0,
+            interlace_measured: false,
             decay: 0.8,
             interlace_decay: 1.0,
+            raw_view: false,
+            field_view: 0,
+            adjust: ntsc::Adjust::default(),
         }
+    }
+
+    /// このフレームで埋まった行のパリティ。偏りが無ければ None。
+    ///
+    /// ボードは行位置を「フィールド内の行×2 + 極性」で送るので、
+    /// **プログレッシブでもインタレースでも1つ飛びに埋まる**。違うのは:
+    ///
+    ///     プログレッシブ  極性が固定 → パリティが**常に同じ**
+    ///     インタレース    フィールドごとに極性が反転 → パリティが**交互**
+    ///
+    /// なのでパリティ単体では判定できず、フレーム間の変化を見る必要がある。
+    fn filled_parity(&self) -> Option<usize> {
+        let (mut odd, mut even) = (0usize, 0usize);
+        for (i, s) in self.line_seen.iter().enumerate() {
+            if *s {
+                if i & 1 == 1 { odd += 1 } else { even += 1 }
+            }
+        }
+        let total = odd + even;
+        // 片方が全体の1割未満なら「そのパリティに偏っている」とみなす。
+        // 完全一致にすると、1本ドロップや迷子ラインで判定が飛ぶ
+        if total < 16 || odd.min(even) * 10 >= total {
+            return None;
+        }
+        Some(if odd > even { 1 } else { 0 })
+    }
+
+    /// **インタレースかどうかを測定で決める。** mflags では決まらない。
+    ///
+    /// `mflags bit0` は「スロットが vtotal 個(フレーム単位の織り込み)」の意味で、
+    /// **VSYNCがフィールドごとに来る本物のインタレースでは 0** になる。それを
+    /// 「インタレースではない」と読むと2つ壊れる(どちらも実機で出た):
+    ///
+    ///   1. 太らせが動いて、空いているスロット(=別フィールドの行)に**隣の行を
+    ///      複製する**。次のフィールドでは逆向きに上書きされるので、各行が
+    ///      「本物の内容」と「隣の行のコピー」をフィールドレートで往復する。
+    ///      拡大すると同じラインに縞が交互に出てチラチラ見える
+    ///   2. 欠損減衰(0.8)が半分の行に毎フィールド掛かる(1で全行が埋まって
+    ///      しまうので実際には出番が無かったが、太らせを止めると効いてくる)
+    ///
+    /// 判定はパリティの交互性。非対称に増減させて、途切れたら早く抜ける。
+    fn update_interlace_measure(&mut self) {
+        let p = self.filled_parity();
+        if let (Some(cur), Some(last)) = (p, self.last_parity) {
+            self.parity_alt += if cur != last { 1 } else { -2 };
+            self.parity_alt = self.parity_alt.clamp(0, 8);
+        }
+        if p.is_some() {
+            self.last_parity = p;
+        }
+        self.interlace_measured = self.parity_alt >= 3;
     }
 
     /// 欠損ライン減衰率を設定(1.0で従来の前フレーム保持)。
@@ -74,6 +167,27 @@ impl FrameAssembler {
     }
 
     /// インターレース時の減衰率を設定(1.0=減衰しない)。
+    /// 復調を止めて生のYを見るか。**artefactの出所を分けるための道具。**
+    /// ライン受信時に fb へ書いているグレースケールがそのまま残る。
+    pub fn set_raw_view(&mut self, v: bool) {
+        self.raw_view = v;
+    }
+
+    /// 片方のフィールドだけを見る。0=織り込み / 1=偶数スロット / 2=奇数スロット。
+    ///
+    /// **織り込みの影響を外して見るための道具。** 縦線が二重に見えるとき、
+    /// 2枚のフィールドがずれているのか、1枚の中で既に二重なのかを分けられる。
+    /// 選んだ側を隣のスロットへ複製するので、縦解像度は半分だが全高で出る
+    /// (黒で間引くとスキャンラインが乗って、かえって見分けにくい)。
+    /// 見た目の調整を差し替える。**復調の校正は触らない**(数値で追えなくなるため)
+    pub fn set_adjust(&mut self, a: ntsc::Adjust) {
+        self.adjust = a;
+    }
+
+    pub fn set_field_view(&mut self, v: u8) {
+        self.field_view = v;
+    }
+
     pub fn set_interlace_decay(&mut self, d: f32) {
         self.interlace_decay = d;
     }
@@ -135,6 +249,19 @@ impl FrameAssembler {
                     for px in self.fb.chunks_exact_mut(4) {
                         px[3] = 255;
                     }
+                    // YC8のときだけ生サンプルを溜める(2B/px)。他の形式では
+                    // 使わないので確保しない(1820×526×2 = 1.9MB)
+                    let need = if m.pixfmt == proto::PIXFMT_YC8 {
+                        self.width * self.height * 2
+                    } else {
+                        0
+                    };
+                    self.raw = vec![0u8; need];
+                    // 3次元コム用の履歴2面。1820×526×2 = 1.9MB ずつ
+                    self.raw_p2 = vec![0u8; need];
+                    self.raw_p4 = vec![0u8; need];
+                    self.hist_n = vec![0u8; if need > 0 { self.height } else { 0 }];
+                    self.ntsc_info = None;
                     self.line_seen = vec![false; self.height];
                     self.cur_frame = None;
                     self.px_filled = 0;
@@ -213,6 +340,45 @@ impl FrameAssembler {
                             self.fb[o + 2] = ((b5 << 3) | (b5 >> 2)) as u8;
                         }
                     }
+                    proto::PIXFMT_YC8 => {
+                        // 生ADC値。byte0 = 緑ch(コンポジットならCVBSそのもの、
+                        // S-VideoならY)、byte1 = 赤ch(S-VideoならC)。
+                        //
+                        // **ここでは復調しない。** Y/C分離のコムが上下のラインを
+                        // 使うので、フィールドが揃うまで待つ必要がある。生のまま
+                        // 溜めて、フレーム完成時(emit)にまとめて復調する。
+                        //
+                        // 同時にYをグレースケールで fb にも置く。復調がロックする
+                        // 前や、バーストが無い信号(モノクロ/同期だけ)でも波形が
+                        // そのまま絵になり、クランプとゲインを目で確認できる。
+                        // この行のこのフレームでの**最初の断片**なら、履歴を1段ずらす。
+                        // いま raw[row] に入っているのは2ボードフレーム前の内容
+                        // (同じ行は2フレームおきにしか書かれない)。
+                        // line_seen はフレーム頭で false に戻るので、これで
+                        // 「フレーム内の初回」を判定できる。
+                        let row = l.line as usize;
+                        if !self.raw.is_empty() && row < self.height
+                            && !self.line_seen.get(row).copied().unwrap_or(true)
+                        {
+                            let (a, b) = (row * self.width * 2, (row + 1) * self.width * 2);
+                            self.raw_p4[a..b].copy_from_slice(&self.raw_p2[a..b]);
+                            self.raw_p2[a..b].copy_from_slice(&self.raw[a..b]);
+                            if let Some(n) = self.hist_n.get_mut(row) {
+                                *n = (*n + 1).min(3);
+                            }
+                        }
+                        let rowbase = (l.line as usize * self.width + off) * 2;
+                        for (i, px) in l.pixels.chunks_exact(2).enumerate().take(fit) {
+                            if rowbase + i * 2 + 1 < self.raw.len() {
+                                self.raw[rowbase + i * 2] = px[0];
+                                self.raw[rowbase + i * 2 + 1] = px[1];
+                            }
+                            let o = base + i * 4;
+                            self.fb[o] = px[0];
+                            self.fb[o + 1] = px[0];
+                            self.fb[o + 2] = px[0];
+                        }
+                    }
                     _ => return completed,
                 }
                 self.px_filled += fit;
@@ -247,6 +413,24 @@ impl FrameAssembler {
     }
 
     fn emit(&mut self) -> CompletedFrame {
+        // --- YC8 なら、まず復調して fb を RGB に置き換える ---
+        //
+        // ここでやるのは、Y/C分離のコムが上下のラインを要るのでフィールドが
+        // 揃ってからでないと計算できないため。欠損ラインの減衰・太らせは
+        // この後に走るので、復調結果に対して掛かる(順序はこれで正しい)。
+        //
+        // ロックしなかったとき(バーストが無い信号など)は fb を触らないので、
+        // ライン受信時に書いてあるYのグレースケールがそのまま残る。
+        if !self.raw.is_empty() && !self.raw_view {
+            let dotclk = self.mode.as_ref().map(|m| m.dotclk_hz).unwrap_or(0);
+            let hist = ntsc::History {
+                p2: &self.raw_p2, p4: &self.raw_p4, hist_n: &self.hist_n,
+            };
+            let info = ntsc::decode_field(
+                &self.raw, self.width, self.height, &self.line_seen, dotclk,
+                &mut self.fb, Some(hist), self.adjust);
+            self.ntsc_info = Some(info);
+        }
         // このフレームで受信できなかったライン(=送信側でドロップ)を前値×decayで減衰。
         // 継続的に欠損するラインは 0.8^n で徐々に暗転し「しばらくすると消える」。
         // 1回だけの欠損は80%でほぼ気づかず、次に受信すれば満輝度へ復帰。
@@ -263,7 +447,13 @@ impl FrameAssembler {
         // 発動しない。ところが1本だけドロップすると発動し、**別フィールドの行**を
         // 複製してしまう(隣のスロットは別フィールド)。実機で「ところどころ開始位置が
         // 他の行と合わない」形で出た。織り込み時は太らせない。
-        let interlaced = self.mode.as_ref().map_or(false, |m| m.mflags & 0x0001 != 0);
+        //
+        // ★判定は mflags ではなく**測定**で行う。mflags bit0 は「フレーム単位の
+        //   織り込み」の意味で、VSYNCがフィールドごとに来る本物のインタレースでは
+        //   0 になる。詳細は update_interlace_measure のコメント。
+        self.update_interlace_measure();
+        let woven = self.mode.as_ref().map_or(false, |m| m.mflags & 0x0001 != 0);
+        let interlaced = woven || self.interlace_measured;
         // インターレースでは半分の行が来ないのが正常なので、減衰は別の値を使う
         let d = if interlaced { self.interlace_decay } else { self.decay };
         if !interlaced {
@@ -289,6 +479,20 @@ impl FrameAssembler {
                         // alpha(px[3])は不変
                     }
                 }
+            }
+        }
+        // 片方のフィールドだけを見る(切り分け用)。選んだパリティの行を
+        // 隣のスロットへ複製する = ラインダブラ。
+        if self.field_view != 0 {
+            let par = (self.field_view - 1) as usize;   // 1→0(偶数) / 2→1(奇数)
+            let mut line = par;
+            while line < h {
+                let dst = line ^ 1;                     // 隣のスロット
+                if dst < h {
+                    let s = line * w * 4;
+                    self.fb.copy_within(s..s + w * 4, dst * w * 4);
+                }
+                line += 2;
             }
         }
         // 太らせても埋まらなかった行を数える。0でないと前フレームの残りが減衰して
@@ -392,5 +596,32 @@ mod tests {
         seq += 1;
         send(&mut asm, pack_line(1, seq, 0, 0, PIXFMT_RGB555, 9, 0, &px));
         assert_eq!(asm.stats.orphan_lines, 1);
+    }
+
+    /// YC8(生8bit)は byte0(緑ch=CVBS/Y)をグレースケールに置く。
+    /// コンポジットの波形をそのまま目で見るための表示なので、Yが3成分に
+    /// 等しく入り、byte1(赤ch=C)は色として混ざらないことを確かめる。
+    #[test]
+    fn yc8_maps_y_to_grayscale() {
+        use crate::protocol::PIXFMT_YC8;
+        let mut asm = FrameAssembler::new();
+        let mut m = test_mode();
+        m.pixfmt = PIXFMT_YC8;
+        assert!(asm.feed(&pack_mode(&m, 0, 0)).is_none());
+
+        // Y = 0, 64, 128, 255 / C は全て 0xFF(混ざったら気づく値)
+        let ys = [0u8, 64, 128, 255];
+        let px: Vec<u8> = ys.iter().flat_map(|&y| [y, 0xFF]).collect();
+        assert!(asm.feed(&pack_line(0, 1, 0, 0, PIXFMT_YC8, 1, 0, &px)).is_none());
+        assert!(asm.feed(&pack_line(0, 2, 1, 0, PIXFMT_YC8, 1, 0, &px)).is_none());
+        // 次フレームの先頭で前フレームが完成する
+        let f = asm
+            .feed(&pack_line(1, 3, 0, 0, PIXFMT_YC8, 1, 0, &px))
+            .expect("frame 0 should complete");
+        assert_eq!(f.fill_ratio, 1.0);
+        for (x, &y) in ys.iter().enumerate() {
+            assert_eq!(&f.rgba[x * 4..x * 4 + 3], &[y, y, y],
+                       "x={x} は Y をそのまま3成分に置く");
+        }
     }
 }

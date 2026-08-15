@@ -54,6 +54,9 @@ def run_case(name: str, width: int, height: int, pixfmt: int, mtu: int) -> bool:
         expected = pattern.make_frame(width, height, i)
         if pixfmt == proto.PIXFMT_RGB555:
             expected = pattern.rgb555_to_rgb888(pattern.rgb888_to_rgb555(expected))
+        elif pixfmt == proto.PIXFMT_YC8:
+            # YC8 は緑ch(=CVBS/Y)をグレースケールに置く。赤ch(=C)は色にしない
+            expected = np.repeat(expected[:, :, 1:2], 3, axis=2)
         if fill != 1.0:
             print("  frame %d fill=%.3f (expected 1.0)" % (i, fill))
             ok = False
@@ -154,6 +157,10 @@ def main():
                  768, 512, proto.PIXFMT_RGB888, 9000),
         run_case("rgb555 768x512 mtu1500",
                  768, 512, proto.PIXFMT_RGB555, 1500),
+        # YC8(生8bit)。コンポジットの実運用は 1820px/ライン なので、
+        # 断片化がRGB555と同じ刻みで割り切れることまで含めてこの幅で回す
+        run_case("yc8 1820x480 mtu1500 (composite 8fsc NTSC)",
+                 1820, 480, proto.PIXFMT_YC8, 1500),
     ]
     sys.exit(0 if all(results) else 1)
 

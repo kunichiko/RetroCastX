@@ -36,6 +36,9 @@ MAC_ADDRESS = 0x025243580001          # ローカル管理アドレス "RCX"
 FPGA_IP     = "192.168.10.50"
 HOST_IP     = "192.168.10.1"          # SUBSCRIBE到着までのANNOUNCE宛先(初期値)
 UDP_PORT    = 34600
+# --- 伝送ピクセル形式(docs/protocol-v0.md / host の protocol.py と一致必須) ---
+PIXFMT_RGB555 = 1             # 2B/px 0RRRRRGGGGGBBBBB
+PIXFMT_YC8    = 3             # 2B/px 下位=緑ch8bit(CVBS/Y) 上位=赤ch8bit(S-VideoのC)
 SCROLL_PX   = 4               # テストパターンのカラーバー横スクロール量[px/frame](host pattern.pyと一致必須)
 
 # パケットタイプ(FSM内部コード。プロトコル上のtype値とは別)
@@ -126,6 +129,7 @@ class RetroCastXStreamer(LiteXModule):
                  audio_sources=None, audio_nsamples=240,
                  mac_address=MAC_ADDRESS, capture=None,
                  cfg_vbp=0, cfg_hs_offset=0, cfg_pll_divide=1104,
+                 cfg_in_mux1=0xAA,
                  extra_stats=None,
                  ):
         # extra_stats: {CONFIGキー: 読み出し専用のSignal}。ストリーマの外側にある
@@ -154,7 +158,13 @@ class RetroCastXStreamer(LiteXModule):
                  int(htotal * vtotal * fps / 2)
         hfreq_mhz = int(dotclk / htotal * 1000)
         vfreq_mhz = int(fps * 1000)
-        mode_id, pixfmt = 1, 1             # RGB555 固定
+        mode_id = 1
+        # 伝送ピクセル形式(protocol-v0.md の pixfmt)。1=RGB555 が既定。
+        # 3=YC8 は同じ2B/pxで「下位=緑ch8bit / 上位=赤ch8bit」を生のまま運ぶ。
+        # コンポジット/S-Video は5bitでは副搬送波の位相が推定できないので必要。
+        # 2B/px は変わらないので断片化・MTU計算・受信側のバッファ確保は共通。
+        pixfmt = Signal(8, reset=PIXFMT_RGB555)   # key 0x36
+        self.cfg_pixfmt = pixfmt
         # MODE の mflags。bit0 = MFLAG_INTERLACE。
         #
         # 実行時に変わる。織り込むと1VSYNC周期あたりのスロット数が半分になる
@@ -357,6 +367,36 @@ class RetroCastXStreamer(LiteXModule):
         # SOG=2.5MHz / クランプ=0.5MHz(SDTV向け) が適正なので 0x12 を既定にする。
         # 詳細な根拠は retrocastx_i2c.py 側のコメント参照
         self.cfg_in_mux2    = Signal(8, reset=0x12)               # key 0x5D (reg 1Ah)
+        # --- コンポジット/S端子を受けるためのアナログ前段(2026-08-14) ---
+        # 全部「モード固有の設定」で、RGB入力では既定値に戻すこと。
+        # 根拠と数値の内訳は retrocastx_i2c.py 側の同名信号のコメントに全部ある。
+        #
+        #                                RGB入力  コンポジット  S端子
+        #   clamp_sel      reg 10h[2:0]  0b000    0b010(緑ミッド) 0b001(赤ミッド)
+        #   coarse_gain_gb reg 1Bh       0x77     0x07(緑0.5倍)  0x77(Yは既定でよい)
+        #   coarse_gain_r  reg 1Ch       0x07     0x07           0x07(Cも既定でよい)
+        #   coarse_off_g   reg 1Fh[5:0]  0x10     0x10           0x10
+        #   coarse_off_r   reg 20h[5:0]  0x10     0x10           0x10
+        #
+        # ★コンポジットでミッドレベルにするだけでは白が飽和する。ADCフルスケールは
+        #   1Vppで、ブランキングが512に座ると +100 IRE(=714mV)に使えるのは残り
+        #   512コードだけ。データシート1Bhの条件「Vpp × Gain < 1Vpp」も既定1.2倍では
+        #   破れる。**クランプ選択と粗ゲインは必ず一緒に動かす。**
+        # ★S端子は Y(緑)がボトム・C(赤)がミッドで、どちらも既定ゲインで収まる。
+        #   Yは輝度専用でバースト用のヘッドルームが要らず、Cは輝度と範囲を分け合わない
+        #   ため。**1Bhは Blue/Green しか持たないので、Cの調整には 1Ch が要る。**
+        self.cfg_clamp_sel  = Signal(3, reset=0x58 & 0x07)        # key 0x5E (reg 10h[2:0])
+        self.cfg_coarse_gain_gb = Signal(8, reset=0x77)           # key 0x5F (reg 1Bh)
+        self.cfg_coarse_off_g   = Signal(6, reset=0x10)           # key 0x65 (reg 1Fh[5:0])
+        self.cfg_coarse_gain_r  = Signal(8, reset=0x07)           # key 0x67 (reg 1Ch)
+        self.cfg_coarse_off_r   = Signal(6, reset=0x10)           # key 0x68 (reg 20h[5:0])
+        # 入力MUX(reg 19h)。[7:6]=SOG [5:4]=Red [3:2]=Green [1:0]=Blue、00=_1/01=_2/10=_3。
+        # **これが実行時に振れないと入力方式を切り替えられない。** 手組みボードでは
+        # MSXだけ CSYNC が SOGIN_2 に来ているので、0xAA(SOG=_3)固定では追従不可だった。
+        #   コンポジット / X68000 RGB → 0xAA (SOG=_3, R/G/B=_3)
+        #   MSX RGB                  → 0x6A (SOG=_2, R/G/B=_3)
+        # 初期値はビルド引数由来(retrocastx_i2c.py の MUX1 と同じ式)。
+        self.cfg_in_mux1        = Signal(8, reset=cfg_in_mux1)    # key 0x69 (reg 19h)
         # SOGOUTのLow期間を「垂直ブロードパルス」とみなす閾値[pixクロック]。
         # MSXの水平同期は約4.7us、垂直ブロードパルスは約27us。DATACLK 21.48MHz なら
         # それぞれ約101と約580クロックなので、その間の400を既定にする。
@@ -444,6 +484,9 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x30),
                         self.cfg_full_line.eq(rx.data[0]),
                     ),
+                    If((cfg_target == 0) & (cfg_key == 0x36),
+                        self.cfg_pixfmt.eq(rx.data[:8]),
+                    ),
                     *([If((cfg_target == 0) & (cfg_key == 0x31),
                           capture.cfg_span_probe_row.eq(rx.data[:13]),
                       ),
@@ -473,6 +516,24 @@ class RetroCastXStreamer(LiteXModule):
                     ),
                     If((cfg_target == 0) & (cfg_key == 0x5D),
                         self.cfg_in_mux2.eq(rx.data[:8]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x5E),
+                        self.cfg_clamp_sel.eq(rx.data[:3]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x5F),
+                        self.cfg_coarse_gain_gb.eq(rx.data[:8]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x65),
+                        self.cfg_coarse_off_g.eq(rx.data[:6]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x67),
+                        self.cfg_coarse_gain_r.eq(rx.data[:8]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x68),
+                        self.cfg_coarse_off_r.eq(rx.data[:6]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x69),
+                        self.cfg_in_mux1.eq(rx.data[:8]),
                     ),
                     If((cfg_target == 0) & (cfg_key == 0x64),
                         self.cfg_sog_vth.eq(rx.data[:16]),
@@ -530,6 +591,7 @@ class RetroCastXStreamer(LiteXModule):
             0x11: reply_mux.eq(self.cfg_hs_offset),
             0x12: reply_mux.eq(self.cfg_pll_divide),
             0x30: reply_mux.eq(self.cfg_full_line),
+            0x36: reply_mux.eq(self.cfg_pixfmt),
             0x17: reply_mux.eq(self.cfg_video_bw),
             0x18: reply_mux.eq(self.cfg_fine_clamp),
             0x19: reply_mux.eq(self.cfg_pll_ctl),
@@ -551,6 +613,12 @@ class RetroCastXStreamer(LiteXModule):
             0x5B: reply_mux.eq(self.cfg_sync_ctl2),
             0x5C: reply_mux.eq(self.cfg_sync_bypass),
             0x5D: reply_mux.eq(self.cfg_in_mux2),
+            0x5E: reply_mux.eq(self.cfg_clamp_sel),
+            0x5F: reply_mux.eq(self.cfg_coarse_gain_gb),
+            0x65: reply_mux.eq(self.cfg_coarse_off_g),
+            0x67: reply_mux.eq(self.cfg_coarse_gain_r),
+            0x68: reply_mux.eq(self.cfg_coarse_off_r),
+            0x69: reply_mux.eq(self.cfg_in_mux1),
             0x64: reply_mux.eq(self.cfg_sog_vth),
             0x66: reply_mux.eq(self.cfg_field_invert),
         }
@@ -775,7 +843,7 @@ class RetroCastXStreamer(LiteXModule):
                                     for i in range(n_ann_words) if i != 1}),
             _T_MODE: Case(word_idx, {
                 0: hdr.eq(0x52 | (1 << 16)),                       # type=MODE
-                2: hdr.eq(Cat(C(mode_id, 8), C(pixfmt, 8), mflags)),
+                2: hdr.eq(Cat(C(mode_id, 8), pixfmt, mflags)),
                 3: hdr.eq(Cat(C(width, 16), mode_htotal)),
                 4: hdr.eq(Cat(mode_vactive, mode_vtotal)),
                 5: hdr.eq(mode_dotclk),
@@ -785,7 +853,7 @@ class RetroCastXStreamer(LiteXModule):
             _T_LINE: Case(word_idx, {
                 0: hdr.eq(Cat(C(0x52, 8), C(0, 8), C(0, 8), line_flags)),
                 2: hdr.eq(Cat(row, C(0, 16 - len(row)), frag_off)),
-                3: hdr.eq(Cat(frag_cnt, C(pixfmt, 8), C(mode_id, 8))),
+                3: hdr.eq(Cat(frag_cnt, pixfmt, C(mode_id, 8))),
                 4: hdr.eq(ts_frag),
             }),
             _T_CFG: Case(word_idx, {
@@ -902,22 +970,35 @@ class RetroCastXStreamer(LiteXModule):
             # という2段にしてある。1ライン当たり1サイクル増えるだけ(31.7µsに対し20ns)。
             lo_c = Signal(16)
             hi_c = Signal(16)
-            # ライン内の絶対位置にする。hs_offset を足しておけば、受信側は
-            # offset_px をそのままライン内の位置として使える(hs_offset が
-            # 描画位置に影響しなくなる = ドットクロック再生と描画の分離)。
+            # どちらもライン内の絶対位置[画素]にする。hs_offset を足しておけば、
+            # 受信側は offset_px をそのままライン内の位置として使える
+            # (hs_offset が描画位置に影響しなくなる = ドットクロック再生と描画の分離)。
+            #
+            # 1ラインまるごと送るか。key 0x30(診断)のほかに、**YC8では強制**する。
+            # YC8はブランキングもカラーバーストもライン全体が「中身」なので、
+            # 「黒でない範囲」という概念が成立しない(そもそも capture 側の判定式は
+            # RGB555のビット割りを前提にしているので結果が無意味になる)。
+            # 設定漏れで壊れるより、形式から決まる方が事故が少ない。
+            send_full = Signal()
+            self.comb += send_full.eq(self.cfg_full_line |
+                                      (self.cfg_pixfmt == PIXFMT_YC8))
             self.comb += [
-                lo_c.eq(Cat(C(0, 1), capture.line_first) + self.cfg_hs_offset),
-                # 診断: 範囲を無視して1ラインまるごと送る(key 0x30)
-                If(self.cfg_full_line,
+                If(send_full,
+                    # 範囲を無視してラインの先頭から htotal ぶん送る。
+                    # (lo_c も hs_offset に戻すこと。line_first のままだと
+                    #  「範囲を無視する」はずが左端だけ内容依存で動いてしまう)
+                    lo_c.eq(self.cfg_hs_offset),
                     hi_c.eq(self.cfg_pll_divide),
                 # line_last は内包。全黒の行では line_first > line_last になるので
                 # その場合は空(送るピクセル0)にする。行自体は送る(落とすと受信側が
                 # 「黒い行」と「届かなかった行」を区別できない)。
                 ).Elif(capture.line_last >= capture.line_first,
+                    lo_c.eq(Cat(C(0, 1), capture.line_first) + self.cfg_hs_offset),
                     hi_c.eq(Cat(C(0, 1), capture.line_last) + 2
                             + self.cfg_hs_offset),
                 ).Else(
-                    hi_c.eq(lo_c),
+                    lo_c.eq(Cat(C(0, 1), capture.line_first) + self.cfg_hs_offset),
+                    hi_c.eq(Cat(C(0, 1), capture.line_first) + self.cfg_hs_offset),
                 ),
             ]
             # 全黒行では lo_c が窓の外(line_first が初期値 entries-1 のまま)を
@@ -1280,6 +1361,10 @@ class RetroCastXStream(SoCMini):
                            (self.spdif.source, self.spdif.rate_hz)],
             capture=capture_obj,
             cfg_vbp=vbp, cfg_hs_offset=hs_offset, cfg_pll_divide=pll_divide,
+            # reg 19h の初期値。retrocastx_i2c.py の MUX1 と同じ式にする
+            # (SOG=_3固定 + R/G/Bはビルド引数)。実行時は key 0x69 で上書き。
+            cfg_in_mux1=((2 << 6) | ((red_input - 1) << 4) |
+                         ((green_input - 1) << 2) | (blue_input - 1)),
             extra_stats={
                 0x40: learner.learn_count,
                 0x41: learner.hit_count,
@@ -1373,6 +1458,12 @@ class RetroCastXStream(SoCMini):
                 self.status.cfg_sync_ctl2.eq(self.streamer.cfg_sync_ctl2),
                 self.status.cfg_sync_bypass.eq(self.streamer.cfg_sync_bypass),
                 self.status.cfg_in_mux2.eq(self.streamer.cfg_in_mux2),
+                self.status.cfg_clamp_sel.eq(self.streamer.cfg_clamp_sel),
+                self.status.cfg_coarse_gain_gb.eq(self.streamer.cfg_coarse_gain_gb),
+                self.status.cfg_coarse_off_g.eq(self.streamer.cfg_coarse_off_g),
+                self.status.cfg_coarse_gain_r.eq(self.streamer.cfg_coarse_gain_r),
+                self.status.cfg_coarse_off_r.eq(self.streamer.cfg_coarse_off_r),
+                self.status.cfg_in_mux1.eq(self.streamer.cfg_in_mux1),
                 self.status.cfg_fine_clamp.eq(self.streamer.cfg_fine_clamp),
                 self.status.cfg_pll_ctl.eq(self.streamer.cfg_pll_ctl),
                 self.status.cfg_clamp_start.eq(self.streamer.cfg_clamp_start),
@@ -1381,6 +1472,9 @@ class RetroCastXStream(SoCMini):
                 self.status.cfg_gain_g.eq(self.streamer.cfg_gain_g),
                 self.status.cfg_gain_r.eq(self.streamer.cfg_gain_r),
                 self.capture.cfg_clear_from.eq((pll_use - hs_use)[1:]),
+                # 画素の詰め方は伝送形式から決まる(capture側で pix ドメインへ同期)
+                self.capture.cfg_raw_yc.eq(
+                    self.streamer.cfg_pixfmt == PIXFMT_YC8),
             ]
 
 
@@ -1405,7 +1499,20 @@ def main():
     # なく配置運の問題だった。他のシードは全て余裕を持って通ったので既定を 5 にする:
     #   seed 1 = 128.01MHz / seed 5 = 140.61MHz / seed 7 = 126.69MHz (いずれもPASS)
     # ロジックを足して eth_rx が落ちたら、まず数シード試すこと。
-    ap.add_argument("--seed", type=int, default=5, help="nextpnr placement seed")
+    #
+    # 2026-08-14: コンポジット用のCONFIGキー(clamp_sel/coarse_gain/pixfmt)と
+    # YC8の詰め替えを足したところ、今度は **seed 5 が eth_rx 123.23MHz で落ちた**。
+    # クリティカルパスは LiteEth の `mac_core_tx_cdc` 非同期FIFO内で完結していて
+    # (grayカウンタ → readable → DPRAM → 出力FF)、**足したロジックとは無関係**。
+    # 内訳も配線 6.17ns / 論理 1.94ns で配置運。既定を通る方へ寄せる:
+    #   seed 1 = eth_rx 130.68MHz / sys 53.54MHz (PASS)
+    #   seed 3 = eth_rx 136.48MHz / sys 55.17MHz (PASS) ← 余裕が最大なのでこれ
+    #   seed 5 = eth_rx 123.23MHz (FAIL)
+    #
+    # ★レポートは**配置後と配線後の2回**出る。判定はルーティング後(最後の4行)を
+    #   見ること。配置後だけ見ると seed 1/3 も FAIL に見える(実際 seed 3 の配置後は
+    #   sys 43.66MHz だが配線後は 55.17MHz)。
+    ap.add_argument("--seed", type=int, default=3, help="nextpnr placement seed")
     ap.add_argument("--no-capture", action="store_true",
                     help="実キャプチャを無効化しテストパターンを送出")
     # 入力mux(0x19)の切り替え。既定は全て _3 = 基板配線。緑のクランプ異常の
