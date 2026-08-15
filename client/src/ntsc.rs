@@ -28,6 +28,15 @@ const BURST_US: (f32, f32) = (5.4, 7.7);
 /// 同期チップとバックポーチ(レベル校正に使う。絵の内容に依存しない)
 const TIP_US: (f32, f32) = (0.7, 4.2);
 const PORCH_US: (f32, f32) = (7.9, 9.3);
+/// 有効映像の区間 [µs]。**この外は黒にする。**
+///
+/// ★実機で管面の左端に細い緑の帯が出た(実測 R2.5 / G21 / B0)。カラーバーストを
+///   そのまま復調した色だった。バーストは輝度0 IREのところに色だけ乗っているので、
+///   RGBに直すと R と B が0にクランプされて G だけ残る。
+///   実際のブラウン管はこの区間ビームが消えているので何も映らない。
+///   管面は時間で窓を決めるので、窓を広げると帰線区間まで映ってしまう。
+///   生の波形を見たいときは「復調しない(生のYを見る)」を使う。
+const ACTIVE_US: (f32, f32) = (9.6, 62.0);
 
 /// クロマの移動平均長[サンプル]。**8の倍数にすること。**
 ///
@@ -307,6 +316,7 @@ pub fn decode_field(
     //     絵の内容に依存しないのがこの校正の利点。
     let (ta, tb) = win(TIP_US, sps, w);
     let (pa, pb) = win(PORCH_US, sps, w);
+    let (aa, ab) = win(ACTIVE_US, sps, w);
     let mut tips = Vec::new();
     let mut porches = Vec::new();
     for y in 0..h {
@@ -591,8 +601,23 @@ pub fn decode_field(
             }
         }
         // --- 3) YUV → RGB ---
+        //
+        // 水平帰線区間(有効映像の外)は**黒にする**。実際のブラウン管はここで
+        // ビームが消えている。残しておくとバーストが緑の帯として管面に出る。
         let o0 = y * w * 4;
-        for n in 0..w {
+        for n in 0..w.min(aa) {
+            let o = o0 + n * 4;
+            fb[o] = 0;
+            fb[o + 1] = 0;
+            fb[o + 2] = 0;
+        }
+        for n in ab.min(w)..w {
+            let o = o0 + n * 4;
+            fb[o] = 0;
+            fb[o + 1] = 0;
+            fb[o + 2] = 0;
+        }
+        for n in aa.min(w)..ab.min(w) {
             // コントラストは輝度と色差の両方へ、彩度は色差だけへ掛ける
             let yy = (yl[n] - porch) * inv_100ire * adj.contrast
                 + adj.brightness * 0.01;
@@ -793,16 +818,44 @@ mod tests {
         assert!(d > 30.0 && d < 70.0,
                 "明るさ+20 IRE の差が {d:.1}(期待 0.20×255=51 前後)");
 
+        // 水平帰線区間が黒であること。**バーストが緑の帯として管面に出ていた。**
+        {
+            let (ba2, bb2) = win(BURST_US, sps, w);
+            let (aa2, _) = win((9.6, 62.0), sps, w);
+            for n in [ba2 + 4, (ba2 + bb2) / 2, bb2 - 4, aa2 - 8, 8] {
+                let o = (y * w + n) * 4;
+                assert_eq!((base[o], base[o + 1], base[o + 2]), (0, 0, 0),
+                           "帰線区間 x={n} が黒でない");
+            }
+            // 有効映像の中は黒でない(全部黒にしてしまっていないこと)
+            let o = (y * w + aa2 + per / 2) * 4;
+            assert!(base[o] as u32 + base[o + 1] as u32 + base[o + 2] as u32 > 30,
+                    "有効映像まで黒にしている");
+        }
+
         // ガンマ。**端点は動かさず中間だけ持ち上げる**(明るさとはここが違う)。
         let gm = dec(Adjust { gamma: 2.2, ..Default::default() });
         let lumv = |fb: &[u8], n: usize| {
             let o = (y * w + n) * 4;
             0.299 * fb[o] as f32 + 0.587 * fb[o + 1] as f32 + 0.114 * fb[o + 2] as f32
         };
-        // 同期区間は黒(0)、色帯の中は中間調。黒が持ち上がらないこと
-        let (sy0, _) = win(TIP_US, sps, w);
-        assert_eq!(lumv(&gm, sy0 + 4) as i32, lumv(&base, sy0 + 4) as i32,
-                   "ガンマで黒が動いた(端点は固定のはず)");
+        // ★ガンマは 0 と 255 以外を全部持ち上げるので、「暗い画素は動かない」は
+        //   期待として誤り(最初そう書いて落ちた: 23.9 → 83.3)。
+        //   見るべきは **単調に上がるだけで、下がりも溢れもしない** こと。
+        let mut lifted = 0usize;
+        for n in (aa..aa + per * 4).step_by(7) {
+            let o = (y * w + n) * 4;
+            for k in 0..3 {
+                assert!(gm[o + k] >= base[o + k],
+                        "ガンマ2.2で下がった画素がある: x={n} ch{k} {} → {}",
+                        base[o + k], gm[o + k]);
+                if gm[o + k] > base[o + k] { lifted += 1; }
+            }
+        }
+        assert!(lifted > 100, "ガンマ2.2でほとんど持ち上がっていない({lifted}点)");
+        // 完全な黒(帰線区間)は0のまま
+        assert_eq!((gm[(y * w + 8) * 4], gm[(y * w + 8) * 4 + 1]), (0, 0),
+                   "ガンマで黒が持ち上がった");
         // 中間調は上がる。ガンマ2.2 なら 0.5 → 0.5^(1/2.2) = 0.73
         let mid = aa + per / 2;
         let (b0, g0) = (lumv(&base, mid), lumv(&gm, mid));
