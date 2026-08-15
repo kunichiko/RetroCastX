@@ -12,6 +12,26 @@ use crate::assembler::{CompletedFrame, FrameAssembler};
 use crate::audio::AudioPlayer;
 use crate::protocol::{self as proto, Packet};
 
+/// スケジューラに「これは対話的な処理だ」と伝える。
+///
+/// ★実機で、**Macを操作している間だけ**フレームが落ちた(マウス移動やアプリ
+///   切り替え)。描画は60Hz出ていてCPU側も0.7msなのに、受信〜組立のスレッドが
+///   横取りされてキューが溢れる(queue drops 2007 / orphan lines 54049)。
+///   既定のQoSだと、UI操作中の window server や他アプリに負ける。
+///
+/// 48000パケット/秒を落とさず捌くのは実質リアルタイム処理なので、
+/// USER_INTERACTIVE を要求する。効かない環境では単に無視される。
+#[cfg(target_os = "macos")]
+fn raise_thread_qos() {
+    // QOS_CLASS_USER_INTERACTIVE
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn raise_thread_qos() {}
+
 pub struct Config {
     pub port: u16,
     /// SUBSCRIBE keepalive の宛先。None なら購読しない(sender_sim等の受け専用)。
@@ -645,13 +665,22 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             return;
         }
     };
-    // 27000パケット/秒に対し8192段 = 約0.3秒ぶん。組立が一瞬詰まっても吸収できる
-    let (tx, rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize, std::net::IpAddr)>(8192);
+    // ★深さは**実測のパケットレート**で決めること。コメントが古くなっていた。
+    //   YC8(全ライン)では実測 48000パケット/秒 なので、8192段では 0.17秒しか
+    //   吸収できない(「27000/秒に対し0.3秒」と書いてあった)。
+    //   実機で、Macを操作している間だけ組立が横取りされてここが溢れた
+    //   (queue drops 2007 / orphan lines 54049)。16384段 = 約0.34秒にする。
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize, std::net::IpAddr)>(16384);
     let (free_tx, free_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     {
         let shared = shared.clone();
-        std::thread::spawn(move || rx_thread(sock, shared, tx, free_rx));
+        std::thread::spawn(move || {
+            raise_thread_qos();
+            rx_thread(sock, shared, tx, free_rx)
+        });
     }
+    // 組立スレッド(この関数)も上げる
+    raise_thread_qos();
 
     // 音声再生器(デバイスが開けなければ再生なしで続行)
     let mut audio_dev: Option<String> = None;
