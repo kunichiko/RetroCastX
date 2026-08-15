@@ -46,3 +46,6 @@ docs/datasheets/*.pdf
 
 # KiCad の編集ロック(そのマシンでの編集中を示す一時ファイル。追跡しない)
 *.lck
+
+# KiCad の自動保存(pcbnew実行中に生成される。コミットしない)
+_autosave-*.kicad_pcb
