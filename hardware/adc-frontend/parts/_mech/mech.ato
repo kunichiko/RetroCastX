@@ -345,6 +345,32 @@ component HeaderSVideo:
     gnd ~ pin 8
 
 
+component Fiducial:
+    """実装機の基準マーク(フィデューシャル)。1mmの銅丸 + 2mmのマスク開口。手実装対象外。
+
+    実装機のカメラがこれを読んで、**基板の実際の位置・回転・伸縮を測って全部品の座標を
+    補正する**。基板外形の切削公差は±0.2mm程度あり、0.5mmピッチの部品にとっては
+    パッド幅に匹敵するズレになるため、これで潰す。
+
+    ★JLCPCBのPCBAは顧客フィデューシャルが無くても受け付ける(基板外形と治具穴で
+      位置決めする)。実際、このプロジェクトの発注者は過去に何度もフィデューシャル無しで
+      PCBAを発注して指摘されたことがない。**必須ではなく精度の保険**。
+      本基板は 0.5mmピッチ HTQFP-100(TVP7002)と 0.6mmピッチ 200ピンSO-DIMM を
+      載せるので、入れておく判断をした(2026-08-16)。
+
+    ★銅にもマスク開口にも何も重ねないこと。カメラは「銅の丸」と「露出した基材」の
+      コントラストで読むので、周囲1mm程度は他の銅・シルクを避ける。
+    ★3個を非対称に置く(4隅のうち3つ)。2個だとオフセットと回転までしか補正できず、
+      3個あると伸縮も補正できる。非対称に置くのは基板の向きを一意に決めるため。
+    ★表面実装機用。裏面も実装するなら裏面にも要るが、裏面は0402中心で微細ピッチが
+      無いので表面のみとした。
+    """
+    trait is_atomic_part<manufacturer="", partnumber="Fiducial_1mm_Mask2mm", footprint="Fiducial_1mm_Mask2mm.kicad_mod", symbol="TestPoint.kicad_sym">
+    trait has_designator_prefix<prefix="FID">
+    trait has_part_removed  # 銅の模様だけ。実装対象外(JLC発注除外)
+    signal pad ~ pin 1
+
+
 component MountingHoleM26:
     """基板固定用ネジ穴 M2.6(GND接続)。
 

@@ -8,7 +8,7 @@ import is_atomic_part
 import has_part_picked
 import has_designator_prefix
 import has_part_removed
-from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeaderAux2x5, Tp1Pad, PogoPin, HeaderJtag, HeaderOled, HeaderDebug20, MountingHoleM26, SolderJumperClosed, HeaderSVideo
+from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeaderAux2x5, Tp1Pad, PogoPin, HeaderJtag, HeaderOled, HeaderDebug20, MountingHoleM26, SolderJumperClosed, HeaderSVideo, Fiducial
 from "parts/TE_Connectivity_1473005_4/sodimm_i5.ato" import SoDimmI5
 from "parts/RICHTEK_RT9013_18GB/RICHTEK_RT9013_18GB.ato" import RICHTEK_RT9013_18GB_package
 from "parts/FTDI_FT2232HL_REEL/FTDI_FT2232HL_REEL.ato" import FTDI_FT2232HL_REEL_package
@@ -1624,6 +1624,10 @@ module App:
     # ★金属スペーサ/金属筐体だと論理GNDが筐体に落ち、MagJack用のシャーシGND島の
     #   分離(4.7nF/2kV)がネジ経由で短絡される。樹脂スペーサを使うか、分離をやめる
     #   判断を意図的にすること。
+    # --- 実装機の基準マーク(3個、非対称配置) ---
+    # 位置は基板上で決める(左上/右上/左下)。回路的な接続は無い。
+    fid = new Fiducial[3]
+
     mount = new MountingHoleM26[5]
     mount[0].gnd ~ gnd
     mount[1].gnd ~ gnd
