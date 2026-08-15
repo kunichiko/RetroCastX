@@ -54,6 +54,9 @@ pub struct Settings {
     pub adj_saturation: f32,
     pub adj_brightness: f32,
     pub adj_contrast: f32,
+    /// ガンマ。1.0 = 信号どおり。2.2 にすると符号化済みの値を二重符号化した
+    /// 見え方(明るい液晶向け)になる
+    pub adj_gamma: f32,
     /// 右の操作パネルを表示するか
     pub show_panel: bool,
     /// NIC受信バッファーの警告ダイアログを二度と出さない。
@@ -122,6 +125,7 @@ impl Default for Settings {
             adj_saturation: 1.0,
             adj_brightness: 0.0,
             adj_contrast: 1.0,
+            adj_gamma: 1.0,
             tune_vbp: 0,
             tune_hs_offset: 152,
             tune_pll_divide: 1104,

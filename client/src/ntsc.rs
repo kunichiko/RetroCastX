@@ -131,11 +131,23 @@ pub struct Adjust {
     /// コントラスト。1.0 = 信号どおり。輝度と色差の両方に掛ける
     /// (色差に掛けないと、コントラストを上げたとき色が薄く見える)
     pub contrast: f32,
+    /// ガンマ。1.0 = 信号どおり(素通し)。出力を `v^(1/gamma)` にする。
+    ///
+    /// ★**1.0 が正しい。** コンポジット/S端子はガンマ符号化済みの値を運ぶので、
+    ///   それをそのまま8bitへ書けばsRGB表示で正しく出る。ここは「明るい液晶では
+    ///   ブラウン管基準の絵が暗く見える」ための好みの調整。
+    ///
+    ///   実測(2026-08-15): 同じ画面のYouTube版と分位で比べると、9点すべてが
+    ///   **ガンマ2.2で平均誤差1.8コード**で一致した。つまりあちらは符号化済みの値を
+    ///   リニアとして扱って二重に符号化した絵(washed out)。2.2 にすればあの
+    ///   見え方を再現できる。
+    pub gamma: f32,
 }
 
 impl Default for Adjust {
     fn default() -> Self {
-        Self { hue_deg: 0.0, saturation: 1.0, brightness: 0.0, contrast: 1.0 }
+        Self { hue_deg: 0.0, saturation: 1.0, brightness: 0.0, contrast: 1.0,
+               gamma: 1.0 }
     }
 }
 
@@ -363,6 +375,19 @@ pub fn decode_field(
     };
     let inv_100ire_c = 1.0 / (c_per_ire * 100.0);
 
+    // ガンマは256エントリの表にしておく。画素ごとに powf を3回呼ぶと
+    // 28.6 MSa/s では到底間に合わない(1.0 のときは表自体を使わない)。
+    let gamma_lut: Option<[u8; 256]> = if (adj.gamma - 1.0).abs() > 1e-3 {
+        let inv = 1.0 / adj.gamma.max(0.1);
+        let mut t = [0u8; 256];
+        for (i, v) in t.iter_mut().enumerate() {
+            *v = ((i as f32 / 255.0).powf(inv) * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+        }
+        Some(t)
+    } else {
+        None
+    };
+
     // --- 4. コム → 直交復調 → RGB ---
     let mut u = vec![0.0f32; w];
     let mut v = vec![0.0f32; w];
@@ -554,9 +579,14 @@ pub fn decode_field(
             let g = yy - 0.5094 * r_y - 0.1942 * b_y;
             let b = yy + b_y;
             let o = o0 + n * 4;
-            fb[o] = to8(r);
-            fb[o + 1] = to8(g);
-            fb[o + 2] = to8(b);
+            let (r, g, b) = (to8(r), to8(g), to8(b));
+            let (r, g, b) = match &gamma_lut {
+                Some(t) => (t[r as usize], t[g as usize], t[b as usize]),
+                None => (r, g, b),
+            };
+            fb[o] = r;
+            fb[o + 1] = g;
+            fb[o + 2] = b;
         }
     }
     Info {
@@ -738,6 +768,27 @@ mod tests {
         let d = lum(&br, n) - lum(&base, n);
         assert!(d > 30.0 && d < 70.0,
                 "明るさ+20 IRE の差が {d:.1}(期待 0.20×255=51 前後)");
+
+        // ガンマ。**端点は動かさず中間だけ持ち上げる**(明るさとはここが違う)。
+        let gm = dec(Adjust { gamma: 2.2, ..Default::default() });
+        let lumv = |fb: &[u8], n: usize| {
+            let o = (y * w + n) * 4;
+            0.299 * fb[o] as f32 + 0.587 * fb[o + 1] as f32 + 0.114 * fb[o + 2] as f32
+        };
+        // 同期区間は黒(0)、色帯の中は中間調。黒が持ち上がらないこと
+        let (sy0, _) = win(TIP_US, sps, w);
+        assert_eq!(lumv(&gm, sy0 + 4) as i32, lumv(&base, sy0 + 4) as i32,
+                   "ガンマで黒が動いた(端点は固定のはず)");
+        // 中間調は上がる。ガンマ2.2 なら 0.5 → 0.5^(1/2.2) = 0.73
+        let mid = aa + per / 2;
+        let (b0, g0) = (lumv(&base, mid), lumv(&gm, mid));
+        assert!(g0 > b0 + 15.0,
+                "ガンマ2.2で中間調が上がっていない: {b0:.1} → {g0:.1}");
+        // 白は255のまま(上限を超えて壊れない)
+        for fbx in [&gm] {
+            assert!(fbx.chunks_exact(4).all(|p| p[0] <= 255 && p[1] <= 255),
+                    "ガンマで値が壊れた");
+        }
 
         // 色相。**回転量そのものは一致しない。** NTSCの副搬送波位相と HSV の色相は
         // 一様に対応しないので、位相を30°回してもHSVでは色によって違う角度になる

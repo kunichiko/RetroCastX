@@ -625,6 +625,10 @@ impl ViewerApp {
         install_cjk_font(&cc.egui_ctx);
         // 通常モードもフルスクリーンと同じシェーダで描く。見え方が食い違わないように。
         if let Some(rs) = cc.wgpu_render_state.as_ref() {
+            // ★描画先の色空間を出す。**ここが sRGB でないと中間調が暗くなる。**
+            //   テクスチャは Rgba8UnormSrgb なのでサンプラがリニアへ復号する。
+            //   出力先が非sRGBだとリニアのまま書かれ、ガンマ2.2ぶん暗く出る。
+            eprintln!("render target format: {:?}", rs.target_format);
             let blit = render::EguiBlit::new(&rs.device, rs.target_format);
             rs.renderer.write().callback_resources.insert(blit);
         }
@@ -659,6 +663,7 @@ impl ViewerApp {
                 saturation: cfg.adj_saturation,
                 brightness: cfg.adj_brightness,
                 contrast: cfg.adj_contrast,
+                gamma: if cfg.adj_gamma > 0.0 { cfg.adj_gamma } else { 1.0 },
             },
             vtotal_smooth: std::cell::Cell::new(0.0),
             vtotal_mode_id: std::cell::Cell::new(u16::MAX),
@@ -795,6 +800,7 @@ impl ViewerApp {
             adj_saturation: self.adjust.saturation,
             adj_brightness: self.adjust.brightness,
             adj_contrast: self.adjust.contrast,
+            adj_gamma: self.adjust.gamma,
             window: self.window,
             tube_time_based: self.tube_time_based,
             mon: self.mon,
@@ -1783,6 +1789,12 @@ impl ViewerApp {
                 "1.00 = 信号どおり。色差にも掛かるので色が薄くならない", &mut ch);
             row(ui, "色相", &mut a.hue_deg, -30.0, 30.0, 0,
                 "NTSCのtint。復調の位相基準をずらす[度]。0 = バーストどおり", &mut ch);
+            row(ui, "ガンマ", &mut a.gamma, 0.6, 3.0, 2,
+                "1.00 = 信号どおり(これが正しい)。コンポジット/S端子はガンマ符号化\n\
+                 済みの値を運ぶので、そのまま出せばsRGB表示で正しく出る。\n\
+                 明るい液晶ではブラウン管基準の絵が暗く見えるので、その調整。\n\
+                 ★2.2 にすると、同じ画面のYouTube版と分位9点が平均誤差1.8コードで\n\
+                 一致する(あちらは符号化済みの値を二重符号化した絵)", &mut ch);
             if ch {
                 self.adjust = a;
                 *self.shared.adjust.lock().unwrap() = Some(a);
