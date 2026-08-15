@@ -467,6 +467,7 @@ impl PaceMeter {
             self.ui_rate_hz);
     }
 
+    /// 新フレームを受け取った(= 中身が変わるpaint)
     fn on_new_frame(&mut self) {
         let now = std::time::Instant::now();
         if let Some(prev) = self.last_paint {
@@ -487,7 +488,10 @@ impl PaceMeter {
                 var.sqrt(),
                 1000.0 / mean
             );
-            eprintln!("pace: {}", self.summary);
+            // ★CPU側の内訳も一緒に出す。パネルはマウスを止めないと読めないので、
+            //   「マウスを動かしている最中」の数字はログでしか取れない
+            //   (実機で「ウィンドウ上でマウスを動かすとレートが下がる」を追うのに要った)
+            eprintln!("pace: {} | {}", self.summary, self.cpu_summary);
             self.last_log = std::time::Instant::now();
         }
     }
