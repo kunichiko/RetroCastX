@@ -1545,8 +1545,35 @@ module App:
     adc_aux.gnd ~ gnd
     adc_aux.power_5va ~ p5v_audio
     adc_aux.power_3v3 ~ p3v3_io
-    aux.audio_l ~ adc_aux.in_l
-    aux.audio_r ~ adc_aux.in_r
+    # --- 第2入力の音声: 2x5ヘッダ と S-Videoヘッダ を受動加算で兼用 ---
+    #
+    # PCM1808 を増やさずに2端子で1個のADCを共有する。双方に直列1.5kΩを入れて
+    # 加算ノードへ落とす。**セレクタではなく加算**なので両方挿せば両方鳴るが、
+    # 実際の使い方は「2台目の機械を1台ずつ繋ぐ」なので実害が無い。
+    #
+    # 定数の根拠(PCM1808 データシート SLES177B の Analog Input):
+    #     入力インピーダンス  60 kΩ
+    #     フルスケール入力    0.6 × VCC = 3.0 Vp-p (1.06 Vrms) @ VCC=5V
+    #     入力センター電圧    0.5 × VCC = 2.5 V (内部バイアス、直列1µFで受ける)
+    #
+    #     片方だけ接続(他方は開放)        60/(60+1.5)          = -0.21 dB ← ほぼ無損失
+    #     両方接続(相手のZout≈600Ω)      (1.5+0.6)‖60 で分圧   = -4.8 dB
+    #     両方接続で両方鳴らす            各 -4.8 dB で加算(理想の-6dBに近い)
+    #
+    # ★直列抵抗が無いと、両方の機器を繋いだとき互いの出力段が押し合う。1.5kΩなら
+    #   最悪(逆相1Vrms同士)でも 2V/3kΩ = 0.7mA しか流れず、どちらの出力も壊れない。
+    # ★1.5kΩは既にBOMにある値(r_cs_top / r_filt と同じ)。1kΩだとBOM行が増える。
+    #   60kΩに対して1.5kΩなので、値の選択は片側接続時の損失にほとんど効かない。
+    # ★ESD(esd_audio)は加算ノード側に付く。直列1.5kΩがESD電流を制限するので
+    #   「直列抵抗 + TVS」という定石の並びになる。
+    r_mix_aux_l = new R1K5_0402
+    r_mix_aux_r = new R1K5_0402
+    r_mix_sv_l = new R1K5_0402
+    r_mix_sv_r = new R1K5_0402
+    aux.audio_l ~> r_mix_aux_l ~> adc_aux.in_l
+    aux.audio_r ~> r_mix_aux_r ~> adc_aux.in_r
+    svideo.audio_l ~> r_mix_sv_l ~> adc_aux.in_l
+    svideo.audio_r ~> r_mix_sv_r ~> adc_aux.in_r
 
     # 音声入力のESD(4ライン: D-SUB音声L/R + 第2入力音声L/R)
     esd_audio = new EsdArray4
@@ -1819,8 +1846,14 @@ module App:
     # --- 音声: アナログ入力 / I2S DOUT ---
     adc_dsub.in_l.override_net_name = "aud_dsub_l"
     adc_dsub.in_r.override_net_name = "aud_dsub_r"
-    adc_aux.in_l.override_net_name = "aud_aux_l"
+    # 第2入力の音声は2端子を受動加算するので、加算ノードと各端子側を分けて命名する。
+    # 明示しないと S-Video 側が "audio_l-1" のような自動命名になって追えない。
+    adc_aux.in_l.override_net_name = "aud_aux_l"      # 加算ノード(R2本 + ESD + 1uF)
     adc_aux.in_r.override_net_name = "aud_aux_r"
+    aux.audio_l.override_net_name = "aud_hdr_l"       # 2x5ヘッダ側(抵抗の手前)
+    aux.audio_r.override_net_name = "aud_hdr_r"
+    svideo.audio_l.override_net_name = "aud_sv_l"     # S-Videoヘッダ側(抵抗の手前)
+    svideo.audio_r.override_net_name = "aud_sv_r"
     adc_dsub.adc.vinl.override_net_name = "aud_dsub_l_ac"
     adc_dsub.adc.vinr.override_net_name = "aud_dsub_r_ac"
     adc_aux.adc.vinl.override_net_name = "aud_aux_l_ac"

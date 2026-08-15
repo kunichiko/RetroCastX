@@ -305,35 +305,44 @@ component BoxHeaderAux2x5:
 
 
 component HeaderSVideo:
-    """S-Video / コンポジット映像入力の 1×4 ヘッダ(2.54mm)。手実装/DNP。
+    """S-Video / コンポジット映像 + 音声の 2×4 ボックスヘッダ(2.54mm, IDCリボン)。手実装/DNP。
 
-    TVP7002 の**1番系統**(GIN_1 / RIN_1 / SOGIN_1、他は未使用)に繋ぐ。
-    ピン: 1=Y  2=GND  3=C  4=GND
+    TVP7002 の**1番系統**(GIN_1 / RIN_1 / SOGIN_1)と、**第2入力と共用の PCM1808**に繋ぐ。
+
+        G G G G     ← 上段 (pin 2/4/6/8 すべてGND)
+        R L C Y     ← 下段 (pin 7/5/3/1)。**Y側が1番ピン**
+
+      1=Y  2=GND  3=C  4=GND  5=音声L  6=GND  7=音声R  8=GND
+
+    **全ての信号が隣にGNDを持つ**ので、リボンケーブルでも撚り線でも帰りを取りやすい。
 
     ★TVP7002はコンポジットをデコードできない(digitizerであってdecoderで、
       副搬送波PLL・直交復調・Y/C分離が無い)。この端子は**8fsc線同期サンプラー**
       として使い、復調はViewer側で行う前提。詳細は docs/composite-video-plan.md。
 
-    ★コネクタを基板に載せず1×4ヘッダにしてあるのは、**発注時点でコネクタを
-      決め打ちしないため**。後からピグテールを自作して RCA でも 4ピンmini-DIN でも
-      付けられる。mini-DIN 4 は Y ピンにコンポジットを流す変換ケーブルが安く
-      手に入るので、コネクタ1個で S-Video とコンポジットの両方をカバーできる。
+    ★音声は**2x5ヘッダ(第2映像入力)と同じ PCM1808 を共有**する。ADCを増やさずに
+      2端子で1個を使うため、双方に直列1.5kΩを入れた受動加算にしてある
+      (セレクタではないので両方挿すと両方鳴る。定数の根拠は main.ato の r_mix_* 参照)。
 
     使い方:
-      S-Video    Y → pin1 / C → pin3 / シールド → pin2,4
+      S-Video    Y → pin1 / C → pin3 / 音声 → pin5,7 / シールドと帰り → 偶数ピン
       コンポジット  芯線 → pin1 / シールド → pin2  (pin3のCは未使用)
 
     ★S-Video なら Y/C 分離(コムフィルタ)が不要になり、さらに C チャンネルが
       独立ゲインで8bitを使い切れる(コンポジットは140 IRE を輝度と分け合う)ので
       クロマ分解能が約4倍になる。
     """
-    trait is_atomic_part<manufacturer="", partnumber="PinHeader_1x4_2.54", footprint="Header_1x4_P2.54mm.kicad_mod", symbol="Header_1x4.kicad_sym">
+    trait is_atomic_part<manufacturer="", partnumber="BoxHeader_2x4_2.54", footprint="BoxHeader_2x4_P2.54mm.kicad_mod", symbol="BoxHeader_2x4.kicad_sym">
     trait has_designator_prefix<prefix="J">
     trait has_part_removed  # 手実装/DNP
     signal y ~ pin 1
-    signal gnd ~ pin 2
     signal c ~ pin 3
+    signal audio_l ~ pin 5
+    signal audio_r ~ pin 7
+    signal gnd ~ pin 2
     gnd ~ pin 4
+    gnd ~ pin 6
+    gnd ~ pin 8
 
 
 component MountingHoleM26:
