@@ -414,6 +414,12 @@ struct PaceMeter {
     ui_ms: std::collections::VecDeque<f32>,
     upload_ms: std::collections::VecDeque<f32>,
     cpu_summary: String,
+    /// ★**描画そのものの回数。** 新フレームの有無に関わらず数える。
+    ///   これが60Hz出ているのに新フレーム間隔が54Hzなら「描画は回っているが
+    ///   フレームが置き換わっている」、こちらも54Hzなら「描画が回っていない」。
+    ui_calls: u32,
+    ui_rate_hz: f32,
+    ui_since: std::time::Instant,
 }
 
 impl PaceMeter {
@@ -426,6 +432,9 @@ impl PaceMeter {
             ui_ms: std::collections::VecDeque::with_capacity(256),
             upload_ms: std::collections::VecDeque::with_capacity(256),
             cpu_summary: String::new(),
+            ui_calls: 0,
+            ui_rate_hz: 0.0,
+            ui_since: std::time::Instant::now(),
         }
     }
 
@@ -437,6 +446,13 @@ impl PaceMeter {
     fn note_ui(&mut self, d: std::time::Duration) {
         if self.ui_ms.len() >= 256 { self.ui_ms.pop_front(); }
         self.ui_ms.push_back(d.as_secs_f32() * 1000.0);
+        self.ui_calls += 1;
+        let el = self.ui_since.elapsed().as_secs_f32();
+        if el >= 1.0 {
+            self.ui_rate_hz = self.ui_calls as f32 / el;
+            self.ui_calls = 0;
+            self.ui_since = std::time::Instant::now();
+        }
         let f = |v: &std::collections::VecDeque<f32>| -> (f32, f32) {
             if v.is_empty() { return (0.0, 0.0); }
             let n = v.len() as f32;
@@ -447,7 +463,8 @@ impl PaceMeter {
         let (um, ux) = f(&self.ui_ms);
         let (tm, tx) = f(&self.upload_ms);
         self.cpu_summary = format!(
-            "CPU: UI {um:.2}ms(最大{ux:.2}) / 転送 {tm:.2}ms(最大{tx:.2})");
+            "描画 {:.1}Hz / CPU: UI {um:.2}ms(最大{ux:.2}) 転送 {tm:.2}ms(最大{tx:.2})",
+            self.ui_rate_hz);
     }
 
     fn on_new_frame(&mut self) {
