@@ -142,9 +142,12 @@ def main():
     # --- S端子: 役割ごとに合否が逆になることを確かめる ---
     #
     # ここが role を足した理由。**同じ波形でも役割が違えば判定が逆**になる:
-    # S端子のYはボトムレベルなので同期チップが飽和しているのが正常だが、
-    # cvbs の判定をそのまま当てると「同期チップが0に張り付いている」と誤検出する。
-    y_sv = make_line(2.19, 16, luma_ire=100.0, burst_ire=0.0, chroma_ire=0.0)
+    # S端子のYはボトムレベル + クランプ窓を同期チップの中に置くので、同期チップが
+    # 0付近に座っているのが正常。cvbs の判定をそのまま当てると「同期チップが0に
+    # 張り付いている」と誤検出する。
+    #
+    # 波形は**実機の実測値**(ブランク58 / 1 IRE=1.450 / 白100 IRE=203)。
+    y_sv = make_line(1.45, 58, luma_ire=100.0, burst_ire=0.0, chroma_ire=0.0)
     s_y = comp._summary([comp.analyze_line(y_sv, SPS)])
     ok.append(check("S端子のY: cvbs判定なら誤検出する(role を足した理由)",
                     bool(comp.verdict(*s_y, role="cvbs")),
@@ -152,6 +155,15 @@ def main():
     ok.append(check("S端子のY: role='y' なら指摘が出ない",
                     not comp.verdict(*s_y, role="y"),
                     str(comp.verdict(*s_y, role="y"))))
+    # ★輝度が数倍になった実機の壊れ方を、そのまま試験にしておく。
+    #   窓をバックポーチに置いたままボトムにすると、ブランキングが底に座って
+    #   その40 IRE下の同期がクリップし、**チップとブランキングの差が消える**。
+    #   「チップが0か」ではなく「差が残っているか」で捕まえるのが要点。
+    y_bad = make_line(1.45, 6, luma_ire=100.0, burst_ire=0.0, chroma_ire=0.0)
+    s_yb = comp._summary([comp.analyze_line(y_bad, SPS)])
+    ok.append(check("S端子のY: 同期がクリップして40 IRE基準が消えたら指摘する",
+                    any("クランプ窓" in b for b in comp.verdict(*s_yb, role="y")),
+                    str(comp.verdict(*s_yb, role="y"))))
 
     # C は搬送波抑圧なので、同期区間も無彩色=ブランキングと同じ値。
     # ミッドレベル128で、バーストは 0.286Vpp ≒ 88コード出る想定。
