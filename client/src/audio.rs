@@ -6,9 +6,13 @@
 //! サンプルを捨てて `max_ms` 以内に保つ。
 //!
 //! ボードのサンプルレート(48kHz, XO由来)と PC のオーディオデバイスのレートは
-//! 独立した水晶なので長時間ではわずかにずれる。ここではレート変換せず、
-//! バッファ長で吸収し、溢れ/枯渇の回数を統計として出す(A/V同期の作り込みは
-//! タイムスタンプを使う将来課題)。
+//! 独立した水晶なので長時間ではわずかにずれる。**実測 12.5ppm**(2.3時間で
+//! 滞留が 72ms → 175ms に育った)。何もしないと上限240msに達して古いサンプルを
+//! まとめて捨てるので、数時間ごとにプチッと鳴る。
+//!
+//! そこで読み出し側で連続的に吸収する(ASRC)。滞留量が目標から離れた分だけ
+//! 読み出しの歩幅を ±0.1% の範囲で変え、線形補間で出す。12.5ppm を打ち消すのに
+//! 必要な歩幅は 0.00125% なので、可聴域から桁で下にある。
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -47,11 +51,42 @@ impl Default for AudioStats {
     }
 }
 
+/// 滞留量から次の読み出し歩幅を決める。**ゆっくり動かすこと。**
+///
+/// 速く動かすと音程が揺れて聞こえる。滞留が目標から離れた割合に比例して歩幅を
+/// 変える比例制御で、定常偏差は残るがそれでよい: 12.5ppm を打ち消すのに必要なのは
+/// 滞留が目標より 1.25% 多い状態(80msなら+1ms)で、遅延としては無視できる。
+///
+/// 歩幅は ±0.1%(1000ppm)で頭打ちにする。打ち消したいのは十数ppmなので桁で余る。
+fn track_ratio(ratio: f64, have: f64, target: f64) -> f64 {
+    let err = ((have - target) / target.max(1.0)).clamp(-1.0, 1.0);
+    let want = (1.0 + err * 0.001).clamp(0.999, 1.001);
+    ratio + (want - ratio) * 0.05
+}
+
 struct Ring {
     /// s16 のインターリーブ列(L,R,L,R,...)
     buf: std::collections::VecDeque<i16>,
     /// プリバッファ達成後に true
     started: bool,
+    // --- 非同期サンプルレート変換(ASRC)の状態 ---
+    /// 補間の左右の入力フレーム
+    a: (f32, f32),
+    b: (f32, f32),
+    /// a と b の間の位置 [0,1)
+    frac: f64,
+    /// 出力1フレームあたり進む入力フレーム数。1.0 からのずれが追従量
+    ratio: f64,
+    /// a,b を読み込んだか(枯渇後は読み直す)
+    primed: bool,
+}
+
+impl Ring {
+    fn pop_frame(&mut self) -> Option<(f32, f32)> {
+        let l = self.buf.pop_front()?;
+        let r = self.buf.pop_front()?;
+        Some((l as f32 / 32768.0, r as f32 / 32768.0))
+    }
 }
 
 pub struct AudioPlayer {
@@ -119,6 +154,11 @@ impl AudioPlayer {
         let ring = Arc::new(Mutex::new(Ring {
             buf: std::collections::VecDeque::with_capacity(max_frames * 2 + 4096),
             started: false,
+            a: (0.0, 0.0),
+            b: (0.0, 0.0),
+            frac: 0.0,
+            ratio: 1.0,
+            primed: false,
         }));
         let stats = Arc::new(AudioStats::default());
         stats.device_rate.store(device_rate as u64, Ordering::Relaxed);
@@ -152,6 +192,14 @@ impl AudioPlayer {
                     }
                     // 音量はコールバックの頭で1回読む(ブロック内で一定にする)
                     let gain = f32::from_bits(stats_cb.gain_bits.load(Ordering::Relaxed));
+
+                    // --- ASRC の追従。**ゆっくり動かす。** 速く動かすと音程が
+                    //     揺れて聞こえる。滞留がプリバッファ量から離れた割合に
+                    //     比例して歩幅を変える比例制御で、12.5ppm を打ち消すのに
+                    //     必要なのは滞留が目標より 1.25% 多い状態(80msなら+1ms)。
+                    let have = (r.buf.len() / 2) as f64;
+                    r.ratio = track_ratio(r.ratio, have, prebuffer_frames as f64);
+
                     // ★**枯渇は「回数」で数える。** 以前はサンプルフレームごとに
                     //   +1 していたので、1回の枯渇でコールバックの残り全部
                     //   (512フレームなら最大512)が加算され、数として読めなかった
@@ -159,30 +207,45 @@ impl AudioPlayer {
                     //    が、実際には1〜2回だった可能性がある)。
                     let mut dry = false;
                     for f in out.chunks_mut(channels) {
-                        let l = r.buf.pop_front();
-                        let rr = r.buf.pop_front();
-                        match (l, rr) {
-                            (Some(l), Some(rr)) => {
-                                // 1.0超のゲインでも歪ませないよう ±1.0 で飽和させる
-                                let lf = (l as f32 / 32768.0 * gain).clamp(-1.0, 1.0);
-                                let rf = (rr as f32 / 32768.0 * gain).clamp(-1.0, 1.0);
-                                for (i, s) in f.iter_mut().enumerate() {
-                                    // ステレオ以上は L,R を先頭2chへ、残りは0
-                                    *s = match i {
-                                        0 => lf,
-                                        1 => rf,
-                                        _ => 0.0,
-                                    };
+                        if !r.primed {
+                            match (r.pop_frame(), r.pop_frame()) {
+                                (Some(a), Some(b)) => {
+                                    r.a = a; r.b = b; r.frac = 0.0; r.primed = true;
+                                }
+                                _ => {
+                                    f.fill(0.0);
+                                    r.started = false;
+                                    stats_cb.playing.store(false, Ordering::Relaxed);
+                                    if !dry {
+                                        dry = true;
+                                        stats_cb.underruns.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    continue;
                                 }
                             }
-                            _ => {
-                                // 枯渇: 無音を出し、次回プリバッファし直す
-                                f.fill(0.0);
-                                r.started = false;
-                                stats_cb.playing.store(false, Ordering::Relaxed);
-                                if !dry {
-                                    dry = true;
-                                    stats_cb.underruns.fetch_add(1, Ordering::Relaxed);
+                        }
+                        // a と b の間を線形補間して1フレーム出す
+                        let t = r.frac as f32;
+                        let lf = ((r.a.0 + (r.b.0 - r.a.0) * t) * gain).clamp(-1.0, 1.0);
+                        let rf = ((r.a.1 + (r.b.1 - r.a.1) * t) * gain).clamp(-1.0, 1.0);
+                        for (i, sm) in f.iter_mut().enumerate() {
+                            // ステレオ以上は L,R を先頭2chへ、残りは0
+                            *sm = match i { 0 => lf, 1 => rf, _ => 0.0 };
+                        }
+                        // 歩幅ぶん進め、跨いだら次の入力フレームを取り込む
+                        r.frac += r.ratio;
+                        while r.frac >= 1.0 {
+                            match r.pop_frame() {
+                                Some(n) => { r.a = r.b; r.b = n; r.frac -= 1.0; }
+                                None => {
+                                    r.started = false;
+                                    r.primed = false;
+                                    stats_cb.playing.store(false, Ordering::Relaxed);
+                                    if !dry {
+                                        dry = true;
+                                        stats_cb.underruns.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    break;
                                 }
                             }
                         }
@@ -233,5 +296,78 @@ impl AudioPlayer {
             .buffered
             .store((r.buf.len() / 2) as u64, Ordering::Relaxed);
         let _ = self.prebuffer_frames;
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ボードとPCの水晶のずれを ASRC が吸収すること。
+    ///
+    /// ★実機で 2.3時間に滞留が 72ms → 175ms に育った(12.5ppm)。何もしないと
+    ///   上限240msに達して古いサンプルをまとめて捨てるので、数時間ごとにプチッと鳴る。
+    ///   ここではその状況を早送りで再現し、**追従があれば発散しない**ことを見る。
+    fn simulate(drift_ppm: f64, track: bool) -> (f64, f64) {
+        let rate = 48000.0f64;
+        let target = rate * 0.080;             // プリバッファ 80ms
+        let max = rate * 0.240;                // 上限 240ms
+        let block = 512.0;                     // コールバック1回のフレーム数
+        let mut have = target;
+        let mut ratio = 1.0f64;
+        let mut peak: f64 = have;
+        // 4時間ぶん回す。12.5ppm なら 80ms から上限240msまで 3.6時間かかる
+        // (実測の 2.3時間で +103ms = 44.8ms/時 と一致する)
+        let blocks = (rate * 3600.0 * 4.0 / block) as usize;
+        for _ in 0..blocks {
+            if track {
+                ratio = track_ratio(ratio, have, target);
+            }
+            // 生産は drift ぶん速い/遅い、消費は歩幅ぶん
+            have += block * ((1.0 + drift_ppm * 1e-6) - ratio);
+            if have > max {
+                have = max;                    // 実装と同じく捨てる
+            }
+            if have < 0.0 {
+                have = 0.0;
+            }
+            peak = peak.max(have);
+        }
+        (have, peak / rate * 1000.0)
+    }
+
+    #[test]
+    fn asrc_absorbs_clock_drift() {
+        let rate = 48000.0f64;
+        let target_ms = 80.0;
+        // 追従なし: 実機と同じ 12.5ppm で上限240msまで育つ
+        let (_, peak_off) = simulate(12.5, false);
+        assert!(peak_off >= 239.0,
+                "追従なしで上限に達しない = 試験になっていない: 最大 {peak_off:.0}ms");
+        // 追従あり: 目標付近に収まる
+        let (end_on, peak_on) = simulate(12.5, true);
+        let end_ms = end_on / rate * 1000.0;
+        assert!((end_ms - target_ms).abs() < 8.0,
+                "4時間後の滞留が目標から離れた: {end_ms:.1}ms(目標 {target_ms}ms)");
+        assert!(peak_on < 120.0, "途中で膨らみすぎ: 最大 {peak_on:.0}ms");
+        // 逆向き(PCが速い)でも枯渇しない
+        let (end_neg, _) = simulate(-12.5, true);
+        let neg_ms = end_neg / rate * 1000.0;
+        assert!((neg_ms - target_ms).abs() < 8.0,
+                "逆向きのずれで滞留がずれた: {neg_ms:.1}ms");
+    }
+
+    /// 歩幅の変化量が可聴域から桁で下にあること(音程が揺れて聞こえないこと)
+    #[test]
+    fn asrc_correction_is_inaudible() {
+        let mut ratio = 1.0f64;
+        for _ in 0..10000 {
+            ratio = track_ratio(ratio, 48000.0 * 0.240, 48000.0 * 0.080);
+        }
+        assert!(ratio <= 1.001 + 1e-9, "歩幅が上限を超えた: {ratio}");
+        // 滞留が上限まで振れても補正は 0.1% = 約1.7セント
+        let cents = 1200.0 * (ratio.ln() / 2.0f64.ln());
+        assert!(cents.abs() < 3.0, "音程が {cents:.2} セント動く(3セント未満に)");
     }
 }
