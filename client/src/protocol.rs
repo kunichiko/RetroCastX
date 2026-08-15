@@ -301,6 +301,13 @@ pub const CFG_KEY_COARSE_OFF_G: u16 = 0x0065;
 pub const CFG_KEY_COARSE_GAIN_R: u16 = 0x0067;
 /// レジスタ20h bit[5:0] 粗アナログオフセット Red
 pub const CFG_KEY_COARSE_OFF_R: u16 = 0x0068;
+/// レジスタ10h bit[7:3] SOGスライス閾値(5bit)。**同期をどの高さで切るか。**
+///
+/// ★S端子で実測(2026-08-15): 既定 0x0B では暗い映像を同期と誤認して垂直検出が
+///   壊れ、フィールド極性が判定できずに絵が半ライン上下に震えた。16〜24 が
+///   正しい窓で、その中央の 20 にすると垂直間隔が 262/263 に安定する。
+pub const CFG_KEY_SOG_THRESH: u16 = 0x0050;
+
 /// レジスタ19h [7:6]=SOG [5:4]=R [3:2]=G [1:0]=B、00=_1 / 01=_2 / 10=_3。
 /// 0xAA=全て_3 / 0x6A=SOGだけ_2(MSXのCSYNC配線)。**入力方式の切替に必須**
 pub const CFG_KEY_IN_MUX1: u16 = 0x0069;

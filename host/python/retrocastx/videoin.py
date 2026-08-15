@@ -150,6 +150,7 @@ MODES = {
             (proto.CFG_KEY_IN_MUX1, MUX_SOG3, "SOG/R/G/B すべて _3(SOGは使わない)"),
             (proto.CFG_KEY_SYNC_CTL, SYNC_5WIRE, "HSYNC/VSYNCを別線で受ける"),
             (proto.CFG_KEY_IN_MUX2, 0x12, "HSYNC_A/VSYNC_A を選択(bit0=0 bit2=0)"),
+            (proto.CFG_KEY_SOG_THRESH, 0x0B, "SOGは使わないので既定"),
             # 31kHz(768x512)の起点。Viewerのプロファイル/自動調整が上書きする
             (proto.CFG_KEY_PLL_DIVIDE, 1104, "起点=31kHzのhtotal(Viewerが上書きする)"),
             (proto.CFG_KEY_PLL_CTL, 0x18, "ICP = 40×75/1104 = 2.7 → 3"),
@@ -163,6 +164,7 @@ MODES = {
             (proto.CFG_KEY_IN_MUX1, MUX_SOG2, "★SOGだけ _2(CSYNCがSOGIN_2に来る)"),
             (proto.CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOG(=CSYNC)から取る"),
             (proto.CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz + クランプLPF 0.5MHz"),
+            (proto.CFG_KEY_SOG_THRESH, 0x0B, "CSYNCのスライス位置(実機で成立している既定)"),
             # 同期セパレータ(11h/12h/13h/22h)は**触らない**。ゲートウェアの既定が
             # 15.7kHz族向けに調整済み(sep 0x75 / pre 3 / post 3)で、実測の根拠も
             # retrocastx_i2c.py に書かれている。ここで上書きすると出所が二重になる。
@@ -179,6 +181,7 @@ MODES = {
         "label": "コンポジット NTSC (Gin3にCVBS、SOGin3へ分岐)",
         "roles": ("cvbs", None),
         "regs": _CVBS_TIMING + [
+            (proto.CFG_KEY_SOG_THRESH, 0x0B, "CVBSのスライス位置(実機で成立している既定)"),
             (proto.CFG_KEY_CLAMP_SEL, 0b010, "Greenだけミッドレベル(バーストを丸ごと入れる)"),
             (proto.CFG_KEY_COARSE_GAIN_GB, 0x07,
              "★Green粗ゲイン0.5倍。ミッドレベルのヘッドルーム半減を吸収する"),
@@ -203,6 +206,12 @@ MODES = {
             #   ブランキング18・白242 → 1 IRE=2.24コードなのに、デコーダは
             #   (18-0)/40=0.45と誤認して**輝度が5倍**になり白飛びした)。
             #   Y はコンポジットの緑chと同じ設定にするのが正解。
+            # ★Yのスライス位置。既定 0x0B では**暗い映像を同期と誤認**して垂直検出が
+            #   壊れ、フィールド極性を判定できず、2枚のフィールドが同じスロットに
+            #   交互に上書きされて絵が半ライン上下に震えた(実機 2026-08-15)。
+            #   閾値を振ると 16〜24 で垂直間隔が 262/263 に安定する。その中央を採る。
+            (proto.CFG_KEY_SOG_THRESH, 20,
+             "★Yのスライス位置。既定0x0Bだと暗部を同期と誤認する。実測16〜24の中央"),
             (proto.CFG_KEY_CLAMP_SEL, 0b011, "★YもCもミッドレベル(Yは同期を含む1Vpp)"),
             (proto.CFG_KEY_COARSE_GAIN_GB, 0x07,
              "★Y粗ゲイン0.5倍。ミッドレベルのヘッドルーム半減を吸収する(コンポジットと同じ)"),

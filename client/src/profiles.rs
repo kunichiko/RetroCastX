@@ -89,6 +89,7 @@ const REGS_X68000: InputRegs = &[
     (proto::CFG_KEY_IN_MUX1, MUX_SOG3, "SOG/R/G/B すべて _3(SOGは使わない)"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_5WIRE, "HSYNC/VSYNCを別線で受ける"),
     (proto::CFG_KEY_IN_MUX2, 0x12, "HSYNC_A/VSYNC_A を選択"),
+    (proto::CFG_KEY_SOG_THRESH, 0x0B, "SOGは使わないので既定"),
     // 31kHz(768x512)の起点。この後は下の「→ 適用」ボタンと自動調整が詰める
     (proto::CFG_KEY_PLL_DIVIDE, 1104, "起点=31kHzのhtotal(この後で詰める)"),
     (proto::CFG_KEY_PLL_CTL, 0x18, "ICP = 40×75/1104 = 2.7 → 3"),
@@ -111,6 +112,7 @@ const REGS_MSX: InputRegs = &[
     (proto::CFG_KEY_IN_MUX1, MUX_SOG2, "★SOGだけ _2(CSYNCがSOGIN_2に来る)"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOG(=CSYNC)から取る"),
     (proto::CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz + クランプLPF 0.5MHz"),
+    (proto::CFG_KEY_SOG_THRESH, 0x0B, "CSYNCのスライス位置(実機で成立している既定)"),
     (proto::CFG_KEY_PLL_DIVIDE, 1368, "起点=MSXのhtotal(この後で詰める)"),
     (proto::CFG_KEY_PLL_CTL, 0x10, "ICP = 40×75/1368 = 2.2 → 2"),
     (proto::CFG_KEY_CLAMP_SEL, 0b000, "R/G/B全てボトムレベルクランプ"),
@@ -131,6 +133,7 @@ const REGS_COMPOSITE: InputRegs = &[
     (proto::CFG_KEY_IN_MUX1, MUX_SOG3, "SOG/R/G/B すべて _3"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOGから取る"),
     (proto::CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz(バーストで誤トリガしない)"),
+    (proto::CFG_KEY_SOG_THRESH, 0x0B, "CVBSのスライス位置(実機で成立している既定)"),
     (proto::CFG_KEY_PLL_DIVIDE, 1820, "PLL分周 = 8fsc NTSC(規格で決まる)"),
     (proto::CFG_KEY_PLL_CTL, 0x10, "VCO=UltraLow + チャージポンプ2"),
     (proto::CFG_KEY_CLAMP_SEL, 0b010, "Greenだけミッドレベル(バーストを丸ごと入れる)"),
@@ -153,6 +156,9 @@ const REGS_SVIDEO: InputRegs = &[
     (proto::CFG_KEY_IN_MUX1, MUX_SOG3, "SOG/R/G/B すべて _3"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOG(Yから分岐)から取る"),
     (proto::CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz"),
+    (proto::CFG_KEY_SOG_THRESH, 20,
+     "★Yのスライス位置。既定0x0Bだと暗い映像を同期と誤認して極性が判定できず、\n\
+      // 絵が半ライン上下に震えた。実測で16〜24が正しい窓、その中央"),
     (proto::CFG_KEY_PLL_DIVIDE, 1820, "PLL分周 = 8fsc NTSC"),
     (proto::CFG_KEY_PLL_CTL, 0x10, "VCO=UltraLow + チャージポンプ2"),
     // ★**YもCもミッドレベル。** 当初 Y をボトムレベルにしていたが**理由を
