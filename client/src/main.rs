@@ -420,6 +420,8 @@ struct PaceMeter {
     ui_calls: u32,
     ui_rate_hz: f32,
     ui_since: std::time::Instant,
+    /// 表示できた新フレームのレート[Hz]。受信レートと並べて出す
+    pub new_frame_hz: f32,
 }
 
 impl PaceMeter {
@@ -435,6 +437,7 @@ impl PaceMeter {
             ui_calls: 0,
             ui_rate_hz: 0.0,
             ui_since: std::time::Instant::now(),
+            new_frame_hz: 0.0,
         }
     }
 
@@ -482,11 +485,12 @@ impl PaceMeter {
             let n = self.intervals_ms.len() as f32;
             let mean = self.intervals_ms.iter().sum::<f32>() / n;
             let var = self.intervals_ms.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / n;
+            self.new_frame_hz = 1000.0 / mean;
             self.summary = format!(
                 "新フレーム間隔 {:.2}ms σ{:.2} → {:.2}Hz",
                 mean,
                 var.sqrt(),
-                1000.0 / mean
+                self.new_frame_hz
             );
             // ★CPU側の内訳も一緒に出す。パネルはマウスを止めないと読めないので、
             //   「マウスを動かしている最中」の数字はログでしか取れない
@@ -2574,13 +2578,35 @@ impl eframe::App for ViewerApp {
 
                 ui.strong("Stats");
                 ui.label(if self.no_vsync { "present: no-vsync" } else { "present: vsync (FIFO)" });
+                let s = self.shared.stats.lock().unwrap().clone();
                 if !self.pace.summary.is_empty() {
-                    ui.monospace(&self.pace.summary);
+                    // ★**「53Hz」だけ出すと「12%描画できていない」と読める。**
+                    //   実際には publish を取りこぼしても**絵の情報は失われない**
+                    //   (フレームバッファは累積で、各publishはその全体のコピー。
+                    //    次のpublishが上位互換)。効くのは動きの滑らかさだけ。
+                    //   受信レートと並べ、意味はホバーで説明する。
+                    let disp = self.pace.new_frame_hz;
+                    let pct = if s.fps > 1.0 { 100.0 * disp / s.fps } else { 0.0 };
+                    ui.monospace(format!("表示 {disp:.1}Hz / 受信 {:.1}Hz ({pct:.0}%)",
+                                         s.fps))
+                        .on_hover_text(
+                            "画面に出せた新フレームの割合。\n\
+                             ★**取りこぼしても絵の情報は失われない。** フレーム\n\
+                             バッファは累積で、各フレームはその全体のコピーなので、\n\
+                             次のフレームが前のものを含んでいる。効くのは動きの\n\
+                             滑らかさだけ。\n\
+                             \n\
+                             そもそもソース59.75Hzに対しディスプレイは60Hzなので、\n\
+                             完璧に拾っても4秒に1回は重複か欠落が出る(原理的)。");
                     if !self.pace.cpu_summary.is_empty() {
-                        ui.monospace(&self.pace.cpu_summary);
+                        ui.monospace(&self.pace.cpu_summary)
+                            .on_hover_text(
+                                "描画=ui()の呼び出し回数(=新フレームを見に行った\n\
+                                 回数)。**画面の更新回数ではない。** 画面は\n\
+                                 ディスプレイのrefresh(60Hz)で更新される。\n\
+                                 到着の揺らぎより細かく見に行くために多めに回す。");
                     }
                 }
-                let s = self.shared.stats.lock().unwrap().clone();
                 ui.monospace(format!("{:.1} fps  {:.1} Mbps", s.fps, s.mbps));
                 ui.monospace(format!("frames {}", s.frames));
                 // lost はOSのUDPバッファ溢れ、qdrop は組立が追いつかず受信スレッドの
