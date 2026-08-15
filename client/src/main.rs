@@ -362,6 +362,11 @@ fn run_headless(
                          s.ntsc_phase_drift_deg);
             }
         }
+        // 生産側がUIを待った時間。**GUIのときだけパケットが落ちる**を切り分ける
+        if s.publish_wait_max_ms > 0.05 {
+            println!("   フレーム差し替えのUI待ち: 合計{:.1}ms 最大{:.1}ms /区間",
+                     s.publish_wait_ms, s.publish_wait_max_ms);
+        }
         println!("   インタレース判定(測定): {}  未充填の行 {}",
                  if s.interlace_measured { "1フィールドずつ来ている(太らせ停止・減衰なし)" }
                  else { "プログレッシブ扱い(太らせ有効)" },
@@ -719,14 +724,25 @@ impl ViewerApp {
         }
         self.seen_gen = generation;
         self.pace.on_new_frame();
-        let guard = self.shared.frame.lock().unwrap();
-        let Some(frame) = guard.as_ref() else { return };
-        self.frame_size = (frame.width as u32, frame.height as u32);
+        // ★**ロックの順序が逆だった。** 以前はフレームのロックを持ったまま
+        //   `rs.renderer.write()` を取りに行っていた。描画中はレンダラのロックが
+        //   取れないので、paint が 19ms かかる間ずっとフレームのロックを握り続け、
+        //   受信側の `shared.frame.lock()` がその間ブロックされていた。
+        //   レンダラを先に取れば、フレームのロックはGPU転送の間だけで済む。
+        //   (両方を取るのはここだけなので、順序を入れ替えても行き詰まらない)
         if let Some(rs) = self.render_state.as_ref() {
             let mut w = rs.renderer.write();
+            let guard = self.shared.frame.lock().unwrap();
+            let Some(frame) = guard.as_ref() else { return };
+            self.frame_size = (frame.width as u32, frame.height as u32);
             if let Some(b) = w.callback_resources.get_mut::<render::EguiBlit>() {
                 b.upload(&rs.device, &rs.queue, &frame.rgba,
                          frame.width as u32, frame.height as u32);
+            }
+        } else {
+            let guard = self.shared.frame.lock().unwrap();
+            if let Some(frame) = guard.as_ref() {
+                self.frame_size = (frame.width as u32, frame.height as u32);
             }
         }
         let _ = ctx;
@@ -2537,6 +2553,12 @@ impl eframe::App for ViewerApp {
                 // 効いていない=色が出ない。コム間隔は測って決めているので、
                 // 織り込み設定が変わっても追従する
                 if s.ntsc_comb_step > 0 {
+                    if s.publish_wait_max_ms > 1.0 {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 170, 60),
+                            format!("フレーム差し替えのUI待ち 合計{:.0}ms 最大{:.0}ms",
+                                    s.publish_wait_ms, s.publish_wait_max_ms));
+                    }
                     ui.colored_label(
                         egui::Color32::from_rgb(120, 200, 120),
                         if s.ntsc_svideo {

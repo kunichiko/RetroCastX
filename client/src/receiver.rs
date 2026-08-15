@@ -104,6 +104,10 @@ pub struct StatsSnapshot {
     /// 赤ch(C)にバーストが載っていた = S端子として復調した。
     /// このときコムは一切使わない(クロスカラーもドットクロールも原理的に無い)
     pub ntsc_svideo: bool,
+    /// フレーム差し替えでUIを待った時間の、直近区間での合計[ms]と最大[ms]。
+    /// **落ちる原因の切り分け用。** ここが長いと生産側が詰まる
+    pub publish_wait_ms: f32,
+    pub publish_wait_max_ms: f32,
     /// 測定で「インタレースの1フィールドずつ来ている」と判定しているか。
     /// mflags では判定できないので、埋まる行のパリティの交互性で決めている
     pub interlace_measured: bool,
@@ -661,6 +665,9 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut last_report = Instant::now();
     let mut bytes_since = 0u64;
     let mut frames_since = 0u32;
+    // フレーム差し替えでUIを待った時間(合計と最大)。統計で出す
+    let mut publish_wait_us = 0u64;
+    let mut publish_wait_max_us = 0u64;
     let mut noise = NoiseMeter::default();
     let mut abox = ActiveBox::default();
     let mut tune = TuneMeter::default();
@@ -774,7 +781,9 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 v
             }
             Err(_) => {
-                tick_stats(&shared, &asm, &noise, &abox, &tune, &weave, &mut last_report, &mut bytes_since, &mut frames_since);
+                tick_stats(&shared, &asm, &noise, &abox, &tune, &weave, &mut last_report,
+                   &mut bytes_since, &mut frames_since,
+                   &mut publish_wait_us, &mut publish_wait_max_us);
                 continue;
             }
         };
@@ -900,7 +909,13 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             // 差し替えて、UIが使い終わった前のバッファを組立側へ返す。
             // ロックはUIがテクスチャ転送を終えるまで取れないので、返した時点で
             // もう誰も参照していない。これで毎フレームの4.8MB確保が消える。
+            // 生産側がUIを待った時間。**落ちる原因を切り分けるために測る。**
+            // ここが長いと、その間フレームを差し替えられず受信側が詰まる。
+            let t_wait = Instant::now();
             let old = shared.frame.lock().unwrap().replace(frame);
+            let us = t_wait.elapsed().as_micros() as u64;
+            publish_wait_us = publish_wait_us.saturating_add(us);
+            if us > publish_wait_max_us { publish_wait_max_us = us; }
             if let Some(old) = old {
                 asm.recycle(old.rgba);
             }
@@ -912,7 +927,9 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         // 受信スレッドが終了していて送れなくても、単に落とすだけで害はない。
         let _ = free_tx.send(buf);
 
-        tick_stats(&shared, &asm, &noise, &abox, &tune, &weave, &mut last_report, &mut bytes_since, &mut frames_since);
+        tick_stats(&shared, &asm, &noise, &abox, &tune, &weave, &mut last_report,
+                   &mut bytes_since, &mut frames_since,
+                   &mut publish_wait_us, &mut publish_wait_max_us);
     }
 }
 
@@ -948,6 +965,8 @@ fn tick_stats(
     last_report: &mut Instant,
     bytes_since: &mut u64,
     frames_since: &mut u32,
+    publish_wait_us: &mut u64,
+    publish_wait_max_us: &mut u64,
 ) {
     let dt = last_report.elapsed();
     if dt < Duration::from_millis(500) {
@@ -982,6 +1001,8 @@ fn tick_stats(
         ntsc_motion_frac: asm.ntsc_info.as_ref().map(|i| i.motion_frac).unwrap_or(0.0),
         ntsc_phase_drift_deg: asm.ntsc_info.as_ref().map(|i| i.phase_drift_deg).unwrap_or(0.0),
         ntsc_svideo: asm.ntsc_info.as_ref().map(|i| i.svideo).unwrap_or(false),
+        publish_wait_ms: *publish_wait_us as f32 / 1000.0,
+        publish_wait_max_ms: *publish_wait_max_us as f32 / 1000.0,
         interlace_measured: asm.interlace_measured,
         occ_h: tune.occ,
         tune_n: tune.n,
@@ -991,4 +1012,6 @@ fn tick_stats(
     *last_report = Instant::now();
     *bytes_since = 0;
     *frames_since = 0;
+    *publish_wait_us = 0;
+    *publish_wait_max_us = 0;
 }

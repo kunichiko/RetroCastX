@@ -152,6 +152,12 @@ impl AudioPlayer {
                     }
                     // 音量はコールバックの頭で1回読む(ブロック内で一定にする)
                     let gain = f32::from_bits(stats_cb.gain_bits.load(Ordering::Relaxed));
+                    // ★**枯渇は「回数」で数える。** 以前はサンプルフレームごとに
+                    //   +1 していたので、1回の枯渇でコールバックの残り全部
+                    //   (512フレームなら最大512)が加算され、数として読めなかった
+                    //   (実機で underruns 416 と出て「416回途切れた」と読めてしまう
+                    //    が、実際には1〜2回だった可能性がある)。
+                    let mut dry = false;
                     for f in out.chunks_mut(channels) {
                         let l = r.buf.pop_front();
                         let rr = r.buf.pop_front();
@@ -174,7 +180,10 @@ impl AudioPlayer {
                                 f.fill(0.0);
                                 r.started = false;
                                 stats_cb.playing.store(false, Ordering::Relaxed);
-                                stats_cb.underruns.fetch_add(1, Ordering::Relaxed);
+                                if !dry {
+                                    dry = true;
+                                    stats_cb.underruns.fetch_add(1, Ordering::Relaxed);
+                                }
                             }
                         }
                     }
