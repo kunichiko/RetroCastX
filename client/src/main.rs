@@ -392,14 +392,28 @@ fn run_headless(
     Ok(())
 }
 
-/// 新フレームpaint間隔の計測(vsync量子化の検出用)。
-/// present完了時刻そのものはwgpu経由では取れないため、paint cadenceを代理指標にする
+/// **新しいフレームが画面に出る間隔**の計測(vsync量子化の検出用)。
+///
+/// ★**描画にかかった時間ではない。** `refresh_texture` は新フレームが無ければ
+///   即 return するので、ここに来るのは「中身が変わったpaint」だけ。だから
+///   ボードが59.8fps送っているのにここが54.9Hzなら、**8%のフレームが表示されずに
+///   置き換わっている**という意味になる。以前は "paint" と表示していて
+///   「描画に18msかかっている」と読めてしまった。
+///
+/// present完了時刻そのものはwgpu経由では取れないため、この間隔を代理指標にする
 /// (FIFOではスワップチェーンのバックプレッシャでvsync周期に量子化される)。
+/// CPU側で実際にかかった時間は `cpu_summary` に別に出す。
 struct PaceMeter {
     last_paint: Option<std::time::Instant>,
     intervals_ms: std::collections::VecDeque<f32>,
     last_log: std::time::Instant,
     summary: String,
+    /// ★**間隔と処理時間は別物。** 上の intervals_ms は「新フレームが画面に出る
+    ///   間隔」で、FIFOのvsync待ちを含む。こちらはCPU側で実際にかかった時間で、
+    ///   間隔が伸びたときに「我々が遅いのか、待たされているのか」を分ける。
+    ui_ms: std::collections::VecDeque<f32>,
+    upload_ms: std::collections::VecDeque<f32>,
+    cpu_summary: String,
 }
 
 impl PaceMeter {
@@ -409,7 +423,31 @@ impl PaceMeter {
             intervals_ms: std::collections::VecDeque::with_capacity(256),
             last_log: std::time::Instant::now(),
             summary: String::new(),
+            ui_ms: std::collections::VecDeque::with_capacity(256),
+            upload_ms: std::collections::VecDeque::with_capacity(256),
+            cpu_summary: String::new(),
         }
+    }
+
+    fn note_upload(&mut self, d: std::time::Duration) {
+        if self.upload_ms.len() >= 256 { self.upload_ms.pop_front(); }
+        self.upload_ms.push_back(d.as_secs_f32() * 1000.0);
+    }
+
+    fn note_ui(&mut self, d: std::time::Duration) {
+        if self.ui_ms.len() >= 256 { self.ui_ms.pop_front(); }
+        self.ui_ms.push_back(d.as_secs_f32() * 1000.0);
+        let f = |v: &std::collections::VecDeque<f32>| -> (f32, f32) {
+            if v.is_empty() { return (0.0, 0.0); }
+            let n = v.len() as f32;
+            let mean = v.iter().sum::<f32>() / n;
+            let max = v.iter().cloned().fold(0.0f32, f32::max);
+            (mean, max)
+        };
+        let (um, ux) = f(&self.ui_ms);
+        let (tm, tx) = f(&self.upload_ms);
+        self.cpu_summary = format!(
+            "CPU: UI {um:.2}ms(最大{ux:.2}) / 転送 {tm:.2}ms(最大{tx:.2})");
     }
 
     fn on_new_frame(&mut self) {
@@ -427,7 +465,7 @@ impl PaceMeter {
             let mean = self.intervals_ms.iter().sum::<f32>() / n;
             let var = self.intervals_ms.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / n;
             self.summary = format!(
-                "paint {:.2}ms σ{:.2} → {:.2}Hz",
+                "新フレーム間隔 {:.2}ms σ{:.2} → {:.2}Hz",
                 mean,
                 var.sqrt(),
                 1000.0 / mean
@@ -2429,8 +2467,11 @@ impl eframe::App for ViewerApp {
     }
 
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let t_ui = std::time::Instant::now();
         let ctx = root.ctx().clone();
+        let t_tex = std::time::Instant::now();
         self.refresh_texture(&ctx);
+        self.pace.note_upload(t_tex.elapsed());
         // ウィンドウ内寸を覚えておき、次回起動時に復元する
         if let Some(r) = ctx.input(|i| i.viewport().inner_rect) {
             let sz = r.size();
@@ -2514,6 +2555,9 @@ impl eframe::App for ViewerApp {
                 ui.label(if self.no_vsync { "present: no-vsync" } else { "present: vsync (FIFO)" });
                 if !self.pace.summary.is_empty() {
                     ui.monospace(&self.pace.summary);
+                    if !self.pace.cpu_summary.is_empty() {
+                        ui.monospace(&self.pace.cpu_summary);
+                    }
                 }
                 let s = self.shared.stats.lock().unwrap().clone();
                 ui.monospace(format!("{:.1} fps  {:.1} Mbps", s.fps, s.mbps));
@@ -3022,6 +3066,7 @@ impl eframe::App for ViewerApp {
 
         // ストリーム停止中でもUI(統計・発見リスト)を更新し続ける
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        self.pace.note_ui(t_ui.elapsed());
     }
 }
 
