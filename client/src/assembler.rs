@@ -70,6 +70,8 @@ pub struct FrameAssembler {
     interlace_decay: f32,
     /// 復調を止めて生のYをそのまま見る(切り分け用)
     raw_view: bool,
+    /// 見た目の調整(彩度・明るさ・コントラスト・色相)
+    adjust: ntsc::Adjust,
     /// 表示するフィールド。0=織り込み(通常) / 1=偶数スロットのみ / 2=奇数スロットのみ。
     /// 選んだ側の行を隣のスロットへ複製して全高で出す(=ラインダブラ)。
     field_view: u8,
@@ -104,6 +106,7 @@ impl FrameAssembler {
             interlace_decay: 1.0,
             raw_view: false,
             field_view: 0,
+            adjust: ntsc::Adjust::default(),
         }
     }
 
@@ -176,6 +179,11 @@ impl FrameAssembler {
     /// 2枚のフィールドがずれているのか、1枚の中で既に二重なのかを分けられる。
     /// 選んだ側を隣のスロットへ複製するので、縦解像度は半分だが全高で出る
     /// (黒で間引くとスキャンラインが乗って、かえって見分けにくい)。
+    /// 見た目の調整を差し替える。**復調の校正は触らない**(数値で追えなくなるため)
+    pub fn set_adjust(&mut self, a: ntsc::Adjust) {
+        self.adjust = a;
+    }
+
     pub fn set_field_view(&mut self, v: u8) {
         self.field_view = v;
     }
@@ -420,7 +428,7 @@ impl FrameAssembler {
             };
             let info = ntsc::decode_field(
                 &self.raw, self.width, self.height, &self.line_seen, dotclk,
-                &mut self.fb, Some(hist));
+                &mut self.fb, Some(hist), self.adjust);
             self.ntsc_info = Some(info);
         }
         // このフレームで受信できなかったライン(=送信側でドロップ)を前値×decayで減衰。

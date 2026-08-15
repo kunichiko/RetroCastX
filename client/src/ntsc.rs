@@ -115,6 +115,30 @@ fn ang_diff(a: f32, b: f32) -> f32 {
 /// (呼び出し側の欠損補間・減衰に任せる)。
 /// 3次元コム用の履歴。`p2` は1 NTSCフレーム前(位相180°)、`p4` は2フレーム前
 /// (位相0°、動き検出用)。`hist_n[y] >= 3` の行だけ3次元を使う。
+/// 見た目の調整。**復調の正しさとは別に持つ。**
+///
+/// 信号内の基準(同期40 IRE / バースト40 IRE p-p / 黒0 IRE / 白100 IRE)に合わせた
+/// 結果が「正しい」絵で、既定値はそこを指す。ここはその上に載せる好みの調整で、
+/// 復調の校正を触らない(校正を歪めると、後で数値で追えなくなる)。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Adjust {
+    /// 色相[度]。NTSCの tint。バースト位相にそのまま足す
+    pub hue_deg: f32,
+    /// 彩度。1.0 = 信号どおり
+    pub saturation: f32,
+    /// 明るさ[IRE]。黒レベルを上下する
+    pub brightness: f32,
+    /// コントラスト。1.0 = 信号どおり。輝度と色差の両方に掛ける
+    /// (色差に掛けないと、コントラストを上げたとき色が薄く見える)
+    pub contrast: f32,
+}
+
+impl Default for Adjust {
+    fn default() -> Self {
+        Self { hue_deg: 0.0, saturation: 1.0, brightness: 0.0, contrast: 1.0 }
+    }
+}
+
 pub struct History<'a> {
     pub p2: &'a [u8],
     pub p4: &'a [u8],
@@ -176,6 +200,7 @@ pub fn decode_field(
     dotclk_hz: u32,
     fb: &mut [u8],
     hist: Option<History<'_>>,
+    adj: Adjust,
 ) -> Info {
     let sps = dotclk_hz as f32;
     let (ba, bb) = win(BURST_US, sps, w);
@@ -361,7 +386,17 @@ pub fn decode_field(
         let chroma_ok = mag[y] > BURST_MIN && (svideo || up.is_some() || dn.is_some());
         locked += chroma_ok as u32;
 
-        let (cp, sp) = (cosp[y], sinp[y]);
+        // 色相は「復調の位相基準をずらす」ことで入れる。ψ = 2π(n-ba)/8 - φ なので、
+        // th = ψ + hue は φ' = φ - hue と同じ。ライン毎に1回の回転で済む。
+        let (cp, sp) = {
+            let (c0, s0) = (cosp[y], sinp[y]);
+            if adj.hue_deg == 0.0 {
+                (c0, s0)
+            } else {
+                let h = adj.hue_deg.to_radians();
+                (c0 * h.cos() + s0 * h.sin(), s0 * h.cos() - c0 * h.sin())
+            }
+        };
         let px = |i: usize, j: usize| raw[(i * w + j) * 2] as f32;
         // S端子では C(赤ch)がそのままクロマ。ミッドレベルクランプなので
         // バックポーチを0点にする
@@ -509,9 +544,12 @@ pub fn decode_field(
         // --- 3) YUV → RGB ---
         let o0 = y * w * 4;
         for n in 0..w {
-            let yy = (yl[n] - porch) * inv_100ire;
-            let b_y = u[n] * inv_100ire_c / 0.493;
-            let r_y = v[n] * inv_100ire_c / 0.877;
+            // コントラストは輝度と色差の両方へ、彩度は色差だけへ掛ける
+            let yy = (yl[n] - porch) * inv_100ire * adj.contrast
+                + adj.brightness * 0.01;
+            let cgain = inv_100ire_c * adj.contrast * adj.saturation;
+            let b_y = u[n] * cgain / 0.493;
+            let r_y = v[n] * cgain / 0.877;
             let r = yy + r_y;
             let g = yy - 0.5094 * r_y - 0.1942 * b_y;
             let b = yy + b_y;
@@ -658,6 +696,72 @@ mod tests {
         (raw, filled)
     }
 
+    /// 見た目の調整が**期待どおりの向きと量で効くこと**。
+    ///
+    /// ★調整は復調の校正を触らないので、既定値では**1コードも変わらない**のが要点。
+    ///   ここが崩れると「調整を戻したのに絵が違う」という追えない状態になる。
+    #[test]
+    fn adjust_moves_the_picture_in_the_expected_direction() {
+        let sps = 8.0 * 3_579_545.0f32;
+        let (w, h) = (1820usize, 24usize);
+        let colors = [(0.75, 0.0, 0.0), (0.0, 0.75, 0.0), (0.0, 0.0, 0.75),
+                      (0.75, 0.75, 0.0), (0.0, 0.75, 0.75), (0.75, 0.0, 0.75)];
+        let (raw, filled) = synth(&colors, w, h, sps, 1);
+        let (aa, _) = win((9.6, 62.0), sps, w);
+        let per = (w - aa) / colors.len();
+        let dec = |a: Adjust| {
+            let mut fb = vec![255u8; w * h * 4];
+            decode_field(&raw, w, h, &filled, sps as u32, &mut fb, None, a);
+            fb
+        };
+        let base = dec(Adjust::default());
+
+        // 既定値は素通し。**1バイトも変わらないこと**
+        assert_eq!(base, dec(Adjust { ..Default::default() }),
+                   "既定値なのに絵が変わった");
+
+        // 彩度。無彩色にすると色差が消えてR=G=Bになる
+        let flat = dec(Adjust { saturation: 0.0, ..Default::default() });
+        let y = 12usize;
+        let n = aa + per / 2;
+        let o = (y * w + n) * 4;
+        let (r, g, b) = (flat[o] as i32, flat[o + 1] as i32, flat[o + 2] as i32);
+        assert!((r - g).abs() <= 2 && (g - b).abs() <= 2,
+                "彩度0なのに無彩色にならない: {r},{g},{b}");
+
+        // 明るさ。+20 IRE で全体が上がる(飽和していない所で)
+        let br = dec(Adjust { brightness: 20.0, ..Default::default() });
+        let lum = |fb: &[u8], n: usize| {
+            let o = (y * w + n) * 4;
+            0.299 * fb[o] as f32 + 0.587 * fb[o + 1] as f32 + 0.114 * fb[o + 2] as f32
+        };
+        let d = lum(&br, n) - lum(&base, n);
+        assert!(d > 30.0 && d < 70.0,
+                "明るさ+20 IRE の差が {d:.1}(期待 0.20×255=51 前後)");
+
+        // 色相。**回転量そのものは一致しない。** NTSCの副搬送波位相と HSV の色相は
+        // 一様に対応しないので、位相を30°回してもHSVでは色によって違う角度になる
+        // (実測: 赤で42°)。見るべきは「全色が同じ向きに回る」ことと
+        // 「hue_deg に比例する」こと。
+        let h15 = dec(Adjust { hue_deg: 15.0, ..Default::default() });
+        let h30 = dec(Adjust { hue_deg: 30.0, ..Default::default() });
+        let rot = |fb: &[u8], i: usize| {
+            let x0 = aa + i * per + per / 4;
+            let x1 = aa + i * per + per * 3 / 4;
+            ang_diff(hue_of(fb, w, y, x0, x1), hue_of(&base, w, y, x0, x1))
+        };
+        let s0 = rot(&h30, 0).signum();
+        for i in 0..colors.len() {
+            let (a, b) = (rot(&h15, i), rot(&h30, i));
+            assert!(b.signum() == s0 && a.signum() == s0,
+                    "色{i} だけ回る向きが違う: 15°で{a:.1}° 30°で{b:.1}°");
+            assert!(a.abs() > 5.0, "色{i} が15°でほとんど回らない: {a:.1}°");
+            let r = b / a;
+            assert!(r > 1.6 && r < 2.4,
+                    "色{i} が hue_deg に比例しない: 15°で{a:.1}° 30°で{b:.1}°(比{r:.2})");
+        }
+    }
+
     /// **S端子はコムを使わない。** 赤chのバーストで自動判定し、Yは素通しにする。
     ///
     /// 実測(PS2、2026-08-15): コンポジットでは細い縦罫線が二重になり、オシロで
@@ -676,7 +780,7 @@ mod tests {
 
         let (raw, filled) = synth_svideo(&colors, w, h, sps, 1.0);
         let mut fb = vec![255u8; w * h * 4];
-        let info = decode_field(&raw, w, h, &filled, sps as u32, &mut fb, None);
+        let info = decode_field(&raw, w, h, &filled, sps as u32, &mut fb, None, Adjust::default());
         assert!(info.svideo, "赤chのバーストからS端子と判定できていない");
         let mut worst = 0.0f32;
         for i in 0..colors.len() {
@@ -691,13 +795,13 @@ mod tests {
             cvbs[n * 2 + 1] = 158;
         }
         let mut fb2 = vec![255u8; w * h * 4];
-        let i2 = decode_field(&cvbs, w, h, &f2, sps as u32, &mut fb2, None);
+        let i2 = decode_field(&cvbs, w, h, &f2, sps as u32, &mut fb2, None, Adjust::default());
         assert!(!i2.svideo, "C側が無信号なのにS端子と判定した");
 
         // ★赤chの粗ゲインが違っても同じ絵になること(バースト基準で校正している)
         let (raw_g, fg) = synth_svideo(&colors, w, h, sps, 0.5);
         let mut fb3 = vec![255u8; w * h * 4];
-        decode_field(&raw_g, w, h, &fg, sps as u32, &mut fb3, None);
+        decode_field(&raw_g, w, h, &fg, sps as u32, &mut fb3, None, Adjust::default());
         let d = fb.iter().zip(fb3.iter())
             .map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
         assert!(d <= 12, "C側のゲインが半分で絵が変わった: 最大差 {d}");
@@ -710,7 +814,7 @@ mod tests {
             raw_i[o] = (raw_i[o] as u16 + 60).min(255) as u8;
         }
         let mut fb4 = vec![255u8; w * h * 4];
-        decode_field(&raw_i, w, h, &fi, sps as u32, &mut fb4, None);
+        decode_field(&raw_i, w, h, &fi, sps as u32, &mut fb4, None, Adjust::default());
         let lum = |n: usize| {
             let o = (12 * w + n) * 4;
             0.299 * fb4[o] as f32 + 0.587 * fb4[o + 1] as f32 + 0.114 * fb4[o + 2] as f32
@@ -787,7 +891,7 @@ mod tests {
             }
         }
         let mut fb = vec![255u8; w * h * 4];
-        decode_field(&raw, w, h, &filled, sps as u32, &mut fb, None);
+        decode_field(&raw, w, h, &filled, sps as u32, &mut fb, None, Adjust::default());
         // 輝度の代表として G を見る
         let at = |y: usize, n: usize| fb[(y * w + n) * 4 + 1] as f32;
         let (peak, base, side) = if vertical {
@@ -944,7 +1048,8 @@ mod tests {
                                std::f32::consts::PI + eps_deg.to_radians(), 0.0);
             let mut fb = vec![255u8; w * h * 4];
             let info = decode_field(&cur, w, h, &filled, sps as u32, &mut fb,
-                                    Some(History { p2: &p2, p4: &p4, hist_n: &hn }));
+                                    Some(History { p2: &p2, p4: &p4, hist_n: &hn }),
+                                    Adjust::default());
             (fsc_ripple(&fb, w, 12, x0, x1), info.phase_drift_deg)
         };
         let (r0, d0) = run(0.0);
@@ -984,11 +1089,11 @@ mod tests {
             m
         };
         let mut fb2 = vec![255u8; w * h * 4];
-        decode_field(&cur, w, h, &filled, sps as u32, &mut fb2, None);
+        decode_field(&cur, w, h, &filled, sps as u32, &mut fb2, None, Adjust::default());
         let e2 = worst(&fb2);
         let mut fb3 = vec![255u8; w * h * 4];
         let i3 = decode_field(&cur, w, h, &filled, sps as u32, &mut fb3,
-                              Some(History { p2: &p2, p4: &p4, hist_n: &hn }));
+                              Some(History { p2: &p2, p4: &p4, hist_n: &hn }), Adjust::default());
         let e3 = worst(&fb3);
         assert_eq!(i3.lines_3d, h as u32, "3次元を使えた行数が足りない");
         assert!(i3.motion_frac < 0.02, "静止なのに動きと判定した: {:.1}%",
@@ -1002,7 +1107,7 @@ mod tests {
         let p4m = synth_alt(&colors, w, h, sps, 0.0, 40.0);
         let mut fbm = vec![255u8; w * h * 4];
         let im = decode_field(&cur, w, h, &filled, sps as u32, &mut fbm,
-                              Some(History { p2: &p2m, p4: &p4m, hist_n: &hn }));
+                              Some(History { p2: &p2m, p4: &p4m, hist_n: &hn }), Adjust::default());
         assert!(im.motion_frac > 0.8, "動きを検出できていない: {:.1}%",
                 100.0 * im.motion_frac);
     }
@@ -1027,11 +1132,13 @@ mod tests {
             let mk = || if use3 {
                 Some(History { p2: &p2, p4: &p4, hist_n: &hn })
             } else { None };
-            decode_field(&raw, w, h, &filled, sps as u32, &mut fb, mk());  // warm-up
+            decode_field(&raw, w, h, &filled, sps as u32, &mut fb, mk(),
+                         Adjust::default());  // warm-up
             let n = 120;
             let t0 = std::time::Instant::now();
             for _ in 0..n {
-                decode_field(&raw, w, h, &filled, sps as u32, &mut fb, mk());
+                decode_field(&raw, w, h, &filled, sps as u32, &mut fb, mk(),
+                         Adjust::default());
             }
             let per = t0.elapsed().as_secs_f64() / n as f64;
             println!("{tag}: 1フィールド {:.3} ms  ({:.1} MSa/s 相当)  \
@@ -1050,7 +1157,7 @@ mod tests {
         let want = [0.0f32, 120.0, 240.0, 60.0, 180.0, 300.0];
         let (raw, filled) = synth(&colors, w, h, sps, step);
         let mut fb = vec![255u8; w * h * 4];
-        let info = decode_field(&raw, w, h, &filled, sps as u32, &mut fb, None);
+        let info = decode_field(&raw, w, h, &filled, sps as u32, &mut fb, None, Adjust::default());
         assert_eq!(info.comb_step, step,
                    "コムのペアを自力で当てられていない (測定した位相差 {:.1}°)",
                    info.phase_delta_deg);
@@ -1115,7 +1222,7 @@ mod tests {
             }
         }
         let mut fb = vec![255u8; w * h * 4];
-        decode_field(&raw, w, h, &filled, sps as u32, &mut fb, None);
+        decode_field(&raw, w, h, &filled, sps as u32, &mut fb, None, Adjust::default());
         let (aa, _) = win((9.6, 62.0), sps, w);
         let per = (w - aa) / colors.len();
         let mut best = f32::MAX;

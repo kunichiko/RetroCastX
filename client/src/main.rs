@@ -509,6 +509,8 @@ struct ViewerApp {
     raw_view: bool,
     /// 表示するフィールド 0=織り込み / 1=偶数 / 2=奇数(同上)
     field_view: u8,
+    /// 見た目の調整(彩度・明るさ・コントラスト・色相)。設定に保存する
+    adjust: ntsc::Adjust,
     /// 管面の幾何に使う vtotal(スロット数)を平滑した値。**整数のまま使わない。**
     ///
     /// ★インターレースは 262.5 ライン/フィールドなので、ボードが測る vtotal は
@@ -652,6 +654,12 @@ impl ViewerApp {
             tune_phase: cfg.tune_phase,
             raw_view: false,
             field_view: 0,
+            adjust: ntsc::Adjust {
+                hue_deg: cfg.adj_hue_deg,
+                saturation: cfg.adj_saturation,
+                brightness: cfg.adj_brightness,
+                contrast: cfg.adj_contrast,
+            },
             vtotal_smooth: std::cell::Cell::new(0.0),
             vtotal_mode_id: std::cell::Cell::new(u16::MAX),
             input_regs_sent: None,
@@ -783,6 +791,10 @@ impl ViewerApp {
             bezel_off: self.bezel_off,
             filter: self.filter,
             interlace_decay: self.interlace_decay,
+            adj_hue_deg: self.adjust.hue_deg,
+            adj_saturation: self.adjust.saturation,
+            adj_brightness: self.adjust.brightness,
+            adj_contrast: self.adjust.contrast,
             window: self.window,
             tube_time_based: self.tube_time_based,
             mon: self.mon,
@@ -1731,6 +1743,51 @@ impl ViewerApp {
         }
         if let Some((label, n)) = self.input_regs_sent {
             ui.monospace(format!("入力設定を書いた: {label} ({n}件)"));
+        }
+        // 見た目の調整。**復調の校正とは別に持つ。**
+        //
+        // 信号内の基準(同期40 IRE / バースト40 IRE p-p)に合わせた結果が「正しい」絵で、
+        // 既定値はそこを指す。ここはその上に載せる好みの調整。校正の方を歪めると
+        // 「どこまでが信号でどこからが好みか」が分からなくなり、後で数値で追えない。
+        ui.horizontal(|ui| {
+            ui.monospace("画調");
+            if ui.small_button("既定へ").on_hover_text(
+                "信号どおり(彩度1.00 明るさ0 コントラスト1.00 色相0°)へ戻す")
+                .clicked()
+            {
+                self.adjust = ntsc::Adjust::default();
+                *self.shared.adjust.lock().unwrap() = Some(self.adjust);
+                self.mark_settings_dirty();
+            }
+            if self.adjust != ntsc::Adjust::default() {
+                ui.colored_label(egui::Color32::from_rgb(220, 170, 60), "信号どおりではない");
+            }
+        });
+        {
+            let mut a = self.adjust;
+            let mut ch = false;
+            let mut row = |ui: &mut egui::Ui, label: &str, v: &mut f32,
+                           lo: f32, hi: f32, dec: usize, tip: &str, ch: &mut bool| {
+                ui.horizontal(|ui| {
+                    ui.monospace(format!("{label:<6}"));
+                    *ch |= ui.add(egui::Slider::new(v, lo..=hi).fixed_decimals(dec))
+                        .on_hover_text(tip)
+                        .changed();
+                });
+            };
+            row(ui, "彩度", &mut a.saturation, 0.0, 2.0, 2,
+                "色の濃さ。1.00 = バースト(40 IRE p-p)基準の信号どおり", &mut ch);
+            row(ui, "明るさ", &mut a.brightness, -20.0, 20.0, 1,
+                "黒レベルを上下する[IRE]。0 = 信号どおり", &mut ch);
+            row(ui, "コントラスト", &mut a.contrast, 0.5, 1.5, 2,
+                "1.00 = 信号どおり。色差にも掛かるので色が薄くならない", &mut ch);
+            row(ui, "色相", &mut a.hue_deg, -30.0, 30.0, 0,
+                "NTSCのtint。復調の位相基準をずらす[度]。0 = バーストどおり", &mut ch);
+            if ch {
+                self.adjust = a;
+                *self.shared.adjust.lock().unwrap() = Some(a);
+                self.mark_settings_dirty();
+            }
         }
         // 復調前の生Yをそのまま見る。**artefactの出所を分ける道具。**
         //

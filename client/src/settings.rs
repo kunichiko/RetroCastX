@@ -48,6 +48,12 @@ pub struct Settings {
     /// 実際のCRTは「何ドットか」を知らず、偏向で決まった管面いっぱいに描く。
     /// ここを 4/3 にすれば 512x256 でも 768x512 でも同じ形で表示される。
     pub tube_aspect: f32,
+    /// 見た目の調整。**復調の校正とは別**で、好みで動かす値。
+    /// 既定(0,1,0,1)は「信号どおり」を指す
+    pub adj_hue_deg: f32,
+    pub adj_saturation: f32,
+    pub adj_brightness: f32,
+    pub adj_contrast: f32,
     /// 右の操作パネルを表示するか
     pub show_panel: bool,
     /// NIC受信バッファーの警告ダイアログを二度と出さない。
@@ -112,6 +118,10 @@ impl Default for Settings {
             muted: false,
             audio_source: Some(0),
             audio_device: None,
+            adj_hue_deg: 0.0,
+            adj_saturation: 1.0,
+            adj_brightness: 0.0,
+            adj_contrast: 1.0,
             tune_vbp: 0,
             tune_hs_offset: 152,
             tune_pll_divide: 1104,
