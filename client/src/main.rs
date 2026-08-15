@@ -509,6 +509,17 @@ struct ViewerApp {
     raw_view: bool,
     /// 表示するフィールド 0=織り込み / 1=偶数 / 2=奇数(同上)
     field_view: u8,
+    /// 管面の幾何に使う vtotal(スロット数)を平滑した値。**整数のまま使わない。**
+    ///
+    /// ★インターレースは 262.5 ライン/フィールドなので、ボードが測る vtotal は
+    ///   262 と 263 を交互に返すのが正常。瞬間値を幾何に使うと縦のスケールが
+    ///   フレームごとに 0.38% 変わり、絵が上下に震える(実機で「横線の縦位置が
+    ///   フレームごとに動いて二重線に見える」形で出た。片フィールド表示でも
+    ///   残ったので、織り込みではなく幾何側だと切り分けられた)。
+    /// (描画中に更新するので Cell。paint_tube を &mut self にすると波及が大きい)
+    vtotal_smooth: std::cell::Cell<f32>,
+    /// 平滑をリセットする判定用。モードが変わったら追従を待たずに飛ばす
+    vtotal_mode_id: std::cell::Cell<u16>,
     /// 直近で入力設定を書き込んだソース(ラベル, 件数)。パネルの確認表示用。
     input_regs_sent: Option<(&'static str, usize)>,
     /// 映像ソースのプロファイル名(profiles::PROFILES の key)。空文字は「自動」。
@@ -641,6 +652,8 @@ impl ViewerApp {
             tune_phase: cfg.tune_phase,
             raw_view: false,
             field_view: 0,
+            vtotal_smooth: std::cell::Cell::new(0.0),
+            vtotal_mode_id: std::cell::Cell::new(u16::MAX),
             input_regs_sent: None,
             source_profile: cfg.source_profile.clone(),
             tune_pending: Default::default(),
@@ -922,6 +935,18 @@ impl ViewerApp {
             Some(m) if m.mflags & 0x0001 != 0 => 1,
             _ => 2,
         };
+        // vtotal を平滑する。**262/263 の交互は正常なので、その平均(262.5)を使う。**
+        // モードが変わったときだけ即座に飛ばす(追従を待つと一瞬絵が伸びる)。
+        {
+            let raw = m.as_ref().map_or(0.0, |m| (m.vtotal as u32 * slot_k) as f32);
+            let id = m.as_ref().map_or(u16::MAX, |m| m.mode_id as u16);
+            let reset = id != self.vtotal_mode_id.get();
+            self.vtotal_smooth
+                .set(render::smooth_vtotal(self.vtotal_smooth.get(), raw, reset));
+            if raw > 0.0 {
+                self.vtotal_mode_id.set(id);
+            }
+        }
         let act = {
             let st = self.shared.stats.lock().unwrap();
             // span_* は「明るい画素が1つでもある行/列」の外接矩形。active_* は
@@ -946,7 +971,7 @@ impl ViewerApp {
             //   インターレース  折り返して2フィールドが  → vtotal
             //                   交互に入るので1ラインが1スロット
             // これを間違えると縦が2倍に引き伸ばされる(実機で絵が上半分に収まった)。
-            vtotal: m.as_ref().map_or(0, |m| m.vtotal as u32 * slot_k),
+            vtotal: self.vtotal_smooth.get(),
             // offset_px はライン内の絶対位置で来るので、ここでずらす必要はない。
             // pll_divide を変えても絵が動かないのはこのため(hs_offset は取り込み
             // 窓の設定であって、描画位置とは無関係になった)
@@ -1734,9 +1759,18 @@ impl ViewerApp {
             ui.monospace("フィールド");
             let mut v = self.field_view;
             let mut ch = false;
-            ch |= ui.selectable_value(&mut v, 0u8, "織り込み").changed();
-            ch |= ui.selectable_value(&mut v, 1u8, "偶数のみ").changed();
-            ch |= ui.selectable_value(&mut v, 2u8, "奇数のみ").changed();
+            // ★片フィールド表示は**ラインダブラ**。横線が2行ぶんの太さになるのは
+            //   仕様。これを知らないと「横線が二重になった」と読めてしまうので、
+            //   ホバーで明示する(実機で実際に紛らわしかった)。
+            let tip = "偶数/奇数は片方のフィールドだけを見る切り分け用。\n\
+                       ★選んだ側の行を隣へ複製するので、**横線は2行ぶんの太さになる**\n\
+                       (縦線の二重化を見るための道具。横方向の判断は「織り込み」で)";
+            ch |= ui.selectable_value(&mut v, 0u8, "織り込み")
+                .on_hover_text(tip).changed();
+            ch |= ui.selectable_value(&mut v, 1u8, "偶数のみ")
+                .on_hover_text(tip).changed();
+            ch |= ui.selectable_value(&mut v, 2u8, "奇数のみ")
+                .on_hover_text(tip).changed();
             if ch {
                 self.field_view = v;
                 *self.shared.field_view.lock().unwrap() = Some(v);

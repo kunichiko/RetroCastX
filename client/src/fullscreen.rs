@@ -291,6 +291,8 @@ fn render_thread(
     let mut last_paint: Option<Instant> = None;
     let mut intervals: Vec<f64> = Vec::new();
     let mut last_log = Instant::now();
+    // 幾何に使う vtotal の平滑値(main.rs の vtotal_smooth と同じ理由)
+    let mut vtotal_smooth = 0.0f32;
 
     loop {
         // 新フレーム到着まで待つ(タイムアウトでハートビート描画: 統計・黒画面維持)
@@ -342,7 +344,13 @@ fn render_thread(
                     let mut p = params;
                     if let Some(m) = shared.mode.lock().unwrap().as_ref() {
                         p.htotal = m.htotal as u32;
-                        p.vtotal = m.vtotal as u32;
+                        // vtotal は平滑した値を使う。**262/263 の交互は正常**
+                        // (インターレースは262.5ライン/フィールド)なので、瞬間値を
+                        // 幾何に使うと縦のスケールがフレームごとに0.38%変わり、
+                        // 絵が上下に震える。詳細は main.rs の vtotal_smooth のコメント。
+                        vtotal_smooth =
+                            render::smooth_vtotal(vtotal_smooth, m.vtotal as f32, false);
+                        p.vtotal = vtotal_smooth;
                         // 管面を時間ベースで決めるのに必要(実CRTと同じ挙動)
                         p.fh_hz = (m.hfreq_mhz_x1000 / 1000) as u32;
                         p.hactive = m.hactive as u32;
