@@ -1,0 +1,62 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+
+component WCH_CH347F_package:
+    """WCH CH347F: USB HS → UART / SPI / I2C / JTAG / SWD ブリッジ。QFN-28 4x4mm。
+
+    FT2232HL(約2,000円)の置き換え。LCSC C18221627、$2.18程度。
+
+    ★**CH347T ではなく CH347F を選ぶ理由**: この基板は JTAG(i5書換え)と UART を
+      **同時に**使う。CH347F はモード切替が不要で UART0/UART1/I2C/SPI/JTAG を
+      同時使用できる。CH347T(TSSOP-20)はピン数が足りず、リセット時に
+      DTR1/RTS1 のレベルでモードを選ぶ必要がある。
+
+    ★**openFPGALoader が対応済み**(src/ch347jtag.cpp):
+        VID 0x1a86  CH347F PID 0x55de  JTAGはUSBインターフェース4
+      書換えコマンドは `openFPGALoader -c ch347_jtag`(要確認: ケーブル名)。
+
+    ★データシートの要点:
+      - 電源は 3.3V のみ。CH347F は VIO で I/O を 1.8/2.5/3.3V に独立給電できる
+      - 外付け 8MHz 水晶が必要(XI/XO)。内蔵発振器は無い
+      - **設定(動作モード・VID・PID・シリアル)は内蔵EEPROM**に持つ。
+        FT2232H で必要だった外部EEPROM(93LC56)が不要になる
+      - USB は「UD+/UD- に直列抵抗を入れないこと」と明記されている
+      - JTAG は SPI とは別ピン(TCK/TDO/TDI/TMS = pin23-26、SPIは pin13-16)
+
+    ★JTAGピンは GPIO と多重化されている(TCK/SWDCLK/GPIO4 等)。JTAGモードで
+      使う限り競合しない。
+    """
+    trait is_atomic_part<manufacturer="WCH", partnumber="CH347F", footprint="QFN-28_L4.0-W4.0-P0.40-BL-EP2.7.kicad_mod", symbol="CH347F.kicad_sym", model="QFN-28_L4.0-W4.0-P0.40-BL-EP2.7.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C18221627", manufacturer="WCH", partno="CH347F">
+    trait has_designator_prefix<prefix="U">
+
+    signal XI ~ pin 1
+    signal XO ~ pin 2
+    signal nRST ~ pin 3
+    signal TXD1 ~ pin 4
+    signal RXD1 ~ pin 5
+    signal VIO ~ pin 6
+    signal SCS1 ~ pin 7
+    signal SRST ~ pin 8
+    signal TRST ~ pin 9
+    signal DTR0 ~ pin 10
+    signal SCL ~ pin 11
+    signal SDA ~ pin 12
+    signal SCS0 ~ pin 13
+    signal SCK ~ pin 14
+    signal MISO ~ pin 15
+    signal MOSI ~ pin 16
+    signal CTS0 ~ pin 17
+    signal RTS0 ~ pin 18
+    signal TXD0 ~ pin 19
+    signal GND ~ pin 20
+    signal VCC ~ pin 21
+    signal RXD0 ~ pin 22
+    signal TCK ~ pin 23
+    signal TDO ~ pin 24
+    signal TDI ~ pin 25
+    signal TMS ~ pin 26
+    signal UDM ~ pin 27
+    signal UDP ~ pin 28
+    GND ~ pin 29          # 露出パッド。GNDへ落とす

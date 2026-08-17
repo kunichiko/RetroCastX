@@ -1,0 +1,19 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+
+component YXC_X32258MSB4SI_package:
+    """YXC X32258MSB4SI: 8MHz 水晶 3225(3.2x2.5mm) 4端子。CH347F の XI/XO 用。
+
+    CH347 データシート: 「The peripheral circuit needs to connect an 8MHz crystal
+    between the XI and XO pins」。負荷容量は品種のCLに合わせて外付けする。
+    ★負荷容量値は発注前にデータシートでCLを確認すること(12MHz品はCL=20pF→33pF×2だった)。
+    """
+    trait is_atomic_part<manufacturer="YXC", partnumber="X32258MSB4SI", footprint="CRYSTAL-SMD_4P-L3.2-W2.5-BL.kicad_mod", symbol="X32258MSB4SI.kicad_sym", model="CRYSTAL-SMD_4P-L3.2-W2.5-BL.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C2682774", manufacturer="YXC", partno="X32258MSB4SI">
+    trait has_designator_prefix<prefix="X">
+
+    signal GND ~ pin 2
+    GND ~ pin 4
+    signal OSC1 ~ pin 1
+    signal OSC2 ~ pin 3

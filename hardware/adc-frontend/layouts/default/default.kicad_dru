@@ -7,6 +7,12 @@
 #     U10 (TVP7002)  → U1
 #     U11 (SO-DIMM)  → U10     ← 旧U10と番号が交差するので同時置換が必要だった
 #     U13 (FT2232H)  → U7
+#
+# ★2026-08-18 FT2232HL → CH347F(QFN-28)への置換で17部品が消え、デジグネータが
+#   135個動いた。**SO-DIMM が U10 → U9 になった**のでこのファイルも直した
+#   (U10 は drgb.buf[0] = SOT-23-6 に変わっていた)。USBブリッジは偶然 U7 のまま。
+#   CH347F は **0.4mmピッチ**で FT2232H(0.5mm)より細かいので、下の
+#   「微細ピッチのファンアウト緩和」は引き続き必要。
 #   **このファイルの memberOfFootprint はデジグネータ直書きなので、番号を振り直したら
 #     必ずここも直すこと。** 直さないと微細ピッチのファンアウト緩和が黙って効かなくなり、
 #     clearance 違反が一気に増える(実測で 0件 → 401件)。KiCadは存在しない
@@ -84,26 +90,30 @@
 # ネットクラス既定(0.4mm)に加え、非GbEネットが近づく場合は3×線幅=0.6mm確保。
 (rule "GbE_diff to other-net clearance"
 	(constraint clearance (min 0.6mm))
-	(condition "A.NetClass == 'GbE_diff' && B.NetClass != 'GbE_diff' && !A.memberOfFootprint('U10') && !B.memberOfFootprint('U10')"))
+	(condition "A.NetClass == 'GbE_diff' && B.NetClass != 'GbE_diff' && !A.memberOfFootprint('U9') && !B.memberOfFootprint('U9')"))
 
-# --- SO-DIMM(U10)のブレークアウト部だけクリアランスを緩和 ---
+# --- SO-DIMM(U9)のブレークアウト部だけクリアランスを緩和 ---
 # **0.6mmピッチのコネクタでGbEのクリアランス(ネットクラス0.4mm/対他ネット0.6mm)は
 #   物理的に満たせない。** パッド幅0.35mm・ピッチ0.6mm なのでパッド端〜端は0.25mmしかなく、
 #   線幅0.2mmで真っ直ぐ引き出しても隣パッドまで0.325mm、線幅0にしても0.425mmが上限。
 #   → ファンアウト区間だけ 0.2mm に緩める(JLC 4層の下限0.09mm・基板最小値0.1mmに対し十分)。
-#   上の 0.6mm ルールにも !memberOfFootprint('U10') を足してあるので、
+#   上の 0.6mm ルールにも !memberOfFootprint('U9') を足してあるので、
 #   ルール同士の優先順位に依存せずどちらか一方だけが効く。
 #
 # ★条件の書き方に注意(2026-08-11 実測): KiCad 9 では
-#     A.memberOfFootprint('U10')  → 効く
-#     A.memberOf('U10')           → 構文は通るが**何にもマッチしない**
-#     A.insideCourtyard('U10')    → 同上(フットプリントにF.CrtYdが無かったため。後に追加済み)
+#     A.memberOfFootprint('U9')  → 効く
+#     A.memberOf('U9')           → 構文は通るが**何にもマッチしない**
+#     A.insideCourtyard('U9')    → 同上(フットプリントにF.CrtYdが無かったため。後に追加済み)
 #   構文エラーが出ない = 効いている、ではないので、極端な値を入れて発火を確認すること。
 (rule "SO-DIMM breakout clearance relax"
 	(constraint clearance (min 0.2mm))
-	(condition "A.memberOfFootprint('U10') || B.memberOfFootprint('U10')"))
+	(condition "A.memberOfFootprint('U9') || B.memberOfFootprint('U9')"))
 
-# --- 0.5mmピッチ部品のブレークアウトはさらに緩める(U1 TVP7002 / U7 FT2232H / D* ESD) ---
+# --- 微細ピッチ部品のブレークアウトはさらに緩める(U1 TVP7002 / U7 CH347F / D* ESD) ---
+# ★U7 は 2026-08-18 に FT2232H(LQFP-64, 0.5mmピッチ)から **CH347F(QFN-28, 0.4mmピッチ)**
+#   へ置き換わった。ピッチが細かくなったのでこの緩和はより必要になっている。
+#   QFN-28 は全パッドが外周1列なので、パッド間を通す必要は無く外へ引き出すだけでよい
+#   (0.4mmピッチでパッド間の隙間は約0.2mmしかなく、0.127mm緩和でも通し配線は不可)。
 # パッド幅0.28mm・ピッチ0.5mm なのでパッド中心から隣パッド端まで **0.360mm** しかない。
 # 真っ直ぐ引き出したときに使える最大線幅は 2×(0.360 − 要求クリアランス):
 #
