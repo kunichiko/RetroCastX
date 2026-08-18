@@ -1,0 +1,68 @@
+name: DCO
+
+# PR に含まれる全コミットが Signed-off-by を持っているか確認する。
+#
+# Signed-off-by は Developer Certificate of Origin 1.1(リポジトリ直下の DCO)
+# への同意を意味する。権利の移転は起きない。詳細は CONTRIBUTING.md を参照。
+#
+# 付け忘れたら:
+#   直前のコミットのみ  git commit --amend -s --no-edit && git push --force-with-lease
+#   複数まとめて        git rebase --signoff origin/main && git push --force-with-lease
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check Signed-off-by
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # base..head を辿るので全履歴が要る
+          fetch-depth: 0
+
+      - name: Verify sign-off on each commit
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # マージコミット(親が2つ以上)は作者の著作物ではないので対象外
+          commits=$(git rev-list --no-merges "$BASE".."$HEAD")
+
+          if [ -z "$commits" ]; then
+            echo "レビュー対象のコミットがありません。"
+            exit 0
+          fi
+
+          failed=0
+          while IFS= read -r sha; do
+            [ -n "$sha" ] || continue
+            subject=$(git show -s --format='%s' "$sha")
+            author=$(git show -s --format='%an <%ae>' "$sha")
+
+            if git show -s --format='%B' "$sha" \
+                 | grep -qiE '^[[:space:]]*Signed-off-by:[[:space:]]*.+[[:space:]]+<[^>]+@[^>]+>[[:space:]]*$'; then
+              echo "  ok      $(git rev-parse --short "$sha")  $subject"
+            else
+              echo "::error::$(git rev-parse --short "$sha") に Signed-off-by がありません — $subject (author: $author)"
+              failed=1
+            fi
+          done <<< "$commits"
+
+          if [ "$failed" -ne 0 ]; then
+            echo ""
+            echo "全コミットに Signed-off-by が必要です。"
+            echo "  git rebase --signoff origin/main && git push --force-with-lease"
+            echo "詳細: CONTRIBUTING.md / DCO"
+            exit 1
+          fi
+
+          echo ""
+          echo "全コミットに Signed-off-by があります。"
