@@ -6,8 +6,19 @@ component YXC_X32258MSB4SI_package:
     """YXC X32258MSB4SI: 8MHz 水晶 3225(3.2x2.5mm) 4端子。CH347F の XI/XO 用。
 
     CH347 データシート: 「The peripheral circuit needs to connect an 8MHz crystal
-    between the XI and XO pins」。負荷容量は品種のCLに合わせて外付けする。
-    ★負荷容量値は発注前にデータシートでCLを確認すること(12MHz品はCL=20pF→33pF×2だった)。
+    between the XI and XO pins」。
+
+    **CL = 20pF**(LCSC C2682774 の仕様。±10ppm / ESR 180Ω / 3.2x2.5mm)。
+    ★**CLはシリーズのデータシートに載っていない。品番側で決まる**ので、確認するときは
+      LCSC/販売店の型番ページを見ること(2026-08-18 に確認)。
+
+    負荷容量は C_ext = 2 x (CL - C_stray) = 2 x (20 - 4) = 32pF → **33pF x 2**。
+    C_stray はパッド+配線+ICのピン容量で3〜5pF程度と見た。
+    現行の12MHz品(X322512MSB4SI)も CL=20pF なので、**8MHzへ替えても33pFのままでよい**。
+
+    ★ESR は 180Ω。12MHz品より高い(周波数が低いほどESRは上がる)。CH347の発振回路の
+      駆動能力(負性抵抗)はデータシートに記載が見当たらなかった。**起動が不安定なら
+      負荷容量を22pF程度へ下げると掛かりやすくなる**(実効CLが下がり励振が強くなる)。
     """
     trait is_atomic_part<manufacturer="YXC", partnumber="X32258MSB4SI", footprint="CRYSTAL-SMD_4P-L3.2-W2.5-BL.kicad_mod", symbol="X32258MSB4SI.kicad_sym", model="CRYSTAL-SMD_4P-L3.2-W2.5-BL.step">
     trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C2682774", manufacturer="YXC", partno="X32258MSB4SI">

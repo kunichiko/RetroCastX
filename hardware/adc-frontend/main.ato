@@ -836,8 +836,11 @@ module UsbProgrammer:
     ch.nRST ~> r_reset ~> p3v3
 
     # --- 8MHz水晶 + 負荷容量 ---
-    # ★負荷容量値は水晶のCLに合わせること。33pFは12MHz品(CL=20pF)から引き継いだ
-    #   暫定値なので、X32258MSB4SIのCLをデータシートで確認して決める。
+    # X32258MSB4SI は **CL=20pF**(LCSC C2682774 で確認、2026-08-18)。
+    # C_ext = 2 x (CL - C_stray) = 2 x (20 - 4) = 32pF → 33pF x 2。
+    # 12MHz品(X322512MSB4SI)も CL=20pF だったので、**33pFのままでよい**。
+    # ★CLはシリーズのデータシートに無く品番側で決まる。確認は型番ページで行うこと。
+    # ★ESR 180Ω。起動が不安定なら 22pF へ下げると掛かりやすくなる。
     xtal = new YXC_X32258MSB4SI_package
     ch.XI ~ xtal.OSC1
     ch.XO ~ xtal.OSC2

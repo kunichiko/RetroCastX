@@ -37096,7 +37096,7 @@
 		(uuid "137dbe3f-13a0-4fd7-a549-6a454642524b")
 		(at 93.5 123.08 90)
 		(property "Reference" "C77"
-			(at -0.97 0 90)
+			(at -0.97 0 270)
 			(layer "B.SilkS")
 			(uuid "4d30d7c7-6de7-4cf0-bbdd-ba75e05e7c47")
 			(effects
@@ -37108,7 +37108,7 @@
 			)
 		)
 		(property "Value" "100nF ±10%"
-			(at 0 -4 90)
+			(at 0 -4 270)
 			(layer "B.Fab")
 			(uuid "f8e848bd-35e3-4bb3-8453-7a9d4fd84d50")
 			(effects
@@ -37120,7 +37120,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "cecd4f6e-f766-4e70-901b-644ba535d150")
@@ -37133,7 +37133,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "3121353b-3da6-4ecf-851a-b2d7c09345c6")
@@ -37146,7 +37146,7 @@
 			)
 		)
 		(property "LCSC" "C1525"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "3cefb2bf-3e4a-46f4-aae7-51484642524b")
@@ -37158,7 +37158,7 @@
 			)
 		)
 		(property "Manufacturer" "SAMSUNG"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "630d2291-8112-4e09-ac98-18524642524b")
@@ -37170,7 +37170,7 @@
 			)
 		)
 		(property "Partnumber" "CL05B104KO5NNNC"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "39898f91-b180-475e-9d4b-25e44642524b")
@@ -37182,7 +37182,7 @@
 			)
 		)
 		(property "capacitance" "100nF ±10%"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "bf6536af-c255-4636-8847-59f24642524b")
@@ -37194,7 +37194,7 @@
 			)
 		)
 		(property "max_voltage" "ℝ+V"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "2715f016-83ca-4afe-a5c6-3b054642524b")
@@ -37206,7 +37206,7 @@
 			)
 		)
 		(property "atopile_address" "c_spdif"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "f338268f-b6f2-4ab3-a737-b3074642524b")
@@ -37218,7 +37218,7 @@
 			)
 		)
 		(property "lcsc_id" "C1525"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "dbd286ad-d062-47ec-b847-bac94642524b")
@@ -39000,7 +39000,7 @@
 		(uuid "3f0334ed-2eee-4646-8d7d-fe354642524b")
 		(at 173 89 -90)
 		(property "Reference" "C82"
-			(at -0.25 -2.5 0)
+			(at -0.25 -2.5 180)
 			(layer "B.SilkS")
 			(uuid "78c3bee5-bfca-477e-85de-3dd3f91222ca")
 			(effects
@@ -39012,7 +39012,7 @@
 			)
 		)
 		(property "Value" "4.7nF ±10%"
-			(at 12.715 -14.37 90)
+			(at 12.715 -14.37 270)
 			(layer "B.Fab")
 			(uuid "85e4c97c-a3bf-4280-83ad-8f857e522edd")
 			(effects
@@ -39024,7 +39024,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "5c457cbe-a43d-413e-afb5-7b68e5ed14d1")
@@ -39037,7 +39037,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "c24cf9f9-b531-47ab-8c8d-4884e4dd5798")
@@ -39050,7 +39050,7 @@
 			)
 		)
 		(property "LCSC" "C309511"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "ed8c2041-e3d2-47aa-96c1-d96e4642524b")
@@ -39062,7 +39062,7 @@
 			)
 		)
 		(property "Manufacturer" "YAGEO"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "e7f9091c-ce0c-413f-88bc-09e94642524b")
@@ -39074,7 +39074,7 @@
 			)
 		)
 		(property "Partnumber" "CC1812KKX7RDBB472"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "59b48fb3-38cd-43fc-9c96-f4684642524b")
@@ -39086,7 +39086,7 @@
 			)
 		)
 		(property "capacitance" "4.7nF ±10%"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "eb4db03b-2912-451d-b820-ccdb4642524b")
@@ -39098,7 +39098,7 @@
 			)
 		)
 		(property "max_voltage" "ℝ+V"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "6393db77-08d1-4d9e-81ca-25cf4642524b")
@@ -39110,7 +39110,7 @@
 			)
 		)
 		(property "atopile_address" "eth.bridge_caps[0]"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "2b644796-72bc-433c-9ce7-e7544642524b")
@@ -39122,7 +39122,7 @@
 			)
 		)
 		(property "lcsc_id" "C309511"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "6f5cea75-f7a1-4509-bdfd-f5dc4642524b")
@@ -39134,7 +39134,7 @@
 			)
 		)
 		(property "PARAM_capacitance" "{\"type\": \"Quantity_Interval_Disjoint\", \"data\": {\"intervals\": {\"type\": \"Numeric_Interval_Disjoint\", \"data\": {\"intervals\": [{\"type\": \"Numeric_Interval\", \"data\": {\"min\": 4.23e-09, \"max\": 5.17e-09}}]}}, \"unit\": \"farad\"}}"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "8f1ff286-7ca6-4131-899f-c9d94642524b")
@@ -39309,7 +39309,7 @@
 		(uuid "3f95b3d7-190b-460e-9872-b1d24642524b")
 		(at 138.5 65.75 90)
 		(property "Reference" "C32"
-			(at 3.75 0.1 270)
+			(at 3.75 0.1 90)
 			(layer "B.SilkS")
 			(uuid "9c06fd2e-e747-48f1-9d30-b6294ef6dac2")
 			(effects
@@ -39321,7 +39321,7 @@
 			)
 		)
 		(property "Value" "33pF ±5%"
-			(at 0 -4 270)
+			(at 0 -4 90)
 			(layer "B.Fab")
 			(uuid "23b73392-2e01-4c48-b194-ab062f56408c")
 			(effects
@@ -39333,7 +39333,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "98027761-a85d-4c01-9de9-4779121f7cbf")
@@ -39346,7 +39346,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "79729d76-3ef7-41ac-986f-96ac90551425")
@@ -39359,7 +39359,7 @@
 			)
 		)
 		(property "capacitance" "33pF ±5%"
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "User.9")
 			(hide yes)
 			(uuid "fa9685ee-5bda-4a48-801b-4efe4642524b")
@@ -39371,7 +39371,7 @@
 			)
 		)
 		(property "max_voltage" "ℝ+V"
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "User.9")
 			(hide yes)
 			(uuid "ac1c7863-f2f1-4dd8-9419-d71b4642524b")
@@ -39383,7 +39383,7 @@
 			)
 		)
 		(property "atopile_address" "c_sog3_aa"
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "User.9")
 			(hide yes)
 			(uuid "d16ad2f6-6ec6-4794-b9ef-1db44642524b")
@@ -40391,7 +40391,7 @@
 		(uuid "5276f1cd-f509-4359-92a7-29104642524b")
 		(at 139.75 70.75 -90)
 		(property "Reference" "C12"
-			(at 1.25 -1.25 90)
+			(at 1.25 -1.25 270)
 			(layer "B.SilkS")
 			(uuid "c4a29bf2-5a57-4a76-bb94-245d47f6b05a")
 			(effects
@@ -40403,7 +40403,7 @@
 			)
 		)
 		(property "Value" "100nF ±10%"
-			(at 0 -4 90)
+			(at 0 -4 270)
 			(layer "B.Fab")
 			(uuid "56458d9b-f119-4bf8-9ada-39c640c87c6c")
 			(effects
@@ -40415,7 +40415,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "daadd479-ab37-44d3-85be-cfe400d2ff11")
@@ -40428,7 +40428,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "792d45ac-bde4-4341-9033-012c6dc3228b")
@@ -40441,7 +40441,7 @@
 			)
 		)
 		(property "LCSC" "C1525"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "c2d1187e-ddd9-4492-bcba-35ec4642524b")
@@ -40453,7 +40453,7 @@
 			)
 		)
 		(property "Manufacturer" "SAMSUNG"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "48c76b1e-4597-4665-bd8a-27b14642524b")
@@ -40465,7 +40465,7 @@
 			)
 		)
 		(property "Partnumber" "CL05B104KO5NNNC"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "d026cee0-6c7e-473c-b020-f1154642524b")
@@ -40477,7 +40477,7 @@
 			)
 		)
 		(property "capacitance" "100nF ±10%"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "76bac5a8-cec7-43c3-9e2b-ff7c4642524b")
@@ -40489,7 +40489,7 @@
 			)
 		)
 		(property "max_voltage" "ℝ+V"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "63457f2e-3fbf-4f8a-98b2-6b2d4642524b")
@@ -40501,7 +40501,7 @@
 			)
 		)
 		(property "atopile_address" "dec_caps[1]"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "cfcbaa51-6157-45f4-a6ef-2dae4642524b")
@@ -40513,7 +40513,7 @@
 			)
 		)
 		(property "lcsc_id" "C1525"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "a59c9d4f-8cdd-4166-a941-90834642524b")
@@ -40688,7 +40688,7 @@
 		(uuid "52a1cdb8-10ed-4cec-8370-84014642524b")
 		(at 123.5 70.93 -90)
 		(property "Reference" "R25"
-			(at 1.27 1.05 90)
+			(at 1.27 1.05 270)
 			(layer "B.SilkS")
 			(uuid "ed42e513-24dc-4f72-b7e3-907382fee867")
 			(effects
@@ -40700,7 +40700,7 @@
 			)
 		)
 		(property "Value" "75Ω ±1%"
-			(at 0 -4 90)
+			(at 0 -4 270)
 			(layer "B.Fab")
 			(uuid "d8669083-eed0-4ede-be64-73e2d06e289f")
 			(effects
@@ -40712,7 +40712,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "e3f7ef51-6662-47d4-8a8c-b2bcc2e33ce5")
@@ -40725,7 +40725,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "afff9bca-84b1-479a-9dc7-696b0e8fe7c4")
@@ -40738,7 +40738,7 @@
 			)
 		)
 		(property "LCSC" "C25133"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "e003dbc3-e88c-4346-a11f-61cc4642524b")
@@ -40750,7 +40750,7 @@
 			)
 		)
 		(property "Manufacturer" "UNI-ROYAL"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "cc4a6771-690e-437c-9333-8e7e4642524b")
@@ -40762,7 +40762,7 @@
 			)
 		)
 		(property "Partnumber" "0402WGF750JTCE"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "ca24914a-68cb-41e8-8d9a-4a854642524b")
@@ -40774,7 +40774,7 @@
 			)
 		)
 		(property "resistance" "75Ω ±1%"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "d61d5064-6006-4e42-a32c-ba634642524b")
@@ -40786,7 +40786,7 @@
 			)
 		)
 		(property "max_power" "ℝ+W"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "0ef11dd3-f057-4767-9beb-4cd24642524b")
@@ -40798,7 +40798,7 @@
 			)
 		)
 		(property "max_voltage" "ℝ+V"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "9b3ca12f-d5e1-4f1d-868f-44fe4642524b")
@@ -40810,7 +40810,7 @@
 			)
 		)
 		(property "atopile_address" "ch_c.r_term"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "5acddd89-1582-49bb-bc55-8d814642524b")
@@ -40822,7 +40822,7 @@
 			)
 		)
 		(property "lcsc_id" "C25133"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "6a9e1377-22e6-4dff-975a-c0704642524b")
@@ -40949,7 +40949,7 @@
 		(uuid "54164f9c-0bae-4af2-ac9d-83924642524b")
 		(at 124.75 93 90)
 		(property "Reference" "FB3"
-			(at -1.53 0 90)
+			(at -1.53 0 270)
 			(layer "B.SilkS")
 			(uuid "f6dbcadc-9dd5-4b00-96ba-3d9c7bfe1774")
 			(effects
@@ -40961,7 +40961,7 @@
 			)
 		)
 		(property "Value" ""
-			(at 0 -4 90)
+			(at 0 -4 270)
 			(layer "B.Fab")
 			(uuid "3c65c669-62a5-4efe-ad15-df9883db4f31")
 			(effects
@@ -40973,7 +40973,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "7fc42679-b23f-4944-a889-e96eeb6df16b")
@@ -40986,7 +40986,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "b72b0c87-551e-4690-9a9d-f809c300644c")
@@ -40999,7 +40999,7 @@
 			)
 		)
 		(property "LCSC" "C76815"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "bcff6a31-d515-49b9-ac31-1b944642524b")
@@ -41011,7 +41011,7 @@
 			)
 		)
 		(property "Manufacturer" "TDK"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "632ad8b5-6faf-481f-91d4-63f04642524b")
@@ -41023,7 +41023,7 @@
 			)
 		)
 		(property "Partnumber" "MPZ1608S221ATA00"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "5bd67143-a89e-4009-83b5-f63d4642524b")
@@ -41035,7 +41035,7 @@
 			)
 		)
 		(property "atopile_address" "fb_audio"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "ad9de70b-b120-443f-b84c-5afe4642524b")
@@ -41047,7 +41047,7 @@
 			)
 		)
 		(property "lcsc_id" "C76815"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "6fd3ced6-51ab-44b6-a6b9-c2d24642524b")
@@ -42055,7 +42055,7 @@
 		(uuid "6d83868c-9952-4d48-b331-0abb4642524b")
 		(at 170 89 -90)
 		(property "Reference" "C81"
-			(at -0.97 0 90)
+			(at -0.97 0 270)
 			(layer "B.SilkS")
 			(uuid "f07b9b0f-1882-42b8-9309-f3c4fe9ea265")
 			(effects
@@ -42067,7 +42067,7 @@
 			)
 		)
 		(property "Value" "100nF ±10%"
-			(at 0 -4 90)
+			(at 0 -4 270)
 			(layer "B.Fab")
 			(uuid "de114e45-d676-4bbf-8e0a-6e3098f6fddb")
 			(effects
@@ -42079,7 +42079,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "485f40c6-7f3c-44d7-a45b-9baef0278ffc")
@@ -42092,7 +42092,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "3b04f0cb-6855-4b06-a201-0d4ef781b16e")
@@ -42105,7 +42105,7 @@
 			)
 		)
 		(property "LCSC" "C1525"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "67d33a59-554b-4cbf-b750-7f1e4642524b")
@@ -42117,7 +42117,7 @@
 			)
 		)
 		(property "Manufacturer" "SAMSUNG"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "1c874056-7c4b-465c-943c-3b8a4642524b")
@@ -42129,7 +42129,7 @@
 			)
 		)
 		(property "Partnumber" "CL05B104KO5NNNC"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "cc54de43-1a9c-46e7-b3de-2bfe4642524b")
@@ -42141,7 +42141,7 @@
 			)
 		)
 		(property "capacitance" "100nF ±10%"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "5420a98e-ef31-4bd6-b4e8-d5ce4642524b")
@@ -42153,7 +42153,7 @@
 			)
 		)
 		(property "max_voltage" "ℝ+V"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "617e67aa-6b56-4457-92eb-a54c4642524b")
@@ -42165,7 +42165,7 @@
 			)
 		)
 		(property "atopile_address" "eth.ct_caps[1]"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "2ecad1c5-d669-452b-91ff-93d04642524b")
@@ -42177,7 +42177,7 @@
 			)
 		)
 		(property "lcsc_id" "C1525"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "b52bc0eb-f13b-4922-b05c-22be4642524b")
@@ -43219,7 +43219,7 @@
 		(uuid "81eabd99-666c-4945-ad3b-11354642524b")
 		(at 132 71.17 -90)
 		(property "Reference" "C48"
-			(at 0.68 2.9 0)
+			(at 0.68 2.9 180)
 			(layer "B.SilkS")
 			(uuid "85ec905d-ace8-4bfb-a159-424532c35b68")
 			(effects
@@ -43231,7 +43231,7 @@
 			)
 		)
 		(property "Value" "33pF ±5%"
-			(at 0 -4 90)
+			(at 0 -4 270)
 			(layer "B.Fab")
 			(uuid "0ee7a9f3-dd89-4702-86b3-87aef68b1e6d")
 			(effects
@@ -43243,7 +43243,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "376c2be5-c48f-4da5-9185-ce704209bf71")
@@ -43256,7 +43256,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "f6a80a47-c4a6-4c9a-8fa3-2539eddd90eb")
@@ -43269,7 +43269,7 @@
 			)
 		)
 		(property "LCSC" "C70465"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "6d64f032-a68a-49ab-9a56-5fcd4642524b")
@@ -43281,7 +43281,7 @@
 			)
 		)
 		(property "Manufacturer" "SAMSUNG"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "56f51020-c744-4e90-ade0-c5944642524b")
@@ -43293,7 +43293,7 @@
 			)
 		)
 		(property "Partnumber" "CL05C330JB5NNNC"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "33622336-b459-40bd-8412-68e14642524b")
@@ -43305,7 +43305,7 @@
 			)
 		)
 		(property "capacitance" "33pF ±5%"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "292ef925-610c-4c3f-af4e-1b694642524b")
@@ -43317,7 +43317,7 @@
 			)
 		)
 		(property "max_voltage" "ℝ+V"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "e5287390-10df-4be6-af41-82944642524b")
@@ -43329,7 +43329,7 @@
 			)
 		)
 		(property "atopile_address" "ch_y.c_aa"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "d23bf884-cdf1-4f3b-a4d9-5b004642524b")
@@ -43341,7 +43341,7 @@
 			)
 		)
 		(property "lcsc_id" "C70465"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "9a62dc3b-0de9-471d-b794-66774642524b")
@@ -44407,7 +44407,7 @@
 		(uuid "8f24e40a-3474-478e-8f5b-be104642524b")
 		(at 102 69.07 -90)
 		(property "Reference" "R41"
-			(at 1.18 1.25 90)
+			(at 1.18 1.25 270)
 			(layer "B.SilkS")
 			(uuid "7fbfe505-c013-484b-bdd7-af8201b55f30")
 			(effects
@@ -44419,7 +44419,7 @@
 			)
 		)
 		(property "Value" "1.5kΩ ±1%"
-			(at 0 -4 90)
+			(at 0 -4 270)
 			(layer "B.Fab")
 			(uuid "05b8ef59-4899-4baa-9504-1e13458ff6a1")
 			(effects
@@ -44431,7 +44431,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "5ba2104e-87b8-4b7f-a6fd-c3199c638f9c")
@@ -44444,7 +44444,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "2fbe7502-64df-4a2c-a09a-6429fcfc3c96")
@@ -44457,7 +44457,7 @@
 			)
 		)
 		(property "LCSC" "C25867"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "a092c446-4cc1-4454-af8c-3ed64642524b")
@@ -44469,7 +44469,7 @@
 			)
 		)
 		(property "Manufacturer" "UNI-ROYAL"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "c728e8d8-3728-40f0-8250-0d6b4642524b")
@@ -44481,7 +44481,7 @@
 			)
 		)
 		(property "Partnumber" "0402WGF1501TCE"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "4172c447-51d5-4b3d-957a-521d4642524b")
@@ -44493,7 +44493,7 @@
 			)
 		)
 		(property "resistance" "1.5kΩ ±1%"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "6c7ac573-e842-4026-ad86-87cd4642524b")
@@ -44505,7 +44505,7 @@
 			)
 		)
 		(property "max_power" "ℝ+W"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "ef0f76bb-70dc-40ce-b85a-e6644642524b")
@@ -44517,7 +44517,7 @@
 			)
 		)
 		(property "max_voltage" "ℝ+V"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "c3ce00a7-5e2a-41be-9625-638d4642524b")
@@ -44529,7 +44529,7 @@
 			)
 		)
 		(property "atopile_address" "r_mix_sv_l"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "96f8b6ae-11de-44e4-861e-33f64642524b")
@@ -44541,7 +44541,7 @@
 			)
 		)
 		(property "lcsc_id" "C25867"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "a6c9568c-0efd-453d-81f0-0f444642524b")
@@ -45501,7 +45501,7 @@
 		(uuid "98a26c17-f82e-405b-9bf3-b8eb4642524b")
 		(at 100.75 73.57 -90)
 		(property "Reference" "R42"
-			(at 1.18 1.25 90)
+			(at 1.18 1.25 270)
 			(layer "B.SilkS")
 			(uuid "bf83b495-ee2f-4efd-b052-3b704d2649d1")
 			(effects
@@ -45513,7 +45513,7 @@
 			)
 		)
 		(property "Value" "1.5kΩ ±1%"
-			(at 0 -4 90)
+			(at 0 -4 270)
 			(layer "B.Fab")
 			(uuid "9fdd5c47-7f05-4c53-b377-53f2923b91e8")
 			(effects
@@ -45525,7 +45525,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "718f4dce-5e58-4eb1-b3ce-796bafdb305a")
@@ -45538,7 +45538,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "caaa78fc-328e-473f-bc9f-a52d59c36f35")
@@ -45551,7 +45551,7 @@
 			)
 		)
 		(property "LCSC" "C25867"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "be371094-a75c-4fb7-9b68-64234642524b")
@@ -45563,7 +45563,7 @@
 			)
 		)
 		(property "Manufacturer" "UNI-ROYAL"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "e62c3b37-2c17-4dbc-a460-69724642524b")
@@ -45575,7 +45575,7 @@
 			)
 		)
 		(property "Partnumber" "0402WGF1501TCE"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "7affc3bd-538f-4377-a142-56e64642524b")
@@ -45587,7 +45587,7 @@
 			)
 		)
 		(property "resistance" "1.5kΩ ±1%"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "52a09c85-fd14-4376-95e9-d6724642524b")
@@ -45599,7 +45599,7 @@
 			)
 		)
 		(property "max_power" "ℝ+W"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "5447ee74-afd7-4ccc-9232-96784642524b")
@@ -45611,7 +45611,7 @@
 			)
 		)
 		(property "max_voltage" "ℝ+V"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "025e170b-d517-4ed8-819e-3b544642524b")
@@ -45623,7 +45623,7 @@
 			)
 		)
 		(property "atopile_address" "r_mix_sv_r"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "326937f0-7ed4-46f5-9f6a-f1084642524b")
@@ -45635,7 +45635,7 @@
 			)
 		)
 		(property "lcsc_id" "C25867"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "ec63acfa-6348-4c73-93a2-b7804642524b")
@@ -48969,7 +48969,7 @@
 		(uuid "dacc206a-652b-40c3-b259-0eae4642524b")
 		(at 136.5 65.75 90)
 		(property "Reference" "C40"
-			(at 1.25 -1.1 90)
+			(at 1.25 -1.1 270)
 			(layer "B.SilkS")
 			(uuid "a57e1385-80c1-47d6-bd48-7b0f2477f717")
 			(effects
@@ -48981,7 +48981,7 @@
 			)
 		)
 		(property "Value" "33pF ±5%"
-			(at 0 -4 270)
+			(at 0 -4 90)
 			(layer "B.Fab")
 			(uuid "2efdfb00-33a9-442a-914e-3dc652f0b3e0")
 			(effects
@@ -48993,7 +48993,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "d8ff40d2-3c27-43b3-ade1-0f9960640b27")
@@ -49006,7 +49006,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "4b6731c0-a206-4c1a-af38-df194dcede40")
@@ -49019,7 +49019,7 @@
 			)
 		)
 		(property "capacitance" "33pF ±5%"
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "User.9")
 			(hide yes)
 			(uuid "347d2e98-8514-4fa9-8159-18bd4642524b")
@@ -49031,7 +49031,7 @@
 			)
 		)
 		(property "max_voltage" "ℝ+V"
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "User.9")
 			(hide yes)
 			(uuid "bb8a7070-be24-4bd2-abd6-c81d4642524b")
@@ -49043,7 +49043,7 @@
 			)
 		)
 		(property "atopile_address" "c_sog2_aa"
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "User.9")
 			(hide yes)
 			(uuid "6256544f-3408-4b80-a781-9e544642524b")
@@ -49218,7 +49218,7 @@
 		(uuid "db9d28f4-10ef-4e69-b99d-a9904642524b")
 		(at 129.047742 83.75 -90)
 		(property "Reference" "U4"
-			(at -0.45 4.047742 90)
+			(at -0.45 4.047742 270)
 			(layer "B.SilkS")
 			(uuid "93acf316-5aa9-4ad8-8232-fd3993371af9")
 			(effects
@@ -49230,7 +49230,7 @@
 			)
 		)
 		(property "Value" ""
-			(at 0 -6.3 90)
+			(at 0 -6.3 270)
 			(layer "B.Fab")
 			(uuid "98947016-2259-4b0c-9d68-bedea76049c6")
 			(effects
@@ -49242,7 +49242,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "2d45839d-691c-4800-952f-c3818429c238")
@@ -49255,7 +49255,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "c6c1ab5a-14d3-492c-9e7b-966fa3633682")
@@ -49268,7 +49268,7 @@
 			)
 		)
 		(property "LCSC" "C92517"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "2f03c66b-b8c3-4c10-9985-26714642524b")
@@ -49280,7 +49280,7 @@
 			)
 		)
 		(property "Manufacturer" "DIODES"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "a69c205b-a55c-4c6e-8ca1-8b0f4642524b")
@@ -49292,7 +49292,7 @@
 			)
 		)
 		(property "Partnumber" "AZ1117H-3.3TRE1"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "a8b2fa93-e61b-462f-a6c4-90ba4642524b")
@@ -49304,7 +49304,7 @@
 			)
 		)
 		(property "atopile_address" "supply.ldo_a33"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "31a5233b-2bcc-4f14-957e-bf0c4642524b")
@@ -49316,7 +49316,7 @@
 			)
 		)
 		(property "lcsc_id" "C92517"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "723459b4-d97f-4d9a-ad2a-31a44642524b")
@@ -49444,7 +49444,7 @@
 		(uuid "deb25a8e-d939-479c-ad11-ecd04642524b")
 		(at 123.5 66.93 -90)
 		(property "Reference" "R23"
-			(at -0.94 0 90)
+			(at -0.94 0 270)
 			(layer "B.SilkS")
 			(uuid "eb1f38d5-638e-4d19-881f-5f63b44fee6d")
 			(effects
@@ -49456,7 +49456,7 @@
 			)
 		)
 		(property "Value" "75Ω ±1%"
-			(at 0 -4 90)
+			(at 0 -4 270)
 			(layer "B.Fab")
 			(uuid "0801104f-e5ed-4806-837b-2b6fbaa56b34")
 			(effects
@@ -49468,7 +49468,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "b82b7a2c-c360-4822-a27f-aa0a470890ed")
@@ -49481,7 +49481,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "aedfdbcc-00a9-44f3-9cf3-479bdbacf488")
@@ -49494,7 +49494,7 @@
 			)
 		)
 		(property "LCSC" "C25133"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "e0be7ecc-3c6f-490f-8fa6-12f14642524b")
@@ -49506,7 +49506,7 @@
 			)
 		)
 		(property "Manufacturer" "UNI-ROYAL"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "f7f166ee-e9ee-4e33-9495-36434642524b")
@@ -49518,7 +49518,7 @@
 			)
 		)
 		(property "Partnumber" "0402WGF750JTCE"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "a89bd8f5-d670-46af-8bfe-72204642524b")
@@ -49530,7 +49530,7 @@
 			)
 		)
 		(property "resistance" "75Ω ±1%"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "f1fa2b51-27bb-4f40-a4e7-feeb4642524b")
@@ -49542,7 +49542,7 @@
 			)
 		)
 		(property "max_power" "ℝ+W"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "6738e801-a37f-45d1-aecd-5fe84642524b")
@@ -49554,7 +49554,7 @@
 			)
 		)
 		(property "max_voltage" "ℝ+V"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "9c9c0c43-8faa-46fe-9e87-50444642524b")
@@ -49566,7 +49566,7 @@
 			)
 		)
 		(property "atopile_address" "ch_y.r_term"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "6ad8585c-03dc-4774-877e-1b134642524b")
@@ -49578,7 +49578,7 @@
 			)
 		)
 		(property "lcsc_id" "C25133"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "c8b81e39-cd17-4029-8f0e-31d54642524b")
@@ -50299,7 +50299,7 @@
 		(uuid "eedf926d-bb54-41a1-8063-73524642524b")
 		(at 105.25 62 90)
 		(property "Reference" "D2"
-			(at -0.95 0 90)
+			(at -0.95 0 270)
 			(layer "B.SilkS")
 			(uuid "6f06da7d-138b-4d1f-bc41-de53200a5db1")
 			(effects
@@ -50311,7 +50311,7 @@
 			)
 		)
 		(property "Value" ""
-			(at 0 -4.75 90)
+			(at 0 -4.75 270)
 			(layer "B.Fab")
 			(uuid "5fcae045-37a7-4f65-a12c-2cec2db6de77")
 			(effects
@@ -50323,7 +50323,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "d0f5869f-ea92-4e10-baad-03be4fc83957")
@@ -50336,7 +50336,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "5802288c-fe28-4953-bd8b-2784115040e1")
@@ -50349,7 +50349,7 @@
 			)
 		)
 		(property "LCSC" "C510333"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "1386615d-fdc1-416e-a2c8-eec64642524b")
@@ -50361,7 +50361,7 @@
 			)
 		)
 		(property "Manufacturer" "ROHM"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "179eabac-fed4-43fa-8197-37284642524b")
@@ -50373,7 +50373,7 @@
 			)
 		)
 		(property "Partnumber" "EMZT6.8ET2R"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "f44f04e3-bb20-4ac5-9170-e5724642524b")
@@ -50385,7 +50385,7 @@
 			)
 		)
 		(property "atopile_address" "esd_sync2"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "56bceb4b-1b12-426f-96ab-98604642524b")
@@ -50397,7 +50397,7 @@
 			)
 		)
 		(property "lcsc_id" "C510333"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "c34a780a-11e2-4693-ada5-3f274642524b")
@@ -50574,7 +50574,7 @@
 		(uuid "ef28985c-90fc-47ca-80de-8c854642524b")
 		(at 110.4 54.7 90)
 		(property "Reference" "D3"
-			(at -0.95 0 90)
+			(at -0.95 0 270)
 			(layer "B.SilkS")
 			(uuid "7724f7fd-7262-4454-89fd-c438c9309047")
 			(effects
@@ -50586,7 +50586,7 @@
 			)
 		)
 		(property "Value" ""
-			(at 1.25 -2.5 90)
+			(at 1.25 -2.5 270)
 			(layer "B.Fab")
 			(uuid "a19044f9-f9ad-48e1-b3e0-ad717e015cf7")
 			(effects
@@ -50598,7 +50598,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "1196ec4d-5b62-4712-a905-2667152581db")
@@ -50611,7 +50611,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "5339be78-dcfe-4447-9982-e99c88b2de3b")
@@ -50624,7 +50624,7 @@
 			)
 		)
 		(property "LCSC" "C510333"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "04a447fd-e006-4884-b205-190a4642524b")
@@ -50636,7 +50636,7 @@
 			)
 		)
 		(property "Manufacturer" "ROHM"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "8e07a4bd-6ed8-471e-bd51-50c94642524b")
@@ -50648,7 +50648,7 @@
 			)
 		)
 		(property "Partnumber" "EMZT6.8ET2R"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "67c43c27-4b55-4a66-b77d-57ad4642524b")
@@ -50660,7 +50660,7 @@
 			)
 		)
 		(property "atopile_address" "esd_sync"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "0def219c-7be4-4910-9944-21cb4642524b")
@@ -50672,7 +50672,7 @@
 			)
 		)
 		(property "lcsc_id" "C510333"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "cef1765a-51f8-453a-a53b-ab104642524b")
@@ -51146,7 +51146,7 @@
 		(uuid "f1e18172-8121-4798-9d5c-c6064642524b")
 		(at 137.5 65.75 90)
 		(property "Reference" "C28"
-			(at 3.75 0 270)
+			(at 3.75 0 90)
 			(layer "B.SilkS")
 			(uuid "3d706a1c-a055-4a94-a55b-ec7e91a5f54e")
 			(effects
@@ -51158,7 +51158,7 @@
 			)
 		)
 		(property "Value" "33pF ±5%"
-			(at 0 -4 270)
+			(at 0 -4 90)
 			(layer "B.Fab")
 			(uuid "9ab860bb-c139-49bd-8326-bf040adc39f7")
 			(effects
@@ -51170,7 +51170,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "01383194-46d7-43c1-ad17-0a3284bd8914")
@@ -51183,7 +51183,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "d4cd65e0-9c29-4898-98df-c1ccb77a8516")
@@ -51196,7 +51196,7 @@
 			)
 		)
 		(property "LCSC" "C70465"
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "User.9")
 			(hide yes)
 			(uuid "648c522d-9bbb-4a17-baec-c35a4642524b")
@@ -51208,7 +51208,7 @@
 			)
 		)
 		(property "Manufacturer" "SAMSUNG"
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "User.9")
 			(hide yes)
 			(uuid "4bb6e953-5c51-46da-81b7-21d04642524b")
@@ -51220,7 +51220,7 @@
 			)
 		)
 		(property "Partnumber" "CL05C330JB5NNNC"
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "User.9")
 			(hide yes)
 			(uuid "9455c247-d773-493c-9bc1-b4e44642524b")
@@ -51232,7 +51232,7 @@
 			)
 		)
 		(property "capacitance" "33pF ±5%"
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "User.9")
 			(hide yes)
 			(uuid "6733dbd0-b9b6-4da5-844c-ef154642524b")
@@ -51244,7 +51244,7 @@
 			)
 		)
 		(property "max_voltage" "ℝ+V"
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "User.9")
 			(hide yes)
 			(uuid "1aa714e3-e833-4299-ae68-62f54642524b")
@@ -51256,7 +51256,7 @@
 			)
 		)
 		(property "atopile_address" "ch_g.c_aa"
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "User.9")
 			(hide yes)
 			(uuid "916d911d-03bd-4183-baca-92894642524b")
@@ -51268,7 +51268,7 @@
 			)
 		)
 		(property "lcsc_id" "C70465"
-			(at 0 0 270)
+			(at 0 0 90)
 			(layer "User.9")
 			(hide yes)
 			(uuid "d82f9f2a-c669-4286-b2d0-0b2c4642524b")
@@ -51704,7 +51704,7 @@
 		(uuid "f49dd125-ea7f-4391-8387-c7274642524b")
 		(at 139.5 65.75 90)
 		(property "Reference" "C54"
-			(at 1.25 1.25 90)
+			(at 1.25 1.25 270)
 			(layer "B.SilkS")
 			(uuid "58d510f5-fbc7-444c-a4c7-30d7041a560d")
 			(effects
@@ -51716,7 +51716,7 @@
 			)
 		)
 		(property "Value" "10nF ±10%"
-			(at 0 -4 90)
+			(at 0 -4 270)
 			(layer "B.Fab")
 			(uuid "379bb198-f77c-4e75-ac7c-2c5fbffb19e1")
 			(effects
@@ -51728,7 +51728,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "cf1efc16-23ba-4067-bcfc-b25e7b81001c")
@@ -51741,7 +51741,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
 			(uuid "a8c77c43-6e83-4599-931d-392ecbe68d2e")
@@ -51754,7 +51754,7 @@
 			)
 		)
 		(property "LCSC" "C15195"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "3baea791-ab54-4ee8-aa69-9c224642524b")
@@ -51766,7 +51766,7 @@
 			)
 		)
 		(property "Manufacturer" "SAMSUNG"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "8033d8e7-b1b2-4745-a0dd-9d914642524b")
@@ -51778,7 +51778,7 @@
 			)
 		)
 		(property "Partnumber" "CL05B103KB5NNNC"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "0debe9fd-b144-43a8-9c53-f82a4642524b")
@@ -51790,7 +51790,7 @@
 			)
 		)
 		(property "capacitance" "10nF ±10%"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "1508be60-ea4e-4aa2-8e8c-6b174642524b")
@@ -51802,7 +51802,7 @@
 			)
 		)
 		(property "max_voltage" "ℝ+V"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "bec89bbb-401b-40c6-9156-32354642524b")
@@ -51814,7 +51814,7 @@
 			)
 		)
 		(property "atopile_address" "nc_gin4"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "fc644933-c950-4f01-b80b-37b24642524b")
@@ -51826,7 +51826,7 @@
 			)
 		)
 		(property "lcsc_id" "C15195"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "User.9")
 			(hide yes)
 			(uuid "418890d1-8f56-4313-9c48-dea64642524b")
