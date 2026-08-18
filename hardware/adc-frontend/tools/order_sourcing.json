@@ -42,8 +42,8 @@
                  "note":"音声ミキシング用。4本は誤差が揃っている方が左右バランスが良い"},
     "C25879":   {"status":"sub", "alt_mfr":"YAGEO", "alt_mpn":"RC0402FR-072K2L", "desc":"2.2k 0402 1% 1/16W", "spare":"passive"},
 
-    "C510333":  {"status":"ok",  "desc":"ROHM 4ch ESD アレイ EMT6(SOT-563)", "spare":"cheap",
-                 "note":"★main.ato に「発注前にデータシートで共通ノード位置(pin2/5)を要確認」と残っている。未消化"},
+    "C510333":  {"status":"ok",  "desc":"ROHM 4ch コモンアノード ESD アレイ EMD5(SC-75A)", "spare":"cheap",
+                 "note":"2026-08-18 データシート確認済で回路は正しい。実物は**5ピン**(上段中央にリード無し)なので、6パッドのランドのうち pad5 は裸パッドになる。GND に落としてあるので無害だが、★手半田で pad5 に半田を盛ると隣の映像信号 pad4/pad6 へブリッジするので盛らないこと"},
     "C81598":   {"status":"sub", "alt_mfr":"Diodes Incorporated", "alt_mpn":"1N4148W-7-F", "desc":"汎用スイッチングダイオード SOD-123", "spare":"cheap",
                  "note":"1N4148W は各社互換。Diodes 版が DK/Mouser とも潤沢"},
     "C7519":    {"status":"ok",  "desc":"USB 2ライン ESD 保護アレイ SOT-23-6", "spare":"cheap"},

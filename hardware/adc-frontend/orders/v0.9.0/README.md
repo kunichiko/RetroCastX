@@ -26,7 +26,7 @@
 | C42 | CL05B102KB5NNNC | FH(風華)は DK/Mouser 扱い無し。同容量・同耐圧の Samsung へ |
 | C45 | CL05B472KB5NNNC | 同上 |
 | C82 | CC1812KKX7RDBB472 | ★耐圧が要点。GND とシャーシ GND を跨ぐので 250VAC 級の安全規格品を選ぶこと |
-| D1 | EMZT6.8ET2R | ★main.ato に「発注前にデータシートで共通ノード位置(pin2/5)を要確認」と残っている。未消化 |
+| D1 | EMZT6.8ET2R | 2026-08-18 データシート確認済で回路は正しい。実物は**5ピン**(上段中央にリード無し)なので、6パッドのランドのうち pad5 は裸パッドになる。GND に落としてあるので無害だが、★手半田で pad5 に半田を盛ると隣の映像信号 pad4/pad6 へブリッジするので盛らないこと |
 | D7 | 1N4148W-7-F | 1N4148W は各社互換。Diodes 版が DK/Mouser とも潤沢 |
 | J1 | DS1037-15FNAKT76-0CC | ★X68000 用 DA-15。DK/Mouser の DA-15 は取付穴・シェル寸法が異なりフットプリントに合わない |
 | J2 | TYPE-C-31-M-12 | いわゆる TYPE-C-31-M-12。DK/Mouser の USB-C は各社独自フットプリント |
@@ -107,7 +107,7 @@
 | C53, C54 | 2 | 12 | DK/Mouser | CL05B103KB5NNNC | 10nF 0402 X7R 50V MLCC |
 | C61, C62, C69, C70 | 4 | 14 | DK/Mouser | CL10A105KB8NNNC | 1uF 0603 X5R MLCC |
 | C82, C83, C84, C85 | 4 | 6 | DK/Mouser | CC1812KKX7RDBB472 | 4.7nF 1812 X7R 高耐圧(GND-シャーシ間ブリッジ) |
-| D1, D2, D3, D4, D5, D6, D8 | 7 | 9 | DK/Mouser | EMZT6.8ET2R | ROHM 4ch ESD アレイ EMT6(SOT-563) |
+| D1, D2, D3, D4, D5, D6, D8 | 7 | 9 | DK/Mouser | EMZT6.8ET2R | ROHM 4ch コモンアノード ESD アレイ EMD5(SC-75A) |
 | D7 | 1 | 3 | DK/Mouser(読替) | 1N4148W-7-F | 汎用スイッチングダイオード SOD-123 |
 | D9 | 1 | 3 | DK/Mouser | USBLC6-2SC6 | USB 2ライン ESD 保護アレイ SOT-23-6 |
 | FB1, FB2, FB3 | 3 | 5 | DK/Mouser | MPZ1608S221ATA00 | フェライトビーズ 220R@100MHz 0603 |

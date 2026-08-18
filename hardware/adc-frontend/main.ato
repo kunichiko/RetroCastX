@@ -231,12 +231,40 @@ component FerriteBead:
 
 
 component EsdArray4:
-    """ROHM EMZT6.8ET2R A-Common Quad ESD array. EMT6 (SOT-563 6-pin). LCSC: C510333
+    """ROHM EMZT6.8ET2R コモンアノード 4ch ESDアレイ。LCSC: C510333
 
-    4ラインESD保護(4 I/O + 共通ノード)。映像/同期/音声入力の保護に使用。
-    ピンアウトは6ピン共通ノードアレイの標準配置(下段1-2-3/上段6-5-4、
-    四隅1/3/4/6=I/O、中央2/5=共通)を採用。4chとも等価なのでI/O割当順は任意。
-    ★発注前にROHM EMZT6.8ET2Rデータシートで共通ノード位置(pin2/5)を要確認。
+    4ラインESD保護(4 I/O + 共通アノード)。映像/同期/音声入力の保護に使用。
+
+    ## パッケージは6ピンではなく**5ピン** (2026-08-18 データシートで確認)
+
+    datasheets/emzt6.8e.pdf (ROHM Rev.A 2011.06) で確認した事実:
+
+        ROHM: EMD5 / JEITA: SC-75A  → **リードは5本**
+        ランド図は 下段3パッド + 上段2パッド(左右のみ)。**上段中央にリードは無い**
+
+        リード番号   1=下段左  2=下段中  3=下段右  4=上段右  5=上段左
+        Structure図: 下段中央(2)だけが共通レールへ直結。他の4本はツェナー経由
+                     → **共通アノードは リード2**
+
+        Vz 6.47〜7.14V (Iz=5mA) / Ct 7.0pF typ (VR=0V, 1MHz) / P=150mW(4素子合計)
+
+    ★ここで使っているフットプリントは汎用の**6パッド EMT6 ランド**なので、
+      pad5(上段中央)には**リードが載らない**。以下の割り当てで pad5 は
+      「リードの無い裸パッド」になるが、GNDに落としてあるので無害
+      (浮かせるより良い)。pad 番号とリード番号は上段でずれる:
+
+        pad1=リード1(I/O)  pad2=リード2(共通)  pad3=リード3(I/O)
+        pad4=リード4(I/O)  pad5=リード無し     pad6=リード5(I/O)
+
+      当初この部品を「6ピン、中央2/5が共通」と誤解していたが、結果として
+      できあがったパッド割り当ては**正しい**(pad2=共通、pad1/3/4/6=I/O)。
+      基板の変更は不要。
+
+    ★手半田時の注意: pad5 にはリードが無いので半田を盛らないこと。盛ると
+      隣の pad4/pad6(映像信号)へブリッジして入力がGND短絡する。
+      パッド間隙は 0.5-0.28=0.22mm ある。
+
+    4chとも等価なのでI/O割当順は任意。
     """
     trait is_atomic_part<manufacturer="ROHM", partnumber="EMZT6.8ET2R", footprint="parts/ROHM_EMZT6_8ET2R/EMT6_L1.6-W1.2-P0.50-LS1.6-BL.kicad_mod", symbol="parts/ROHM_EMZT6_8ET2R/EMZT6.8ET2R.kicad_sym">
     trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C510333", manufacturer="ROHM", partno="EMZT6.8ET2R">
