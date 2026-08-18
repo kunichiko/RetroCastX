@@ -350,4 +350,11 @@
 		(options "")
 		(descr "atopile: part lib: YXC_X32258MSB4SI")
 	)
+	(lib
+		(name "ST_USBLC6_2SC6")
+		(type "KiCad")
+		(uri "${KIPRJMOD}/../../parts/ST_USBLC6_2SC6")
+		(options "")
+		(descr "atopile: part lib: ST_USBLC6_2SC6")
+	)
 )
