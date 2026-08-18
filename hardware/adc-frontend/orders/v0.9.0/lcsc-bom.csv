@@ -1,0 +1,8 @@
+Quantity,LCSC Part Number,Manufacturer Part Number,Designator,Description
+1,C77836,DS1037-15FNAKT76-0CC,J1,D-SUB 15pin(DA-15 2列)メス スルーホール
+3,C165948,TYPE-C-31-M-12,J2,USB Type-C レセプタクル 16pin SMD
+3,C7436577,YTC-A1251-08ABW,J6,1.25mm ピッチ 8pin SMD コネクタ
+2,C54408,HR911130A,"J11, J12",RJ45 パルストランス内蔵 10/100/1000 スルーホール
+3,C965555,WS2812B-2020,LED1,RGB LED 2020(WS2812B 互換)
+3,C18221627,CH347F,U7,USB-HS → JTAG+UART ブリッジ QFN-28
+1,,Colorlight i5 (ECP5),(module),SO-DIMM FPGA モジュール本体。AliExpress 等

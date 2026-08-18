@@ -4769,7 +4769,7 @@
 		(uuid "1470e8cc-c1d8-4da3-a053-8e194642524b")
 		(at 123.75 85 -90)
 		(property "Reference" "C72"
-			(at 0.5 2.95 0)
+			(at 0.72 0.5 0)
 			(layer "F.SilkS")
 			(uuid "4f58784a-1f12-41cd-8a50-c165dcd19dea")
 			(effects
@@ -4777,7 +4777,7 @@
 					(size 0.8 0.8)
 					(thickness 0.15)
 				)
-				(justify left)
+				(justify right)
 			)
 		)
 		(property "Value" "100nF ±10%"
@@ -10856,7 +10856,7 @@
 		(uuid "3925c5e1-0eac-44f6-acd6-88694642524b")
 		(at 102.62 146 180)
 		(property "Reference" "C10"
-			(at -1.49 0 0)
+			(at 1.37 -1.25 0)
 			(layer "F.SilkS")
 			(uuid "4beb93a8-48b0-43c6-8f31-8227ae752ea9")
 			(effects
@@ -17387,7 +17387,7 @@
 		(uuid "6f04e94e-2587-4ef6-8540-4f204642524b")
 		(at 123.75 82.92 -90)
 		(property "Reference" "C73"
-			(at 1.35 2.76 0)
+			(at 1.61 0.5 0)
 			(layer "F.SilkS")
 			(uuid "ba5dece5-70d7-4489-b9ce-1be4f1c081fb")
 			(effects
@@ -17395,7 +17395,7 @@
 					(size 0.8 0.8)
 					(thickness 0.15)
 				)
-				(justify left)
+				(justify right)
 			)
 		)
 		(property "Value" "100nF ±10%"
@@ -18565,7 +18565,7 @@
 		(uuid "784b38ec-4c84-4c9a-a82f-75474642524b")
 		(at 106 144 -90)
 		(property "Reference" "R3"
-			(at 0.94 0 90)
+			(at -0.75 1 90)
 			(layer "F.SilkS")
 			(uuid "afbb1ee5-5ce4-4827-9e5a-9f7d791ff3c7")
 			(effects
@@ -19187,7 +19187,7 @@
 		(uuid "7e365dfb-e72f-4147-b0b6-74bc4642524b")
 		(at 123.8 92 -90)
 		(property "Reference" "C64"
-			(at 1.2 0.6 0)
+			(at 0.72 0.5 0)
 			(layer "F.SilkS")
 			(uuid "b6718875-55ab-46f6-ad78-3024e6ea84fc")
 			(effects
@@ -32211,7 +32211,7 @@
 		(uuid "d3f763a2-675c-4b14-98c0-78af4642524b")
 		(at 123.8 81 90)
 		(property "Reference" "C41"
-			(at 1.5 0.5 0)
+			(at 2 1.2 0)
 			(layer "F.SilkS")
 			(uuid "331ec183-e825-4c0c-b657-ada6116dcab1")
 			(effects
@@ -32489,7 +32489,7 @@
 		(uuid "d4a286dc-dc34-401e-83d8-8fd54642524b")
 		(at 123.8 90 -90)
 		(property "Reference" "C65"
-			(at 1.8 0.6 0)
+			(at 1.53 0.5 0)
 			(layer "F.SilkS")
 			(uuid "d0e815b2-e9b2-448c-b37c-70f52ac75fc7")
 			(effects
@@ -35015,7 +35015,7 @@
 		(uuid "f15163a1-dc46-4dda-8e2e-ae254642524b")
 		(at 107.2 145.6 -90)
 		(property "Reference" "C8"
-			(at -0.97 0 90)
+			(at 1.65 1.2 90)
 			(layer "F.SilkS")
 			(uuid "3a65efc3-57ab-4f57-bd4d-7fb7aed85868")
 			(effects
@@ -52087,6 +52087,19 @@
 			(font
 				(size 1 0.8)
 				(thickness 0.15)
+				(bold yes)
+			)
+			(justify left bottom)
+		)
+	)
+	(gr_text "TCK\nTMS\nTDI\nTDO"
+		(at 171.143994 139.677202 90)
+		(layer "F.SilkS")
+		(uuid "9ab28e34-6ea2-4fa3-b7e3-ea1099630415")
+		(effects
+			(font
+				(size 1.6 1.5)
+				(thickness 0.3)
 				(bold yes)
 			)
 			(justify left bottom)
