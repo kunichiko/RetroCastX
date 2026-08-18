@@ -8,7 +8,7 @@ FPGA直接変換構成(ADC → FPGA → GbE → UDP → PC/Mac)に向けた部�
 推奨構成:**TVP7002(ADCフロントエンド、OSSC回路流用)+ Colorlight i5(ECP5 + デュアルGbE)+ LiteX/LiteEth(UDPハードウェアスタック)**
 
 - ボードは 5A-75B ではなく **Colorlight i5/i9** を推奨。SODIMMエッジに約100本のI/OがバッファなしでFPGA直結しており、5A-75Bで必須となる74HC245改造が不要。
-- ADCは **TI TVP7002** が第一候補。DigiKeyで $10.20/個・1,539個在庫(2026-07時点)、OSSCで15/24/31kHz実績あり、リファレンス回路(ossc_pcb)がオープンソース。
+- ADCは **TI TVP7002** が第一候補。DigiKeyで $10.20/個・1,539個在庫(2026-07時点)、OSSCで15/24/31kHz実績あり、リファレンス回路(ossc_pcb)が公開されている(※ライセンス表明はないため、設計データの複製・再配布は不可。回路構成の参考にとどめること)。
 - Colorlightカードへの映像レート入力の先行事例は**存在しない**(実現すれば世界初の領域)。
 
 ## ① Colorlight 5A-75B リビジョン事情
@@ -50,7 +50,9 @@ FPGA直接変換構成(ADC → FPGA → GbE → UDP → PC/Mac)に向けた部�
 | ADI ADV7181D | Active | 流通あり | ADC最大75MHz。15/24kHzには足りるが31kHz高ドットクロックに余裕なし。デコーダ寄りで複雑 |
 | ADI ADV7842 | 流通薄(LCSC等) | $8〜10 | 12bit/170MHz + HDMI RX。BGA・過剰統合 |
 
-- **第一候補:TVP7002**。理由:最安・在庫潤沢・OSSCによるレトロ周波数(15/24/31kHz)の実証・[ossc_pcb](https://github.com/marqs85/ossc_pcb) のオープンな回路図(SCART/VGA入力の前段回路含む)をそのまま参考にできる。ファームウェア側も [ossc](https://github.com/marqs85/ossc) のTVP7002初期化コードが参考になる。
+- **第一候補:TVP7002**。理由:最安・在庫潤沢・OSSCによるレトロ周波数(15/24/31kHz)の実証・[ossc_pcb](https://github.com/marqs85/ossc_pcb) に公開された回路図(SCART/VGA入力の前段回路含む)で構成を確認できる。ファームウェア側も [ossc](https://github.com/marqs85/ossc) のTVP7002初期化コードで設定値の妥当性を確認できる。
+
+  **ライセンスに注意**: `ossc_pcb` はライセンスを明示していない(=全著作権保留)ため、設計データを複製して持ち込むことはできない。`ossc` のファームウェアは GPL-3.0 なので、コードを取り込むと本プロジェクトの Apache-2.0 と両立しない。いずれも**回路構成や設定値の妥当性を確認する参考資料**として扱い、実装はデータシート(SLES206C)を典拠に自前で起こすこと。
 - 第二候補:AD9984A。オープンな採用例として [HDMI2USB-vmodvga](https://github.com/timvideos/HDMI2USB-vmodvga)(VGAキャプチャ拡張ボード)あり。ただしVESAレート向けで、15kHz同期での動作はベンチ検証が必要。
 - 評価ボードは実質入手不可(EVAL-AD9984AEBZ は $1,071・在庫1、TVP7002EVM は絶版)。**ブレークアウトは自作前提**。
 - 補足:Chip One Stop は2026年5月にストア閉鎖(arrow.comに統合)。日本からの調達は DigiKey / Mouser / Arrow JP。

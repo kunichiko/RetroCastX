@@ -119,7 +119,7 @@ footer code{font-family:ui-monospace,monospace;background:var(--surface2);paddin
 <li><label><input type="checkbox"><span class="txt"><b>I2Cレジスタ初期化(必須)</b>: 入力選択 <code>19h/1Ah</code>、ライン数 <code>01h/02h</code> を入力モードに設定。無設定では出力は無意味。→ DATACLKが回り始める</span></label></li>
 </ul>
 <div class="callout">
-  <b>初期化列の参考</b>: <b>OSSC(marqs85/ossc)のTVP7002初期化コード</b>がそのまま使える(本プロジェクトの流用元)。完全な回路は当リポジトリ <code>main.ato</code>(module <code>App</code> / <code>VideoInputChannel</code>)が実装済み。
+  <b>初期化列</b>: 本プロジェクトの初期化列はデータシート <code>SLES206C</code> を典拠に自前で起こしたもので、<code>gateware/retrocastx_i2c.py</code> の <code>WR_REG</code>/<code>WR_VAL</code> にある。<b>OSSC(marqs85/ossc)のTVP7002初期化コード</b>は、レトロ周波数で実績のある設定値と突き合わせる<b>裏取りの資料</b>として参照できる(GPL-3.0 のためコードの取り込みは不可。設定値も一致していない)。完全な回路は当リポジトリ <code>main.ato</code>(module <code>App</code> / <code>VideoInputChannel</code>)が実装済み。
 </div>
 
 <footer>
