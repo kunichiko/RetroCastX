@@ -596,3 +596,41 @@ PCより長いので、既定の広い窓(開始50・幅32)の方が有利だっ
 | 0x19 | 03h PLL(VCOレンジ+チャージポンプ) |
 | 0x1A | 05h クランプ開始位置 |
 | 0x1B | 06h クランプ幅 |
+
+## 手半田実装用の発注リスト(DigiKey / Mouser)
+
+`ato build` が出す `build/builds/default/default.bom.csv` は **JLCPCB 発注用**で、
+LCSC 品番が主役になっている。この基板は中国国内ブランド(UNI-ROYAL の抵抗、FH の
+コンデンサ、HANRUN の RJ45、YXC の水晶など)を多用しているので、そのまま DigiKey や
+Mouser の BOM ツールに投げても**半分近くが「該当なし」で落ちる**。
+
+`tools/gen_order_bom.py` が `tools/order_sourcing.json` の読み替え表を当てて、
+アップロードできる形に整える。
+
+```sh
+python3 tools/gen_order_bom.py --tag v0.9.0            # 1枚分
+python3 tools/gen_order_bom.py --tag v0.9.0 --boards 5 # 5枚分
+```
+
+| 出力 | 用途 |
+|---|---|
+| `orders/<tag>/digikey-bom.csv` | DigiKey myLists → BOM Manager にアップロード |
+| `orders/<tag>/mouser-bom.csv` | Mouser BOM ツールにアップロード |
+| `orders/<tag>/lcsc-bom.csv` | LCSC でしか買えない分 |
+| `orders/<tag>/README.md` | 人が読む用(注意点・読み替え理由つき) |
+
+アップロード用 CSV には**実在する製造元品番だけ**を載せている。汎用ピンヘッダや
+ネジを説明文のまま混ぜると照合結果が「該当なし」だらけになって読めなくなるので、
+それらは README の「どこでも買える汎用品」に分けてある。
+
+★読み替え表に無い LCSC 品番があるとエラーで止まる。回路を変えたら
+`tools/order_sourcing.json` も更新すること(黙って落とさないための仕掛け)。
+
+### 入手性で注意が要る部品
+
+| 部品 | 事情 |
+|---|---|
+| U1 TVP7002PZP | TI が生産終了方向。**Mouser は取扱なし**、DigiKey のみ(2026-08 時点 184個 $12.04)。手半田で失敗する可能性を考えると予備を1個持っておきたい |
+| U7 CH347F | WCH は DK/Mouser 扱い無し。LCSC / AliExpress / 秋月 |
+| J1/J2/J6/J11/J12 | コネクタはフットプリントが製品固有。**代替不可**なので LCSC で買う |
+| LED1 WS2812B-2020 | 2020 サイズは DK/Mouser では稀。5050 は入るが footprint が合わない |

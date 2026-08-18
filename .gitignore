@@ -50,3 +50,6 @@ hardware/adc-frontend/datasheets/*.pdf
 
 # KiCad の自動保存(pcbnew実行中に生成される。コミットしない)
 _autosave-*.kicad_pcb
+
+# Fabrication Toolkit のタイムスタンプ付きバックアップ(zip本体を追跡するので不要)
+hardware/adc-frontend/layouts/default/production/backups/

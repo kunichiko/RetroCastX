@@ -11,12 +11,12 @@ import has_part_removed
 from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeaderAux2x5, Tp1Pad, PogoPin, HeaderJtag, HeaderOled, HeaderDebug20, MountingHoleM26, SolderJumperClosed, HeaderSVideo, Fiducial
 from "parts/TE_Connectivity_1473005_4/sodimm_i5.ato" import SoDimmI5
 from "parts/RICHTEK_RT9013_18GB/RICHTEK_RT9013_18GB.ato" import RICHTEK_RT9013_18GB_package
-from "parts/FTDI_FT2232HL_REEL/FTDI_FT2232HL_REEL.ato" import FTDI_FT2232HL_REEL_package
-from "parts/MICROCHIP_93LC56BT_I_SN/MICROCHIP_93LC56BT_I_SN.ato" import MICROCHIP_93LC56BT_I_SN_package
-from "parts/YXC_X322512MSB4SI/YXC_X322512MSB4SI.ato" import YXC_X322512MSB4SI_package
+from "parts/WCH_CH347F/WCH_CH347F.ato" import WCH_CH347F_package
+from "parts/ST_USBLC6_2SC6/ST_USBLC6_2SC6.ato" import ST_USBLC6_2SC6_package
+from "parts/YXC_X32258MSB4SI/YXC_X32258MSB4SI.ato" import YXC_X32258MSB4SI_package
 from "parts/Worldsemi_WS2812B_2020/Worldsemi_WS2812B_2020.ato" import Worldsemi_WS2812B_2020_package
 from "parts/ST_1N4148W/ST_1N4148W.ato" import ST_1N4148W_package
-from "passives.ato" import R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, R10K_0402, R12K_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805, C33pF_0402, C33pF_0402_DNP
+from "passives.ato" import C22pF_0402, R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, R10K_0402, R12K_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805, C33pF_0402, C33pF_0402_DNP
 
 # =============================================================================
 # RetroCastX ADC front-end: TVP7002 breakout for Colorlight i5 EXT board
@@ -247,12 +247,42 @@ component FerriteBead:
 
 
 component EsdArray4:
-    """ROHM EMZT6.8ET2R A-Common Quad ESD array. EMT6 (SOT-563 6-pin). LCSC: C510333
+    """ROHM EMZT6.8ET2R コモンアノード 4ch ESDアレイ。LCSC: C510333
 
-    4ラインESD保護(4 I/O + 共通ノード)。映像/同期/音声入力の保護に使用。
-    ピンアウトは6ピン共通ノードアレイの標準配置(下段1-2-3/上段6-5-4、
-    四隅1/3/4/6=I/O、中央2/5=共通)を採用。4chとも等価なのでI/O割当順は任意。
-    ★発注前にROHM EMZT6.8ET2Rデータシートで共通ノード位置(pin2/5)を要確認。
+    4ラインESD保護(4 I/O + 共通アノード)。映像/同期/音声入力の保護に使用。
+
+    ## パッケージは6ピンではなく**5ピン** (2026-08-18 データシートで確認)
+
+    datasheets/emzt6.8e.pdf (ROHM Rev.A 2011.06) で確認した事実:
+
+        ROHM: EMD5 / JEITA: SC-75A  → **リードは5本**
+        ランド図は 下段3パッド + 上段2パッド(左右のみ)。**上段中央にリードは無い**
+
+        リード番号   1=下段左  2=下段中  3=下段右  4=上段右  5=上段左
+        Structure図: 下段中央(2)だけが共通レールへ直結。他の4本はツェナー経由
+                     → **共通アノードは リード2**
+
+        Vz 6.47〜7.14V (Iz=5mA) / Ct 7.0pF typ (VR=0V, 1MHz) / P=150mW(4素子合計)
+
+    ## フットプリントは5パッドに作り直した (2026-08-18, tools/fix_esd_land.py)
+
+    取り込み時のフットプリントは汎用の**6パッド EMT6 ランド**で、上段中央に
+    リードの載らない裸パッドがあった。加えてパッド幅が 0.28mm しかなく、
+    リード幅 0.22±0.05mm(最大0.27)に対して**片側フィレットが最小 0.005mm**
+    = 実質ゼロだった。ROHM 推奨ランドに合わせて作り直した:
+
+        pad  位置        新             旧
+         1   下段左   (-0.55) 0.4x0.6   (-0.50) 0.28x0.6
+         2   下段中   ( 0.00) 0.3x0.6   ( 0.00) 0.28x0.6   共通アノード
+         3   下段右   (+0.55) 0.4x0.6   (+0.50) 0.28x0.6
+         4   上段右   (+0.55) 0.4x0.6   (+0.50) 0.28x0.6
+         5   上段左   (-0.55) 0.4x0.6   ←旧 pad6
+        (削除) 上段中央                 ←旧 pad5。リードが無い
+
+    これで pad 番号 = データシートのリード番号になった。裸パッドが消えたので
+    PCBA でメタルマスクが行き場の無いペーストを刷る問題も無くなった。
+
+    4chとも等価なのでI/O割当順は任意。
     """
     trait is_atomic_part<manufacturer="ROHM", partnumber="EMZT6.8ET2R", footprint="parts/ROHM_EMZT6_8ET2R/EMT6_L1.6-W1.2-P0.50-LS1.6-BL.kicad_mod", symbol="parts/ROHM_EMZT6_8ET2R/EMZT6.8ET2R.kicad_sym">
     trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C510333", manufacturer="ROHM", partno="EMZT6.8ET2R">
@@ -260,9 +290,8 @@ component EsdArray4:
     signal io1 ~ pin 1
     signal io2 ~ pin 3
     signal io3 ~ pin 4
-    signal io4 ~ pin 6
+    signal io4 ~ pin 5
     signal gnd ~ pin 2
-    gnd ~ pin 5
 
 
 component Osc27M:
@@ -798,104 +827,93 @@ module EthernetPort:
 
 
 # --- FT2232H: USB書換え(JTAG)+ UART の主経路 -----------------------------------
-module Ft2232hProgrammer:
-    """FT2232H (C27882): USB Hi-Speed → ch.A MPSSE=JTAG / ch.B=UART。
-    i5をUSB経由で書換える主経路(openFPGALoader -c ft2232)。JTAGはポゴピン経由で
-    i5底面のTCK/TMS/TDI/TDOパッドへ。EEPROM(93LC56)でVID/PID/シリアルを固定。
-    電源は基板3.3V(USB接続時のみ立つ=バスパワー等価)。内部1.8V LDOでコア給電。"""
+module UsbProgrammer:
+    """WCH CH347F (LCSC C18221627): USB HS → JTAG + UART。
+    i5をUSB経由で書換える主経路。JTAGはポゴピン経由でi5底面のTCK/TMS/TDI/TDOパッドへ。
+
+    ★**FT2232HL(約2,000円)から置き換えた**(2026-08-18)。CH347Fは$2.18程度で、
+      さらに周辺部品が大幅に減る:
+        - 外部EEPROM(93LC56)+パスコン … CH347Fは**内蔵EEPROM**にVID/PID/モードを持つ
+        - フェライトビーズ2個、VREGIN/VREGOUT/VCORE/VPHY/VPLLのパスコン7個、
+          REF用12kΩ … FT2232Hが3.3Vから内部1.8Vを作ってVCORE/VPHY/VPLLへ配る構成
+          だったため必要だったもの。CH347Fは3.3V単一で済む
+      合計で約14部品が消える。
+
+    ★**openFPGALoader が対応済み**(src/ch347jtag.cpp、VID 0x1a86 / PID 0x55de、
+      JTAGはUSBインターフェース4)。**ケーブル名は発注前に
+      `openFPGALoader --list-cables` で確認すること。**
+
+    ★CH347T ではなく CH347F。この基板は JTAG と UART を**同時に**使うので、
+      モード切替が要らない CH347F を選んだ。
+
+    ★**macOSのUARTドライバは後退する。** JTAGはopenFPGALoaderがlibusbで直接叩くので
+      ドライバ不要だが、UARTはWCHのドライバ導入が必要(FTDIはmacOS標準で使えた)。
+    """
     signal gnd
-    signal p3v3        # VCCIO / VREGIN = 3.3V
+    signal p3v3        # VCC / VIO = 3.3V
     signal usb_dp
     signal usb_dm
-    # ch.A MPSSE → JTAG(ポゴピンへ)
+    # JTAG(ポゴピンへ)
     signal jtag_tck
     signal jtag_tdi
     signal jtag_tdo
     signal jtag_tms
-    # ch.B → UART(i5と接続)
-    signal uart_txd    # FT TXD → i5 RX
-    signal uart_rxd    # FT RXD ← i5 TX
+    # UART0(i5と接続)
+    signal uart_txd    # CH347 TXD0 → i5 RX
+    signal uart_rxd    # CH347 RXD0 ← i5 TX
 
-    ft = new FTDI_FT2232HL_REEL_package
+    ch = new WCH_CH347F_package
 
-    # --- 電源/GND ---
-    ft.VCCIO ~ p3v3
-    ft.VREGIN ~ p3v3
-    ft.GND ~ gnd
-    ft.AGND ~ gnd
-    ft.TEST ~ gnd            # テストモード無効(GND固定)
-    # 内部1.8V LDO: VREGOUT → VCORE。VPHY/VPLLはフェライトで分離給電。
-    ft.VREGOUT ~ ft.VCORE
-    fb_phy = new FerriteBead
-    fb_pll = new FerriteBead
-    ft.VREGOUT ~ fb_phy.p1
-    fb_phy.p2 ~ ft.VPHY
-    ft.VREGOUT ~ fb_pll.p1
-    fb_pll.p2 ~ ft.VPLL
+    # --- 電源/GND。3.3V単一。露出パッド(pin29)もGNDへ ---
+    ch.VCC ~ p3v3
+    ch.VIO ~ p3v3      # I/O電源。i5のJTAGが3.3VなのでVCCと同電位にする
+    ch.GND ~ gnd
 
-    # デカップリング(VCCIO×4 + 各電源)
-    c_vccio = new C100nF_0402[4]
-    ft.VCCIO ~> c_vccio[0] ~> gnd
-    ft.VCCIO ~> c_vccio[1] ~> gnd
-    ft.VCCIO ~> c_vccio[2] ~> gnd
-    ft.VCCIO ~> c_vccio[3] ~> gnd
-    c_vregin = new C100nF_0402
-    ft.VREGIN ~> c_vregin ~> gnd
-    c_vregin_bulk = new C10uF_0805
-    ft.VREGIN ~> c_vregin_bulk ~> gnd
-    c_vregout = new C100nF_0402
-    ft.VREGOUT ~> c_vregout ~> gnd
-    c_vregout_bulk = new C1uF_0603
-    ft.VREGOUT ~> c_vregout_bulk ~> gnd
-    c_vcore = new C100nF_0402
-    ft.VCORE ~> c_vcore ~> gnd
-    c_vphy = new C100nF_0402
-    ft.VPHY ~> c_vphy ~> gnd
-    c_vpll = new C100nF_0402
-    ft.VPLL ~> c_vpll ~> gnd
+    # デカップリング(VCC / VIO 各々。データシートの応用回路に倣う)
+    c_vcc = new C100nF_0402
+    ch.VCC ~> c_vcc ~> gnd
+    c_vcc_bulk = new C10uF_0805
+    ch.VCC ~> c_vcc_bulk ~> gnd
+    c_vio = new C100nF_0402
+    ch.VIO ~> c_vio ~> gnd
 
-    # REF: 12kΩ→GND(USB PLL基準電流)
-    r_ref = new R12K_0402
-    ft.REF ~> r_ref ~> gnd
-
-    # nRESET: 10kΩプルアップ(内部PU有だが確実化)
+    # --- nRST: 10kΩプルアップ ---
     r_reset = new R10K_0402
-    ft.nRESET ~> r_reset ~> p3v3
+    ch.nRST ~> r_reset ~> p3v3
 
-    # --- 12MHz水晶 + 負荷容量(CL=20pF品 → 33pF×2)---
-    xtal = new YXC_X322512MSB4SI_package
-    ft.OSCI ~ xtal.OSC1
-    ft.OSCO ~ xtal.OSC2
+    # --- 8MHz水晶 + 負荷容量 ---
+    # ★**CH347 データシートの応用回路が 22pF を明示している**
+    #   「C5 and C6 are monolith or high-frequency ceramic capacitors with a
+    #    capacity of about 22pF」
+    #   水晶は X32258MSB4SI で CL=20pF(LCSC C2682774 で確認)。CLからは
+    #   C=2*(20-4)=32pF→33pF と計算したくなるが、**メーカー指定を優先する**。
+    #   CH347内部のピン容量が大きめなのだと思われる。33pFだと実効CLが過大になり、
+    #   ESR 180Ω の 8MHz 品では発振の起動が重くなる(2026-08-18に33pF→22pFへ訂正)。
+    xtal = new YXC_X32258MSB4SI_package
+    ch.XI ~ xtal.OSC1
+    ch.XO ~ xtal.OSC2
     xtal.GND ~ gnd
-    c_osci = new C33pF_0402
-    ft.OSCI ~> c_osci ~> gnd
-    c_osco = new C33pF_0402
-    ft.OSCO ~> c_osco ~> gnd
+    c_osci = new C22pF_0402
+    ch.XI ~> c_osci ~> gnd
+    c_osco = new C22pF_0402
+    ch.XO ~> c_osco ~> gnd
 
-    # --- 構成EEPROM 93LC56(x16固定, 'B')---
-    ee = new MICROCHIP_93LC56BT_I_SN_package
-    ee.CS ~ ft.EECS
-    ee.CLK ~ ft.EECLK
-    ee.DI ~ ft.EEDATA
-    ee.DO ~ ft.EEDATA       # DI/DOはEEDATAで共通(FTDI標準)
-    ee.VCC ~ p3v3
-    ee.VSS ~ gnd
-    c_ee = new C100nF_0402
-    ee.VCC ~> c_ee ~> gnd
+    # --- USB D+/D-(データシート: 直列抵抗を入れないこと)---
+    ch.UDP ~ usb_dp
+    ch.UDM ~ usb_dm
 
-    # --- USB D+/D-(FT2232Hは直列抵抗内蔵→外付け27Ω不要)---
-    ft.DP ~ usb_dp
-    ft.DM ~ usb_dm
+    # --- JTAG(pin23-26) ---
+    ch.TCK ~ jtag_tck
+    ch.TDI ~ jtag_tdi   # CH347 → DUT
+    ch.TDO ~ jtag_tdo   # DUT → CH347(入力)
+    ch.TMS ~ jtag_tms
 
-    # --- ch.A MPSSE = JTAG(openFPGALoader ft2232標準割当)---
-    ft.ADBUS0 ~ jtag_tck    # TCK
-    ft.ADBUS1 ~ jtag_tdi    # TDI (FT→DUT)
-    ft.ADBUS2 ~ jtag_tdo    # TDO (DUT→FT, 入力)
-    ft.ADBUS3 ~ jtag_tms    # TMS
+    # --- UART0(pin19/22) ---
+    ch.TXD0 ~ uart_txd
+    ch.RXD0 ~ uart_rxd
 
-    # --- ch.B = UART ---
-    ft.BDBUS0 ~ uart_txd    # TXD (FT→i5 RX)
-    ft.BDBUS1 ~ uart_rxd    # RXD (i5 TX→FT)
+    # 未使用: TXD1/RXD1, SPI(SCS0/SCK/MISO/MOSI), I2C(SCL/SDA),
+    #        TRST/SRST, DTR0, CTS0/RTS0, SCS1 は未接続
 
 
 # --- Top level ----------------------------------------------------------------
@@ -939,11 +957,22 @@ module App:
     usbc.cc2 ~> r_cc2 ~> gnd
 
     # --- オンボードFT2232H: USB書換え(JTAG)+ UART の主経路 ---
-    ft2232 = new Ft2232hProgrammer
+    ft2232 = new UsbProgrammer
     ft2232.gnd ~ gnd
     ft2232.p3v3 ~ p3v3_io.hv
     ft2232.usb_dp ~ usbc.dp
     ft2232.usb_dm ~ usbc.dn
+
+    # --- USB信号線のESD保護(2026-08-18追加) ---
+    # CH347データシート: 「It is recommended to add ESD protection device for USB
+    # signal line. The parasitic capacitance of ESD chip should be less than 2pF」
+    # USBLC6-2SC6 は I/O-GND 間 typ 0.8pF / max 1.0pF で要求を満たす(SLKOR版データシート)。
+    # ★**コネクタ(J2)の直近に配置すること。** ESDは経路が短いほど効く。
+    esd_usb = new ST_USBLC6_2SC6_package
+    esd_usb.gnd ~ gnd
+    esd_usb.io1 ~ usbc.dp
+    esd_usb.io2 ~ usbc.dn
+    esd_usb.vbus ~ power_5v.hv
     # ch.B UART → SO-DIMM空きGPIO(i5側UART)
     ft2232.uart_txd ~ sodimm.io_w1   # FT TXD → i5 RX (P6 pin50)
     ft2232.uart_rxd ~ sodimm.io_v1   # i5 TX  → FT RXD (P6 pin52)
@@ -1772,11 +1801,6 @@ module App:
     tvp.hsync_b.override_net_name = "hsync_b"
     tvp.vsync_b.override_net_name = "vsync_b"
 
-    # FT2232H の内部1.8V をフェライトで分けた枝。自動命名だと "hv" や
-    # "c_vpll-power-hv" になって追えないので明示する
-    ft2232.ft.VPHY.override_net_name = "ft_vphy_1v8"
-    ft2232.ft.VPLL.override_net_name = "ft_vpll_1v8"
-
     # --- TVP アナログ電源(フェライトビーズ後段: star接続の起点) ---
     tvp.avdd.override_net_name = "avdd"
     tvp.pll_avdd.override_net_name = "pll_avdd"
@@ -1913,9 +1937,9 @@ module App:
     eth.jack.ct.override_net_name = "eth1_ct"
     eth.jack2.ct.override_net_name = "eth2_ct"
     supply.ldo_a33.out.override_net_name = "p3v3_a"
-    # FT2232内部1.8V(VREGOUT→VCORE、VPHY/VPLLへフェライト分離給電)
-    ft2232.ft.VREGOUT.override_net_name = "ft_vcore_1v8"
-    # FT2232の水晶ノード(電源ではない)。自動命名だと素の "hv" になり紛らわしい
+    # CH347F の水晶ノード(電源ではない)。自動命名だと素の "hv" になり紛らわしい
+    # ★FT2232H時代にあった ft_vcore_1v8 / ft_vphy_1v8 / ft_vpll_1v8 は、CH347Fが
+    #   3.3V単一で内部1.8V系を持たないため消滅した(2026-08-18)。
     ft2232.xtal.OSC1.override_net_name = "ft_osci"
     ft2232.xtal.OSC2.override_net_name = "ft_osco"
     supply.ldo_a19.VOUT.override_net_name = "p1v9_a"

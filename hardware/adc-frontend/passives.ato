@@ -122,6 +122,22 @@ component C33pF_0402 from Capacitor:
     trait has_designator_prefix<prefix="C">
     assert capacitance within 31.35pF to 34.65pF
 
+component C22pF_0402 from Capacitor:
+    """22pF C0G/NP0 0402(1005メトリック)。CH347F の 8MHz 水晶の負荷容量。
+
+    ★**CH347 データシートの応用回路が 22pF を明示している**
+      (「C5 and C6 are monolith or high-frequency ceramic capacitors with a
+       capacity of about 22pF」)。
+      水晶の CL=20pF から C=2*(CL-Cstray)≈33pF と計算したくなるが、**メーカー指定を
+      優先する**。CH347 内部のピン容量が大きめなのだと思われる。33pF だと実効CLが
+      過大になり、ESR 180Ω の 8MHz 品では発振の起動が重くなる。
+    C0G/NP0 は 33pF 品と同じ理由(容量が温度と電圧でほとんど動かない)。
+    フットプリント/シンボルは 33pF 品(CL05C330JB5NNNC)と共通の C0402 を使う。"""
+    trait is_atomic_part<manufacturer="SAMSUNG", partnumber="CL05C220JB5NNNC", footprint="parts/SAMSUNG_CL05C330JB5NNNC/C0402.kicad_mod", symbol="parts/SAMSUNG_CL05C330JB5NNNC/CL05C330JB5NNNC.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C70464", manufacturer="SAMSUNG", partno="CL05C220JB5NNNC">
+    trait has_designator_prefix<prefix="C">
+    assert capacitance within 20.9pF to 23.1pF
+
 component C33pF_0402_DNP from Capacitor:
     """C33pF_0402 と同じフットプリントの未実装(DNP)版。
 

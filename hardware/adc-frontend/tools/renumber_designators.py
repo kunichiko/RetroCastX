@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """main.ato の宣言順にデジグネータを振り直す対応表を作る。
 
+★★**発注後はこれを実行してはいけない。** 番号が大きく動くので、発注済み基板の
+   資料・写真・オシロのメモと食い違う。発注後は tools/lock_designators.py を使うこと
+   (一度使った番号を二度と使わせない。欠番は欠番のまま)。
+   実際 2026-08-18 の CH347F 置換でこれを走らせ、135個の番号が動いた。
+
 atopile は keep_designators=True(既定)のとき、.kicad_pcb の Reference プロパティを
 正典としてデジグネータを読み込む(faebryk/libs/app/designators.py の
 load_kicad_pcb_designators)。つまり PCB 側でリネームすれば ato build はそれを維持する。

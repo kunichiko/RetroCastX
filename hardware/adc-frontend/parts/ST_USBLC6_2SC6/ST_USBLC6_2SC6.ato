@@ -1,0 +1,40 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+
+component ST_USBLC6_2SC6_package:
+    """USBLC6-2SC6: USB 2.0 High-Speed 用 ESD保護アレイ。SOT-23-6。LCSC C7519。
+
+    CH347 データシートの指示:
+      「It is recommended to add ESD protection device for USB signal line.
+        The parasitic capacitance of ESD chip should be less than 2pF」
+
+    容量(第二供給元 SLKOR のデータシートで確認、VR=0V / 1MHz):
+        Cj  typ 0.4 / max 0.5 pF   I/O to I/O
+        Cj  typ 0.8 / max 1.0 pF   I/O to GND
+    → **2pF未満の要求を満たす**。480Mbps の USB HS 用に作られた定番部品。
+    ★ST のカタログにある「3.5pF max」は測定条件が違う値。混同しないこと。
+
+    ピン配置は **KiCad 標準ライブラリ(Power_Protection.kicad_sym の USBLC6-2P6)で確認**
+    した(2026-08-18)。データシートのピン配置図が画像でテキスト抽出できなかったため:
+
+        pin1 I/O1   pin2 GND   pin3 I/O2
+        pin4 I/O2   pin5 VBUS  pin6 I/O1
+
+    **I/O1 は pin1 と pin6、I/O2 は pin3 と pin4 で内部接続**されている。片側だけ繋いでも
+    機能するが、両方繋ぐと信号が素通りする配線(入→出)にできる。本設計では D+/D- を
+    それぞれ1本のネットとして扱い、pin1/pin6・pin3/pin4 を同じネットに繋いでいる。
+
+    ★VBUS(pin5)は 5V ラインの保護用。本設計では USB-C の VBUS へ繋ぐ。
+    ★配置は**コネクタの直近**に。ESDは経路が短いほど効く。
+    """
+    trait is_atomic_part<manufacturer="STMICROELECTRONICS", partnumber="USBLC6-2SC6", footprint="SOT-23-6_L2.9-W1.6-P0.95-LS2.8-BL.kicad_mod", symbol="USBLC6-2SC6.kicad_sym", model="SOT-23-6_L2.9-W1.6-H1.5-LS2.8-P0.95.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C7519", manufacturer="STMICROELECTRONICS", partno="USBLC6-2SC6">
+    trait has_designator_prefix<prefix="D">
+
+    signal io1 ~ pin 1
+    io1 ~ pin 6
+    signal gnd ~ pin 2
+    signal io2 ~ pin 3
+    io2 ~ pin 4
+    signal vbus ~ pin 5
