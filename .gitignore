@@ -52,3 +52,7 @@ _autosave-*.kicad_pcb
 
 # Fabrication Toolkit のタイムスタンプ付きバックアップ(zip本体を追跡するので不要)
 hardware/adc-frontend/layouts/default/production/backups/
+
+# Excel/Office が開いている間だけ作るロックファイル
+~$*
+.~lock.*#
