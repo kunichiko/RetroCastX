@@ -340,7 +340,49 @@ atopile取り込み部品のフットプリント実パッドと、main.atoの(�
 → **`ato build` は全ターゲット成功**(netlist/PCB/BOM/pinout/power-tree/stackup)。
 **全コネクタのピン配置を実データシートで確定済み**(発注前コネクタQA完了)。
 
+## v0.9.0 発注済み (2026-08-19)
+
+**生基板のみ**を発注した。部品は手半田で実装する(v1.0 で PCBA を予定)。
+
+```
+基板      100.000 x 100.000mm / 4層 (F.Cu / In1="GND" / In2="PWR" / B.Cu) / 1.6mm / ENIG
+部品      190個
+DRC       error 0件 / warning 192件 / 未配線 0件
+製造データ layouts/default/production/RetroCast_X_v0.9.0.zip
+git tag   v0.9.0-pcb
+```
+
+### ★デジグネータを凍結した
+
+`tools/lock_designators.py --freeze v0.9.0` を実行し、190部品を
+`tools/designator_lock.json` に記録した(接頭辞13種、最大値 C85/D9/FB3/FID3/H5/
+J12/JP1/LED1/PG4/R46/TP2/U16/X3)。
+
+以後の運用:
+
+```sh
+ato build                                  # 回路を変えたら
+python3 tools/lock_designators.py          # ★番号を戻す(欠番は再利用しない)
+python3 tools/restore_tuning_patterns.py   # ★等長配線を守る
+python3 tools/restore_pcb_settings.py      # ★原点とリビジョンを戻す
+```
+
+**発注済みなので `tools/renumber_designators.py` は絶対に実行しないこと。**
+番号が動くと発注済み基板の資料・写真・オシロのメモと食い違う。
+
+### 残っている既知の警告
+
+```
+lib_footprint_issues  190件  ライブラリとの差異(意図的な編集によるもの)
+connection_width        1件  ゾーン隅の丸め由来。角がある限り出る(pcbnewで個別除外)
+```
+
 ## 残作業(発注前に必須)
+
+★この節は**初期設計時**のもので、v0.9.0 の発注をもって大半は解消済み
+(フットプリント紐付け・ピン照合・レイアウトはすべて完了、AZ1117H-ADJ は
+RT9013-18 → TLV75718P へ置き換え済み)。履歴として残す。
+
 
 1. **フットプリント紐付け**: VS Code の atopile 拡張で各ICを `ato create part`
    (上記LCSC ID)で取り込み、`main.ato` のスタブcomponentを置き換える
@@ -596,6 +638,62 @@ PCより長いので、既定の広い窓(開始50・幅32)の方が有利だっ
 | 0x19 | 03h PLL(VCOレンジ+チャージポンプ) |
 | 0x1A | 05h クランプ開始位置 |
 | 0x1B | 06h クランプ幅 |
+
+## ★`ato build` の後に必ず実行すること
+
+`ato build` は **atopile がモデル化していない要素を書き出し時に落とす**。
+落ちるものが2種類あり、どちらも黙って消えるので毎回機械的に戻すこと。
+
+```sh
+python3 tools/restore_tuning_patterns.py   # GbEの等長配線が基板外へ飛ぶのを防ぐ
+python3 tools/restore_pcb_settings.py      # 基板の原点とリビジョン番号を戻す
+```
+
+### 1. 等長配線オブジェクト
+
+`(generated ... (type tuning_pattern))` の中身が捨てられ、KiCad が開いたときに
+パターンを作り直して **member の配線を基板外へ移動させる**。実際に2回発火し、
+GbEの等長配線67本が x=277.5 まで飛んだ。詳細は `tools/restore_tuning_patterns.py`。
+
+### 2. 基板の原点とリビジョン番号 (2026-08-19 に特定)
+
+```
+(title_block (rev "v0.9.0"))    リビジョン番号
+(setup (grid_origin 87.5 149))  基板の原点(グリッド原点)
+```
+
+`title` は残るのに `rev` だけ消える。atopile の非テストコードには PCB の
+title_block も grid_origin/aux_axis_origin も一切現れない(title_block は回路図側の
+変換にしか出てこない)。
+
+**実証**: 両方が入った状態で `ato build` を実行したら両方消えた。再現性あり。
+
+**git履歴**: 消失は必ず `ato build` を伴うコミット、復活は pcbnew 作業のコミット。
+
+```
+47868cf  grid 復活   基板固定用M2.6ネジ穴を追加(pcbnew作業)
+ab25097  grid 消失   配線途中のスナップショット
+f916edc  grid 復活   配線途中のスナップショット
+7156ba7  grid 消失   J9の3Dモデルオフセットを反映(ato build)
+34391de  grid 復活   配線途中のスナップショット
+715e368  grid 消失   デジグネータを宣言順に振り直す(ato build)
+fa3fe14  grid+rev 復活  v0.9.0の製造データを出した時点を記録(pcbnew作業)
+ac85734  grid+rev 消失  FT2232HL を CH347F に置き換える(ato build)
+```
+
+利用者は4回設定し直しており、そのたびに次の build で失われていた。
+**grid_origin はガーバー/ドリルの出力原点**なので、消えたまま製造データを出すと
+座標系が変わり、実装機データや過去の版と突き合わせられなくなる。
+
+値は `tools/pcb_settings.json` に置いて git で追跡する。pcbnew で変えたら
+`python3 tools/restore_pcb_settings.py --capture` で取り込み直すこと。
+
+### 落ちないが書式が変わるもの(実害なし)
+
+`ato build` は他にも書式を正規化する: パッドの `(layers)` の並び順、数値の桁、
+`(locked no)` 等の既定値の明示、カスタムパッドの `(fill yes)`/`(anchor circle)` の削除。
+J2(USB-C)のカスタムパッド4個で確認したところ、**実効形状のバウンディングボックスは
+1.300x0.600mm で前後完全一致**しており、KiCad が既定値で同じ形に解決する。実害はない。
 
 ## 手半田実装用の発注リスト(DigiKey / Mouser)
 

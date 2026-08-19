@@ -140,7 +140,7 @@
    "status": "ok",
    "desc": "ビデオデジタイザ HTQFP-100",
    "spare": "exact",
-   "note": "★TI は生産終了方向。DigiKey に在庫あり(2026-08 時点 184個 $12.04)、Mouser は取扱なし。入手できるうちに確保する"
+   "note": "★2026-08-18 調査。**廃番ではない**(TI 製品ページは ACTIVE)。ただし流通在庫が薄く、DigiKey 184個 $12.04 / 工場リードタイム26週 / **Mouser は取扱なし** / LCSC 自社在庫4個。以前『生産終了方向』と書いたが言い過ぎだった(根拠にした TI の PCN は本品種を特定したものではない)。LCSC の Other Suppliers に2,973個あるが EOL 品のブローカー在庫で再マーキングの懸念があるため勧めない。PCBA 用は DigiKey で確保して JLCPCB へ委託送付(または JLCPCB の Pre-Order / Global Sourcing)する。★TVP70025IPZP は後継品ではなく上位互換でもない: 90MSPS/10bit固定/WXGA止まりで $16.56 と高く、ピン配置もレジスタマップも互換の保証が無い"
   },
   "C10429": {
    "status": "ok",
@@ -186,12 +186,6 @@
    "spare": "cheap",
    "note": "WCH は DK/Mouser 扱い無し。LCSC / AliExpress / 秋月 で入手"
   },
-  "C965555": {
-   "status": "lcsc",
-   "desc": "RGB LED 2020(WS2812B 互換)",
-   "spare": "cheap",
-   "note": "2020 サイズは DK/Mouser では稀。5050 は入るがフットプリントが合わない"
-  },
   "C725995": {
    "status": "lcsc",
    "desc": "27MHz アクティブ発振器 3.2x2.5mm 4pad 3.3V CMOS",
@@ -214,7 +208,7 @@
    "status": "lcsc",
    "desc": "D-SUB 15pin(DA-15 2列)メス スルーホール",
    "spare": "exact",
-   "note": "★X68000 用 DA-15。DK/Mouser の DA-15 は取付穴・シェル寸法が異なりフットプリントに合わない"
+   "note": "★X68000 用 DA-15(メス/15ピン2列/ライトアングル/スルーホール)。DK/Mouser の DA-15 は取付穴・シェル寸法が異なりフットプリントに合わない。2026-08-18 時点 LCSC 自社在庫 112個 / $0.43 で問題なし"
   },
   "C165948": {
    "status": "lcsc",
@@ -230,8 +224,14 @@
   "C54408": {
    "status": "lcsc",
    "desc": "RJ45 パルストランス内蔵 10/100/1000 スルーホール",
-   "spare": "exact",
-   "note": "HANRUN HR911130A。マグジャックはピン配置が製品固有で互換品が無い"
+   "spare": "cheap",
+   "note": "HANRUN HR911130A。★2026-08-18 時点で調達先が分かれる:\n  LCSC   **在庫切れ**(Notify Me のみ、$2.17@10 / $1.92@30)\n  JLCPCB Assembly Parts Lib に **5,165個**(Extended、¥401.14@1+ / ¥307.76@31+、Full Reel 31個)\n→ v1.0 の PCBA は JLCPCB 側で調達できるので問題なし。2個/枚なので16枚以上なら 31+ の価格帯に入る。\n→ v0.9.0 の手半田分は AliExpress で調達する(定番品)。\nフットプリントは HanRun HR911105A/HR911130A 系の事実上の業界標準配置(10ピン2列千鳥+LED4+シールド2)なので互換品が多い。公称互換品: LINK-PP LPJG0806FBNL(★使うならピン表の突き合わせが必要)。\n★AliExpress で買う場合は内蔵トランス品質のばらつきに注意。10/100 は通っても 1000Base-T でリンクが不安定になる例がある。届いたら1個で先にリンク確認すること"
+  },
+  "C5349955": {
+   "status": "lcsc",
+   "desc": "フルカラーLED 2020(WS2812B互換, 制御IC内蔵)",
+   "spare": "cheap",
+   "note": "★Worldsemi WS2812B-2020(C965555)から変更(2026-08-19)。理由は吸湿性ランク:\n  WS2812B-2020 MSL 5a → JLCPCB が48時間の焼成(60℃)を要求し追加料金\n  XL-2020RGBC  MSL 3  → 焼成不要\nJLCPCB は MSL5以上で焼成を要求する。LCSC 在庫も 35,115個→175,745個 と5倍、単価差は $0.074→$0.093 の2セントのみ。WS2812B 互換の1本線プロトコルで 信号割り当ても DI=3/DO=1/GND=2/VDD=4 と同一。★ランドは違う(パッドが x 方向 ±0.92→±0.68 と内寄り)ので基板のフットプリントも差し替え済み。\n2020 サイズは DK/Mouser では稀なので引き続き LCSC 調達"
   }
  },
  "extra": [
@@ -280,10 +280,10 @@
   {
    "ref": "J8",
    "qty": 1,
-   "status": "ok",
-   "mpn": "PLR135/T10",
-   "mfr": "Everlight Electronics",
-   "desc": "S/PDIF 光受信モジュール"
+   "status": "misc",
+   "mpn": "PLR135/T",
+   "mfr": "EVERLIGHT",
+   "desc": "S/PDIF 光受信モジュール。秋月電子 109595(150円)。★PLR135/T10 は DigiKey 廃品種・在庫0、代替の PLR237/T10BK も在庫0だったため 形状違いの PLR135/T へ変更。ランドが違うのでフットプリントも差し替え済み"
   },
   {
    "ref": "PG1-PG4",

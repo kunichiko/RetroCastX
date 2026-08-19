@@ -1,0 +1,19 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component XINGLIGHT_XL_2020RGBC_2812B_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C5349955", date="2026-08-18T23:54:20.214347+00:00", checksum="2a9e0d73bcaddb2deb67b1256a15f2501a11fbd3207dcde22fed4433e9dda5b0">
+
+    trait is_atomic_part<manufacturer="XINGLIGHT", partnumber="XL-2020RGBC-2812B", footprint="LED-SMD_4P-L2.0-W2.0-BR-1.kicad_mod", symbol="XL-2020RGBC-WS2812B.kicad_sym", model="6.STEP">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C5349955", manufacturer="XINGLIGHT", partno="XL-2020RGBC-2812B">
+    trait has_designator_prefix<prefix="LED">
+
+    # pins
+    signal DI ~ pin 3
+    signal DO ~ pin 1
+    signal GND ~ pin 2
+    signal VDD ~ pin 4

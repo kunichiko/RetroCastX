@@ -357,4 +357,11 @@
 		(options "")
 		(descr "atopile: part lib: ST_USBLC6_2SC6")
 	)
+	(lib
+		(name "XINGLIGHT_XL_2020RGBC_2812B")
+		(type "KiCad")
+		(uri "${KIPRJMOD}/../../parts/XINGLIGHT_XL_2020RGBC_2812B")
+		(options "")
+		(descr "atopile: part lib: XINGLIGHT_XL_2020RGBC_2812B")
+	)
 )

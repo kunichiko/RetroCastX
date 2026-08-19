@@ -1,0 +1,209 @@
+(footprint "PLR135_T"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Everlight PLR135/T TOSLINK optical receiver (Akizuki 109595, 150 yen). Through-hole, hand-soldered / not JLC-assembled. Land pattern per datasheet DPL-0000018_Rev.4 p6 \"PCB Layout for Electrical Circuit\": 3 signal pins phi0.80 at 2.54mm pitch, 2 mounting holes phi3.20 at 7.62mm spacing, 3.95mm from the signal row, signal row centred between the mounting holes. PIN FUNCTION: 1=Vcc 2=GND 3=Vout. Body approx 11.5 x 11.3mm, height 19.5mm; the mounting holes and the optical barrel are both on the +Y (front) side: body spans -0.35mm (behind the pin row) to +10.95mm (front face), 11.30mm deep and is meant to overhang the board edge.")
+	(property "Reference" "REF**"
+		(at 2.54 -2.2 0)
+		(layer "F.SilkS")
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0001")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "PLR135_T"
+		(at 2.54 12.0 0)
+		(layer "F.Fab")
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0002")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" "https://akizukidenshi.com/goodsaffix/plr135-t.pdf"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0003")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" "TOSLINK optical receiver, 2.4-5.5V, 16Mbps"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0004")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "hand_solder" "true"
+		(at 2.54 -2.2 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0005")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr through_hole exclude_from_pos_files)
+	(fp_line
+		(start -3.21 -0.35)
+		(end 8.29 -0.35)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0010")
+	)
+	(fp_line
+		(start -3.21 10.95)
+		(end 8.29 10.95)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0011")
+	)
+	(fp_line
+		(start -3.21 -0.35)
+		(end -3.21 10.95)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0012")
+	)
+	(fp_line
+		(start 8.29 -0.35)
+		(end 8.29 10.95)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0013")
+	)
+	(fp_line
+		(start -3.46 -0.6)
+		(end 8.54 -0.6)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0020")
+	)
+	(fp_line
+		(start -3.46 11.2)
+		(end 8.54 11.2)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0021")
+	)
+	(fp_line
+		(start -3.46 -0.6)
+		(end -3.46 11.2)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0022")
+	)
+	(fp_line
+		(start 8.54 -0.6)
+		(end 8.54 11.2)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0023")
+	)
+	(fp_text user "hand-solder"
+		(at 2.54 8.5 0)
+		(layer "F.SilkS")
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0030")
+		(effects
+			(font
+				(size 0.8 0.8)
+				(thickness 0.15)
+			)
+		)
+	)
+	(fp_text user "1=Vcc"
+		(at -1.9 -1.1 0)
+		(layer "F.SilkS")
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0031")
+		(effects
+			(font
+				(size 0.7 0.7)
+				(thickness 0.12)
+			)
+		)
+	)
+	(pad "1" thru_hole rect
+		(at 0 0)
+		(size 1.5 1.5)
+		(drill 0.9)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0041")
+	)
+	(pad "2" thru_hole circle
+		(at 2.54 0)
+		(size 1.5 1.5)
+		(drill 0.9)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0042")
+	)
+	(pad "3" thru_hole circle
+		(at 5.08 0)
+		(size 1.5 1.5)
+		(drill 0.9)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0043")
+	)
+	(pad "4" thru_hole circle
+		(at -1.27 3.95)
+		(size 3.4 3.4)
+		(drill 3.2)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0044")
+	)
+	(pad "5" thru_hole circle
+		(at 6.35 3.95)
+		(size 3.4 3.4)
+		(drill 3.2)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "b1f0a3d2-11c4-4a70-9e51-3a2c6d7e0045")
+	)
+	(embedded_fonts no)
+)
