@@ -44,6 +44,17 @@ BOM = ROOT / "build/builds/default/default.bom.csv"
 TABLE = ROOT / "tools/order_sourcing.json"
 
 
+def clean(text, limit=90):
+    """CSV の1セルへ入れるために改行を潰して短く切る。
+
+    ★注記に改行入りの長文を書いたら CSV が壊れた(2026-08-19)。
+      order_sourcing.json の note は人間向けに長く詳しく書くので、
+      CSV へはそのまま流さない。詳細は README 側に出る。
+    """
+    t = " ".join(str(text or "").split())
+    return t[:limit - 1] + "…" if len(t) > limit else t
+
+
 def with_spares(qty, kind):
     """手半田用の予備を足す。"""
     if kind == "passive":
@@ -100,7 +111,11 @@ def write_csvs(rows, out):
     #   「ピンヘッダ 1x6」のような説明文で混ぜると、その行が「該当なし」になって
     #   BOM ツールの照合結果が汚れるので misc は別扱いにする。
     dist = [r for r in rows if r["status"] in ("ok", "sub")]
-    lcsc = [r for r in rows if r["status"] == "lcsc"]
+    # ★LCSC 品番を持たない行は CSV に載せない。BOM ツールは品番で照合するので
+    #   照合できない行が混ざると結果が汚れる(ポゴピン・i5モジュールが該当)。
+    #   README の一覧には出るので、買い忘れる心配はない。
+    lcsc = [r for r in rows if r["status"] == "lcsc" and r["lcsc"]]
+    lcsc_nokey = [r for r in rows if r["status"] == "lcsc" and not r["lcsc"]]
     misc = [r for r in rows if r["status"] == "misc"]
 
     with (out / "digikey-bom.csv").open("w", newline="") as f:
@@ -108,25 +123,25 @@ def write_csvs(rows, out):
         w.writerow(["Quantity", "Manufacturer Part Number", "Manufacturer",
                     "Customer Reference", "Description"])
         for r in dist:
-            w.writerow([r["qty"], r["mpn"], r["mfr"], r["refs"], r["desc"]])
+            w.writerow([r["qty"], r["mpn"], r["mfr"], r["refs"], clean(r["desc"])])
 
     with (out / "mouser-bom.csv").open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["Quantity 1", "Mfr Part Number", "Manufacturer Name",
                     "Customer Part Number", "Description"])
         for r in dist:
-            w.writerow([r["qty"], r["mpn"], r["mfr"], r["refs"], r["desc"]])
+            w.writerow([r["qty"], r["mpn"], r["mfr"], r["refs"], clean(r["desc"])])
 
     with (out / "lcsc-bom.csv").open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["Quantity", "LCSC Part Number", "Manufacturer Part Number",
                     "Designator", "Description"])
         for r in lcsc:
-            w.writerow([r["qty"], r["lcsc"], r["mpn"], r["refs"], r["desc"]])
-    return dist, lcsc, misc
+            w.writerow([r["qty"], r["lcsc"], r["mpn"], r["refs"], clean(r["desc"])])
+    return dist, lcsc, lcsc_nokey, misc
 
 
-def write_readme(rows, dist, lcsc, misc, out, tag, boards):
+def write_readme(rows, dist, lcsc, lcsc_nokey, misc, out, tag, boards):
     subs = [r for r in dist if r["status"] == "sub"]
     notes = [r for r in rows if r["note"]]
 
@@ -183,6 +198,15 @@ def write_readme(rows, dist, lcsc, misc, out, tag, boards):
               ("品番", lambda r: r["mpn"]),
               ("内容", lambda r: r["desc"])])}
 
+## ★品番指定のない調達品 ({len(lcsc_nokey)}品目) — CSV には入れていません
+
+LCSC 品番を持たないので BOM ツールでは照合できません。**AliExpress 等で手配**します。
+
+{table(lcsc_nokey, [("部品", lambda r: r["refs"]),
+                    ("数", lambda r: r["qty"]),
+                    ("品名", lambda r: r["mpn"]),
+                    ("内容", lambda r: r["desc"][:200])])}
+
 ## どこでも買える汎用品 ({len(misc)}品目)
 
 品番を指定する意味が無いのでアップロード用 CSV には**入れていません**
@@ -216,8 +240,8 @@ def main():
     out = ROOT / "orders" / a.tag
     out.mkdir(parents=True, exist_ok=True)
     rows = collect(a.boards)
-    dist, lcsc, misc = write_csvs(rows, out)
-    write_readme(rows, dist, lcsc, misc, out, a.tag, a.boards)
+    dist, lcsc, lcsc_nokey, misc = write_csvs(rows, out)
+    write_readme(rows, dist, lcsc, lcsc_nokey, misc, out, a.tag, a.boards)
 
     n_sub = sum(1 for r in dist if r["status"] == "sub")
     print(f"{out.relative_to(ROOT)} に出力しました ({a.boards}枚分)")
