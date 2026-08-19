@@ -14,7 +14,7 @@ from "parts/RICHTEK_RT9013_18GB/RICHTEK_RT9013_18GB.ato" import RICHTEK_RT9013_1
 from "parts/WCH_CH347F/WCH_CH347F.ato" import WCH_CH347F_package
 from "parts/ST_USBLC6_2SC6/ST_USBLC6_2SC6.ato" import ST_USBLC6_2SC6_package
 from "parts/YXC_X32258MSB4SI/YXC_X32258MSB4SI.ato" import YXC_X32258MSB4SI_package
-from "parts/Worldsemi_WS2812B_2020/Worldsemi_WS2812B_2020.ato" import Worldsemi_WS2812B_2020_package
+from "parts/XINGLIGHT_XL_2020RGBC_2812B/XINGLIGHT_XL_2020RGBC_2812B.ato" import XINGLIGHT_XL_2020RGBC_2812B_package
 from "parts/ST_1N4148W/ST_1N4148W.ato" import ST_1N4148W_package
 from "passives.ato" import C22pF_0402, R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, R10K_0402, R12K_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805, C33pF_0402, C33pF_0402_DNP
 
@@ -1490,7 +1490,7 @@ module App:
     j_dbg.dbg19 ~ sodimm.io_h16   # pin92  H16
     j_dbg.dbg20 ~ sodimm.io_f18   # pin94  F18
 
-    # --- ステータス表示用フルカラーLED (WS2812B-2020) ---
+    # --- ステータス表示用フルカラーLED (XINGLIGHT XL-2020RGBC-WS2812B) ---
     #
     # 2.0×2.0mm のシリアル制御RGB。800kHz の1本線プロトコル(24bit GRB)で
     # ゲートウェアから任意の色を出せる。リンク状態・モード・エラーの表示に使う。
@@ -1507,7 +1507,19 @@ module App:
     #
     # 電源は power_5v(USB VBUS)から取る。音声用の p5v_audio(フェライト分離後)は
     # 使わない — LEDの電流パルス(最大60mA)を音声レールに乗せたくないため。
-    led_status = new Worldsemi_WS2812B_2020_package
+    #
+    # ★Worldsemi WS2812B-2020(C965555) から XINGLIGHT XL-2020RGBC-WS2812B(C5349955)
+    #   へ変更した (2026-08-19)。理由は**吸湿性ランク(MSL)**:
+    #
+    #     WS2812B-2020 (C965555)   MSL 5a  → JLCPCB が48時間の焼成を要求し追加料金
+    #     XL-2020RGBC  (C5349955)  MSL 3   → 焼成不要
+    #
+    #   JLCPCB は MSL5以上の部品に焼成(60℃ 48時間)を要求する。加えて LCSC 在庫も
+    #   35,115個 → 175,745個 と5倍あり、単価差は $0.074 → $0.093 と2セントだけ。
+    #   WS2812B 互換の1本線プロトコルで、信号割り当ても DI=3/DO=1/GND=2/VDD=4 と同一。
+    #   ★ランドは微妙に違う(パッドが x 方向に ±0.92 → ±0.68 と内寄り)ので
+    #     フットプリントは差し替えてある。
+    led_status = new XINGLIGHT_XL_2020RGBC_2812B_package
     d_led = new ST_1N4148W_package
     signal p_led_4v3
     power_5v.hv ~ d_led.A

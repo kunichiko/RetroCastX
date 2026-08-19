@@ -223,18 +223,42 @@ component SolderJumper:
     signal b ~ pin 2
 
 component SpdifRxModule:
-    """光デジタル(TOSLINK)受信モジュール、3.3V動作。
+    """光デジタル(TOSLINK)受信モジュール Everlight PLR135/T、2.4〜5.5V動作。
 
-    候補: Everlight PLR135/T8 / CLIFF FC684205R。LCSC: 要選定。
-    注意: ピン番号は仮割り当て。フットプリント取り込み後にデータシートと必ず照合。
+    秋月電子 109595(150円)。データシート: datasheets/plr135-t.pdf
+    (Everlight DPL-0000018_Rev.4)。16Mbps、Vout は TTL 互換。
+
+    ## PLR135/T10 から PLR135/T へ変更した (2026-08-19)
+
+    T10 は DigiKey で廃品種・在庫0、代替の PLR237/T10BK も在庫0だった。
+    秋月で入手できる形状違いの PLR135/T に切り替えた。**ランドが違う**:
+
+        項目            PLR135/T (新)        PLR135/T10 (旧)
+        信号ピン        3本 2.54mmピッチ     同じ
+        信号穴径        φ0.80(実装はφ0.9)    φ0.9
+        取付穴の間隔    7.62mm               5.08mm
+        取付穴の径      φ3.20                φ1.15
+        信号列からの距離 3.95mm              2.63mm
+        信号列の位置    取付穴の中央         取付穴と同じx
+
+    ## ★ピン機能を訂正した
+
+    データシート p6 の PIN FUNCTION は **1=Vcc / 2=GND / 3=Vout**。
+    旧定義は out=pin1 / vcc=pin3 で**VccとVoutが逆**だった。docstring に
+    「ピン番号は仮割り当て。データシートと必ず照合」と書かれたまま照合されて
+    いなかったもの。このまま実装すると 3.3V が出力ピンに加わり、モジュールが
+    壊れるところだった。
+
+    本体は約 11.5(W) x 11.3(D) x 19.5(H) mm。光ポートの筒は取付穴とは反対側
+    (フットプリントの +Y 方向)に突き出し、基板端から張り出す向きで使う。
     """
-    trait is_atomic_part<manufacturer="EVERLIGHT", partnumber="PLR135/T10", footprint="PLR135_T10.kicad_mod", symbol="PLR135_T10.kicad_sym">
+    trait is_atomic_part<manufacturer="EVERLIGHT", partnumber="PLR135/T", footprint="PLR135_T.kicad_mod", symbol="PLR135_T.kicad_sym">
     trait has_designator_prefix<prefix="J">
     trait has_part_removed  # 手実装/DNP: 基板にFPは載せるがJLC発注しない
     # 手実装(JLC発注除外)。has_part_picked無し
-    signal out ~ pin 1     # S/PDIFビットストリーム(TTL)
-    signal gnd ~ pin 2
-    signal vcc ~ pin 3
+    signal vcc ~ pin 1     # データシート p6: 1=Vcc
+    signal gnd ~ pin 2     #                 2=GND
+    signal out ~ pin 3     #                 3=Vout (S/PDIFビットストリーム, TTL)
 
 component BoxHeader2x8Argus:
     """ArgusX(アナログRGBマトリクスセレクタ)の2x8汎用映像端子と嵌合する

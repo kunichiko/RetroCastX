@@ -1,0 +1,54 @@
+{
+ "_doc": [
+  "部品単価の実測値。tools/cost_estimate.py が使う。",
+  "",
+  "★ここに無い品目の価格を推測で埋めてはいけない。",
+  "  cost_estimate.py は価格の無い品目を『未取得』として別枠に出し、合計を",
+  "  『下限』として扱う。埋めたくなったら、実際に販売ページを見て source と",
+  "  fetched を付けてここに追記すること。",
+  "",
+  "  2026-08-19 に Colorlight i5 を『$15〜25』と口頭見積したが、これは根拠の無い",
+  "  記憶で、実勢(利用者実測 約5,000円)の半分以下だった。実測値と並べて提示した",
+  "  ため同じ確度に見えてしまった。この仕組みはその再発防止のためにある。",
+  "",
+  "キー: DigiKey/Mouser 品目は製造元品番(MPN)、LCSC 品目は LCSC 品番。",
+  "      orders/<tag>/*.csv の該当列と突き合わせる。",
+  "",
+  "basis:",
+  "  measured       販売ページで実際に確認した",
+  "  user-observed  利用者が画面で確認した値を伝えてくれた",
+  "",
+  "qty_break: その単価が適用される数量。発注数がこれ未満なら実際はもっと高い。"
+ ],
+
+ "fx": {
+  "USD_JPY_digikey": 170,
+  "USD_JPY_lcsc": 155,
+  "note": "DigiKey Japan の円建て価格は USD x 約170 だった(利用者実測: ASEM1 $2.77 -> 471円)。LCSC/AliExpress は USD 建てなので実勢レート寄りの155で換算。いずれも概算なので、確定額は各社の BOM ツールで出すこと。"
+ },
+
+ "prices": {
+  "TVP7002PZP":              {"unit": 12.04,  "currency": "USD", "qty_break": 1,   "basis": "measured", "fetched": "2026-08-18", "source": "https://www.digikey.com/en/products/detail/texas-instruments/TVP7002PZP/1765836", "note": "在庫184個 Active。Mouser は JLCPCB 経由の表示では170個あった"},
+  "1473005-4":               {"unit": 9.59,   "currency": "USD", "qty_break": 1,   "basis": "measured", "fetched": "2026-08-19", "source": "https://www.digikey.com/en/products/result?keywords=1473005-4"},
+  "PCM1808PWR":              {"unit": 1.59,   "currency": "USD", "qty_break": 1,   "basis": "measured", "fetched": "2026-08-19", "source": "https://www.digikey.com/en/products/result?keywords=PCM1808PWR"},
+  "EMZT6.8ET2R":             {"unit": 0.1983, "currency": "USD", "qty_break": 25,  "basis": "measured", "fetched": "2026-08-19", "source": "https://www.digikey.com/en/products/result?keywords=EMZT6.8ET2R", "note": "在庫34,069個。$0.51@1 / $0.313@10 / $0.1983@25"},
+  "CL05B104KO5NNNC":         {"unit": 0.0066, "currency": "USD", "qty_break": 250, "basis": "measured", "fetched": "2026-08-19", "source": "https://www.digikey.com/en/products/result?keywords=CL05B104KO5NNNC", "note": "$0.10@1 / $0.0096@100 / $0.0066@250"},
+  "RC0402FR-07220RL":        {"unit": 0.0061, "currency": "USD", "qty_break": 200, "basis": "measured", "fetched": "2026-08-19", "source": "https://www.digikey.com/en/products/result?keywords=RC0402FR-07220RL", "note": "$0.10@1 / $0.0097@100"},
+  "ASEM1-27.000MHZ-LC-T":    {"unit": 2.77,   "currency": "USD", "qty_break": 1,   "basis": "measured", "fetched": "2026-08-18", "source": "https://www.digikey.com/en/products/result?keywords=ASEM1-27.000MHZ-LC-T", "note": "現在は LCSC の C725995 を使うので発注リストには載らない"},
+  "SG3225CAN 12.2880M-TJGA3":{"unit": 2.62,   "currency": "USD", "qty_break": 1,   "basis": "measured", "fetched": "2026-08-18", "source": "https://www.digikey.com/en/products/detail/epson/SG3225CAN-12-2880M-TJGA3/13627711", "note": "同上。現在は C20617595 を使う"},
+  "ABM8AIG-8.000MHZ-1Z-T":   {"unit": 1.17,   "currency": "USD", "qty_break": 1,   "basis": "measured", "fetched": "2026-08-18", "source": "https://www.digikey.com/en/products/result?keywords=ABM8-8.000MHZ", "note": "同上。現在は C2682774 を使う"},
+  "1812GC472KAT1A":          {"unit": 0.49,   "currency": "USD", "qty_break": 25,  "basis": "measured", "fetched": "2026-08-18", "source": "https://www.digikey.com/en/products/detail/kyocera-avx/1812GC472KAT1A/808129", "note": "DigiKey で買う場合の代替。現在は LCSC の C309511 を使う"},
+
+  "C725995":   {"unit": 0.4311, "currency": "USD", "qty_break": 10, "basis": "measured", "fetched": "2026-08-18", "source": "https://www.lcsc.com/product-detail/C725995.html", "note": "在庫5,282個。$0.3772@30"},
+  "C20617595": {"unit": 0.3033, "currency": "USD", "qty_break": 10, "basis": "measured", "fetched": "2026-08-18", "source": "https://www.lcsc.com/product-detail/C20617595.html", "note": "在庫6,350個。$0.2854@30"},
+  "C2682774":  {"unit": 0.1942, "currency": "USD", "qty_break": 5,  "basis": "measured", "fetched": "2026-08-18", "source": "https://www.lcsc.com/product-detail/C2682774.html", "note": "在庫1,215個"},
+  "C309511":   {"unit": 0.2414, "currency": "USD", "qty_break": 25, "basis": "measured", "fetched": "2026-08-18", "source": "https://www.lcsc.com/product-detail/C309511.html", "note": "在庫42,835個。$0.211@50"},
+  "C77836":    {"unit": 0.4268, "currency": "USD", "qty_break": 5,  "basis": "measured", "fetched": "2026-08-18", "source": "https://www.lcsc.com/product-detail/C77836.html", "note": "在庫112個"},
+  "C5349955":  {"unit": 0.0925, "currency": "USD", "qty_break": 50, "basis": "measured", "fetched": "2026-08-19", "source": "https://www.lcsc.com/product-detail/RGB-LEDs-Built-in-IC_XINGLIGHT-XL-2020RGBC-WS2812B_C5349955.html", "note": "在庫175,745個。$0.1109@10 / $0.0823@100"},
+  "C54408":    {"unit": 2.1665, "currency": "USD", "qty_break": 10, "basis": "measured", "fetched": "2026-08-18", "source": "https://www.lcsc.com/product-detail/C54408.html", "note": "★LCSC は在庫切れ。手半田分は AliExpress 調達なので実際の支払額は不明。JLCPCB Assembly Parts Lib には5,165個 ¥401.14@1 / ¥307.76@31"}
+ },
+
+ "unpriced_notes": {
+  "Colorlight i5 (ECP5)": "★2026-08-19 利用者が AliExpress で確認したところ **約5,000円**。私が会話中に『$15〜25(2,300〜3,900円)』と述べたのは根拠の無い記憶で誤り(2021年頃の$12.99が頭にあった)。出品者差が大きく、$14.96〜66.73 の幅がある(i9・キャリアボード付きを含む)。商品ページを直接取得できなかったため measured にはしない。"
+ }
+}
