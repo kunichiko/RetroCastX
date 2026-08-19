@@ -21,9 +21,14 @@
 
 ## 既存の入力を保つ
 
-★再生成しても**ステータスと備考は引き継がれる**。既存ファイルがあれば
+★再生成しても**状態・発注先・注文番号・備考は引き継がれる**。既存ファイルがあれば
 デジグネータ列をキーに読み戻してから書き直す。部品構成が変わっても
 入力済みのチェックが消えない。
+
+発注先は CSV のファイル名から機械的に決めるが、**利用者が手で変えたらそちらを優先する**
+(例: DigiKey 在庫切れで AliExpress に切り替えた場合)。上書きした件は実行時に報告する。
+★2026-08-19、この引き継ぎが無かったため U9 の発注先(DigiKey→AliExpress の手編集)を
+  再生成で消してしまった。
 
 ## 使い方
 
@@ -177,6 +182,10 @@ def read_existing(path):
             continue
         keep[str(ref)] = {
             "状態": row[idx["状態"]] if "状態" in idx else None,
+            # ★発注先も引き継ぐ。CSV から機械的に決めた値を利用者が手で変えることが
+            #   あるため(2026-08-19: U9 を DigiKey → AliExpress に変えたのを
+            #   再生成で消してしまった)。手編集を優先し、上書きした件数を報告する。
+            "発注先": row[idx["発注先"]] if "発注先" in idx else None,
             "注文番号/日付": row[idx.get("注文番号/日付", -1)] if "注文番号/日付" in idx else None,
             "備考": row[idx["備考"]] if "備考" in idx else None,
         }
@@ -209,9 +218,15 @@ def build(tag, boards):
     style_header(ws, f"RetroCast X 調達管理 ({tag} / {boards}枚分)",
                  "tools/gen_order_xlsx.py が生成。状態・注文番号・備考は再生成しても引き継がれます")
 
+    overridden = []
     for i, r in enumerate(rows):
         row = 3 + i
         prev = keep.get(r["refs"], {})
+        # 手で変えた発注先があればそれを使う(単価の換算レートもそちらに合わせる)
+        pv = prev.get("発注先")
+        if pv and pv in VENDOR_FILL and pv != r["vendor"]:
+            overridden.append((r["refs"], r["vendor"], pv))
+            r["vendor"] = pv
         vals = [
             prev.get("状態") or "未発注",
             r["refs"], r["desc"][:120], r["vendor"], r["mpn"], r["mfr"], r["qty"],
@@ -325,7 +340,7 @@ def build(tag, boards):
     ws3.freeze_panes = "A3"
 
     wb.save(out)
-    return out, rows, keep
+    return out, rows, keep, overridden
 
 
 def main():
@@ -333,7 +348,7 @@ def main():
     p.add_argument("--tag", default="v0.9.0")
     p.add_argument("--boards", type=int, default=2)
     a = p.parse_args()
-    out, rows, keep = build(a.tag, a.boards)
+    out, rows, keep, overridden = build(a.tag, a.boards)
     print(f"{out.relative_to(ROOT)} に出力しました ({a.boards}枚分)")
     print(f"  {len(rows)}品目")
     for v in ("DigiKey", "LCSC", "AliExpress", "秋月電子等"):
@@ -341,7 +356,9 @@ def main():
         if g:
             print(f"    {v:<12} {len(g):>3}品目 {sum(r['qty'] for r in g):>5}個")
     if keep:
-        print(f"  既存の入力を {len(keep)}行から引き継いだ")
+        print(f"  既存の入力を {len(keep)}行から引き継いだ(状態/発注先/注文番号/備考)")
+    for refs, auto, manual in overridden:
+        print(f"    発注先は手編集を優先: {refs} {auto} → {manual}")
     unknown = sum(1 for r in rows if not r["unit_usd"])
     if unknown:
         print(f"  ★単価未確認 {unknown}品目(小計に入っていない)")
