@@ -40,10 +40,13 @@ gateware/bitstreams/
 # 実機から録音した確認用WAV(生成物)
 *.wav
 
-# メーカー配布のデータシート(再配布可否が不明なのでコミットしない)。
-# 各ディレクトリの README.md に入手元だけを残す
-docs/datasheets/*.pdf
-hardware/adc-frontend/datasheets/*.pdf
+# メーカー配布のデータシート(再配布が許諾されていないのでコミットしない)。
+# 各 datasheets/README.md に入手元だけを残す。
+#
+# ディレクトリ指定にしていたら atopile が parts/ に落とすPDFが素通りしたので、
+# 全体を対象にしている。自作PDFを入れたいときだけ git add -f すること。
+*.pdf
+*.PDF
 
 # KiCad の編集ロック(そのマシンでの編集中を示す一時ファイル。追跡しない)
 *.lck
