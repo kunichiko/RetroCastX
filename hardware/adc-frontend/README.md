@@ -170,36 +170,37 @@ ESD が PESD5V0U4BW → 実際は EMZT6.8ET2R など)。値・在庫は LCSC 品
 
 | Ref | 部品 | メーカー | LCSC | 回路上の位置 |
 |---|---|---|---|---|
-| U1 | TVP7002PZP | TI | C3824085 | `tvp` |
+| D1, D2, D3, D4, D5, D6, D8 | EMZT6.8ET2R | ROHM | C510333 | `esd_rgb, esd_sync2, esd_sync, esd_svideo, drgb.esd[0], drgb.esd[1], esd_audio` |
+| D7 | 1N4148W | ST(Semtech) | C81598 | `d_led` |
+| D9 | USBLC6-2SC6 | STMICROELECTRONICS | C7519 | `esd_usb` |
+| FB1, FB2, FB3 | MPZ1608S221ATA00 | TDK | C76815 | `fb_avdd, fb_pll, fb_audio` |
+| H1, H2, H3, H4, H5 | MountingHole_2.8mm_M2.6_Pad | — | — | `mount[0], mount[1], mount[2], mount[3], mount[4]` |
 | J1 | DS1037-15FNAKT76-0CC | CONNFLY | C77836 | `vga` |
-| U2, U9, U11, U12, U13 | SN74LVC2G17DBVR | TI | C10429 | `buf_sync, buf_sync2, drgb.buf[0], drgb.buf[1], drgb.buf[2]` |
-| X1 | OT322527MJBA4SL | YXC | C725995 | `osc` |
+| J2 | TYPE-C-31-M-12 | 韩国韩荣 | C165948 | `usbc` |
+| J3 | Header_1x6_P2.54mm | — | — | `jtag_hdr` |
+| J4 | BoxHeader_2x5_P2.54mm | — | — | `aux` |
+| J5 | BoxHeader_2x4_P2.54mm | — | — | `svideo` |
+| J6 | YTC-A1251-08ABW | YIYUAN | C7436577 | `j_drgb` |
+| J7 | Header_2x15_P2.54mm | — | — | `j_dbg` |
+| J8 | PLR135_T | — | — | `spdif` |
+| J9, J10 | Header_1x4_P2.54mm | — | — | `j11_argus, j_oled` |
+| J11, J12 | HR911130A | HANRUN | C54408 | `eth.jack, eth.jack2` |
+| JP1 | SolderJumper_2_Bridged | — | — | `sj_ext5v` |
+| LED1 | XL-2020RGBC-2812B | XINGLIGHT | C5349955 | `led_status` |
+| PG1, PG2, PG3, PG4 | PogoPin_D1.0mm | — | — | `pogo_tck, pogo_tms, pogo_tdi, pogo_tdo` |
+| TP1, TP2 | TestPoint_TH1 | — | — | `tp_ys, tp_led_do` |
+| U1 | TVP7002PZP | TI | C3824085 | `tvp` |
+| U2, U8, U10, U11, U12 | SN74LVC2G17DBVR | TI | C10429 | `buf_sync, buf_sync2, drgb.buf[0], drgb.buf[1], drgb.buf[2]` |
 | U3, U4 | AZ1117H-3.3TRE1 | DIODES | C92517 | `supply.ldo_io, supply.ldo_a33` |
 | U5 | RT9013-18GB | RICHTEK | C59969 | `supply.ldo_a19` |
 | U6 | TLV70019DDCR | TI | C2862411 | `supply.ldo_d19` |
-| J2 | TYPE-C-31-M-12 | 韩国韩荣 | C165948 | `usbc` |
-| U7 | FT2232HL-REEL | FTDI | C27882 | `ft2232.ft` |
-| FB1, FB2, FB3, FB4, FB5 | MPZ1608S221ATA00 | TDK | C76815 | `ft2232.fb_phy, ft2232.fb_pll, fb_avdd, fb_pll, fb_audio` |
-| X2 | X322512MSB4SI | YXC | C9002 | `ft2232.xtal` |
-| U8 | 93LC56BT-I/SN | MICROCHIP | C6164 | `ft2232.ee` |
-| PG1, PG2, PG3, PG4 | PogoPin_D1.0mm | — | — | `pogo_tck, pogo_tms, pogo_tdi, pogo_tdo` |
-| J3 | Header_1x6_P2.54mm | — | — | `jtag_hdr` |
-| JP1 | SolderJumper_2_Bridged | — | — | `sj_ext5v` |
-| D1, D2, D3, D4, D5, D6, D8 | EMZT6.8ET2R | ROHM | C510333 | `esd_rgb, esd_sync2, esd_sync, esd_svideo, drgb.esd[0], drgb.esd[1], esd_audio` |
-| J4 | BoxHeader_2x5_P2.54mm | — | — | `aux` |
-| TP1, TP2 | TestPoint_TH1 | — | — | `tp_ys, tp_led_do` |
-| J5, J9, J10 | Header_1x4_P2.54mm | — | — | `svideo, j11_argus, j_oled` |
-| U10 | 1473005-4 | TE Connectivity | C428482 | `sodimm` |
-| J6 | YTC-A1251-08ABW | YIYUAN | C7436577 | `j_drgb` |
-| J7 | Header_2x15_P2.54mm | — | — | `j_dbg` |
-| LED1 | WS2812B-2020 | Worldsemi | C965555 | `led_status` |
-| D7 | 1N4148W | ST(Semtech) | C81598 | `d_led` |
+| U7 | CH347F | WCH | C18221627 | `ft2232.ch` |
+| U9 | 1473005-4 | TE Connectivity | C428482 | `sodimm` |
+| U13, U14 | PCM1808PWR | TI | C55513 | `adc_dsub.adc, adc_aux.adc` |
+| U15, U16 | 24AA025E48-I/SN | MICROCHIP | C46840 | `eeprom_mac0, eeprom_mac1` |
+| X1 | OT322527MJBA4SL | YXC | C725995 | `osc` |
+| X2 | X32258MSB4SI | YXC | C2682774 | `ft2232.xtal` |
 | X3 | OT2JI-111-12.288M | YXC | C20617595 | `xo_audio` |
-| U14, U15 | PCM1808PWR | TI | C55513 | `adc_dsub.adc, adc_aux.adc` |
-| J8 | PLR135_T10 | — | — | `spdif` |
-| H1, H2, H3, H4, H5 | MountingHole_2.8mm_M2.6_Pad | — | — | `mount[0], mount[1], mount[2], mount[3], mount[4]` |
-| U16, U17 | 24AA025E48-I/SN | MICROCHIP | C46840 | `eeprom_mac0, eeprom_mac1` |
-| J11, J12 | HR911130A | HANRUN | C54408 | `eth.jack, eth.jack2` |
 
 抵抗・コンデンサは値・パッケージ指定済み(atopileのピッカーが実部品を自動選定)。
 パスコンの実配置レポートは `../../docs/decoupling-placement.html`(基板から生成)。
@@ -745,7 +746,13 @@ PCより長いので、既定の広い窓(開始50・幅32)の方が有利だっ
 ```sh
 python3 tools/restore_tuning_patterns.py   # GbEの等長配線が基板外へ飛ぶのを防ぐ
 python3 tools/restore_pcb_settings.py      # 基板の原点とリビジョン番号を戻す
+python3 tools/lock_designators.py          # 番号を戻す(欠番は再利用しない。発注後は必須)
+python3 tools/gen_parts_table.py           # README の主要部品表を実装に追随させる
+python3 tools/gen_order_bom.py --tag v0.9.0 --boards 2   # 発注リスト
+python3 tools/gen_order_xlsx.py --tag v0.9.0 --boards 2  # 調達管理表
 ```
+
+`--check` を付けると書き換えずに食い違いだけ報告する(`gen_parts_table.py` のみ)。
 
 ### 1. 等長配線オブジェクト
 

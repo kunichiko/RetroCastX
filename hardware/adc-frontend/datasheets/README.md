@@ -23,11 +23,16 @@
 
 LCSC の製品ページ内「Datasheet」リンク、または秋月の商品ページからPDFを取得できます。
 
-**注意(PLR135)**: 基板に実装しているのは **PLR135/T10**(秋月
-[109597](https://akizukidenshi.com/catalog/g/g109597/))で、こちらは別文書
-(DPL-0000031_Rev.4)です。ランドパターンを再検証するときは T10 側の資料を
-参照してください(`layouts/default/*.kicad_pcb` のフットプリント記述に
-両方の文書番号を記録しています)。
+**注意(PLR135)**: v0.9.0 に実装するのは **PLR135/T**(秋月
+[109595](https://akizukidenshi.com/catalog/g/g109595/)、文書 DPL-0000018_Rev.4)で、
+上表の `plr135-t.pdf` がその資料です。
+
+以前は **PLR135/T10**(秋月 [109597](https://akizukidenshi.com/catalog/g/g109597/)、
+別文書 DPL-0000031_Rev.4)を選定していましたが、DigiKey で廃品種・在庫0になったため
+2026-08-19 に T へ切り替えました(取付穴が φ1.15/5.08mm → φ3.20/7.62mm と違うので
+ランドも作り直しています)。`parts/_mech/PLR135_T10.kicad_mod` は履歴として
+残していますが**使っていません**。経緯は `parts/_mech/mech.ato` の
+`SpdifRxModule` の docstring を参照。
 
 ## メモ
 
