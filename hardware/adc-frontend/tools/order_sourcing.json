@@ -17,9 +17,10 @@
  ],
  "parts": {
   "C15850": {
-   "status": "ok",
-   "desc": "10uF 0805 X5R MLCC",
-   "spare": "passive"
+   "status": "lcsc",
+   "desc": "10uF 0805 X5R 25V MLCC",
+   "spare": "passive",
+   "note": "★DigiKey 在庫切れ(2026-08-19 利用者確認)のため LCSC 発注へ移した。元の選定品(Samsung CL21A106KAYNNNE)がそのまま在庫2,758,420個 $0.0795@50。DigiKey で買うなら Murata GRM21BR61E106KA73L か YAGEO CC0805KKX5R8BB106 (いずれも 10uF/25V/X5R/0805/±10% で等価、在庫あり)"
   },
   "C1525": {
    "status": "ok",
@@ -69,11 +70,10 @@
    "note": "★2kV 耐圧は必須。LANケーブルはサージや建物間の電位差を拾うため Bob-Smith 終端の ブリッジには 2kV が標準で、耐圧は落とせない。LCSC なら同じ Yageo 品が $0.24@25。DigiKey で買うなら KYOCERA AVX 1812GC472KAT1A($0.49@25、4700pF/2000V/X7R/±10%/1812 で完全同スペック、在庫42,893)が Yageo(154円)より安い"
   },
   "C25905": {
-   "status": "sub",
-   "alt_mfr": "YAGEO",
-   "alt_mpn": "RC0402FR-075K1L",
-   "desc": "5.1k 0402 1% 1/16W",
-   "spare": "passive"
+   "status": "lcsc",
+   "desc": "5.1k 0402 1% 1/16W(USB-C CC プルダウン)",
+   "spare": "passive",
+   "note": "★DigiKey 在庫切れ(2026-08-19 利用者確認)のため LCSC 発注へ移した。元の選定品(UNI-ROYAL 0402WGF5101TCE)が在庫6,406,000個 $0.0043@100。★USB Type-C の CC1/CC2 プルダウンなので **5.1kΩ±1% は規格上の要求**(Rd = 5.1k で Default USB Power = 5V/500mA〜3A を宣言する)。値を変えてはいけない。DigiKey で買うなら YAGEO RC0402FR-075K1L の在庫が戻るのを待つか同等の1%品"
   },
   "C25744": {
    "status": "sub",
@@ -127,9 +127,10 @@
    "note": "1N4148W は各社互換。Diodes 版が DK/Mouser とも潤沢"
   },
   "C7519": {
-   "status": "ok",
+   "status": "lcsc",
    "desc": "USB 2ライン ESD 保護アレイ SOT-23-6",
-   "spare": "cheap"
+   "spare": "cheap",
+   "note": "★DigiKey 在庫切れ(2026-08-19 利用者確認)のため LCSC 発注へ移した。LCSC は ST 純正が在庫33,840個 $0.1432@10。DigiKey には Slkormicro($0.18) / GOODWORK($0.04) / UMW($0.91) の互換品表示があるが、USB データラインの保護なので**接合容量が効く**(ST は Cj typ 0.8pF I/O-GND)。セカンドソースは容量規定を確認してから使うこと。ST 純正が買えるなら純正で。"
   },
   "C76815": {
    "status": "ok",
@@ -143,9 +144,10 @@
    "note": "★2026-08-18 調査。**廃番ではない**(TI 製品ページは ACTIVE)。ただし流通在庫が薄く、DigiKey 184個 $12.04 / 工場リードタイム26週 / **Mouser は取扱なし** / LCSC 自社在庫4個。以前『生産終了方向』と書いたが言い過ぎだった(根拠にした TI の PCN は本品種を特定したものではない)。LCSC の Other Suppliers に2,973個あるが EOL 品のブローカー在庫で再マーキングの懸念があるため勧めない。PCBA 用は DigiKey で確保して JLCPCB へ委託送付(または JLCPCB の Pre-Order / Global Sourcing)する。★TVP70025IPZP は後継品ではなく上位互換でもない: 90MSPS/10bit固定/WXGA止まりで $16.56 と高く、ピン配置もレジスタマップも互換の保証が無い"
   },
   "C10429": {
-   "status": "ok",
+   "status": "lcsc",
    "desc": "デュアルシュミットバッファ SOT-23-6",
-   "spare": "cheap"
+   "spare": "cheap",
+   "note": "★DigiKey 在庫切れ(2026-08-19 利用者確認)のため LCSC 発注へ移した。LCSC は TI 純正が在庫22,242個 $0.2403@30。DigiKey には UMW の同型番互換品($0.19)がある。5V トレラント入力の シュミットバッファで同期信号の整形に5個使うので、代替を使うなら VIH/VIL のヒステリシス幅を確認すること"
   },
   "C92517": {
    "status": "ok",
@@ -288,9 +290,9 @@
   {
    "ref": "PG1-PG4",
    "qty": 4,
-   "status": "misc",
-   "mpn": "ポゴピン D1.0mm",
-   "desc": "任意。未実装でも動作する"
+   "status": "lcsc",
+   "mpn": "バネ付きコンタクトピン(圧入TH, 胴径1.0mm, 基板上高さ約3mm)",
+   "desc": "★必須部品。「任意。未実装でも動作する」と書いていたのは誤り(2026-08-19訂正)。SO-DIMM コネクタに JTAG は通っておらず、i5 モジュール底面のテストパッド(TCK/TMS/TDI/TDO)へバネ接触させるこの4本が**基板上の CH347F から FPGA へ届く唯一の経路**。J3(jtag_hdr)は同じネットへの並列引き出しなので単独では i5 に届かない。無い場合はモジュール底面へ直接ケーブルを半田付けする逃げ道はある。\n## 必要寸法(ドリル1.0mm / パッド1.9mm / 2.54mmピッチ x4)\n  基板〜モジュール裏の間隙 2.6mm(★ソケット種で変動。実機で測ってから買うのが確実)\n  基板上高さ > 2.6mm(接触する) かつ 基板上高さ - 2.6mm <= ストローク(底突きしない)\n  → 自由長 3.0〜3.2mm / 全圧縮 2.5mm以下 / 胴径 約1.0mm\n## 入手先\n  AliExpress  「Spring Loaded Pogo Pin Through Holes PCB Height 3mm」系。高さを3/4/5/6...mm から選べる汎用品で $0.94/10個。設計時に想定していたのはこれ。\n  DigiKey     Mill-Max 0984-0-15-20-64-14-11-0 $1.04@1 在庫2,734個。胴径1.09mmは合うが**自由長3.91mm/全圧縮2.90mmで背が高すぎ**、間隙2.6mmでは0.3mm底突きする。他の Mill-Max シリーズで自由長3mm級を探すこと。Harwin P1113CV3 は自由長24mm・推奨穴2.4mmで全く合わない。\n  JLCPCB      Assembly Parts Lib に1,211品目あるが、在庫の多いものは D=2mm 系でドリル1.0mmに入らない。\n## PCBA に出す場合\n★has_part_removed のまま**自分で手半田する**のを勧める。理由:\n  1. 高さがこの基板固有のスタックアップに依存し、実測してから選びたい\n  2. バネと金メッキが加熱で劣化する。半田が筒内へ吸われるとプランジャが動かなくなる\n  3. JLC の在庫品でドリル1.0mm/高さ3mm級に合うものが見つかっていない\nどうしても JLC に付けさせるなら、適合品を特定した上で委託(Consignment)する。"
   },
   {
    "ref": "H1-H5",
