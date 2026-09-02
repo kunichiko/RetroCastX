@@ -27,7 +27,22 @@ Viewer が UDP 34600 を掴んでいても動く(ストリームはエフェメ�
 購読する)。ただし**レジスタの読み戻しはできない**ので、条件の記録は
 「このツールが設定した値」に限られる。
 
-★★ 2026-09-03 の測定結果(v0.9.0 / X68000 512x512 65536色 / pll_div 736)★★
+★★ RGB888 伝送での実測(2026-09-03、v0.9.0 実機)★★
+
+    段(0→31): 0 0 0 0 30 38 46 53 61 69 76 84 92 99 107 115 122 130 137
+              145 153 160 168 175 183 190 198 205 213 220 227 234
+    段差: 最小0 最大30 平均7.55(段4以降は 7〜8 で単調)
+
+**32階調のうち28段が7〜8コード刻みで完全に分離**した。RGB555 では隣接コードが
+1しか離れておらず余裕ゼロだったので、これで目的は達成。4チャンネルとも同一の構造。
+
+残るのは**下位4段(0〜3)が ADC でクリップされている**ことだけ。粗オフセット
+(key 0x65 / 0x68 を 0x08〜0x1F)を振っても下端は動かないことを、この
+クリーンな測定基盤で再確認した(以前の同じ結論は汚染された測定に基づいていたが、
+結論自体は正しかった)。クランプを片チャンネルだけミッドにする実験は、
+バンドの意味の検査(band0 は R≈G≈B)に引っかかって測れない。
+
+★★ 2026-09-03 の測定結果(RGB555 伝送。上の RGB888 と対比)★★
 
     グレー/緑/青 : 29階調(5bit 2〜30)。失っているのは 0, 1, 31
     赤           : 28階調(5bit 3〜30)。失っているのは 0, 1, 2, 31
@@ -94,7 +109,9 @@ import numpy as np
 from . import protocol as proto
 from .receiver import FrameAssembler
 
-# RGB555 の 5bit 値をビット複製で 8bit にした正当なコード
+# RGB555 の 5bit 値をビット複製で 8bit にした正当なコード。
+# ★RGB888 伝送ではこの制約が無くなる(8bitの生値がそのまま来る)ので、
+#   判定は「32段が別々の値か」「間隔が一様か」に変わる。
 LEGAL = {((n << 3) | (n >> 2)): n for n in range(32)}
 BAND_NAMES = ["グレー", "赤", "緑", "青", "1px縞", "2px縞", "4px縞", "白/黒"]
 STEP_DOTS = 16          # 階調1段の幅[ドット]
@@ -168,7 +185,7 @@ def content_rows(img):
     return idx
 
 
-def measure(img, spd, warn):
+def measure(img, spd, warn, is555=True):
     lum = img.max(axis=2).astype(np.int32)
     xs = np.flatnonzero(lum.max(axis=0) > 24)
     if len(xs) < 64:
@@ -184,6 +201,18 @@ def measure(img, spd, warn):
     if gaps and gaps != {2}:
         warn.append("内容のある行の間隔が一定でない: %s" % sorted(gaps)[:5])
     y0, y1 = int(rowidx[0]), int(rowidx[-1])
+
+    # ★原点(パターンの x=0 に対応するサンプル位置)を band7 から取る。
+    #   band7 は左半分が白ベタなので、その白の開始位置がそのまま x=0。
+    #   有効領域の検出に頼るより確実(暗い段は閾値を超えないため)。
+    x_org = None
+    sel7 = rowidx[7 * 64:8 * 64]
+    sel7 = sel7[len(sel7) // 3: len(sel7) - len(sel7) // 3]
+    if len(sel7) >= 8:
+        p7 = np.median(img[sel7].max(axis=2), axis=0)
+        w7 = np.flatnonzero(p7 > p7.max() * 0.5)
+        if len(w7) >= 64:
+            x_org = int(w7[0])
 
     bands = {}
     for b in range(NBANDS):
@@ -219,18 +248,39 @@ def measure(img, spd, warn):
             # 列ごとの最頻値。中央値だと隣接コードの混在で存在しない値になる
             prof = np.array([mode_of(src[:, x]) for x in range(src.shape[1])])
             want_w = int(round(STEP_DOTS * spd))
-            plats = plateaus(prof, max(4, want_w // 2))
-            steps = [(v, w) for v, w in plats if w <= want_w * 2]
+            # ★**位置から窓を切って読む。**
+            #   プラトー(同じ値が続く区間)で拾う方式は RGB555 では成立したが、
+            #   RGB888 では量子化によるノイズ抑制が無く、1サンプルのノイズで
+            #   16連続が8〜9に割れて段を取りこぼす(実測)。
+            #   1段=16ドットという構造は既知なので、原点から16サンプルごとに
+            #   窓を切り、その中央の最頻値を段の値とする方が確実。
+            #   原点は band7(左半分が白ベタ)の白の開始位置から取る。
+            if x_org is None:
+                plats = plateaus(prof, max(4, want_w // 2))
+                steps = [(v, w) for v, w in plats if w <= want_w * 2]
+            else:
+                steps = []
+                for i in range(32):
+                    a = x_org + int(round(i * want_w))
+                    z = x_org + int(round((i + 1) * want_w))
+                    if z > src.shape[1]:
+                        break
+                    win = src[:, a + want_w // 4: z - want_w // 4]
+                    v = mode_of(win)
+                    if v is None:
+                        break
+                    steps.append((v, want_w))
             # --- 検査3: プラトー幅 ---
             bad = [w for _, w in steps if abs(w - want_w) > max(2, want_w // 4)]
             if bad:
                 warn.append("band%d(%s): 幅が %d から外れるプラトー %d個 %s"
                             % (b, BAND_NAMES[b], want_w, len(bad), bad[:5]))
             # --- 検査5: 正当なコードか ---
-            illegal = [v for v, _ in steps if v not in LEGAL]
-            if illegal:
-                warn.append("band%d(%s): RGB555 に無いコード %s"
-                            % (b, BAND_NAMES[b], sorted(set(illegal))[:6]))
+            if is555:
+                illegal = [v for v, _ in steps if v not in LEGAL]
+                if illegal:
+                    warn.append("band%d(%s): RGB555 に無いコード %s"
+                                % (b, BAND_NAMES[b], sorted(set(illegal))[:6]))
             bands[b] = {"kind": "ramp", "steps": [v for v, _ in steps],
                         "widths": [w for _, w in steps]}
         else:
@@ -317,7 +367,7 @@ def main():
                      "  隣と混ざるので校正できない。pll_divide を直すこと\n"
                      "  (X68000 512ドット系は 736 = 69.55199MHz/3 ÷ 31.5kHz)"
                      % (spd, corr))
-        m, err = measure(img, spd, warn)
+        m, err = measure(img, spd, warn, is555=(mode.pixfmt == 1))
         if err:
             sys.exit("★%s。測定を中止する" % err)
         results.append((m, mode))
@@ -329,9 +379,16 @@ def main():
     # 全段が一致することを要求すると、境目の1段(量子化の縁で出たり出なかったり
     # する段)だけで全部が捨てられる。**全フレームに出た段を「確定」、一部だけに
     # 出た段を「境界」として区別して報告する**方が使える。
+    # ★段は順序を持つ。集合で扱うとノイズ由来の値が「異なる値」に化けて
+    #   「32段揃った」と誤判定する(実際に赤で誤判定した)。
+    #   **段インデックスごとにフレーム間の中央値**を取る。
     confirmed, marginal = {}, {}
+    steps_by_idx = {}
     for b in range(4):
-        sets = [set(r[0].bands[b]["steps"]) for r in results]
+        cols = [r[0].bands[b]["steps"] for r in results]
+        n = min(len(c) for c in cols) if cols else 0
+        steps_by_idx[b] = [int(np.median([c[i] for c in cols])) for i in range(n)]
+        sets = [set(c) for c in cols]
         inter = set.intersection(*sets) if sets else set()
         union = set.union(*sets) if sets else set()
         confirmed[b] = sorted(inter)
@@ -350,29 +407,53 @@ def main():
     print("  ★レジスタの読み戻しは Viewer が 34600 を掴んでいると不可。"
           "上記以外の条件は記録できていない")
 
+    is555 = (mode.pixfmt == 1)
     print("\n=== 階調バンド(X68000 の32階調がコードに載っているか)===")
+    print("  伝送形式 pixfmt=%d (%s)"
+          % (mode.pixfmt, "RGB555 2B/px" if is555 else
+             "RGB888 3B/px" if mode.pixfmt == 0 else "?"))
     for b in range(4):
         cf, mg = confirmed[b], marginal[b]
-        ncf = sorted(LEGAL[c] for c in cf if c in LEGAL)
-        nmg = sorted(LEGAL[c] for c in mg if c in LEGAL)
         print("\n--- %s ---" % BAND_NAMES[b])
-        print("  確定した段 %d 個: 5bit値 %s" % (len(ncf), ncf))
-        if nmg:
-            print("  境界の段 %d 個(フレームによって出入りする): 5bit値 %s"
-                  % (len(nmg), nmg))
-        bad = [c for c in set(cf) | set(mg) if c not in LEGAL]
-        if bad:
-            print("  ★RGB555 に無いコード: %s" % sorted(bad))
-        lost = [n for n in range(32) if n not in ncf and n not in nmg]
-        if lost:
-            print("  ★取り込めていない 5bit 値 %d個: %s" % (len(lost), lost))
+        if is555:
+            ncf = sorted(LEGAL[c] for c in cf if c in LEGAL)
+            nmg = sorted(LEGAL[c] for c in mg if c in LEGAL)
+            print("  確定した段 %d 個: 5bit値 %s" % (len(ncf), ncf))
+            if nmg:
+                print("  境界の段 %d 個(フレームによって出入り): 5bit値 %s"
+                      % (len(nmg), nmg))
+            bad = [c for c in set(cf) | set(mg) if c not in LEGAL]
+            if bad:
+                print("  ★RGB555 に無いコード: %s" % sorted(bad))
+            lost = [n for n in range(32) if n not in ncf and n not in nmg]
+            if lost:
+                print("  ★取り込めていない 5bit 値 %d個: %s" % (len(lost), lost))
+            else:
+                print("  → 32階調すべてが載っている(ロスレス成立)")
         else:
-            print("  → 32階調すべてが載っている(ロスレス成立)")
+            # RGB888: 段インデックス順に並べ、単調性と間隔で判定する
+            v = steps_by_idx[b]
+            print("  段(0→31): " + " ".join("%3d" % x for x in v))
+            if len(v) < 32:
+                print("  ★窓が %d 個しか取れていない(32 のはず)" % len(v))
+                continue
+            d = [b_ - a_ for a_, b_ in zip(v, v[1:])]
+            flat = [i for i, x in enumerate(d) if x <= 0]
+            print("  段差    : " + " ".join("%3d" % x for x in d))
+            print("  段差の統計: 最小%d 最大%d 平均%.2f" % (min(d), max(d),
+                                                       sum(d) / len(d)))
+            if flat:
+                print("  ★段差が0以下の箇所 %d 個(段が分離していない): 段%s→%s"
+                      % (len(flat), flat[0], flat[0] + 1))
+                print("     → 潰れている段: %s" % [i for i in flat])
+            else:
+                print("  → **32段すべてが単調に分離している(ロスレス成立)**")
 
     print("\n=== 縞・ベタバンド(白の代表値)===")
     for b in range(4, 8):
         vs = sorted(lv_sets[b])
-        tag = " ".join("%s(5bit %s)" % (v, LEGAL.get(v, "★不正")) for v in vs)
+        tag = " ".join(("%s(5bit %s)" % (v, LEGAL.get(v, "★不正")) if is555
+                        else "%s" % v) for v in vs)
         print("  %-8s %s%s" % (BAND_NAMES[b], tag,
                                "  ←フレーム間で不一致" if len(vs) > 1 else ""))
 
