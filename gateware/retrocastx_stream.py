@@ -1218,7 +1218,7 @@ class RetroCastXStream(SoCMini):
                  green_input=3, red_input=3, blue_input=3,
                  pll_divide=1104, hs_offset=0, vs_row_at_sync=525,
                  measure=True, mclk_out=True, auto_vtotal=True, vbp=0,
-                 interlace_cap=0):
+                 interlace_cap=0, eth_phy=1):
         from litex_boards.platforms import colorlight_i5
         from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
         from retrocastx_net import RetroCastXUDPIPCore
@@ -1230,11 +1230,27 @@ class RetroCastXStream(SoCMini):
         self.crg = _CRG(platform, sys_clk_freq)
 
         # Ethernet PHY (RGMII) + hardware UDP/IP core
-        # eth 1 = U19/U20ボール = U28 = ETH2側PHY(SO-DIMM ETH2_*配線に対応)。
-        # eth 0(G1/G2=U29)はETH1側。試作ではMagJackをETH2へ配線したのでindex=1。
+        #
+        # ★**litex の index とコネクタ表記 ETH1/ETH2 は入れ替わっている**。
+        #   litex_boards の colorlight_i5.py に明記されている:
+        #     "The order of the two PHYs is swapped with the naming of the
+        #      connectors on the board so to match with the configuration of
+        #      their PHYA[0] pins."
+        #   したがって:
+        #     eth 0 (G1/G2)   = コネクタ ETH2 = SO-DIMM eth2_* = v0.9.0 の J11
+        #     eth 1 (U19/U20) = コネクタ ETH1 = SO-DIMM eth1_* = v0.9.0 の J12
+        #
+        #   以前ここには「eth 1 = ETH2側PHY」と書いてあったが**逆だった**
+        #   (2026-09-02 修正)。手組み試作機が動いていたのは index=1 = ETH1側で、
+        #   v0.9.0 でそこに繋がるのは J12。J11 で使うには index=0 にする。
+        #
+        #   既定は 1 (=J12) のまま。2026-09-02 の v0.9.0 実機確認で、J12 の
+        #   はんだ不良を直したところ index=1 のまま ping/発見/ストリームが
+        #   全て通った(26フレーム, lost_pkts=0)。index=0 は seed 3 で
+        #   eth_rx 122.55MHz(制約125)で閉じないため、J11 へ移すならシード探索が要る。
         self.ethphy = LiteEthPHYRGMII(
-            clock_pads = platform.request("eth_clocks", 1),
-            pads       = platform.request("eth", 1),
+            clock_pads = platform.request("eth_clocks", eth_phy),
+            pads       = platform.request("eth", eth_phy),
             tx_delay   = 0e-9)
         # LiteEthUDPIPCore ではなく自前のコア。中身は同じ構成(MAC + ARP + IP +
         # ICMP + UDP)で、受信パケットから相手のMACを学習する層を挟んである。
@@ -1547,6 +1563,10 @@ def main():
                          "既定0=VSYNC直後から全行取り込む。水平を hs_offset=0 で"
                          "ラインの頭から取り込むのと同じ方針で、垂直位置は管面の"
                          "V位置で決める。0以外にすると上が切れるモードが出る")
+    ap.add_argument("--eth-phy", type=int, default=1, choices=(0, 1),
+                    help="litex の eth index。1=コネクタETH1=v0.9.0のJ12(既定), "
+                         "0=コネクタETH2=v0.9.0のJ11。J11で使うにはシード探索が要る "
+                         "(seed 3 では eth_rx 122.55MHz で閉じない)")
     ap.add_argument("--no-mclk-out", action="store_true",
                     help="P3 147のMCLK出力を0固定にする(音声は止まる)。ノイズ切り分け用")
     args = ap.parse_args()
@@ -1560,7 +1580,8 @@ def main():
                            measure=not args.no_measure,
                            mclk_out=not args.no_mclk_out,
                            auto_vtotal=not args.no_auto_vtotal,
-                           vbp=args.vbp, interlace_cap=args.interlace)
+                           vbp=args.vbp, interlace_cap=args.interlace,
+                           eth_phy=args.eth_phy)
     builder = Builder(soc, output_dir="build/colorlight_i5", compile_software=False)
     builder.build(run=args.build, seed=args.seed)
 

@@ -293,18 +293,41 @@ J12 (y=77.0, 下側)  eth1_* = SO-DIMM 奇数ピン 15/17/23/21/27/29/35/33
 さらに**呼び名が資料間で逆**。`docs/sodimm-pinmap.html`(出典: wuxx ext-board 図)は
 偶数ピンを Eth2 と呼ぶが、rainbow-board は同じ偶数ピンを ETH1 と呼ぶ。配線は同じで
 ラベルだけの違いだが、ゲートウェアの PHY インデックス選択で迷う原因になる。
-本リポジトリの流儀は **ETH2=jack(J11)=PHY0=litex eth1**(映像ストリーム既定)。
 → v1.0 でシルクに ETH1/ETH2 を入れること。
 
-**2. センタータップのネット名が入れ違っている(電気的には無害)。**
+★**litex の eth index との対応(2026-09-02 実機で確定)**。以前ここには
+「ETH2=jack(J11)=PHY0=litex eth1」と書いていたが**逆だった**。
+`litex_boards/platforms/colorlight_i5.py` 自身にこう書いてある:
+
+> The order of the two PHYs is swapped with the naming of the connectors on the
+> board so to match with the configuration of their PHYA[0] pins.
 
 ```
-main.ato:1933  eth.jack.ct.override_net_name  = "eth1_ct"   ← jack は eth2_* を運ぶ
-main.ato:1934  eth.jack2.ct.override_net_name = "eth2_ct"   ← jack2 は eth1_*
+platform.request("eth", 0) = コネクタ ETH2 = eth2_*(偶数ピン) = J11
+platform.request("eth", 1) = コネクタ ETH1 = eth1_*(奇数ピン) = J12  ← gateware 既定
 ```
 
-各ポートに独立した 100nF が付いているので電気的には問題ないが、名前が逆。
-v1.0 で直す。
+手組み試作機では配線がたまたま index=1 と一致していたので露見せず、v0.9.0 で J11 に
+挿した瞬間に「リンクはするのに ARP も ping も返らない」という形で出た。
+**判断はコネクタ表記ではなく SO-DIMM ピン番号の偶奇で行うこと。**
+`retrocastx_stream.py --eth-phy {0,1}` で切り替えられる(既定 1 = J12)。
+J11 へ移す場合は **seed 3 では index=0 の eth_rx が 122.55MHz(制約125)で閉じない**
+のでシード探索が要る(index=1 は seed 3 で 131.51MHz PASS)。
+
+**2. センタータップのネット名が入れ違っていた(2026-09-02 に main.ato 側を修正済み)。**
+
+```
+修正前  eth.jack.ct  = "eth1_ct"   ← jack は eth2_* を運ぶのに eth1_ct
+        eth.jack2.ct = "eth2_ct"   ← jack2 は eth1_* を運ぶのに eth2_ct
+修正後  eth.jack.ct  = "eth2_ct"   (= J11, C80, 表面)
+        eth.jack2.ct = "eth1_ct"   (= J12, C81, 裏面)
+```
+
+電気的には各ポートに独立した 100nF が付いているだけなので無害だったが、
+**この名前の逆転が実機デバッグで実害を出した**。v0.9.0 の実装で C81 が
+未実装だったとき、「eth2_ct が載っていない」を J11 側の欠品と誤読した
+(実際に欠品していたのは J12 の C81)。★**基板は v0.9.0 のまま**なので、
+現物のシルク/ネット名は旧のまま。次に `ato build` を流した時点で新名称になる。
 
 ## Ethernet LED: PHY直結 / GPIO の二経路(2026-08-11)
 

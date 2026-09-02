@@ -741,7 +741,9 @@ module EthernetPort:
     - 論理GND-シャーシ間: 各ポート 4.7nF/2kV ×2(1812)
     - **ETH2=jack=PHY0=litex eth1(映像ストリーム既定)、ETH1=jack2=PHY1=litex eth0(将来のデュアルリンク/2.5G化用)**
       ※litexのデフォルトindexは0=ETH1だが、gatewareはeth1(=ETH2)を要求して映像を出す。
-    - LED: 両ポートのMagJack緑/黄LEDをFPGA GPIOで駆動(ETH2=io_r1/io_t1, ETH1=io_w1/io_v1)
+    - LED: 両ポートのMagJack緑/黄LEDをFPGA GPIOで駆動(ETH2=io_r1/io_t1, ETH1=io_u1/io_y2)
+      ※以前ここに「ETH1=io_w1/io_v1」と書いてあったのは誤り(2026-09-02修正)。
+        io_w1/io_v1 は CH347 の UART0。信号宣言(led_g_drive2/led_y_drive2)が正。
     """
     signal gnd
     signal chassis
@@ -1946,8 +1948,13 @@ module App:
     supply.ldo_io.out.override_net_name = "p3v3_io"
     # Ethernetジャックのセンタータップ(Bob Smith終端)。電源ではないが、自動命名だと
     # 素の "hv" になりレイアウト時に電源と紛らわしい
-    eth.jack.ct.override_net_name = "eth1_ct"
-    eth.jack2.ct.override_net_name = "eth2_ct"
+    # ★**MDI側の命名と揃えること**(2026-09-02に逆だったのを修正)。
+    #   jack  = ETH2 = J11(MDIは eth2_*)→ eth2_ct = C80(表面)
+    #   jack2 = ETH1 = J12(MDIは eth1_*)→ eth1_ct = C81(裏面)
+    #   以前は逆に書いてあり、v0.9.0 の実機デバッグで「eth2_ct が載っていない」を
+    #   J11側の欠品と誤読した(実際に欠品していたのは J12 の C81)。
+    eth.jack.ct.override_net_name = "eth2_ct"
+    eth.jack2.ct.override_net_name = "eth1_ct"
     supply.ldo_a33.out.override_net_name = "p3v3_a"
     # CH347F の水晶ノード(電源ではない)。自動命名だと素の "hv" になり紛らわしい
     # ★FT2232H時代にあった ft_vcore_1v8 / ft_vphy_1v8 / ft_vpll_1v8 は、CH347Fが
