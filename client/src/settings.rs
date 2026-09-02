@@ -20,6 +20,17 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 
+/// ドット復元の係数 a の既定値 ×1000。
+///
+/// 理論値は 0.36(孤立1ドットの到達率が実測 64% = 1-a)。ただし白が既に
+/// 231/255 まで来ていて上の余裕が無く、幅の広い明部の**先頭画素**が
+/// v/(1-a) でオーバーシュートして 3.2% 飽和した(2026-09-02 実測)。
+/// **飽和ゼロで短い run の振幅が最大になるのは 0.28。**
+///
+/// 白の余裕を作れば(TVPの細ゲインを下げれば)0.36 まで使える。
+/// 飽和と復元度のトレードオフなので、スライダーで詰められるようにしてある。
+fn default_dot_a() -> u32 { 280 }
+
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub volume: f32,
@@ -69,6 +80,10 @@ pub struct Settings {
     pub bezel_off: bool,
     /// 補間 0=ニアレスト 1=バイリニア 2=sharp-bilinear
     pub filter: u32,
+    /// ドット復元(1タップ逆フィルタ)の係数 a ×1000。0 = 無効。
+    /// R/G/B 独立に掛かる(劣化も3経路で独立に起きているため)。
+    /// 既定値の根拠は default_dot_a() を参照。
+    pub dot_a_milli: u32,
     /// インターレース時の残光。1.0=前フィールドの行をそのまま残す(既定、チラつき無し)。
     /// 下げるとCRTの残光に近づくが、面全体がフィールドレートでちらつく。
     pub interlace_decay: f32,
@@ -148,6 +163,7 @@ impl Default for Settings {
             bezel: String::new(),
             bezel_off: false,
             filter: 2,
+            dot_a_milli: default_dot_a(),
             interlace_decay: 1.0,
             crop_x: 0,
             crop_y: 0,
@@ -271,6 +287,7 @@ impl Settings {
                 "netcheck_muted" => s.netcheck_muted = v == "true",
                 "bezel_off" => s.bezel_off = v == "true",
                 "filter" => { if let Ok(x) = v.parse::<u32>() { s.filter = x.min(2) } }
+                "dot_a_milli" => { if let Ok(x) = v.parse::<u32>() { s.dot_a_milli = x.min(900) } }
                 "interlace_decay" => {
                     if let Ok(x) = v.parse::<f32>() { s.interlace_decay = x.clamp(0.0, 1.0) }
                 }
@@ -331,6 +348,7 @@ impl Settings {
              netcheck_muted = {}\n\
              bezel_off = {}\n\
              filter = {}\n\
+             dot_a_milli = {}\n\
              interlace_decay = {}\n\
              crop_x = {}\n\
              crop_y = {}\n\
@@ -363,6 +381,7 @@ impl Settings {
             self.netcheck_muted,
             self.bezel_off,
             self.filter,
+            self.dot_a_milli,
             self.interlace_decay,
             self.crop_x,
             self.crop_y,

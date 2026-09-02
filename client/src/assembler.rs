@@ -56,6 +56,31 @@ pub struct FrameAssembler {
     parity_alt: i32,
     /// 測定で「インタレースの1フィールド」と判定しているか(診断用)
     pub interlace_measured: bool,
+    /// **ドット復元(1タップ逆フィルタ)の係数 a を ×1000 した値。0 = 無効。**
+    ///
+    /// X68000 の 768x512(ドットクロック 34.776MHz)では、**本体の出力段で
+    /// 既に1ドットのパルスが立ち切っていない**。2026-09-02 に v0.9.0 実機で実測:
+    ///
+    ///   1ドット幅 → 白の 64% / 2ドット幅 → 82% / 4ドット以上 → 100%
+    ///
+    /// オシロでコネクタ直後と基板フィルタ通過後を比べて差が無かったので、
+    /// **基板の RC(220Ω×33pF, τ=7.26ns)ではなく信号源側**が原因と確定した。
+    ///
+    /// 一次ローパスを通った信号をサンプルすると、理想のドット値 d[n] とは
+    ///   v[n] = a·v[n-1] + (1-a)·d[n]
+    /// の関係になる。孤立1ドットパルスの到達率がそのまま (1-a) なので、
+    /// 実測 64% から **a = 0.36** が直接決まる(τ を推定する必要が無い)。
+    /// 逆算は1タップで済む:
+    ///   d[n] = (v[n] - a·v[n-1]) / (1-a)
+    ///
+    /// 汎用のピーキングと違い**劣化モデルの厳密な逆演算**なので、a が実測と
+    /// 合っていればオーバーシュート(輪郭のリンギング)は出ない。
+    /// 高域が 1/(1-a) 倍に持ち上がるぶん雑音も増えるが、実測 noise 0.4% なら問題ない。
+    pub dot_a_milli: u32,
+    /// 行ごとの「直前に書いた生の値」と「その次のx」。断片化したラインで
+    /// v[n-1] を跨いで繋ぐために持つ。**復元後ではなく生の値**を保つこと。
+    last_raw: Vec<[u8; 3]>,
+    last_x: Vec<usize>,
     decay: f32,           // 欠損ラインの減衰率(1.0=前フレーム保持のまま, 0.8=毎フレーム80%へ暗転)
     /// インターレース時の減衰率。既定 1.0(=減衰しない)。
     ///
@@ -102,6 +127,9 @@ impl FrameAssembler {
             last_parity: None,
             parity_alt: 0,
             interlace_measured: false,
+            dot_a_milli: 0,
+            last_raw: Vec::new(),
+            last_x: Vec::new(),
             decay: 0.8,
             interlace_decay: 1.0,
             raw_view: false,
@@ -263,6 +291,8 @@ impl FrameAssembler {
                     self.hist_n = vec![0u8; if need > 0 { self.height } else { 0 }];
                     self.ntsc_info = None;
                     self.line_seen = vec![false; self.height];
+                    self.last_raw = vec![[0u8; 3]; self.height];
+                    self.last_x = vec![usize::MAX; self.height];
                     self.cur_frame = None;
                     self.px_filled = 0;
                 }
@@ -320,6 +350,11 @@ impl FrameAssembler {
                         px[2] = 0;
                         // alpha(px[3])は不変
                     }
+                    // 行を消したので、ドット復元の「左隣」の連結も切る。
+                    // 残すと前フレームの右端が今フレームの左端の v[n-1] になる。
+                    if let Some(x) = self.last_x.get_mut(l.line as usize) {
+                        *x = usize::MAX;
+                    }
                 }
                 let base = (l.line as usize * self.width + off) * 4;
                 match l.pixfmt {
@@ -330,14 +365,46 @@ impl FrameAssembler {
                         }
                     }
                     proto::PIXFMT_RGB555 => {
+                        let row = l.line as usize;
+                        // a は 0.9 で頭打ち。1 に近づけると 1/(1-a) が発散する
+                        let a = self.dot_a_milli.min(900) as i32;
+                        // 断片の左隣の**生の**値。前の断片が直前まで書いていれば
+                        // それを継ぐ。そうでなければ 0(ボードは非黒範囲だけを
+                        // 送るので、範囲の外は黒とみなして良い)。
+                        let mut prev: [i32; 3] =
+                            if a > 0 && self.last_x.get(row) == Some(&off) {
+                                let p = self.last_raw[row];
+                                [p[0] as i32, p[1] as i32, p[2] as i32]
+                            } else {
+                                [0, 0, 0]
+                            };
                         for (i, px) in l.pixels.chunks_exact(2).enumerate().take(fit) {
                             let v = u16::from_le_bytes([px[0], px[1]]);
                             let (r5, g5, b5) = ((v >> 10) & 0x1F, (v >> 5) & 0x1F, v & 0x1F);
-                            let o = base + i * 4;
                             // 5bit→8bit はビット複製(受信リファレンスと同一)
-                            self.fb[o] = ((r5 << 3) | (r5 >> 2)) as u8;
-                            self.fb[o + 1] = ((g5 << 3) | (g5 >> 2)) as u8;
-                            self.fb[o + 2] = ((b5 << 3) | (b5 >> 2)) as u8;
+                            let raw = [
+                                ((r5 << 3) | (r5 >> 2)) as i32,
+                                ((g5 << 3) | (g5 >> 2)) as i32,
+                                ((b5 << 3) | (b5 >> 2)) as i32,
+                            ];
+                            let o = base + i * 4;
+                            if a == 0 {
+                                self.fb[o] = raw[0] as u8;
+                                self.fb[o + 1] = raw[1] as u8;
+                                self.fb[o + 2] = raw[2] as u8;
+                            } else {
+                                // d[n] = (v[n] - a·v[n-1]) / (1-a)
+                                for c in 0..3 {
+                                    let d = (raw[c] * 1000 - a * prev[c]) / (1000 - a);
+                                    self.fb[o + c] = d.clamp(0, 255) as u8;
+                                }
+                                prev = raw;
+                            }
+                        }
+                        if a > 0 && fit > 0 && row < self.last_x.len() {
+                            self.last_raw[row] =
+                                [prev[0] as u8, prev[1] as u8, prev[2] as u8];
+                            self.last_x[row] = off + fit;
                         }
                     }
                     proto::PIXFMT_YC8 => {

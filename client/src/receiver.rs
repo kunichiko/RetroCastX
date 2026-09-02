@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::net::UdpSocket;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -34,6 +34,15 @@ fn raise_thread_qos() {}
 
 pub struct Config {
     pub port: u16,
+    /// 受信ソケットを縛るローカルアドレス。既定は 0.0.0.0(全IF)。
+    ///
+    /// ★**VPN 接続中は指定が要る**(2026-09-02)。VPN が既定経路を握ると、
+    ///   0.0.0.0 に bind したソケットからの 255.255.255.255 宛 SUBSCRIBE が
+    ///   point-to-point の utun に載ろうとして
+    ///   `Can't assign requested address` で失敗し、ボードに届かない。
+    ///   `--bind 192.168.11.24` のようにボードと同じL2にいるIFのアドレスを
+    ///   指定すると既定経路を迂回する。
+    pub bind: String,
     /// SUBSCRIBE keepalive の宛先。None なら購読しない(sender_sim等の受け専用)。
     pub subscribe_to: Option<String>,
     /// 購読対象ボードのMAC。None ならワイルドカード(単一ボードLAN専用)。
@@ -499,6 +508,9 @@ pub struct BoardInfo {
 
 #[derive(Default)]
 pub struct Shared {
+    /// ドット復元(1タップ逆フィルタ)の係数 a ×1000。0 = 無効。
+    /// UI から live に変えられるよう Atomic で持つ(詳細は assembler の dot_a_milli)。
+    pub dot_a_milli: AtomicU32,
     pub frame: Mutex<Option<CompletedFrame>>,
     /// フレーム更新の世代カウンタ(UIはこれでテクスチャ再アップロードを判定)
     pub frame_gen: AtomicU64,
@@ -600,7 +612,11 @@ pub fn spawn(
     //   (2026-08-15)。macOS では bind は通るようになるものの、ブロードキャストは
     //   片方のソケットにしか配られず、capture が無言で0行になる。
     //   「Viewerを閉じてください」と明示的に失敗する方がまだ良いので、付けない。
-    raw.bind(&std::net::SocketAddr::from(([0, 0, 0, 0], cfg.port)).into())?;
+    let bind_ip: std::net::Ipv4Addr = cfg.bind.parse().map_err(|e| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                            format!("--bind {} を解釈できません ({e})", cfg.bind))
+    })?;
+    raw.bind(&std::net::SocketAddr::from((bind_ip, cfg.port)).into())?;
     let sock: UdpSocket = raw.into();
     sock.set_read_timeout(Some(Duration::from_millis(200)))?;
     if cfg.subscribe_to.is_some() {
@@ -928,6 +944,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         if let Some(a) = shared.adjust.lock().unwrap().take() {
             asm.set_adjust(a);
         }
+        asm.dot_a_milli = shared.dot_a_milli.load(Ordering::Relaxed);
         if let Some(frame) = asm.feed(&buf[..n]) {
             frames_since += 1;
             noise.feed(&frame.rgba);

@@ -80,6 +80,7 @@ fn main() -> eframe::Result {
     eprintln!("settings: {}", settings::Settings::path().display());
     let mut audio = receiver::AudioOpts::default();
     audio.source = cfg.audio_source;
+    let mut bind = String::from("0.0.0.0");
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -87,6 +88,18 @@ fn main() -> eframe::Result {
             "--mac" => target_mac = Some(parse_mac(&args.next().expect("--mac needs AA:BB:.."))),
             "--port" => port = args.next().expect("--port needs a value").parse().unwrap(),
             "--no-subscribe" => subscribe_to = None,
+            // 受信ソケットを縛るローカルアドレス。**VPN接続中に必要**:
+            // 既定経路がVPNだと 0.0.0.0 からの 255.255.255.255 宛 SUBSCRIBE が
+            // utun に載ろうとして失敗し、ボードに届かない。ボードと同じL2に
+            // いるIFのアドレスを渡すと迂回できる(例 --bind 192.168.11.24)。
+            "--bind" => bind = args.next().expect("--bind needs an IP (e.g. 192.168.11.24)"),
+            // ドット復元(1タップ逆フィルタ)の係数 a を 0.0..0.9 で指定。
+            // 0 で無効。設定ファイルの値を一時的に上書きする(A/B検証用)。
+            "--dot-restore" => {
+                let a: f32 = args.next().expect("--dot-restore needs a (e.g. 0.36)")
+                    .parse().expect("--dot-restore は 0.0〜0.9 の数値");
+                cfg.dot_a_milli = (a.clamp(0.0, 0.9) * 1000.0).round() as u32;
+            }
             "--dump-seq" => {
                 dump_seq = Some(args.next().expect("--dump-seq needs a count")
                                 .parse().unwrap())
@@ -181,8 +194,8 @@ fn main() -> eframe::Result {
     }
 
     if let Some(secs) = headless_secs {
-        return run_headless(port, subscribe_to, target_mac, secs, decay, interlace_decay,
-                            audio, dump_frame, dump_seq);
+        return run_headless(port, bind, subscribe_to, target_mac, secs, decay, interlace_decay,
+                            audio, dump_frame, dump_seq, cfg.dot_a_milli);
     }
     if fullscreen_mode {
         let rot = if rotate == u32::MAX { cfg.rotate } else { rotate };
@@ -195,7 +208,7 @@ fn main() -> eframe::Result {
             h_size: 1.0, h_pos: 0.0, v_size: 1.0, v_pos: 0.0,
             ..Default::default()
         };
-        fullscreen::run(port, subscribe_to, target_mac, decay, interlace_decay, audio, p); // 戻らない
+        fullscreen::run(port, bind, subscribe_to, target_mac, decay, interlace_decay, audio, p); // 戻らない
     }
 
     let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
@@ -222,7 +235,7 @@ fn main() -> eframe::Result {
         "RetroCast X",
         options,
         Box::new(move |cc| {
-            Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, no_vsync, decay, interlace_decay,
+            Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, bind.clone(), no_vsync, decay, interlace_decay,
                                        audio, cfg.clone())))
         }),
     )
@@ -278,6 +291,7 @@ fn parse_mac(s: &str) -> [u8; 6] {
 /// GUIなしで受信パイプラインだけ動かし、毎秒統計を出力する(検証・CI用)。
 fn run_headless(
     port: u16,
+    bind: String,
     subscribe_to: Option<String>,
     target_mac: Option<[u8; 6]>,
     secs: u64,
@@ -286,10 +300,12 @@ fn run_headless(
     audio: receiver::AudioOpts,
     dump_frame: Option<String>,
     dump_seq: Option<usize>,
+    dot_a_milli: u32,
 ) -> eframe::Result {
     let shared = Arc::new(receiver::Shared::default());
+    shared.dot_a_milli.store(dot_a_milli, std::sync::atomic::Ordering::Relaxed);
     receiver::spawn(
-        receiver::Config { port, subscribe_to, target_mac, decay, interlace_decay, audio },
+        receiver::Config { port, bind: bind.clone(), subscribe_to, target_mac, decay, interlace_decay, audio },
         shared.clone(),
         || {},
     )
@@ -603,6 +619,11 @@ struct ViewerApp {
     tune_get_at: Option<std::time::Instant>,
     /// ボードの現在値を取り込み済みか。起動時に1回だけ合わせる
     tune_synced: bool,
+    /// TVPの細ゲイン(レジスタ08h/09h/0Ah)。ゲイン = 1 + N/256。
+    /// **基板ごとに違う**ので手で詰められるようにする。値はボードから読み戻す。
+    tune_gain_r: i32,
+    tune_gain_g: i32,
+    tune_gain_b: i32,
     /// 現在のウィンドウ内寸(保存用)
     window_size: egui::Vec2,
     /// 中央の描画領域と画のサイズ。ウィンドウを等倍に合わせるのに使う
@@ -634,6 +655,8 @@ struct ViewerApp {
     bezel_tex: Option<(egui::TextureHandle, u32)>,
     /// 補間 0=ニアレスト 1=バイリニア 2=sharp-bilinear
     filter: u32,
+    /// ドット復元の係数 a ×1000。0=無効。詳細は assembler の dot_a_milli
+    dot_a_milli: u32,
     /// インターレース時の残光(1.0=減衰しない)。設定に保存する
     interlace_decay: f32,
     /// 管面が映す時間窓 [h0,h1,v0,v1]。CRTのH位置/H幅・V位置/V幅に相当
@@ -683,6 +706,7 @@ impl ViewerApp {
         port: u16,
         subscribe_to: Option<String>,
         target_mac: Option<[u8; 6]>,
+        bind: String,
         no_vsync: bool,
         decay: f32,
     interlace_decay: f32,
@@ -703,7 +727,7 @@ impl ViewerApp {
         let shared = Arc::new(receiver::Shared::default());
         let ctx = cc.egui_ctx.clone();
         let rx_error = receiver::spawn(
-            receiver::Config { port, subscribe_to: subscribe_to.clone(), target_mac, decay, interlace_decay, audio },
+            receiver::Config { port, bind: bind.clone(), subscribe_to: subscribe_to.clone(), target_mac, decay, interlace_decay, audio },
             shared.clone(),
             move || ctx.request_repaint(),
         )
@@ -740,6 +764,11 @@ impl ViewerApp {
             tune_pending: Default::default(),
             tune_get_at: None,
             tune_synced: false,
+            // 初期値は REGS_X68000 と同じ(v0.9.0 で校正した値)。
+            // 実際の値はボードから読み戻して上書きされる
+            tune_gain_r: 43,
+            tune_gain_g: 39,
+            tune_gain_b: 35,
             window_size: egui::vec2(cfg.window_w, cfg.window_h),
             last_avail: egui::Vec2::ZERO,
             last_tex: egui::Vec2::ZERO,
@@ -756,6 +785,7 @@ impl ViewerApp {
             bezel_off: cfg.bezel_off,
             bezel_tex: None,
             filter: cfg.filter,
+            dot_a_milli: cfg.dot_a_milli,
             interlace_decay: cfg.interlace_decay,
             window: cfg.window,
             tube_time_based: cfg.tube_time_based,
@@ -869,6 +899,7 @@ impl ViewerApp {
             audio_device: self.audio_device_sel.clone(),
             rotate: self.rotate,
             tube_aspect: self.tube_aspect,
+            dot_a_milli: self.dot_a_milli,
             show_panel: self.show_panel,
             netcheck_muted: self.netcheck_muted,
             bezel: self.bezel.clone(),
@@ -1088,7 +1119,7 @@ impl ViewerApp {
     }
 
     /// 実行時に調整できるキーの一覧。読み戻しと表示の同期に使う
-    const TUNE_KEYS: [u16; 7] = [
+    const TUNE_KEYS: [u16; 10] = [
         protocol::CFG_KEY_VBP,
         protocol::CFG_KEY_HS_OFFSET,
         protocol::CFG_KEY_PLL_DIVIDE,
@@ -1096,6 +1127,9 @@ impl ViewerApp {
         protocol::CFG_KEY_PHASE,
         protocol::CFG_KEY_FULL_LINE,
         protocol::CFG_KEY_FRAME_SKIP,
+        protocol::CFG_KEY_GAIN_R,
+        protocol::CFG_KEY_GAIN_G,
+        protocol::CFG_KEY_GAIN_B,
     ];
 
     /// ボードの現在値を表示へ反映する。
@@ -1366,6 +1400,9 @@ impl ViewerApp {
                 protocol::CFG_KEY_FULL_LINE => self.tune_full_line = val != 0,
                 protocol::CFG_KEY_FRAME_SKIP => self.tune_frame_skip = val as u8,
                 protocol::CFG_KEY_PHASE => self.tune_phase = (val as u8).min(31),
+                protocol::CFG_KEY_GAIN_R => self.tune_gain_r = val as i32,
+                protocol::CFG_KEY_GAIN_G => self.tune_gain_g = val as i32,
+                protocol::CFG_KEY_GAIN_B => self.tune_gain_b = val as i32,
                 _ => {}
             }
         }
@@ -2090,6 +2127,38 @@ impl ViewerApp {
             }
             ui.monospace(format!("{:.0}度", self.tune_phase as f32 * 360.0 / 32.0));
         });
+        // --- TVPの細ゲイン(白バランスと白レベル)---
+        //
+        // ★**基板ごとに違う。** アナログ3経路のばらつきを埋める値なので、
+        //   基板が変われば正解が変わる。v0.9.0 の校正値は R=43 / G=39 / B=35
+        //   (白ベタが3chとも RGB555 のコード28=231 に載る)。
+        //
+        //   合わせ方: 白いベタ塗りの**内側**(縁の立ち上がり途中を除く)を見て、
+        //   3chが同じコードに載るようにする。**コードが変わる境目ではなく、
+        //   同じコードに載る範囲の中央に置くこと。** 端に置くと温度ドリフトで
+        //   1コード揺れる。RGB555 の1コードは 3.6% あるので目に見える。
+        //
+        //   白を最上位コード(255)まで上げるとX68000の32階調が1:1で載るが、
+        //   最上位には上の境目が無いためドリフトに弱く、クリップも検出できない。
+        //   階調の並んだ映像源(カラーバー/グレースケールランプ)で
+        //   ゲインとオフセットを同時に合わせるまでは、余裕のある値にしておく。
+        ui.horizontal(|ui| {
+            ui.monospace("細ゲイン");
+            ui.monospace("ゲイン = 1 + N/256");
+        });
+        row(ui, "  gain_R", &mut self.tune_gain_r, 0, 255,
+            protocol::CFG_KEY_GAIN_R, &mut send);
+        row(ui, "  gain_G", &mut self.tune_gain_g, 0, 255,
+            protocol::CFG_KEY_GAIN_G, &mut send);
+        row(ui, "  gain_B", &mut self.tune_gain_b, 0, 255,
+            protocol::CFG_KEY_GAIN_B, &mut send);
+        ui.horizontal(|ui| {
+            ui.monospace(format!(
+                "  R×{:.3}  G×{:.3}  B×{:.3}",
+                1.0 + self.tune_gain_r as f32 / 256.0,
+                1.0 + self.tune_gain_g as f32 / 256.0,
+                1.0 + self.tune_gain_b as f32 / 256.0));
+        });
         ui.horizontal(|ui| {
             if ui.button("読む").on_hover_text(
                 "ボードの現在値を取り込んで表示を合わせる").clicked()
@@ -2494,6 +2563,12 @@ impl eframe::App for ViewerApp {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let t_ui = std::time::Instant::now();
         let ctx = root.ctx().clone();
+        // ドット復元の係数を受信スレッドへ渡す(組立時に生のADCコードへ掛ける)。
+        // 毎フレームの store は Relaxed で十分に安い。
+        self.shared.dot_a_milli.store(
+            self.dot_a_milli,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let t_tex = std::time::Instant::now();
         self.refresh_texture(&ctx);
         self.pace.note_upload(t_tex.elapsed());
@@ -2929,6 +3004,29 @@ impl eframe::App for ViewerApp {
                         self.filter = f;
                         self.mark_settings_dirty();
                     }
+                });
+                ui.horizontal(|ui| {
+                    // ★**ドット復元(1タップ逆フィルタ)。**
+                    //   X68000 768x512 では本体の出力段で既に1ドットのパルスが
+                    //   立ち切っておらず、実測で 1ドット=白の64% / 2ドット=82% /
+                    //   4ドット以上=100%(2026-09-02, v0.9.0)。オシロでコネクタ
+                    //   直後と基板フィルタ後に差が無かったので、基板ではなく
+                    //   信号源側が原因と確定している。
+                    //
+                    //   一次ローパスの逆演算なので、係数が合っていれば
+                    //   オーバーシュート(輪郭のリンギング)は出ない。
+                    //   孤立1ドットの到達率が (1-a) なので a = 1 - 0.64 = 0.36 が既定。
+                    ui.monospace("ドット復元");
+                    let mut a = self.dot_a_milli as f32 / 1000.0;
+                    if ui.add(egui::Slider::new(&mut a, 0.0..=0.9).fixed_decimals(2)).changed() {
+                        self.dot_a_milli = (a * 1000.0).round() as u32;
+                        self.mark_settings_dirty();
+                    }
+                    ui.monospace(if self.dot_a_milli == 0 {
+                        "切".to_string()
+                    } else {
+                        format!("1px を {:.0}% → 100% へ", 100.0 * (1.0 - a))
+                    });
                 });
                 ui.horizontal(|ui| {
                     // インターレースの残光。

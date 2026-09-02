@@ -24,14 +24,14 @@ use crate::receiver;
 use crate::remote_input;
 use crate::render;
 
-pub fn run(port: u16, subscribe_to: Option<String>, target_mac: Option<[u8; 6]>, decay: f32,
+pub fn run(port: u16, bind: String, subscribe_to: Option<String>, target_mac: Option<[u8; 6]>, decay: f32,
            interlace_decay: f32,
            audio: receiver::AudioOpts, params: render::Params) -> ! {
     let shared = Arc::new(receiver::Shared::default());
     let subscribe_dest = subscribe_to.clone();
     let (tx, rx): (Sender<()>, Receiver<()>) = std::sync::mpsc::channel();
     receiver::spawn(
-        receiver::Config { port, subscribe_to, target_mac, decay, interlace_decay, audio },
+        receiver::Config { port, bind, subscribe_to, target_mac, decay, interlace_decay, audio },
         shared.clone(),
         move || {
             let _ = tx.send(());
