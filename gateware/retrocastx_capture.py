@@ -95,7 +95,13 @@ class TvpCapture(Module):
         self.line_ack   = Signal()                # 1パルスで pop(送出開始時)
         self.rd_face    = Signal(nface_bits)      # 読み出す面(送信側がラッチして固定)
         self.rd_word    = Signal(max=max(entries, 2))   # 面内ワード位置(=x/2)
-        self.rd_data    = Signal(32)              # {pix1, pix0}
+        self.rd_data    = Signal(64)              # {pix1, pix0} 各32bitスロット
+        #   スロットの中身は **8bit×3 の生値**(byte0=R byte1=G byte2=B)。
+        #   ★伝送形式(RGB555 / RGB888 / YC8)への変換は**送出側で行う**。
+        #     バッファに8bitのまま持てば、形式を増やしてもここは変わらない。
+        #     RGB555 は5bitしか運べず、X68000 の32階調を 1:1 で載せるには
+        #     ゲイン誤差の余裕がゼロになる(実測 29/32)。8bit で運べば
+        #     PC 側で32階調へ吸着できる。
         # 指定した行の「push時点の非黒範囲」を pix ドメインでラッチして見る窓。
         # FIFOも送信FSMも通らないので、キャプチャの判定そのものが正しいかを
         # 切り分けられる。実測で「範囲だけがFIFOの滞留段数ぶん遅れて見える」
@@ -209,7 +215,9 @@ class TvpCapture(Module):
         self.meas_lines_tvp = Signal(16)          # VSOUT間のHSOUT数(=vtotal)
 
         # --- ラインバッファ(true dual-port: write=pix / read=sys)---
-        self.specials.mem = mem = Memory(32, nface * entries)
+        # 32bit→64bit へ広げた(2画素/エントリは維持、各画素32bitスロット)。
+        # BRAM: 64 × nface × entries = 512 Kbit / LFE5U-25F の EBR 1008 Kbit
+        self.specials.mem = mem = Memory(64, nface * entries)
         wr = mem.get_port(write_capable=True, clock_domain="pix")
         rd = mem.get_port(clock_domain="sys")
         self.specials += wr, rd
@@ -251,7 +259,7 @@ class TvpCapture(Module):
         # 先に存在している必要がある)
         skip_cnt = Signal(4)
         send_frame = Signal(reset=1)              # 間引きで落とすフレームでは 0
-        pair_lo = Signal(16)                      # 偶数xピクセル保持
+        pair_lo = Signal(32)                      # 偶数xピクセル保持(32bitスロット)
 
         # VSYNCエッジ行数ガード: 前回受理VSYNCからの経過行数(vrow)が vs_min_rows 以上の
         # エッジのみ受理する。row ではなく vrow を使うのは、vs_row_at_sync で表示位相を
@@ -298,8 +306,13 @@ class TvpCapture(Module):
         self.cfg_raw_yc = Signal()          # 1 = YC8(生8bit) / 0 = RGB555
         raw_yc = Signal()                   # pixドメインへ同期した版
         self.specials += MultiReg(self.cfg_raw_yc, raw_yc, "pix")
-        pixw = Signal(16)
-        self.comb += pixw.eq(Mux(raw_yc, Cat(g, r), rgb888_to_555(r, g, b)))
+        # ★バッファには**変換せず8bitのまま**入れる(byte0=R byte1=G byte2=B)。
+        #   YC8 だけは「下位=緑ch / 上位=赤ch」という別の意味を持つ形式なので、
+        #   ここで詰め替えておく(復調に8bitの生値が要るのは元から同じ)。
+        pixw = Signal(32)
+        self.comb += pixw.eq(Mux(raw_yc,
+                                 Cat(g, r, C(0, 16)),      # YC8: byte0=緑 byte1=赤
+                                 Cat(r, g, b, C(0, 8))))   # 生RGB888
         # 「黒でない」の判定しきい値(RGB555の各成分, 0..31)。ノイズで真っ暗な所が
         # 0にならないので、少し上げないと範囲が毎ライン全幅に広がってしまう。
         # ★YC8では意味を持たない(ブランキングもバーストも「中身」なので、
@@ -684,9 +697,12 @@ class TvpCapture(Module):
         #   成立しない。上位(retrocastx_stream.py)が cfg_full_line 相当を強制し、
         #   ここの ln_first/ln_last を使わないようにしてある。
         def _nz(p):
-            return ((p[0:5] > self.cfg_black_th)
-                    | (p[5:10] > self.cfg_black_th)
-                    | (p[10:15] > self.cfg_black_th))
+            # ★しきい値は RGB555 の 5bit 値(0..31)で定義されているので、
+            #   8bit スロットの**上位5bit**と比べる。こうすると 32bit 化しても
+            #   非黒範囲の判定が従来とビット単位で一致する。
+            return ((p[3:8] > self.cfg_black_th)        # R
+                    | (p[11:16] > self.cfg_black_th)    # G
+                    | (p[19:24] > self.cfg_black_th))   # B
         pair_nz = Signal()
         self.comb += pair_nz.eq(pix_we & (_nz(pixw) | _nz(pair_lo)))
         ln_first = Signal(entry_bits, reset=2 ** entry_bits - 1)

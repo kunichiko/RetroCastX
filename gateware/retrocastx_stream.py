@@ -878,7 +878,25 @@ class RetroCastXStreamer(LiteXModule):
             self.comb += mflags.eq(Cat(self.stat_interlaced, C(0, 15)))
         else:
             self.comb += mflags.eq(C(1 if interlace else 0, 16))
-        line_pixdata = capture.rd_data if cap_mode else Cat(pix0.pix, pix1.pix)
+        # --- ラインバッファの生値(8bit×3)→ 伝送形式へ ---
+        #
+        # ★**変換はここで行う。** バッファは 8bit のまま持っているので、
+        #   伝送形式を増やしてもキャプチャ側は変わらない。
+        #   スロットは 32bit で byte0=R byte1=G byte2=B。
+        #   ただし YC8 だけは書込側で「byte0=緑ch byte1=赤ch」に詰め替えてある
+        #   (復調に8bitの生値が要るため)。
+        if cap_mode:
+            def _slot555(p):
+                # 0RRRRRGGGGGBBBBB。Cat は第1引数がLSB側
+                return Cat(p[19:24], p[11:16], p[3:8], C(0, 1))
+            s0, s1 = capture.rd_data[0:32], capture.rd_data[32:64]
+            line_pixdata = Signal(32)
+            self.comb += line_pixdata.eq(
+                Mux(pixfmt == PIXFMT_YC8,
+                    Cat(s0[0:16], s1[0:16]),               # YC8: 2B/px そのまま
+                    Cat(_slot555(s0), _slot555(s1))))      # RGB555: 2B/px
+        else:
+            line_pixdata = Cat(pix0.pix, pix1.pix)
         self.comb += [
             line_flags.eq(Cat(frag_last, field)),
             ts_frag.eq(ts_line + frag_off),
