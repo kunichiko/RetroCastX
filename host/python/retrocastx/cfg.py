@@ -96,7 +96,8 @@ def _num(s: str) -> int:
 
 
 class Cfg:
-    def __init__(self, ip: str, port: int, timeout: float = 0.3):
+    def __init__(self, ip: str, port: int, timeout: float = 0.3,
+                 bind: str = "0.0.0.0"):
         self.dst = (ip, port)
         self.seq = 1
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -107,12 +108,20 @@ class Cfg:
         #   エフェメラルポートにbindすると応答が受け取れず「キー未対応」に見えるので、
         #   受信ポートに合わせてbindする(他のツールも同じ流儀)。
         #   Viewerが起動中は同じポートを掴んでいるので bind に失敗する。
+        #
+        # ★**VPN を張っていると 0.0.0.0 では 255.255.255.255 へ送れない**
+        #   (2026-09-02)。VPN が既定経路を握ると限定ブロードキャストが
+        #   point-to-point の utun に載ろうとして sendto が
+        #   `OSError: [Errno 49] Can't assign requested address` で落ちる。
+        #   `--bind 192.168.11.24` のようにボードと同じL2にいるIFのアドレスを
+        #   指定すれば、既定経路を迂回して出ていく。
         try:
-            self.sock.bind(("0.0.0.0", port))
+            self.sock.bind((bind, port))
         except OSError as e:
             raise SystemExit(
-                "UDP %d を bind できません (%s)\n"
-                "Viewer など同じポートを使うアプリを閉じてから実行してください。" % (port, e))
+                "UDP %d を %s で bind できません (%s)\n"
+                "Viewer など同じポートを使うアプリを閉じてから実行してください。"
+                % (port, bind, e))
 
     def _xfer(self, op: int, key: int, value: int = 0, retries: int = 4):
         """SET/GET を送って REPLY の value を返す。来なければ None。"""
@@ -159,6 +168,11 @@ def main():
     ap.add_argument("--board", required=True,
                     help="ボードのIP(255.255.255.255 でブロードキャストも可)")
     ap.add_argument("--port", type=int, default=proto.DEFAULT_PORT)
+    ap.add_argument("--bind", default="0.0.0.0",
+                    help="受信ソケットを縛るローカルアドレス。**VPN接続中は必須**: "
+                         "既定経路がVPNだと 255.255.255.255 への送信が "
+                         "EADDRNOTAVAIL で落ちる。ボードと同じL2にいるIFの "
+                         "アドレスを指定する(例 192.168.11.24)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     g = sub.add_parser("get", help="現在値を読む")
@@ -185,7 +199,7 @@ def main():
             print("0x%04X   %-20s %s" % (k, name, desc))
         return
 
-    c = Cfg(args.board, args.port)
+    c = Cfg(args.board, args.port, bind=args.bind)
 
     if args.cmd == "get":
         v = c.get(args.key)
