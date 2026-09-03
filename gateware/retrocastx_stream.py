@@ -566,6 +566,16 @@ class RetroCastXStreamer(LiteXModule):
                       ),
                        If((cfg_target == 0) & (cfg_key == 0x35),
                           capture.cfg_frame_skip.eq(rx.data[:4]),
+                      ),
+                       # 非黒判定の閾値(5bit = 8bitコードの上位5bit)。key 0x37。
+                       # ★**暗い「絵の中身」まで黒と見なすと、その画素は範囲から
+                       #   外れて送られず、受信側では 0 のままになる。**
+                       #   既定2は code>=24 でないと非黒にならないので、
+                       #   X68000 の32階調のうち下2段(code 8,16)が消えていた
+                       #   (2026-09-03 に実測で確定)。映像源によって適切な値が
+                       #   違うので実行時に振れるようにする。
+                       If((cfg_target == 0) & (cfg_key == 0x37),
+                          capture.cfg_black_th.eq(rx.data[:5]),
                       )] if cap_mode else []),
                     If((cfg_target == 0) & (cfg_key == 0x1F),
                         self.cfg_phase.eq(rx.data[:5]),
@@ -739,6 +749,7 @@ class RetroCastXStreamer(LiteXModule):
                 0x33: reply_mux.eq(capture.cap_drops),
                 0x34: reply_mux.eq(capture.stat_pop_probe),
                 0x35: reply_mux.eq(capture.cfg_frame_skip),
+                0x37: reply_mux.eq(capture.cfg_black_th),
             })
         _add_reply({k: reply_mux.eq(sig) for k, sig in (extra_stats or {}).items()})
         self.comb += Case(cfg_key, reply_cases)
