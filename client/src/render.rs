@@ -388,13 +388,42 @@ pub struct EguiBlit {
     pub uniform: wgpu::Buffer,
     /// (テクスチャ, ビュー, バインド, 幅, 高さ)
     pub tex: Option<(wgpu::Texture, wgpu::TextureView, wgpu::BindGroup, u32, u32)>,
+    /// 映像テクスチャのフォーマット。**描画先に合わせて決める**(video_tex_format)
+    tex_format: wgpu::TextureFormat,
+}
+
+/// 映像テクスチャのフォーマットを描画先に合わせて選ぶ。
+///
+/// ★**フレームバッファは表示用の値をそのまま持っている**(assembler が作る
+///   8bit の RGB)。だから画面までに何の変換もかからないのが正しい。
+///   ところがテクスチャとレンダーターゲットの sRGB 性が食い違うと、GPU が
+///   片側だけ変換して素通りしなくなる:
+///
+///     テクスチャ Srgb + 描画先リニア → サンプル時に sRGB→リニア へ復号
+///       されるが再符号化されないので、**暗部が大きく潰れる**。
+///       実測(2026-09-03): FB 8/16/24/32/41/49/57 が画面上で
+///       1/1/2/4/6/8/11 になっていた。sRGB→リニアの曲線そのもの。
+///     テクスチャ Unorm + 描画先 Srgb → 復号されないまま符号化され、
+///       二重にかかって中間調が持ち上がる(フルスクリーンで実際に起きた)。
+///
+///   どちらも「片側だけ変換」が原因なので、**両者の sRGB 性を揃える**。
+///   揃えれば復号と再符号化が打ち消し合う(または両方起きない)ので、
+///   格納バイトがそのまま画面に出る。
+pub fn video_tex_format(target: wgpu::TextureFormat) -> wgpu::TextureFormat {
+    if target.is_srgb() {
+        wgpu::TextureFormat::Rgba8UnormSrgb
+    } else {
+        wgpu::TextureFormat::Rgba8Unorm
+    }
 }
 
 impl EguiBlit {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let pipeline = Pipeline::new(device, format);
         let uniform = pipeline.make_uniform_buffer(device);
-        Self { pipeline, uniform, tex: None }
+        let tex_format = video_tex_format(format);
+        eprintln!("video texture format: {tex_format:?} (target {format:?})");
+        Self { pipeline, uniform, tex: None, tex_format }
     }
 
     /// 受信した RGBA をテクスチャへ載せる(寸法が変わったら作り直す)
@@ -410,9 +439,8 @@ impl EguiBlit {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                // 映像データはsRGB符号化済み。リニア扱いにすると出力段で二重に
-                // 符号化され中間調が持ち上がる(フルスクリーンで実際に起きた)
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                // 描画先の sRGB 性に合わせる。詳細は video_tex_format
+                format: self.tex_format,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });

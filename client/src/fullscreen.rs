@@ -321,13 +321,9 @@ fn render_thread(
                         mip_level_count: 1,
                         sample_count: 1,
                         dimension: wgpu::TextureDimension::D2,
-                        // 映像データはsRGB符号化済みなので、テクスチャもsRGBで
-                        // 作る。Rgba8Unorm(リニア扱い)にすると、サンプル時に
-                        // 復号されないまま出力段でリニア→sRGBに符号化され、
-                        // 二重にかかって中間調が持ち上がる(全体が明るく見える)。
-                        // 通常モードのeguiは ColorImage をsRGBとして扱うので、
-                        // こちらを合わせないと見え方が食い違う。
-                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        // 描画先(サーフェス)の sRGB 性に合わせる。
+                        // 詳細は render::video_tex_format のコメント。
+                        format: crate::render::video_tex_format(gpu.config.format),
                         usage: wgpu::TextureUsages::TEXTURE_BINDING
                             | wgpu::TextureUsages::COPY_DST,
                         view_formats: &[],
