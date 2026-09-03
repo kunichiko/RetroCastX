@@ -1855,26 +1855,65 @@ impl ViewerApp {
                 .clicked();
             if let Some(p) = prof {
                 if (changed || write) && !p.input_regs.is_empty() {
+                    // ★伝送形式は、**いまのボードの値でこのソースが成立するなら
+                    //   上書きしない**。実行時に選べるようにしたので、
+                    //   X68000 RGB を RGB888 で見ているところへ入力設定を書いて
+                    //   黙って RGB555 に戻されると、選択が消えたように見える。
+                    //   YC8 が要るソース(コンポジット/S端子)や、ボードが
+                    //   別種の形式で止まっている場合は上書きする(救済が要る)。
+                    let have = self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt);
+                    let is_rgb = |f: u8| matches!(f, protocol::PIXFMT_RGB888
+                                                    | protocol::PIXFMT_RGB555
+                                                    | protocol::PIXFMT_RGB565);
+                    let keep_fmt = match (p.pixfmt(), have) {
+                        (Some(want), Some(h)) if want != protocol::PIXFMT_YC8 => is_rgb(h),
+                        _ => false,
+                    };
+                    let mut n = 0;
                     for (k, v, _) in p.input_regs {
+                        if keep_fmt && *k == protocol::CFG_KEY_PIXFMT {
+                            continue;
+                        }
                         send.push((*k, *v));
+                        n += 1;
                     }
-                    self.input_regs_sent = Some((p.label, p.input_regs.len()));
+                    self.input_regs_sent = Some((p.label, n));
                 }
             }
         });
-        // ボードの伝送形式が選択と食い違っていたら言う。**電源断でTVPのレジスタが
-        // 消えた状態がこれ**で、絵は出るが復調できない(コンポジットなのにRGB555)。
+        // ボードの伝送形式が**このソースで成立しない**ときだけ言う。
+        //
+        // ★「プロファイルの値と一致するか」で見てはいけない。伝送形式は
+        //   実行時に選べる(上の「伝送形式」コンボ)ので、X68000 RGB を
+        //   RGB888 で受けるのは**正当な選択**であって異常ではない。
+        //   一致で判定すると、そこで「設定が消えた」と嘘の警告が出る
+        //   (2026-09-03 に実際に出た)。
+        //
+        // 成立するかどうかは形式の**種類**で決まる:
+        //   YC8 … コンポジット/S端子の復調には生の8bitが要る。必須
+        //   RGB … RGB555 も RGB888 も絵になる。どちらでもよい
+        // 電源断でTVPのレジスタが消えた状態は、この「種類が違う」側に出る
+        // (コンポジットなのに RGB555 になっていて復調できない)。
         if let Some(p) = profiles::by_key(&self.source_profile) {
             if let (Some(want), Some(have)) = (
                 p.pixfmt(),
                 self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt),
             ) {
-                if want != have {
+                let is_rgb = |f: u8| matches!(f, protocol::PIXFMT_RGB888
+                                                | protocol::PIXFMT_RGB555
+                                                | protocol::PIXFMT_RGB565);
+                let ok = if want == protocol::PIXFMT_YC8 {
+                    have == protocol::PIXFMT_YC8
+                } else {
+                    is_rgb(have)
+                };
+                if !ok {
                     ui.colored_label(
                         egui::Color32::from_rgb(220, 170, 60),
                         format!(
-                            "ボードの伝送形式が {have}(このソースは {want})。\
-                             電源を入れ直して設定が消えた可能性 → 「入力設定を書く」"
+                            "ボードの伝送形式が {} で、このソース({})では絵になりません。\
+                             電源を入れ直して設定が消えた可能性 → 「入力設定を書く」",
+                            pixfmt_name(have), pixfmt_name(want)
                         ),
                     );
                 }
