@@ -780,10 +780,10 @@ impl ViewerApp {
             tune_synced: false,
             // 初期値は REGS_X68000 と同じ(v0.9.0 で校正した値)。
             // 実際の値はボードから読み戻して上書きされる
-            tune_gain_r: 43,
+            tune_gain_r: 64,
             tune_pixfmt: protocol::PIXFMT_RGB555 as i32,
-            tune_gain_g: 39,
-            tune_gain_b: 35,
+            tune_gain_g: 61,
+            tune_gain_b: 57,
             window_size: egui::vec2(cfg.window_w, cfg.window_h),
             last_avail: egui::Vec2::ZERO,
             last_tex: egui::Vec2::ZERO,
