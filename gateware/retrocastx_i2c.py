@@ -440,6 +440,12 @@ class StatusDisplay(Module):
         #
         # 残っている問題は**下端**(5bit の 1 と 2 がどのゲインでも落ちる)。
         # これはゲインではなくオフセット/クランプ側の話で、別途。
+        # ★**この reset は使われない。** 上位(retrocastx_stream.py の SoC 結線)が
+        #   `status.cfg_gain_* <- streamer.cfg_gain_*` を平文の comb で毎サイクル
+        #   駆動するので、電源投入時の実効値は **retrocastx_stream.py の
+        #   cfg_gain_b/g/r の reset** で決まる。ここだけ直しても効かない
+        #   (2026-09-03 に実際にやって遠回りした)。読む人を誤解させないよう
+        #   値は揃えてある。tools/check_gain_defaults.py が両方を見ている。
         self.cfg_gain_b = Signal(8, reset=57)
         self.cfg_gain_g = Signal(8, reset=61)
         self.cfg_gain_r = Signal(8, reset=64)

@@ -332,6 +332,62 @@ def main():
     if args.set:
         time.sleep(2.5)
 
+    # --- いま効いている設定を読み戻して記録する ---
+    #
+    # ★**測定条件が残っていない測定は後で使えない。** ゲインやクランプが何だったか
+    #   分からない数値を並べても、比べられないし再現もできない。
+    #
+    # 読み戻しには 34600 が要る。**ボードは CONFIG の応答を送信元ポートではなく
+    # 固定の 34600 に返す**ので、映像受信用のエフェメラルポート(上の bind)では
+    # 受け取れない。以前ここは「Viewer が 34600 を掴んでいると不可」とだけ
+    # 書いていたが、実際には Viewer が起動していなくても読み戻していなかった。
+    # 誰が掴んでいるか調べずに Viewer を名指しする文言だったため、
+    # ポートを空けても直らない原因を探して遠回りした(2026-09-03)。
+    READBACK = [
+        (proto.CFG_KEY_PLL_DIVIDE, "pll_divide"),
+        (0x0036, "pixfmt"), (0x0037, "black_th"), (0x0030, "full_line"),
+        (0x001E, "gain_R"), (0x001D, "gain_G"), (0x001C, "gain_B"),
+        (0x005F, "coarse_gain_GB"), (0x0067, "coarse_gain_R"),
+        (0x0065, "coarse_off_G"), (0x0068, "coarse_off_R"),
+        (0x005E, "clamp_sel"), (0x001F, "phase"), (0x0017, "video_bw"),
+    ]
+    try:
+        rb = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        rb.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        rb.bind((args.bind, args.port))
+        rb.settimeout(0.4)
+    except OSError as e:
+        rb = None
+        cond.append("★読み戻し不可: UDP %d を bind できない (%s)。"
+                    "誰が掴んでいるかは `lsof -nP -iUDP:%d` で分かる"
+                    % (args.port, e, args.port))
+    if rb is not None:
+        got = {}
+        for key, name in READBACK:
+            for _ in range(3):
+                rb.sendto(proto.pack_config(seq[0], proto.CFG_TARGET_BOARD,
+                                            proto.CFG_OP_GET, key, 0),
+                          (args.board, args.port))
+                seq[0] = (seq[0] + 1) & 0xFFFF
+                try:
+                    d, _ = rb.recvfrom(2048)
+                except socket.timeout:
+                    continue
+                try:
+                    t, pk = proto.parse(d)
+                except ValueError:
+                    continue
+                if t == proto.TYPE_CONFIG and pk.is_reply and pk.key == key:
+                    got[name] = pk.value
+                    break
+        rb.close()
+        if got:
+            cond.append("読み戻し: " + "  ".join(
+                "%s=%d" % (n, got[n]) for _, n in READBACK if n in got))
+        miss = [n for _, n in READBACK if n not in got]
+        if miss:
+            cond.append("★読み戻せなかったキー: %s" % ", ".join(miss))
+
     def grab(timeout=15.0):
         asm = FrameAssembler()
         end = time.monotonic() + timeout
@@ -404,8 +460,7 @@ def main():
     print("  サンプル/ドット %.3f   有効領域 x=%d..%d y=%d..%d"
           % (m.samples_per_dot, *m.geom))
     print("  フレーム %d 枚で一致" % args.frames)
-    print("  ★レジスタの読み戻しは Viewer が 34600 を掴んでいると不可。"
-          "上記以外の条件は記録できていない")
+
 
     is555 = (mode.pixfmt == 1)
     print("\n=== 階調バンド(X68000 の32階調がコードに載っているか)===")

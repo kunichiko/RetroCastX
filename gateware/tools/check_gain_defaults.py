@@ -3,16 +3,23 @@
 
 ## なぜ要るか
 
-同じ既定値が3箇所にある:
+同じ既定値が**4箇所**にある:
 
-  1. gateware/retrocastx_i2c.py   cfg_gain_r/g/b    電源投入時にボードが持つ値
-  2. client/src/profiles.rs       REGS_X68000       「入力設定を書く」で送る値
-  3. client/src/main.rs           tune_gain_*       読み戻す前の初期表示
+  1. gateware/retrocastx_stream.py cfg_gain_r/g/b  ★**電源投入時の実効値**
+  2. gateware/retrocastx_i2c.py    cfg_gain_r/g/b  1 に comb で上書きされる(死んでいる)
+  3. client/src/profiles.rs        REGS_X68000     「入力設定を書く」で送る値
+  4. client/src/main.rs            tune_gain_*     読み戻す前の初期表示
 
-2026-09-03、2 だけを変えたため「Viewer を再起動したらゲインが下がった」ように
-見えた。実際には失われておらず、**ボードを焼き直して 1 の値に戻り、Viewer が
-それを正直に読み戻して表示していた**だけ。値そのものより、食い違いに気づけない
-ことが問題なので機械で見る。
+2026-09-03 に2回はまった:
+
+  ・3 だけを変えたため「Viewer を再起動したらゲインが下がった」ように見えた。
+    実際には失われておらず、焼き直して 1 の値に戻ったのを Viewer が正直に
+    読み戻していただけ。
+  ・そこで 2 を直したが **2 は死んでいる**ので効かず、焼き直しても古い値が出た。
+    このツールも 2 しか見ていなかったため「3箇所とも一致」と**偽の安心**を
+    返した。検査が嘘をつくのは検査が無いより悪い。
+
+値そのものより食い違いに気づけないことが問題なので機械で見る。
 
     python3 tools/check_gain_defaults.py     # 揃っていなければ非0で終了
 """
@@ -35,7 +42,10 @@ def grab(path, patterns):
 
 
 sources = {
-    "gateware/retrocastx_i2c.py (電源投入時)": grab(
+    "gateware/retrocastx_stream.py ★実効値": grab(
+        "gateware/retrocastx_stream.py",
+        {c: r"cfg_gain_%s     = Signal\(8, reset=(\d+)\)" % c for c in "rgb"}),
+    "gateware/retrocastx_i2c.py (上書きされる)": grab(
         "gateware/retrocastx_i2c.py",
         {c: r"cfg_gain_%s = Signal\(8, reset=(\d+)\)" % c for c in "rgb"}),
     "client/src/profiles.rs (入力設定を書く)": grab(
@@ -51,9 +61,9 @@ bad = {n: v for n, v in sources.items() if v != ref}
 for name, vals in sources.items():
     print("  %-40s R=%-3d G=%-3d B=%d" % (name, vals["r"], vals["g"], vals["b"]))
 if bad:
-    print("\n細ゲインの既定値が揃っていません。3箇所とも同じ値にしてください。",
-          file=sys.stderr)
+    print("\n細ゲインの既定値が揃っていません。%d箇所とも同じ値にしてください。"
+          % len(sources), file=sys.stderr)
     print("(ボードを焼き直すと電源投入時の値に戻り、Viewer はそれを読み戻します)",
           file=sys.stderr)
     sys.exit(1)
-print("\n細ゲインの既定値: 3箇所とも一致")
+print("\n細ゲインの既定値: %d箇所とも一致" % len(sources))

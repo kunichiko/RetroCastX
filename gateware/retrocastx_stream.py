@@ -396,9 +396,15 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_pll_ctl    = Signal(8, reset=0x18)              # key 0x19 (reg 03h)
         self.cfg_clamp_start= Signal(8, reset=0x32)              # key 0x1A (reg 05h)
         self.cfg_clamp_width= Signal(8, reset=0x20)              # key 0x1B (reg 06h)
-        self.cfg_gain_b     = Signal(8, reset=35)                # key 0x1C (reg 08h)
-        self.cfg_gain_g     = Signal(8, reset=33)                # key 0x1D (reg 09h)
-        self.cfg_gain_r     = Signal(8, reset=39)                # key 0x1E (reg 0Ah)
+        # ★★**細ゲインの電源投入時の実効値はここ。**
+        #   retrocastx_i2c.py 側にも同名の Signal と reset があるが、
+        #   下の方(SoC の結線)で `status.cfg_gain_* <- streamer.cfg_gain_*` を
+        #   平文の comb で毎サイクル駆動しているため、**i2c 側の reset は死んでいる**。
+        #   2026-09-03、i2c 側だけ直して「直したつもり」になり、焼き直しても
+        #   古い値が出て遠回りした。値の根拠(実測)は retrocastx_i2c.py のコメント。
+        self.cfg_gain_b     = Signal(8, reset=57)                # key 0x1C (reg 08h)
+        self.cfg_gain_g     = Signal(8, reset=61)                # key 0x1D (reg 09h)
+        self.cfg_gain_r     = Signal(8, reset=64)                # key 0x1E (reg 0Ah)
         self.cfg_phase      = Signal(5, reset=16)                # key 0x1F (reg 04h)
         self.cfg_sync_ctl   = Signal(8, reset=0x52)              # key 0x22 (reg 0Eh)
         # --- 映像レベルCSYNCをSOG経由で受けるための分離パラメータ(2026-08-11) ---
