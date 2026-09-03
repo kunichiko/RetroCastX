@@ -163,6 +163,30 @@ def _label(key: int) -> str:
     return "?"
 
 
+def _no_reply(args):
+    """応答が無いときの案内。
+
+    「キー未対応」だけを出していると、実際には**経路の問題**なのに
+    ファームの機能不足だと誤読する(2026-09-03 に実際にやった)。
+    ボードにはゲートウェイが無いので、別サブネットからだとユニキャストの
+    応答を返せない。ANNOUNCE はブロードキャストなので discover では
+    見つかってしまい、余計に紛らわしい。
+    """
+    print("応答なし: key 0x%04X" % args.key)
+    board_net = ".".join(args.board.split(".")[:3])
+    bind_net = ".".join(args.bind.split(".")[:3])
+    if args.bind != "0.0.0.0" and board_net != bind_net:
+        print("  ★--bind %s がボード %s と別サブネットです。"
+              % (args.bind, args.board))
+        print("    ボードにゲートウェイは無いので、応答を返せません。")
+        print("    ボードと同じ帯のアドレスを足してください:")
+        print("      sudo ifconfig en0 alias %s.1 255.255.255.0" % board_net)
+        print("    (使い終わったら sudo ifconfig en0 -alias %s.1)" % board_net)
+    else:
+        print("  このファームでは未対応のキーかもしれません。")
+        print("  Viewerが同じポートを掴んでいないかも確認してください。")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--board", required=True,
@@ -204,14 +228,14 @@ def main():
     if args.cmd == "get":
         v = c.get(args.key)
         if v is None:
-            print("応答なし: key 0x%04X はこのファームでは未対応かもしれません" % args.key)
+            _no_reply(args)
             raise SystemExit(1)
         print("key 0x%04X (%s) = 0x%X (%d)" % (args.key, _label(args.key), v, v))
 
     elif args.cmd == "set":
         v = c.set(args.key, args.value)
         if v is None:
-            print("応答なし: key 0x%04X はこのファームでは未対応かもしれません" % args.key)
+            _no_reply(args)
             raise SystemExit(1)
         ok = "OK" if v == args.value else "★不一致(値が丸められた/未対応の可能性)"
         print("key 0x%04X (%s): 要求 0x%X → 反映 0x%X  %s"

@@ -1,7 +1,7 @@
 """Board discovery: listen for RetroCastX ANNOUNCE broadcasts and list boards.
 
 Usage:
-    python3 -m retrocastx.discover [--port 34600] [--timeout 0]
+    python3 -m retrocastx.discover [--port 34600] [--timeout 0] [--bind ADDR]
 
 The board broadcasts a TYPE_INFO packet every second. This tool prints each
 board (source IP is authoritative; the payload ip is advisory) and can also
@@ -20,12 +20,26 @@ def main():
     ap.add_argument("--timeout", type=float, default=0, help="seconds; 0 = run forever")
     ap.add_argument("--subscribe", action="store_true",
                     help="send SUBSCRIBE back to each discovered board")
+    ap.add_argument("--bind", default="0.0.0.0",
+                    help="受信ソケットを縛るローカルアドレス。**VPN接続中は必須**: "
+                         "既定経路がVPNだと 255.255.255.255 への送信が "
+                         "EADDRNOTAVAIL で落ちる。ボードと同じL2にいるIFの "
+                         "アドレスを指定する(例 192.168.11.24)")
     args = ap.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    sock.bind(("0.0.0.0", args.port))
+    # VPN下では 0.0.0.0 のままだと送信が EADDRNOTAVAIL で落ちる。
+    # ボードが見つからないのと同じ形で失敗するので誤読しやすい(cfg.py と同じ流儀)。
+    try:
+        sock.bind((args.bind, args.port))
+    except OSError as e:
+        raise SystemExit(
+            "UDP %d を %s で bind できません (%s)\n"
+            "  Viewerが起動中なら終了してください。VPN接続中は --bind に "
+            "ボードと同じL2にいるIFのアドレスを指定してください。"
+            % (args.port, args.bind, e))
     sock.settimeout(1.0)
 
     seen = {}
