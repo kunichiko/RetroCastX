@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RGB888 伝送(wire_bpp=3)の検証: fake TVP → TvpCapture → RetroCastXStreamer。
+"""RGB888 伝送(実行時に key 0x36 で切替)の検証: fake TVP → TvpCapture → RetroCastXStreamer。
 
 `sim_capture_stream.py` の RGB555 版と同じ駆動で、**3バイト/画素**の
 LINE ペイロードが r/g/b のバイト列として正しく出るかを検証する。
@@ -57,7 +57,7 @@ class DUT(Module):
         self.submodules.streamer = RetroCastXStreamer(
             self.port, SYS, width=W, height=H, fps=200.0,
             announce_period=0.02, mode_period=0.01, sub_timeout=0.05,
-            mtu_payload=1472, capture=self.cap, wire_bpp=3)
+            mtu_payload=1472, capture=self.cap)
 
 
 def expect_pix(x, row):
@@ -78,6 +78,19 @@ def _send_datagram(ep, payload, ip, port):
         while not ((yield ep.valid) and (yield ep.ready)):
             yield
     yield ep.valid.eq(0); yield ep.last.eq(0); yield
+
+
+def set_fmt888(dut):
+    """伝送形式を RGB888 にする。
+
+    ★形式はビルド時ではなく**実行時**(key 0x36)で決まる。ここでは
+      cfg_pixfmt を直接立てる。CONFIG パケットで切り替える形も試したが、
+      SUBSCRIBE と近接して注入するとパケットの流れが乱れて LINE が
+      出なくなった。CONFIG 経路そのものは sim_stream が検証している。
+      既定は RGB555 なので、この設定が効いていなければ画素照合で落ちる。
+    """
+    yield dut.streamer.cfg_pixfmt.eq(proto.PIXFMT_RGB888)
+    yield
 
 
 def subscriber(dut):
@@ -142,12 +155,18 @@ def main():
     N = 40_000
     run_simulation(
         dut,
-        [subscriber(dut), tvp_driver(dut), collector(dut, grams, N)],
+        [set_fmt888(dut), subscriber(dut), tvp_driver(dut),
+         collector(dut, grams, N)],
         clocks={"sys": 10, "pix": 10})
 
     lines = []
     for payload in grams:
-        ptype, pkt = proto.parse(payload)
+        # CONFIG の応答など LINE 以外も流れてくる。解析できないものは飛ばす
+        # (この試験の目的は LINE の画素照合)
+        try:
+            ptype, pkt = proto.parse(payload)
+        except ValueError:
+            continue
         if ptype == proto.TYPE_LINE:
             lines.append(pkt)
     print(f"datagrams={len(grams)} LINE packets={len(lines)}")

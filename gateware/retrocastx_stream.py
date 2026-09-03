@@ -126,7 +126,7 @@ class RetroCastXStreamer(LiteXModule):
     def __init__(self, udp_port, sys_clk_freq, width=512, height=512, fps=30.0,
                  announce_period=1.0, mode_period=1.0, sub_timeout=10.0,
                  announce_ip=HOST_IP, udp_port_nr=UDP_PORT,
-                 mtu_payload=1472, interlace=False, wire_bpp=2,
+                 mtu_payload=1472, interlace=False,
                  audio_sources=None, audio_nsamples=240,
                  mac_address=MAC_ADDRESS, capture=None,
                  cfg_vbp=0, cfg_hs_offset=0, cfg_pll_divide=1104,
@@ -164,8 +164,16 @@ class RetroCastXStreamer(LiteXModule):
         # 3=YC8 は同じ2B/pxで「下位=緑ch8bit / 上位=赤ch8bit」を生のまま運ぶ。
         # コンポジット/S-Video は5bitでは副搬送波の位相が推定できないので必要。
         # 2B/px は変わらないので断片化・MTU計算・受信側のバッファ確保は共通。
-        pixfmt = Signal(8, reset=(PIXFMT_RGB555 if wire_bpp == 2
-                                  else PIXFMT_RGB888))   # key 0x36
+        pixfmt = Signal(8, reset=PIXFMT_RGB555)   # key 0x36
+        # ★**伝送形式は実行時に切り替えられる**(key 0x36)。
+        #   RGB888(3B/px)と RGB555・YC8(2B/px)は 1語に入る画素数が違うので、
+        #   断片長・語数・xの進み・読出アドレス・語の組み立てがすべて変わる。
+        #   それらをこの信号で選ぶ。
+        #   ※当初ビルド時の選択にしていたが、**YC8(コンポジット/S端子)が
+        #     使えなくなる**という機能の後退を伴うので実行時切替へ直した。
+        #     懸念していたタイミングは実測で余裕があった
+        #     (eth_rx 132.57MHz / 制約125、sys 54.94MHz / 制約45)。
+        fmt888 = Signal()
         self.cfg_pixfmt = pixfmt
         # MODE の mflags。bit0 = MFLAG_INTERLACE。
         #
@@ -180,30 +188,33 @@ class RetroCastXStreamer(LiteXModule):
         unit_ticks = htotal * (vtotal // 2 if interlace else vtotal)  # ts歩進/伝送単位
         assert not interlace or height % 4 == 0
 
+        self.comb += fmt888.eq(pixfmt == PIXFMT_RGB888)
+
         # --- ライン断片化(host/python の protocol.fragment_line と同一の分割) ---
         #
-        # ★**伝送形式はビルド時に決める**(wire_bpp = 2 or 3)。
-        #   実行時に切り替える形にすると nwords / length / x の進み / 読出アドレス
-        #   すべてにマルチプレクサが入り、余裕の少ない sys ドメインに効く。
-        #   ビルド時なら実証済みの 2B/px 経路に一切手を入れずに済む。
+        # ★**伝送形式は実行時に切り替える**(key 0x36)。
         #
-        #     wire_bpp=2: RGB555(+ 実行時に YC8 へ切替)。2画素=1語
-        #     wire_bpp=3: RGB888 専用。4画素=3語(12バイト)
+        #     RGB555 / YC8 : 2B/px。2画素=1語
+        #     RGB888       : 3B/px。4画素=3語(12バイト)
         #
-        #   ピクセル数はワード整列のため wire_bpp=2 で偶数、=3 で4の倍数にする
-        #   (3n が4の倍数になるのは n が4の倍数のときだけ)。
-        assert wire_bpp in (2, 3), "wire_bpp は 2 か 3"
-        WIRE_BPP = wire_bpp
-        PX_ALIGN = 2 if wire_bpp == 2 else 4
-        frag_px_max = ((mtu_payload - 20) // wire_bpp) & ~(PX_ALIGN - 1)
-        assert frag_px_max >= PX_ALIGN, "MTU too small"
-        FRAG_PX = frag_px_max          # 1断片の最大ピクセル数
-        def _nw(n):                    # ピクセル数 → 32bit語数(ヘッダ5語込み)
-            return 5 + (n // 2 if wire_bpp == 2 else 3 * n // 4)
+        #   ピクセル数はワード整列のため4の倍数にする(3n が4の倍数になるのは
+        #   n が4の倍数のときだけ。RGB555 でも4の倍数なら2の倍数を満たす)。
+        # ★整列は**常に4画素**にする。RGB888 が4画素=3語なので4の倍数が要り、
+        #   RGB555 でも4の倍数は2の倍数を満たすため両立する。実行時に切り替える
+        #   以上、整列単位を形式で変えると断片の途中で辻褄が合わなくなる。
+        PX_ALIGN = 4
+        FRAG_PX_555 = ((mtu_payload - 20) // 2) & ~(PX_ALIGN - 1)
+        FRAG_PX_888 = ((mtu_payload - 20) // 3) & ~(PX_ALIGN - 1)
+        assert min(FRAG_PX_555, FRAG_PX_888) >= PX_ALIGN, "MTU too small"
+        FRAG_PX = Signal(16)           # 1断片の最大ピクセル数(形式で決まる)
+        self.comb += FRAG_PX.eq(Mux(fmt888, FRAG_PX_888, FRAG_PX_555))
+        def _nw(n):                    # パターン生成側(RGB555固定)用
+            return 5 + n // 2
+        # パターン生成側(cap_mode でない)は RGB555 固定。断片表はビルド時に作る
         frags = []
         off = 0
         while off < width:
-            n = min(frag_px_max, width - off)
+            n = min(FRAG_PX_555, width - off)
             frags.append((off, n))
             off += n
         assert all(n % PX_ALIGN == 0 for _, n in frags), \
@@ -211,21 +222,33 @@ class RetroCastXStreamer(LiteXModule):
         n_frags = len(frags)
         frag_off_arr = Array(Constant(o, bits_sign=16) for o, _ in frags)
         frag_cnt_arr = Array(Constant(n, bits_sign=16) for _, n in frags)
-        frag_len_arr = Array(Constant(20 + wire_bpp * n, bits_sign=16)
-                             for _, n in frags)
+        frag_len_arr = Array(Constant(20 + 2 * n, bits_sign=16) for _, n in frags)
         frag_nwords_arr = Array(Constant(_nw(n), bits_sign=16) for _, n in frags)
         # 実行時の値(Signal)から length / nwords を作る式。形式で分ける。
-        #   wire_bpp=2: length = 20 + 2n      nwords = 5 + n/2
-        #   wire_bpp=3: length = 20 + 3n      nwords = 5 + 3n/4  (n は4の倍数)
+        #   RGB555/YC8: length = 20 + 2n   nwords = 5 + n/2
+        #   RGB888    : length = 20 + 3n   nwords = 5 + 3n/4  (n は4の倍数)
         def _len_expr(n):
-            return 20 + (Cat(C(0, 1), n) if wire_bpp == 2
-                         else (n + Cat(C(0, 1), n)))
+            # 20 + 2n / 20 + 3n
+            return 20 + Mux(fmt888, n + Cat(C(0, 1), n), Cat(C(0, 1), n))
         def _nw_expr(n):
-            return 5 + (n[1:] if wire_bpp == 2
-                        else (n[2:] + Cat(C(0, 1), n[2:])))
+            # 5 + n/2 / 5 + 3n/4(n は4の倍数)
+            return 5 + Mux(fmt888, n[2:] + Cat(C(0, 1), n[2:]), n[1:])
         aud_nwords = 5 + audio_nsamples
+        # ★nwords / word_idx の幅は**両方の形式の最悪値**から決める。
+        #
+        #   捕捉モードでは断片のピクセル数が実行時に決まる(n_c = min(FRAG_PX, 幅))
+        #   ので、ビルド時の frags 表(RGB555固定)だけから幅を取ると RGB888 で
+        #   足りなくなる。足りないと nwords が黙って切り捨てられ、`last` が
+        #   早く立って**先頭1語だけのパケット**が出る(2026-09-03 に W=16 の
+        #   試験で発覚。13→4bit に対し RGB888 は 17 語で 17&0xF=1 になっていた)。
+        #   width=1024 の実機ビルドは 555 が 367 語で 9bit になり 888 の 368 語が
+        #   たまたま収まっていた。偶然で成立していただけなので必ず両方見る。
+        px_max = ((width + PX_ALIGN - 1) // PX_ALIGN) * PX_ALIGN
+        nw_555_max = _nw(min(FRAG_PX_555, px_max))
+        nw_888_max = 5 + 3 * min(FRAG_PX_888, px_max) // 4
         max_nwords = max(10, 8, aud_nwords if n_aud else 0,
-                         *(_nw(n) for _, n in frags))
+                         *(_nw(n) for _, n in frags),
+                         nw_555_max, nw_888_max)
 
         line_interval = int(sys_clk_freq / (fps * lines_per_unit))
         assert line_interval >= 1
@@ -248,24 +271,26 @@ class RetroCastXStreamer(LiteXModule):
         frag_cnt = Signal(16)          # この断片のピクセル数
         frag_last = Signal()           # 最終断片か
         px_end = Signal(16)            # このラインで送る範囲の終端(この値は含まない)
-        # RGB888(4画素=3語)の語内位相 0..2。wire_bpp=2 では使わない
+        # RGB888(4画素=3語)の語内位相 0..2。2B/px のときは使わない
         gph = Signal(2)
         # RGB888 の語1は2エントリを跨ぐため、前エントリをラッチして持つ
         ent_prev = Signal(64)
 
         def _px_adv():
-            """ペイロード1語を送出したときの前進動作。
+            """ペイロード1語を送出したときの前進動作(形式で変わる)。
 
-            wire_bpp=2: 1語=2画素なので毎語 x += 2
-            wire_bpp=3: 4画素=3語。位相を回し、群の最後(位相2)で x += 4
+            RGB555/YC8: 1語=2画素なので毎語 x += 2
+            RGB888    : 4画素=3語。位相を回し、群の最後(位相2)で x += 4
             """
-            if wire_bpp == 2:
-                return [NextValue(x, x + 2)]
-            return [If(gph == 2,
-                       NextValue(gph, 0),
-                       NextValue(x, x + 4),
+            return [If(fmt888,
+                       If(gph == 2,
+                           NextValue(gph, 0),
+                           NextValue(x, x + 4),
+                       ).Else(
+                           NextValue(gph, gph + 1),
+                       ),
                    ).Else(
-                       NextValue(gph, gph + 1),
+                       NextValue(x, x + 2),
                    )]
         ts_frame = Signal(32)              # 現伝送単位先頭のドットクロックカウンタ
         ts_line  = Signal(32)              # 現ライン先頭(= ts_frame + line*htotal)
@@ -937,16 +962,19 @@ class RetroCastXStreamer(LiteXModule):
         if cap_mode:
             rdd = capture.rd_data
             line_pixdata = Signal(32)
-            if wire_bpp == 2:
-                def _slot555(p):
-                    # 0RRRRRGGGGGBBBBB。Cat は第1引数がLSB側
-                    return Cat(p[19:24], p[11:16], p[3:8], C(0, 1))
-                s0, s1 = rdd[0:32], rdd[32:64]
-                self.comb += line_pixdata.eq(
-                    Mux(pixfmt == PIXFMT_YC8,
-                        Cat(s0[0:16], s1[0:16]),           # YC8: 2B/px そのまま
-                        Cat(_slot555(s0), _slot555(s1))))  # RGB555: 2B/px
-            else:
+            def _slot555(p):
+                # 0RRRRRGGGGGBBBBB。Cat は第1引数がLSB側
+                return Cat(p[19:24], p[11:16], p[3:8], C(0, 1))
+            s0, s1 = rdd[0:32], rdd[32:64]
+            w2b = Signal(32)          # 2B/px(RGB555 or YC8)の語
+            w3b = Signal(32)          # 3B/px(RGB888)の語
+            self.comb += [
+                w2b.eq(Mux(pixfmt == PIXFMT_YC8,
+                           Cat(s0[0:16], s1[0:16]),           # YC8 はそのまま
+                           Cat(_slot555(s0), _slot555(s1)))),
+                line_pixdata.eq(Mux(fmt888, w3b, w2b)),
+            ]
+            if True:
                 # ★RGB888 のギアボックス: 4画素(2エントリ)→ 3語(12バイト)
                 #
                 #   entry e   → slot0(px0) slot1(px1)   ← ent_prev にラッチ
@@ -960,9 +988,9 @@ class RetroCastXStreamer(LiteXModule):
                 #   32bit語はリトルエンディアンで線に出るので、Cat の順が
                 #   そのままバイト順になる。
                 self.comb += Case(gph, {
-                    0: line_pixdata.eq(Cat(rdd[0:24], rdd[32:40])),
-                    1: line_pixdata.eq(Cat(ent_prev[40:56], rdd[0:16])),
-                    2: line_pixdata.eq(Cat(rdd[16:24], rdd[32:56])),
+                    0: w3b.eq(Cat(rdd[0:24], rdd[32:40])),
+                    1: w3b.eq(Cat(ent_prev[40:56], rdd[0:16])),
+                    2: w3b.eq(Cat(rdd[16:24], rdd[32:56])),
                 })
         else:
             line_pixdata = Cat(pix0.pix, pix1.pix)
@@ -992,11 +1020,9 @@ class RetroCastXStreamer(LiteXModule):
                 sink.valid & sink.ready & (ptype == _T_LINE) & (
                     ((word_idx >= 5) & (word_idx != nwords - 1)) |
                     ((word_idx == nwords - 1) & ~frag_last)))
-            if wire_bpp == 2:
-                x_next = Signal(max=width + 2)
-                self.comb += x_next.eq(x + Mux(x_adv, 2, 0))
-                self.comb += capture.rd_word.eq(x_next[1:])   # entry = x_next/2
-            else:
+            x_next = Signal(max=width + 2)
+            self.comb += x_next.eq(x + Mux(x_adv, 2, 0))
+            if True:
                 # ★位相ごとに必要なエントリが違う。BRAM は1サイクル遅延なので
                 #   「次サイクルに必要なエントリ」を先出しする(2B/px と同じ流儀)。
                 #
@@ -1008,12 +1034,15 @@ class RetroCastXStreamer(LiteXModule):
                 ent_base = Signal(max=max(width // 2 + 3, 2))
                 self.comb += ent_base.eq(x[1:])
                 self.comb += capture.rd_word.eq(
-                    ent_base + Mux(x_adv,
-                                   Mux(gph == 2, 2, 1),
-                                   Mux(gph == 0, 0, 1)))
+                    Mux(fmt888,
+                        ent_base + Mux(x_adv,
+                                       Mux(gph == 2, 2, 1),
+                                       Mux(gph == 0, 0, 1)),
+                        x_next[1:]))          # 2B/px: entry = x_next/2
                 # 位相0から前進する瞬間の rd_data が entry base。次サイクルには
                 # base+1 に変わるので、ここでラッチしておく
-                self.sync += If(x_adv & (gph == 0), ent_prev.eq(capture.rd_data))
+                self.sync += If(fmt888 & x_adv & (gph == 0),
+                                ent_prev.eq(capture.rd_data))
             # ts はキャプチャのDATACLK自走カウンタ(LINE開始時にラッチ)。定数
             # (htotal×frame番号)からの算出だと仮定したモードでしか合わないが、
             # 実カウンタなら常に正確で音声との同期もモードに依らず成立する。
@@ -1155,7 +1184,8 @@ class RetroCastXStreamer(LiteXModule):
                 NextValue(frag_last, n_c >= d_al),
                 NextValue(length, _len_expr(n_c)),
                 NextValue(nwords, _nw_expr(n_c)),
-            ] + ([NextValue(gph, 0)] if wire_bpp == 3 else [])
+                NextValue(gph, 0),
+            ]
         else:
             line_prep = []
             line_span = [
@@ -1342,7 +1372,7 @@ class RetroCastXStream(SoCMini):
                  green_input=3, red_input=3, blue_input=3,
                  pll_divide=1104, hs_offset=0, vs_row_at_sync=525,
                  measure=True, mclk_out=True, auto_vtotal=True, vbp=0,
-                 interlace_cap=0, eth_phy=1, wire_bpp=2):
+                 interlace_cap=0, eth_phy=1):
         from litex_boards.platforms import colorlight_i5
         from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
         from retrocastx_net import RetroCastXUDPIPCore
@@ -1496,7 +1526,6 @@ class RetroCastXStream(SoCMini):
         learner = self.ethcore.arp_learner
         self.streamer = RetroCastXStreamer(
             udp_port, sys_clk_freq, width=2048, height=2048, fps=60.0,
-            wire_bpp=wire_bpp,
             audio_sources=[(self.i2s.sources[0], 48000),
                            (self.i2s.sources[1], 48000),
                            (self.spdif.source, self.spdif.rate_hz)],
@@ -1688,12 +1717,6 @@ def main():
                          "既定0=VSYNC直後から全行取り込む。水平を hs_offset=0 で"
                          "ラインの頭から取り込むのと同じ方針で、垂直位置は管面の"
                          "V位置で決める。0以外にすると上が切れるモードが出る")
-    ap.add_argument("--wire-bpp", type=int, default=2, choices=(2, 3),
-                    help="伝送のバイト/画素。2=RGB555(実行時にYC8へ切替可、既定) / "
-                         "3=RGB888専用。★RGB555 は5bitしか運べず、X68000 の32階調を "
-                         "1:1 で載せるにはゲイン誤差の余裕がゼロになる(実測29/32)。"
-                         "3 にすると PC 側で32階調へ吸着できるが、YC8 "
-                         "(コンポジット/S端子)は使えなくなり帯域も1.5倍になる")
     ap.add_argument("--eth-phy", type=int, default=1, choices=(0, 1),
                     help="litex の eth index。1=コネクタETH1=v0.9.0のJ12(既定), "
                          "0=コネクタETH2=v0.9.0のJ11。J11で使うにはシード探索が要る "
@@ -1712,7 +1735,7 @@ def main():
                            mclk_out=not args.no_mclk_out,
                            auto_vtotal=not args.no_auto_vtotal,
                            vbp=args.vbp, interlace_cap=args.interlace,
-                           eth_phy=args.eth_phy, wire_bpp=args.wire_bpp)
+                           eth_phy=args.eth_phy)
     builder = Builder(soc, output_dir="build/colorlight_i5", compile_software=False)
     builder.build(run=args.build, seed=args.seed)
 
