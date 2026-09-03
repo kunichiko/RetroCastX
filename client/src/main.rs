@@ -731,9 +731,14 @@ impl ViewerApp {
         install_cjk_font(&cc.egui_ctx);
         // 通常モードもフルスクリーンと同じシェーダで描く。見え方が食い違わないように。
         if let Some(rs) = cc.wgpu_render_state.as_ref() {
-            // ★描画先の色空間を出す。**ここが sRGB でないと中間調が暗くなる。**
-            //   テクスチャは Rgba8UnormSrgb なのでサンプラがリニアへ復号する。
-            //   出力先が非sRGBだとリニアのまま書かれ、ガンマ2.2ぶん暗く出る。
+            // 描画先の色空間を出す。映像テクスチャはこれに合わせて選ぶ
+            // (render::video_tex_format が sRGB 性を揃える)。
+            //
+            // ★このコメントは以前「ここが sRGB でないと中間調が暗くなる」と
+            //   **機構を正しく書いていたのに、診断の出力を足しただけで直して
+            //   いなかった**。2026-09-03 まで暗部が潰れたまま残り、その間
+            //   ガンマを上げて相殺していた(ntsc.rs の Adjust::gamma 参照)。
+            //   原因が分かっているなら、その場で直すか issue にすること。
             eprintln!("render target format: {:?}", rs.target_format);
             let blit = render::EguiBlit::new(&rs.device, rs.target_format);
             rs.renderer.write().callback_resources.insert(blit);
