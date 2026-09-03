@@ -26,6 +26,7 @@ import time
 
 import numpy as np
 
+from . import netutil
 from . import protocol as proto
 
 # 黒判定のしきい値(RGB555の各成分 0..31)。gateware の cfg_black_th の既定値と
@@ -74,16 +75,21 @@ def _self_test():
 
 
 class Board:
-    def __init__(self, ip, port, local_port):
-        self.dst = (ip, port)
+    def __init__(self, ip, port, local_port, bind="0.0.0.0"):
+        # 宛先が既定(ブロードキャスト)ならNICごとのサブネット宛に展開する。
+        # 限定ブロードキャストは既定経路に載るのでVPN下では送信自体が落ちる
+        # (詳細は netutil の冒頭コメント)。
+        self.dsts = netutil.targets_for(ip, bind)
+        self.port = port
         self.seq = 0
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock = netutil.prep_socket(
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32 << 20)
-        self.sock.bind(("0.0.0.0", local_port))
+        self.sock.bind((bind, local_port))
         self.sock.settimeout(0.2)
 
     def _send(self, payload):
-        self.sock.sendto(payload, self.dst)
+        netutil.send_all(self.sock, self.dsts, self.port, payload)
         self.seq = (self.seq + 1) & 0xFFFF
 
     def set_cfg(self, key, value):
@@ -144,7 +150,7 @@ def compare(label, ref, got, max_show=10):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--board", required=True)
+    netutil.add_args(ap)
     ap.add_argument("--port", type=int, default=proto.DEFAULT_PORT)
     ap.add_argument("--local-port", type=int, default=34699,
                     help="受信に使う自分側のポート(Viewerと競合しない値)")
@@ -153,7 +159,7 @@ def main():
 
     _self_test()
     print("算術の自己検算: OK")
-    b = Board(args.board, args.port, args.local_port)
+    b = Board(args.board, args.port, args.local_port, bind=args.bind)
 
     # まず同条件を2回。ここが低いと以降の比較に意味がない
     b.set_cfg(proto.CFG_KEY_FULL_LINE, 0)

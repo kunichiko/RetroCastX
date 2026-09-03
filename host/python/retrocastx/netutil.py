@@ -88,6 +88,35 @@ def broadcast_targets(bind="0.0.0.0"):
     return pick_targets(_enumerate(), pinned)
 
 
+def targets_for(board, bind="0.0.0.0"):
+    """`--board` の指定を宛先リストに直す。
+
+    既定(限定ブロードキャスト)や "auto" のときはNICごとのサブネット宛に展開し、
+    具体的なIPが指定されていればそれ1つにする。各ツールがこれを呼ぶだけで
+    VPN下でも通るようになる。
+    """
+    if board in (LIMITED, "auto", "", None):
+        return broadcast_targets(bind)
+    return [board]
+
+
+def add_args(ap, default_board=None):
+    """`--board` / `--bind` を argparse へ足す。全ツールで文言を揃えるため。"""
+    ap.add_argument("--board", default=default_board or LIMITED,
+                    help="ボードのIP。既定はブロードキャスト(NICごとのサブネット宛へ"
+                         "自動展開するのでVPN下でも通る)")
+    ap.add_argument("--bind", default="0.0.0.0",
+                    help="ソケットを縛るローカルアドレス。通常は不要"
+                         "(NICを1つに絞りたいときだけ)")
+
+
+def prep_socket(sock):
+    """ブロードキャストを出せるようにする。各ツールで付け忘れないため。"""
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    return sock
+
+
 def send_all(sock, targets, port, pkt):
     """宛先すべてへ送り、成功した数を返す。0 なら1つも出せていない。
 

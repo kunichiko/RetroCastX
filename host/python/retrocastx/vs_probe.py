@@ -23,6 +23,7 @@ import socket
 import time
 from collections import Counter
 
+from . import netutil
 from . import protocol as proto
 from .receiver import FrameAssembler
 
@@ -136,7 +137,7 @@ def sweep_sync(get, setv, sub, mode):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--board", required=True)
+    netutil.add_args(ap)
     ap.add_argument("--port", type=int, default=proto.DEFAULT_PORT)
     ap.add_argument("--samples", type=int, default=400)
     ap.add_argument("--raw", action="store_true",
@@ -146,23 +147,24 @@ def main():
                          "残る設定を探す")
     args = ap.parse_args()
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock = netutil.prep_socket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 << 20)
-    sock.bind(("0.0.0.0", args.port))
+    sock.bind((args.bind, args.port))
     sock.settimeout(0.2)
     asm = FrameAssembler()
     seq = 0
-    dst = (args.board, args.port)
+    dsts = netutil.targets_for(args.board, args.bind)
 
     def sub():
         nonlocal seq
-        sock.sendto(proto.pack_subscribe(seq), dst)
+        netutil.send_all(sock, dsts, args.port, proto.pack_subscribe(seq))
         seq = (seq + 1) & 0xFFFF
 
     def get(key):
         nonlocal seq
-        sock.sendto(proto.pack_config(seq, proto.CFG_TARGET_BOARD,
-                                      proto.CFG_OP_GET, key, 0), dst)
+        netutil.send_all(sock, dsts, args.port,
+                         proto.pack_config(seq, proto.CFG_TARGET_BOARD,
+                                           proto.CFG_OP_GET, key, 0))
         seq = (seq + 1) & 0xFFFF
         end = time.monotonic() + 0.25
         while time.monotonic() < end:
@@ -194,8 +196,9 @@ def main():
 
     def setv(key, value):
         nonlocal seq
-        sock.sendto(proto.pack_config(seq, proto.CFG_TARGET_BOARD,
-                                      proto.CFG_OP_SET, key, value), dst)
+        netutil.send_all(sock, dsts, args.port,
+                         proto.pack_config(seq, proto.CFG_TARGET_BOARD,
+                                           proto.CFG_OP_SET, key, value))
         seq = (seq + 1) & 0xFFFF
 
     if args.raw:

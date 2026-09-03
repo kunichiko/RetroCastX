@@ -55,6 +55,7 @@ import socket
 import statistics
 import time
 
+from . import netutil
 from . import protocol as proto
 from .cfg import Cfg
 from .line_probe import collect
@@ -396,14 +397,15 @@ def cmd_capture(c: Cfg, args) -> int:
     #   macOS では bind は通るがブロードキャストが片方にしか配られず、無言で0行になる。
     #   下の「Viewerを閉じてから実行する」と明示的に失敗する方がまだ良い。
     try:
-        sock.bind(("0.0.0.0", args.port))
+        sock.bind((args.bind, args.port))
     except OSError as e:
         print("UDP %d を bind できません (%s)。Viewerを閉じてから実行する"
               % (args.port, e))
         return 1
     sock.settimeout(1.0)
     print("LINEを %.1f 秒集める" % args.seconds)
-    mode, by_frame = collect(sock, (args.board, args.port), args.seconds)
+    mode, by_frame = collect(sock, netutil.targets_for(args.board, args.bind),
+                                args.port, args.seconds)
     sock.close()
     if mode is None or not by_frame:
         print("MODEかLINEが来ない")
@@ -482,9 +484,10 @@ def cmd_synctest(c: Cfg, args) -> int:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.bind(("0.0.0.0", args.port))
+        sock.bind((args.bind, args.port))
         sock.settimeout(1.0)
-        mode, by_frame = collect(sock, (args.board, args.port), args.seconds)
+        mode, by_frame = collect(sock, netutil.targets_for(args.board, args.bind),
+                                args.port, args.seconds)
         sock.close()
         if mode is None:
             return None
@@ -502,18 +505,18 @@ def cmd_synctest(c: Cfg, args) -> int:
     got = {}
     for start, label in ((230, "バースト後 (230)"), (50, "同期チップ上 (50)")):
         # Cfg はポート34600をbindするので、受信の前に手放す
-        cfg = Cfg(args.board, args.port)
+        cfg = Cfg(args.board, args.port, bind=args.bind)
         cfg.set(proto.CFG_KEY_CLAMP_START, start)
         del cfg
         m = measure()
         if m is None:
             print("%-26s 測定できず(LINEが来ない)" % label)
-            Cfg(args.board, args.port).set(proto.CFG_KEY_CLAMP_START, 230)
+            Cfg(args.board, args.port, bind=args.bind).set(proto.CFG_KEY_CLAMP_START, 230)
             return 1
         tip, blank = m
         got[start] = blank - tip
         print("%-26s %10.1f %14.1f %8.1f" % (label, tip, blank, blank - tip))
-    Cfg(args.board, args.port).set(proto.CFG_KEY_CLAMP_START, 230)
+    Cfg(args.board, args.port, bind=args.bind).set(proto.CFG_KEY_CLAMP_START, 230)
 
     swing = abs(got[230] - got[50])
     print("\nクランプ移動による差の入れ替わり = %.1f コード" % swing)
@@ -840,7 +843,7 @@ def cmd_probe(c: Cfg, args) -> int:
     #   macOS では bind は通るがブロードキャストが片方にしか配られず、無言で0行になる。
     #   下の「Viewerを閉じてから実行する」と明示的に失敗する方がまだ良い。
     try:
-        sock.bind(("0.0.0.0", args.port))
+        sock.bind((args.bind, args.port))
     except OSError as e:
         print("UDP %d を bind できません (%s)。Viewerを閉じてから実行する"
               % (args.port, e))
@@ -848,7 +851,8 @@ def cmd_probe(c: Cfg, args) -> int:
     sock.settimeout(1.0)
     print("LINEを %.1f 秒集める(このツールが購読先を奪うのでViewerは止まる)"
           % args.seconds)
-    mode, by_frame = collect(sock, (args.board, args.port), args.seconds)
+    mode, by_frame = collect(sock, netutil.targets_for(args.board, args.bind),
+                                args.port, args.seconds)
     sock.close()
     if mode is None:
         print("MODEが来ない。ボードのIPとサブネットを確認する")
@@ -1005,8 +1009,7 @@ def report(rows_out, lines, sps, role="cvbs") -> str:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--board", required=True,
-                    help="ボードのIP(255.255.255.255 でブロードキャストも可)")
+    netutil.add_args(ap)
     ap.add_argument("--port", type=int, default=proto.DEFAULT_PORT)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -1057,7 +1060,7 @@ def main():
     if args.cmd == "capture":
         raise SystemExit(cmd_capture(None, args))
 
-    c = Cfg(args.board, args.port) if args.cmd != "probe" else None
+    c = Cfg(args.board, args.port, bind=args.bind) if args.cmd != "probe" else None
     if args.cmd == "apply":
         raise SystemExit(cmd_apply(c, args))
     if args.cmd == "auto":
