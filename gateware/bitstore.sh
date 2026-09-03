@@ -14,6 +14,12 @@ DIR=bitstreams
 BIT=build/colorlight_i5/gateware/colorlight_i5.bit
 export PATH="$HOME/opt/oss-cad-suite/bin:$PATH"
 
+# JTAGケーブル。v0.9.0 基板はポゴピン経由の CH347 アダプタで繋ぐ。
+# (i5 オンボードの CMSIS-DAP は手組みボード時代に使っていたもので、もう使わない)
+# 別のアダプタに替えたときは CABLE=... で上書きする。決め打ちにしていると
+# "JTAG init failed with: Error: no USB backend available" で止まって原因が分かりにくい。
+CABLE="${CABLE:-ch347_jtag}"
+
 case "$1" in
 save)
     [ -n "$2" ] || { echo "使い方: $0 save <名前> [メモ...]" >&2; exit 2; }
@@ -33,11 +39,11 @@ list)
     ;;
 flash)
     [ -f "$DIR/$2.bit" ] || { echo "無い: $DIR/$2.bit" >&2; exit 1; }
-    openFPGALoader -b colorlight-i5 "$DIR/$2.bit"
+    openFPGALoader -b colorlight-i5 -c "$CABLE" "$DIR/$2.bit"
     ;;
 flash-perm)
     [ -f "$DIR/$2.bit" ] || { echo "無い: $DIR/$2.bit" >&2; exit 1; }
-    openFPGALoader -b colorlight-i5 -f --unprotect-flash "$DIR/$2.bit"
+    openFPGALoader -b colorlight-i5 -c "$CABLE" -f --unprotect-flash "$DIR/$2.bit"
     ;;
 *)
     sed -n '2,12p' "$0"
