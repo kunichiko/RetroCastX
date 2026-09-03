@@ -546,18 +546,82 @@ fn signal_is_valid(m: &protocol::Mode) -> bool {
 /// 有理比なので本物の局所ピークに見える)。そこで、まず上限まで意図的に過剰
 /// サンプルしてスペクトル占有率から倍率を割り出し、そこから8の倍数で±7%だけ
 /// 局所探索して詰める。最後に位相を振る。
+///
+/// ## 簡易(Quick)とフル(Full)
+///
+/// 上のフルスキャンは**探索範囲が広すぎる**。プロファイルを選んでいるなら
+/// pll_divide は「水晶÷分周 ÷ fH が整数」を満たす数点しか取り得ないので、
+/// その数点だけを見ればよい(例: X68000の31.5kHzなら htotal 1104/736/552/368)。
+///
+/// **機種固有の分岐は一切書かない。** 候補は `profiles::scan_candidates` が
+/// プロファイルの水晶/分周表と fH から作るので、機種を足すときは
+/// `profiles.rs` の表を書けばここは触らなくてよい。
+///
+/// ### 何で1:1を判定するか — 位相感度
+///
+/// 使うのは**位相感度**。1ドット=1サンプルなら、位相を半ドット動かせば全サンプルが
+/// ドットの中央から境目へ移るので鮮鋭度が大きく落ちる。過剰サンプルだと、位相を
+/// 動かしても「一部のサンプルが境目に来る」状態が入れ替わるだけなので変化が小さい。
+/// **同じ pll_divide での比**なので、絵の内容にも入力の帯域にも依存しない。
+///
+/// ★**スペクトル占有率で1:1を判定してはいけない。** 一度これで実装して外した。
+///   占有率は「1:1ならスペクトルがNyquistまで埋まる」を前提にするが、入力の
+///   アナログ帯域がドットレートに対して足りていない機種ではその前提が崩れる。
+///   X68000の768x512(34.776MHz)がまさにそれで、1ドットが白の64%までしか
+///   立たない。正解の1104で測っても占有率は0.7程度しか出ないので、
+///   `1104 × 0.7 = 773` から「736だ」と誤って1段降りた(実機で発生)。
+///   1.0倍と1.5倍を占有率で見分けるのは、この機種では原理的に無理。
+///
+///   占有率にも使い道はあって、`est = 設定値 × 占有率 = 真のhtotal × 帯域率`
+///   なので **真の htotal の下限**になる(帯域率 ≤ 1 だから)。下限としてなら
+///   信用できるので、枝刈りと最後のフォールバックにだけ使う。
+///
+/// ### 降り方
+///
+/// htotal の**大きい方から**測り、位相感度が立った最初の候補を採る。大きい側から
+/// 始めるのが安全側で、真値より大きい pll_divide は整数倍の過剰サンプルなので
+/// 情報が落ちない(絵が眠くなるだけ)のに対し、小さい値はドットを飛ばして絵が壊れる。
+/// **降りるには積極的な証拠(位相感度が弱い)を要求し、無ければ降りない。**
+///
+/// どの候補でも位相感度が立たないときは、**いちばん大きい候補に戻す**。判別できて
+/// いないので推測で選ばない。この経路に来るのはたいてい、そのモードが1:1にできない
+/// (TVPの下限12MHzで整数倍を強いられている)場合で、候補は全部が過剰サンプル
+/// = どれを選んでも絵は壊れない。
 enum AutoPhase {
     /// 上限まで過剰サンプルして占有率を測る
     Oversample,
     /// 8の倍数で局所探索(pll候補, 結果)
     Sweep { cands: Vec<u32>, i: usize, best: (u32, f32), med: Vec<f32> },
+    /// 簡易: 候補を htotal の**大きい順**に、位相を8点振って「1:1かどうか」を見る。
+    /// `k` は位相の点番号(位相 = k*4)
+    QuickProbe { i: usize, k: u8, best: (u8, f32), worst: f32 },
     /// 位相を粗く振る
     PhaseCoarse { i: u8, best: (u8, f32), all: Vec<f32> },
     /// 位相を1刻みで詰める
     PhaseFine { list: Vec<u8>, i: usize, best: (u8, f32) },
 }
 
+/// スキャンの種類。**探索空間の広さだけが違う**。測り方(占有率と鮮鋭度)も
+/// 位相の詰め方も同じ。
+enum AutoMode {
+    /// 簡易: プロファイルの水晶/分周が許すモードだけを見る。
+    Quick {
+        /// 測る順番。htotal の**降順**で、設定値(pll_divide)の重複は除いてある。
+        /// 設定値が同じ点は測っても区別できないので1回で済ませる
+        ladder: Vec<profiles::ScanPoint>,
+        /// 候補ごとの (最良位相, その鮮鋭度, 最悪の鮮鋭度)。測った順に積む
+        probes: Vec<(u8, f32, f32)>,
+        /// 占有率から出した htotal の**下限**。フォールバックと枝刈りにだけ使う。
+        /// 0 は未測定
+        est: f32,
+    },
+    /// フル: プロファイルを使わず、絵のスペクトルだけから範囲を割り出して
+    /// 8刻みで舐める。プロファイルに無いモードや、未知の機種で使う
+    Full,
+}
+
 struct AutoTune {
+    mode: AutoMode,
     phase: AutoPhase,
     /// この時刻まではボードの反映待ち
     wait_until: std::time::Instant,
@@ -569,7 +633,17 @@ struct AutoTune {
     worst: f32,
     /// 半分にして測り直した回数
     attempt: u8,
+    /// 簡易スキャンで選んだ点のオーバーサンプル倍率。
+    /// **1より大きいなら位相感度が弱いのが正常**なので、最後の判定に使う
+    over: u32,
 }
+
+/// 位相を振っても鮮鋭度が変わらない(最悪÷最良がこれより大きい)なら、まだ
+/// 1ドットが複数サンプルに広がっている = 過剰サンプル、と判定する。
+///
+/// 0.85 はフルスキャン側で実機から決めた値(15kHz帯で 0.95 = ほぼ変わらない、が
+/// 過剰サンプルの実測)。簡易スキャンが1段降りるかどうかもこの1つの数字で決まる。
+const PHASE_SENSITIVE: f32 = 0.85;
 
 const AUTO_PLL_MIN: u32 = 200;
 const AUTO_PLL_MAX: u32 = 2304;
@@ -615,6 +689,10 @@ struct ViewerApp {
     ///   残ったので、織り込みではなく幾何側だと切り分けられた)。
     /// (描画中に更新するので Cell。paint_tube を &mut self にすると波及が大きい)
     vtotal_smooth: std::cell::Cell<f32>,
+    /// 前回 vtotal_smooth を更新した時刻。平滑の時定数を**時間で**決めるのに使う。
+    /// フレーム数で決めると、MODEが1秒に1〜2回しか来ないのに60Hzで回るせいで
+    /// 収束しきってしまい、平均されずに追従する(実機で縦が数ピクセル伸び縮みした)
+    vtotal_last_t: std::cell::Cell<Option<std::time::Instant>>,
     /// 平滑をリセットする判定用。モードが変わったら追従を待たずに飛ばす
     vtotal_mode_id: std::cell::Cell<u16>,
     /// 直近で入力設定を書き込んだソース(ラベル, 件数)。パネルの確認表示用。
@@ -777,6 +855,7 @@ impl ViewerApp {
                 gamma: if cfg.adj_gamma > 0.0 { cfg.adj_gamma } else { 1.0 },
             },
             vtotal_smooth: std::cell::Cell::new(0.0),
+            vtotal_last_t: std::cell::Cell::new(None),
             vtotal_mode_id: std::cell::Cell::new(u16::MAX),
             input_regs_sent: None,
             source_profile: cfg.source_profile.clone(),
@@ -1085,12 +1164,21 @@ impl ViewerApp {
         };
         // vtotal を平滑する。**262/263 の交互は正常なので、その平均(262.5)を使う。**
         // モードが変わったときだけ即座に飛ばす(追従を待つと一瞬絵が伸びる)。
+        // 時定数は**経過時間**で効かせる。ここは描画のたびに呼ばれるが、raw の
+        // 出どころ(MODE)は1秒に1〜2回しか更新されないので、フレーム数で減衰させると
+        // 同じ値へ収束しきって平均にならない(render.rs の smooth_vtotal 参照)。
         {
+            let now = std::time::Instant::now();
+            let dt = self
+                .vtotal_last_t
+                .get()
+                .map_or(1.0 / 60.0, |t| now.duration_since(t).as_secs_f32());
+            self.vtotal_last_t.set(Some(now));
             let raw = m.as_ref().map_or(0.0, |m| (m.vtotal as u32 * slot_k) as f32);
             let id = m.as_ref().map_or(u16::MAX, |m| m.mode_id as u16);
             let reset = id != self.vtotal_mode_id.get();
             self.vtotal_smooth
-                .set(render::smooth_vtotal(self.vtotal_smooth.get(), raw, reset));
+                .set(render::smooth_vtotal(self.vtotal_smooth.get(), raw, reset, dt));
             if raw > 0.0 {
                 self.vtotal_mode_id.set(id);
             }
@@ -1491,7 +1579,7 @@ impl ViewerApp {
         }
     }
 
-    /// 自動調整を開始する。上限まで過剰サンプルするところから始める
+    /// フルスキャンを開始する。上限まで過剰サンプルするところから始める
     fn auto_start(&mut self) {
         // YC8 は pll_divide が規格で決まっているので探索してはいけない
         if self.pll_locked_by_format() {
@@ -1501,13 +1589,102 @@ impl ViewerApp {
         self.send_cfg(protocol::CFG_KEY_PLL_DIVIDE, AUTO_PLL_MAX);
         self.tune_pll_divide = AUTO_PLL_MAX as i32;
         self.auto = Some(AutoTune {
+            mode: AutoMode::Full,
             phase: AutoPhase::Oversample,
             wait_until: std::time::Instant::now() + std::time::Duration::from_millis(1800),
             base_n: self.shared.stats.lock().unwrap().tune_n,
             note: "過剰サンプル中...".into(),
             worst: 0.0,
             attempt: 0,
+            over: 1,
         });
+    }
+
+    /// いま選んでいるプロファイル(「自動」なら fH から推定したもの)で、
+    /// この fH に対して実在しうるモードの一覧。簡易スキャンの探索空間。
+    ///
+    /// **機種固有の分岐はここにも無い。** プロファイルの表と fH だけで決まる。
+    fn scan_candidates(&self) -> Vec<profiles::ScanPoint> {
+        let fh_hz = self
+            .shared
+            .mode
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|m| m.hfreq_mhz_x1000 as f64 / 1000.0)
+            .unwrap_or(0.0);
+        if !(fh_hz > 0.0) {
+            return Vec::new();
+        }
+        let p = if self.source_profile.is_empty() {
+            profiles::best_over_all(fh_hz).map(|(p, _)| p)
+        } else {
+            profiles::by_key(&self.source_profile)
+        };
+        p.map(|p| profiles::scan_candidates(p, fh_hz))
+            .unwrap_or_default()
+    }
+
+    /// 簡易スキャンを開始する。
+    ///
+    /// **htotal のいちばん大きい候補から始めて、下へしか動かない。** これが安全側:
+    /// 真値より大きい pll_divide は整数倍の過剰サンプルなので情報は落ちない
+    /// (絵が眠くなるだけ)が、小さい値はドットを飛ばすので絵が壊れる。
+    /// 降りるには「位相を振っても鮮鋭度が変わらない」= 過剰サンプルという
+    /// 積極的な証拠を要求する。証拠が無ければその場に留まる。
+    fn auto_start_quick(&mut self) {
+        if self.pll_locked_by_format() {
+            self.auto_done = Some("YC8では pll_divide は規格値。自動調整しません".into());
+            return;
+        }
+        let mut cands = self.scan_candidates();
+        if cands.is_empty() {
+            self.auto_done =
+                Some("この fH を説明できる候補がありません。フルスキャンを使ってください".into());
+            return;
+        }
+        // htotal の降順に並べ替える。これが測る順番(=降りる順番)
+        cands.sort_by(|a, b| b.htotal.cmp(&a.htotal));
+        // 設定値が同じ点は測っても区別できない(31.5kHzの htotal 736 と 368 は
+        // どちらも pll 736)。htotal 降順なので、残るのは大きい htotal の解釈
+        let mut ladder: Vec<profiles::ScanPoint> = Vec::new();
+        for c in &cands {
+            if !ladder.iter().any(|l| l.pll_divide == c.pll_divide) {
+                ladder.push(c.clone());
+            }
+        }
+        let first = ladder[0].clone();
+        let n = ladder.len();
+        self.send_cfg(protocol::CFG_KEY_PLL_DIVIDE, first.pll_divide);
+        self.tune_pll_divide = first.pll_divide as i32;
+        self.send_cfg(protocol::CFG_KEY_PHASE, 0);
+        self.tune_phase = 0;
+        self.auto = Some(AutoTune {
+            mode: AutoMode::Quick { ladder, probes: Vec::new(), est: 0.0 },
+            phase: AutoPhase::QuickProbe { i: 0, k: 0, best: (0, 0.0), worst: f32::MAX },
+            wait_until: std::time::Instant::now() + std::time::Duration::from_millis(1800),
+            base_n: self.shared.stats.lock().unwrap().tune_n,
+            note: if n > 1 {
+                format!("候補 {n}通り。pll {} から位相を振ります...", first.pll_divide)
+            } else {
+                format!("候補は pll {} だけ。位相を振ります...", first.pll_divide)
+            },
+            worst: 0.0,
+            attempt: 0,
+            over: first.oversample,
+        });
+    }
+
+    /// 位相を1刻みで詰める段へ入る。`ph` を中心に±2
+    fn auto_enter_phase_fine(&mut self, ph: u8, sharp: f32, note: String) {
+        let list: Vec<u8> = (0..5)
+            .map(|k| ((ph as i32 + k - 2).rem_euclid(32)) as u8)
+            .collect();
+        let head = list[0];
+        if let Some(a) = self.auto.as_mut() {
+            a.phase = AutoPhase::PhaseFine { list, i: 0, best: (ph, sharp) };
+        }
+        self.auto_next(protocol::CFG_KEY_PHASE, head as u32, note, 600);
     }
 
     /// 新しい測定が来ていれば (鋭さ, 占有率) を返す。まだなら None
@@ -1566,6 +1743,113 @@ impl ViewerApp {
             None => return,
         };
         match phase {
+            // --- 簡易スキャン: 候補の中を上から降りる ---
+            //
+            // 占有率は「Nyquistまでのうち実際に使われている割合」で、過剰サンプル
+            // 側にいる限り 1/倍率 に一致する。だから (いまの pll_divide)×占有率 が
+            // 1:1 の値の推定になる。フルスキャンはこの推定を ±7% の局所探索で
+            // 詰めるが、こちらは**候補にスナップするだけ**でよい。候補は 4/3 倍
+            // 以上離れているので、推定に -3% のバイアスと ±0.5% のばらつきが
+            // あっても取り違えようがない。
+            AutoPhase::QuickProbe { i, k, mut best, mut worst } => {
+                // 最初の1点で占有率から htotal の下限を控えておく。
+                // est = 設定値 × 占有率 = 真のhtotal × 入力の帯域率 ≤ 真のhtotal。
+                // **下限としてしか使わない**(上限や推定値として使うと、帯域が
+                // 足りない機種で1段下へ降り過ぎる。実機の768x512で踏んだ)
+                if i == 0 && k == 0 {
+                    let e = self.tune_pll_divide as f32 * occ;
+                    if let Some(AutoMode::Quick { est, .. }) =
+                        self.auto.as_mut().map(|a| &mut a.mode)
+                    {
+                        *est = e;
+                    }
+                }
+                if sharp > best.1 {
+                    best = (k * 4, sharp);
+                }
+                worst = worst.min(sharp);
+                // 位相は32段。粗く8点(4刻み)見れば感度の有無は分かる
+                if k + 1 < 8 {
+                    if let Some(a) = self.auto.as_mut() {
+                        a.phase = AutoPhase::QuickProbe { i, k: k + 1, best, worst };
+                    }
+                    let pll = self.tune_pll_divide;
+                    self.auto_next(protocol::CFG_KEY_PHASE, ((k + 1) * 4) as u32,
+                                   format!("pll {pll}: 位相 {}/8", k + 2), 600);
+                    return;
+                }
+                let rel = if best.1 > 0.0 { worst / best.1 } else { 1.0 };
+                let (ladder, est) = match self.auto.as_ref().map(|a| &a.mode) {
+                    Some(AutoMode::Quick { ladder, est, .. }) => (ladder.clone(), *est),
+                    _ => return,
+                };
+                if let Some(AutoMode::Quick { probes, .. }) =
+                    self.auto.as_mut().map(|a| &mut a.mode)
+                {
+                    probes.push((best.0, best.1, worst));
+                }
+                if rel <= PHASE_SENSITIVE {
+                    // 位相で鮮鋭度が大きく動く = 1ドットが1サンプルに載っている。
+                    // ここで確定し、位相だけ1刻みで詰める
+                    let c = ladder[i].clone();
+                    if let Some(a) = self.auto.as_mut() {
+                        a.worst = worst;
+                        a.over = c.oversample;
+                    }
+                    self.auto_enter_phase_fine(
+                        best.0, best.1,
+                        format!("pll {} で位相感度あり({:.0}%)→ 位相を詰めています",
+                                c.pll_divide, rel * 100.0));
+                    return;
+                }
+                // 過剰サンプル。1つ下の候補へ降りる。
+                // ただし占有率の下限に矛盾する候補(htotal が est より小さい)は
+                // 真値になり得ないので飛ばす。10%は測定のばらつきぶんの余裕
+                let floor = est * 0.9;
+                let next = (i + 1..ladder.len()).find(|&j| ladder[j].htotal as f32 >= floor);
+                if let Some(j) = next {
+                    let c = ladder[j].clone();
+                    if let Some(a) = self.auto.as_mut() {
+                        a.phase = AutoPhase::QuickProbe {
+                            i: j, k: 0, best: (0, 0.0), worst: f32::MAX,
+                        };
+                        a.over = c.oversample;
+                    }
+                    self.send_cfg(protocol::CFG_KEY_PLL_DIVIDE, c.pll_divide);
+                    self.tune_pll_divide = c.pll_divide as i32;
+                    self.auto_next(protocol::CFG_KEY_PHASE, 0,
+                                   format!("位相感度が弱い({:.0}%)→ 次の候補 pll {}",
+                                           rel * 100.0, c.pll_divide),
+                                   900);
+                    return;
+                }
+                // どの候補でも位相感度が立たなかった。**いちばん大きい候補に戻す。**
+                //
+                // ここは判別できていないので、推測で選ばず安全側へ倒す。大きい側は
+                // 整数倍の過剰サンプルで済む(眠くなるだけ)が、小さい側はドットを
+                // 飛ばして絵が壊れる。占有率から「もっと小さいはず」と推測して降りる
+                // 実装も試したが、入力の帯域が足りない機種で正解から1段降ろしてしまう
+                // (実機の768x512で発生)。**判別できないときは動かさない**が正しい。
+                //
+                // この経路に来るのは、たいてい TVPの下限12MHzでそのモードが1:1に
+                // できない場合(候補が全部オーバーサンプル)。絵は壊れない。
+                let top = ladder[0].clone();
+                let ph = match self.auto.as_ref().map(|a| &a.mode) {
+                    Some(AutoMode::Quick { probes, .. }) => probes.first().copied(),
+                    _ => None,
+                }
+                .unwrap_or((best.0, best.1, worst));
+                if let Some(a) = self.auto.as_mut() {
+                    a.worst = ph.2;
+                    a.over = top.oversample;
+                }
+                self.send_cfg(protocol::CFG_KEY_PLL_DIVIDE, top.pll_divide);
+                self.tune_pll_divide = top.pll_divide as i32;
+                self.auto_enter_phase_fine(
+                    ph.0, ph.1,
+                    format!("1:1と言える候補なし → 安全側の pll {} に戻します",
+                            top.pll_divide));
+            }
             AutoPhase::Oversample => {
                 // 1:1の pll_divide ≒ 過剰サンプル時の pll_divide x 占有率。
                 // 実測では真値に対して -3% の系統バイアスが残るので、局所探索で吸収する
@@ -1677,12 +1961,24 @@ impl ViewerApp {
                     // 動かせば全サンプルが中央から縁へ移るので鮮鋭度が大きく変わる。
                     // 変わらないなら「半分のサンプルが既に縁にいる」= 過剰サンプル。
                     // 実機の15kHzモードで最悪95%(=変わらない)のまま2.3倍の値に
-                    // 着地したので、その場合は半分にして測り直す。
+                    // 着地したので、フルスキャンではその場合に半分にして測り直す。
                     // 半分にできるのは、それがTVPの下限以上のときだけ。下限で
                     // 過剰サンプルを強いられている帯域(15kHz)では位相感度が弱いのが
                     // 正常なので、ここで下げてしまうとPLLが範囲外の無効な領域へ入る
                     // (実機で432まで落ちて絵が壊れた)。
-                    if rel > 0.85 && attempt < 2 && pll / 2 >= self.pll_min_hw() {
+                    //
+                    // ★**簡易スキャンではこの再測定をしない。** 探索空間が候補に
+                    //   限られているので、位相感度で降りる先は「1つ下の候補」= 真値
+                    //   より小さい実在しない設定になり、ドットを飛ばす方へ倒れる。
+                    //   そもそも**倍率は分かっている**(選んだ点の oversample)。
+                    //   下限のせいで×2になっている点なら位相感度が弱いのは当たり前で、
+                    //   これは異常ではないので、判定にそう書けば足りる。
+                    let quick = matches!(
+                        self.auto.as_ref().map(|a| &a.mode),
+                        Some(AutoMode::Quick { .. })
+                    );
+                    let over = self.auto.as_ref().map_or(1, |a| a.over);
+                    if !quick && rel > 0.85 && attempt < 2 && pll / 2 >= self.pll_min_hw() {
                         if let Some(a) = self.auto.as_mut() {
                             a.attempt = attempt + 1;
                         }
@@ -1698,15 +1994,20 @@ impl ViewerApp {
                     self.tune_phase = best.0;
                     self.auto = None;
                     let at_floor = pll <= self.pll_min_hw() + 8;
-                    let judge = if at_floor {
-                        "TVPの下限(12MHz)。このモードは1:1不可"
+                    let judge = if quick && over > 1 {
+                        // 候補の htotal がTVPの下限を割るので、整数倍にせざるを
+                        // 得なかった点。1:1にはできないが、位相ロックはしている
+                        format!("TVPの下限で×{over}オーバーサンプル。このモードは1:1不可")
+                    } else if at_floor {
+                        "TVPの下限(12MHz)。このモードは1:1不可".to_string()
                     } else if rel <= 0.85 {
-                        "1:1"
+                        "1:1".to_string()
                     } else {
-                        "要確認"
+                        "要確認".to_string()
                     };
+                    let how = if quick { "簡易" } else { "フル" };
                     self.auto_done = Some(format!(
-                        "pll_div {} / 位相 {} で完了({judge}: 最悪の位相は {:.0}%)",
+                        "{how}: pll_div {} / 位相 {} で完了({judge}: 最悪の位相は {:.0}%)",
                         pll, best.0, rel * 100.0));
                     self.want_fit = true;
                 }
@@ -1807,7 +2108,7 @@ impl ViewerApp {
         // htotal = f_dot / fH が整数になる f_dot を選べば一意に決まる。fH は
         // pll_divide に依存しない絶対値で、MODEが持っている。絵の内容を一切
         // 見ないので、真っ黒な画面でも模様が無くても当たる(スペクトル探索の
-        // 「自動調整」が変な値に着地するのはここが理由)。
+        // 「フルスキャン」が変な値に着地するのはここが理由)。
         let fh_hz = self
             .shared
             .mode
@@ -2095,7 +2396,7 @@ impl ViewerApp {
         // ここには「目標の有効幅から pll_div を比例計算する」UI(target w / ×8 /
         // → pll)があったが撤去した。比例計算は有効映像の実測が信用できないと
         // 上限まで走り、実機で pll_div が 2304 に達して絵が崩れ、DATACLKが
-        // 100MHzを超えてボードごとハングした。いまは下の「自動調整」が絵の
+        // 100MHzを超えてボードごとハングした。いまは下のスキャンが絵の
         // スペクトルから倍率を割り出すので、初期値がどれだけ外れていても収束する。
         let st = self.shared.stats.lock().unwrap().clone();
         // 縦はスロット単位で測っている。プログレッシブでは行が1つ飛びに並ぶので
@@ -2249,6 +2550,22 @@ impl ViewerApp {
         // (実機で pll_div が 2304 まで行って絵が崩れた)。こちらは絵の
         // スペクトルから倍率を割り出すので、いまの値がどれだけ外れていても
         // 1回で正しい範囲に入る。
+        //
+        // ★**簡易とフルの2本立てにしてある。**
+        //   すぐ上の「適用」は fH と水晶だけで決める(絵を一切見ない)ので速いが、
+        //   同じ fH を作れるドットクロックが複数あると決め切れない。X68000の
+        //   31.5kHz がまさにそれで、768x512(1104)と512x512(736)と HRL付き(552)が
+        //   全部 fH 31.500kHz ちょうど。「適用」は安全側の最大値=1104 を返すので、
+        //   512x512 のときは 1.5倍オーバーサンプルのままになる。
+        //
+        //   簡易スキャンはその**候補(この例では htotal 4点 = 設定値3通り)だけ**を、
+        //   htotal の大きい方から位相を振って調べ、位相感度が立った最初の点を採る。
+        //   降りるには「位相を動かしても鮮鋭度が変わらない = 過剰サンプル」という
+        //   積極的な証拠を要求するので、迷ったときは大きい側(安全側)に留まる。
+        //   フルスキャンは候補という前提を置かずに数十点を舐めるので、桁違いに遅く、
+        //   絵に模様が無いと変な値へ着地することもある。
+        //   まず簡易、駄目ならフル、という順番で使う。
+        let quick_cands = self.scan_candidates();
         ui.horizontal(|ui| {
             if self.auto.is_some() {
                 if ui.button("中止").clicked() {
@@ -2259,19 +2576,60 @@ impl ViewerApp {
                     ui.monospace(a.note.clone());
                 }
             } else {
-                if ui.button("自動調整")
-                    .on_hover_text("pll_divide と位相を実測で決める(40秒ほど)。\n\
+                let n = quick_cands.len();
+                let list = quick_cands
+                    .iter()
+                    .map(|c| {
+                        if c.oversample > 1 {
+                            format!("htotal {} → pll {} (×{})",
+                                    c.htotal, c.pll_divide, c.oversample)
+                        } else {
+                            format!("htotal {} → pll {}", c.htotal, c.pll_divide)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n         ");
+                let btn = ui.add_enabled(n > 0, egui::Button::new("簡易スキャン"));
+                let btn = if n > 0 {
+                    btn.on_hover_text(format!(
+                        "プロファイルの水晶/分周と fH から出る候補だけを、\n\
+                         htotal の大きい方から位相を振って調べます\n\
+                         (10〜25秒。位相もそのまま最適値に合わせます)。\n\
+                         候補 {n}点:\n\
+                         {list}\n\
+                         **まずこちらを試す。**\n\
+                         1段下へ降りるには「位相を動かしても鮮鋭度が変わらない」\n\
+                         という証拠が要るので、判断できないときは大きい側\n\
+                         (=過剰サンプル。眠いだけで壊れない)に留まります"
+                    ))
+                } else {
+                    btn.on_hover_text(
+                        "この fH を説明できる候補がありません\n\
+                         (MODE未受信か、プロファイルに無いドットクロック)。\n\
+                         フルスキャンを使ってください",
+                    )
+                };
+                if btn.clicked() {
+                    self.auto_done = None;
+                    self.auto_start_quick();
+                }
+                if ui.button("フルスキャン")
+                    .on_hover_text("候補を前提にせず pll_divide を総当たりで探し、\n\
+                                    そのあと位相(0〜31)も振って決めます(40秒ほど)。\n\
+                                    プロファイルに無いモードや未知の機種向け。\n\
                                     文字など細かい模様が出ている画面で実行してください")
                     .clicked()
                 {
                     self.auto_done = None;
                     self.auto_start();
                 }
-                if let Some(d) = self.auto_done.clone() {
-                    ui.monospace(d);
-                }
             }
         });
+        if self.auto.is_none() {
+            if let Some(d) = self.auto_done.clone() {
+                ui.monospace(d);
+            }
+        }
         if ui.button("send all").clicked() {
             send.push((protocol::CFG_KEY_VBP, self.tune_vbp as u32));
             send.push((protocol::CFG_KEY_HS_OFFSET, self.tune_hs_offset as u32));

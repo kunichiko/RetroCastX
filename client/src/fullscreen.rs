@@ -293,6 +293,9 @@ fn render_thread(
     let mut last_log = Instant::now();
     // 幾何に使う vtotal の平滑値(main.rs の vtotal_smooth と同じ理由)
     let mut vtotal_smooth = 0.0f32;
+    // 平滑の時定数は**時間**で効かせる。フレーム数で減衰させると、MODEが1秒に
+    // 1〜2回しか更新されないのに毎フレーム呼ぶせいで収束しきり、平均されない
+    let mut vtotal_last_t: Option<std::time::Instant> = None;
 
     loop {
         // 新フレーム到着まで待つ(タイムアウトでハートビート描画: 統計・黒画面維持)
@@ -344,8 +347,12 @@ fn render_thread(
                         // (インターレースは262.5ライン/フィールド)なので、瞬間値を
                         // 幾何に使うと縦のスケールがフレームごとに0.38%変わり、
                         // 絵が上下に震える。詳細は main.rs の vtotal_smooth のコメント。
-                        vtotal_smooth =
-                            render::smooth_vtotal(vtotal_smooth, m.vtotal as f32, false);
+                        let now = std::time::Instant::now();
+                        let dt = vtotal_last_t
+                            .map_or(1.0 / 60.0, |t| now.duration_since(t).as_secs_f32());
+                        vtotal_last_t = Some(now);
+                        vtotal_smooth = render::smooth_vtotal(
+                            vtotal_smooth, m.vtotal as f32, false, dt);
                         p.vtotal = vtotal_smooth;
                         // 管面を時間ベースで決めるのに必要(実CRTと同じ挙動)
                         p.fh_hz = (m.hfreq_mhz_x1000 / 1000) as u32;
