@@ -613,8 +613,15 @@ NICの列挙は `if-addrs` で、Windows も同じコードで動く。
 
 送信が1つも通らなかったときは `Shared::net_error` に理由を入れてUIへ出す。
 **以前は `let _ =` で捨てていたので、症状が「何も映らない」だけだった。**
-なお `host/python` 側のツールは未対応で、VPN下では `--bind` が必要なまま
-(`discover.py` は probe 送信の例外で終了するので受動リッスンまで到達しない)。
+
+`host/python` 側は `retrocastx/netutil.py` に同じ判定を寄せてある。NICの列挙は
+psutil を使い、無ければ限定ブロードキャストに落ちる(= VPN下では従来どおり
+失敗するので `--bind` が要る)。標準ライブラリには getifaddrs 相当が無いため。
+`discover.py` / `cfg.py` / `pll_tune.py` は対応済みで `--board` も省略できる。
+**送信の失敗でプログラムを終わらせない**のも要点で、ボードはANNOUNCEを毎秒
+自発送出するので probe が出せなくても受動リッスンで見つかる。
+未対応: `line_probe.py` / `span_check.py` / `videoin.py` / `vs_probe.py`
+(いずれも `--board` 必須のまま。同じ差し替えで直る)。
 
 **生同期(P4 pin155=HSYNC / pin153=VSYNC)は sysドメインで測る。** pll_divide に依存
 しない絶対値が得られる(key 0x2A/0x2B/0x2C)。TVPのHSOUT/VSOUT経由の値は、TVPが

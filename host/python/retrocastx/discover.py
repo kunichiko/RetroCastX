@@ -11,6 +11,7 @@ import argparse
 import socket
 import time
 
+from . import netutil
 from . import protocol as proto
 
 
@@ -21,40 +22,47 @@ def main():
     ap.add_argument("--subscribe", action="store_true",
                     help="send SUBSCRIBE back to each discovered board")
     ap.add_argument("--bind", default="0.0.0.0",
-                    help="受信ソケットを縛るローカルアドレス。**VPN接続中は必須**: "
-                         "既定経路がVPNだと 255.255.255.255 への送信が "
-                         "EADDRNOTAVAIL で落ちる。ボードと同じL2にいるIFの "
-                         "アドレスを指定する(例 192.168.11.24)")
+                    help="受信ソケットを縛るローカルアドレス。**通常は不要**: "
+                         "probe はNICごとのサブネット宛へ出すので既定経路を "
+                         "参照しない。NICを1つに絞りたいときだけ指定する")
     args = ap.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    # VPN下では 0.0.0.0 のままだと送信が EADDRNOTAVAIL で落ちる。
-    # ボードが見つからないのと同じ形で失敗するので誤読しやすい(cfg.py と同じ流儀)。
+    # bind はポートを掴むだけ。宛先の決め方は netutil に寄せてある。
     try:
         sock.bind((args.bind, args.port))
     except OSError as e:
         raise SystemExit(
             "UDP %d を %s で bind できません (%s)\n"
-            "  Viewerが起動中なら終了してください。VPN接続中は --bind に "
-            "ボードと同じL2にいるIFのアドレスを指定してください。"
+            "  Viewerが起動中なら終了してください。"
             % (args.port, args.bind, e))
     sock.settimeout(1.0)
 
     seen = {}
     seq = 0
     last_probe = 0.0
+    warned = False
+    targets = netutil.broadcast_targets(args.bind)
     deadline = time.monotonic() + args.timeout if args.timeout > 0 else None
-    print("probing for RetroCastX boards on UDP %d (broadcast DISCOVER) ..." % args.port)
+    print("probing for RetroCastX boards on UDP %d (DISCOVER → %s) ..."
+          % (args.port, " ".join(targets)))
     try:
         while deadline is None or time.monotonic() < deadline:
             now = time.monotonic()
             if now - last_probe >= 1.0:
-                # 全ボードへ問いかける(ワイルドカードMAC+ブロードキャスト、発見のみ)
-                sock.sendto(proto.pack_subscribe(seq, announce_only=True,
-                                                 mac=proto.WILDCARD_MAC),
-                            ("255.255.255.255", args.port))
+                # 全ボードへ問いかける(ワイルドカードMAC+ブロードキャスト、発見のみ)。
+                # ★**送信の失敗でプログラムを終わらせない。** ボードはANNOUNCEを
+                #   毎秒自発送出するので、probe が出せなくても受動リッスンで
+                #   見つかる。以前は sendto の例外がそのまま終了させていたため、
+                #   VPN接続中は「ボードが見つからない」という形で失敗していた。
+                pkt = proto.pack_subscribe(seq, announce_only=True,
+                                           mac=proto.WILDCARD_MAC)
+                if netutil.send_all(sock, targets, args.port, pkt) == 0 and not warned:
+                    warned = True
+                    print("  ※ " + netutil.explain_failure(targets))
+                    print("  (ANNOUNCEの受動リッスンは続けます)")
                 seq += 1
                 last_probe = now
             try:

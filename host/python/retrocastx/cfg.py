@@ -37,6 +37,7 @@ import argparse
 import socket
 import time
 
+from . import netutil
 from . import protocol as proto
 
 # 実行時に振れるキー(gateware/retrocastx_stream.py の cfg_* と対応)。
@@ -99,7 +100,14 @@ def _num(s: str) -> int:
 class Cfg:
     def __init__(self, ip: str, port: int, timeout: float = 0.3,
                  bind: str = "0.0.0.0"):
-        self.dst = (ip, port)
+        # ★宛先が限定ブロードキャストのときは**NICごとのサブネット宛**に展開する。
+        #   限定ブロードキャストは既定経路に載るので、VPN接続中は sendto そのものが
+        #   EADDRNOTAVAIL で落ちる。詳細と実測値は netutil の冒頭コメント。
+        if ip in (netutil.LIMITED, "auto", "", None):
+            self.dsts = netutil.broadcast_targets(bind)
+        else:
+            self.dsts = [ip]
+        self.port = port
         self.seq = 1
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -110,12 +118,10 @@ class Cfg:
         #   受信ポートに合わせてbindする(他のツールも同じ流儀)。
         #   Viewerが起動中は同じポートを掴んでいるので bind に失敗する。
         #
-        # ★**VPN を張っていると 0.0.0.0 では 255.255.255.255 へ送れない**
-        #   (2026-09-02)。VPN が既定経路を握ると限定ブロードキャストが
-        #   point-to-point の utun に載ろうとして sendto が
-        #   `OSError: [Errno 49] Can't assign requested address` で落ちる。
-        #   `--bind 192.168.11.24` のようにボードと同じL2にいるIFのアドレスを
-        #   指定すれば、既定経路を迂回して出ていく。
+        # ★かつては VPN 接続中に --bind が必須だったが、宛先をNICごとの
+        #   サブネット宛にしたので不要になった(2026-09-04)。NICを1つに絞りたい
+        #   ときだけ指定する。psutil が無くてNICを列挙できない環境では、
+        #   従来どおり限定ブロードキャストに落ちるので --bind が要る。
         try:
             self.sock.bind((bind, port))
         except OSError as e:
@@ -127,9 +133,9 @@ class Cfg:
     def _xfer(self, op: int, key: int, value: int = 0, retries: int = 4):
         """SET/GET を送って REPLY の value を返す。来なければ None。"""
         for _ in range(retries):
-            self.sock.sendto(
-                proto.pack_config(self.seq, proto.CFG_TARGET_BOARD, op, key, value),
-                self.dst)
+            pkt = proto.pack_config(self.seq, proto.CFG_TARGET_BOARD, op, key, value)
+            if netutil.send_all(self.sock, self.dsts, self.port, pkt) == 0:
+                raise SystemExit(netutil.explain_failure(self.dsts))
             self.seq = (self.seq + 1) & 0xFFFF
             end = time.monotonic() + 0.3
             while time.monotonic() < end:
@@ -196,8 +202,9 @@ def _no_reply(args):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--board", required=True,
-                    help="ボードのIP(255.255.255.255 でブロードキャストも可)")
+    ap.add_argument("--board", default=netutil.LIMITED,
+                    help="ボードのIP。既定はブロードキャスト(NICごとのサブネット宛へ"
+                         "自動展開するのでVPN下でも通る)")
     ap.add_argument("--port", type=int, default=proto.DEFAULT_PORT)
     ap.add_argument("--bind", default="0.0.0.0",
                     help="受信ソケットを縛るローカルアドレス。**VPN接続中は必須**: "
