@@ -359,9 +359,40 @@ impl FrameAssembler {
                 let base = (l.line as usize * self.width + off) * 4;
                 match l.pixfmt {
                     proto::PIXFMT_RGB888 => {
+                        // ★ドット復元は **RGB555 と同じ**ように掛ける。
+                        //   劣化は信号源(X68000 の出力段)で起きているので、
+                        //   伝送形式とは無関係。8bit なので 5→8 の展開が要らず、
+                        //   量子化が粗くないぶん RGB555 より素直に効く。
+                        //   ※2026-09-03: RGB888 化の直後、この分岐にだけ
+                        //     フィルタを入れ忘れていて「スライダーを動かしても
+                        //     絵が変わらない」という形で出た。
+                        let row = l.line as usize;
+                        let a = self.dot_a_milli.min(900) as i32;
+                        let mut prev: [i32; 3] =
+                            if a > 0 && self.last_x.get(row) == Some(&off) {
+                                let p = self.last_raw[row];
+                                [p[0] as i32, p[1] as i32, p[2] as i32]
+                            } else {
+                                [0, 0, 0]
+                            };
                         for (i, px) in l.pixels.chunks_exact(3).enumerate().take(fit) {
                             let o = base + i * 4;
-                            self.fb[o..o + 3].copy_from_slice(px);
+                            if a == 0 {
+                                self.fb[o..o + 3].copy_from_slice(px);
+                            } else {
+                                let raw = [px[0] as i32, px[1] as i32, px[2] as i32];
+                                // d[n] = (v[n] - a·v[n-1]) / (1-a)
+                                for c in 0..3 {
+                                    let d = (raw[c] * 1000 - a * prev[c]) / (1000 - a);
+                                    self.fb[o + c] = d.clamp(0, 255) as u8;
+                                }
+                                prev = raw;
+                            }
+                        }
+                        if a > 0 && fit > 0 && row < self.last_x.len() {
+                            self.last_raw[row] =
+                                [prev[0] as u8, prev[1] as u8, prev[2] as u8];
+                            self.last_x[row] = off + fit;
                         }
                     }
                     proto::PIXFMT_RGB555 => {

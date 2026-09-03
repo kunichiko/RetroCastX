@@ -55,6 +55,17 @@ fn attach_parent_console() {
 #[cfg(not(windows))]
 fn attach_parent_console() {}
 
+/// 伝送形式の表示名。数値のままだと 0=888 / 1=555 が直感に反するので名前で出す
+fn pixfmt_name(f: u8) -> &'static str {
+    match f {
+        protocol::PIXFMT_RGB888 => "RGB888 (3B/px)",
+        protocol::PIXFMT_RGB555 => "RGB555 (2B/px)",
+        protocol::PIXFMT_RGB565 => "RGB565 (2B/px)",
+        protocol::PIXFMT_YC8 => "YC8 (2B/px)",
+        _ => "unknown",
+    }
+}
+
 fn main() -> eframe::Result {
     attach_parent_console();
     let mut port = protocol::DEFAULT_PORT;
@@ -622,6 +633,9 @@ struct ViewerApp {
     /// TVPの細ゲイン(レジスタ08h/09h/0Ah)。ゲイン = 1 + N/256。
     /// **基板ごとに違う**ので手で詰められるようにする。値はボードから読み戻す。
     tune_gain_r: i32,
+    /// 伝送形式(0x36)。0=RGB888 / 1=RGB555 / 3=YC8。
+    /// ゲートウェアは実行時に切り替えるので、他の tune 値と同じ扱いにする
+    tune_pixfmt: i32,
     tune_gain_g: i32,
     tune_gain_b: i32,
     /// 現在のウィンドウ内寸(保存用)
@@ -767,6 +781,7 @@ impl ViewerApp {
             // 初期値は REGS_X68000 と同じ(v0.9.0 で校正した値)。
             // 実際の値はボードから読み戻して上書きされる
             tune_gain_r: 43,
+            tune_pixfmt: protocol::PIXFMT_RGB555 as i32,
             tune_gain_g: 39,
             tune_gain_b: 35,
             window_size: egui::vec2(cfg.window_w, cfg.window_h),
@@ -1119,7 +1134,7 @@ impl ViewerApp {
     }
 
     /// 実行時に調整できるキーの一覧。読み戻しと表示の同期に使う
-    const TUNE_KEYS: [u16; 10] = [
+    const TUNE_KEYS: [u16; 11] = [
         protocol::CFG_KEY_VBP,
         protocol::CFG_KEY_HS_OFFSET,
         protocol::CFG_KEY_PLL_DIVIDE,
@@ -1130,6 +1145,7 @@ impl ViewerApp {
         protocol::CFG_KEY_GAIN_R,
         protocol::CFG_KEY_GAIN_G,
         protocol::CFG_KEY_GAIN_B,
+        protocol::CFG_KEY_PIXFMT,
     ];
 
     /// ボードの現在値を表示へ反映する。
@@ -1400,6 +1416,7 @@ impl ViewerApp {
                 protocol::CFG_KEY_FULL_LINE => self.tune_full_line = val != 0,
                 protocol::CFG_KEY_FRAME_SKIP => self.tune_frame_skip = val as u8,
                 protocol::CFG_KEY_PHASE => self.tune_phase = (val as u8).min(31),
+                protocol::CFG_KEY_PIXFMT => self.tune_pixfmt = val as i32,
                 protocol::CFG_KEY_GAIN_R => self.tune_gain_r = val as i32,
                 protocol::CFG_KEY_GAIN_G => self.tune_gain_g = val as i32,
                 protocol::CFG_KEY_GAIN_B => self.tune_gain_b = val as i32,
@@ -2640,7 +2657,8 @@ impl eframe::App for ViewerApp {
                 self.band_leds(ui);
                 if let Some(m) = self.shared.mode.lock().unwrap().clone() {
                     ui.monospace(format!("{}x{} (id {})", m.hactive, m.vactive, m.mode_id));
-                    ui.monospace(format!("pixfmt {}", m.pixfmt));
+                    // 実際に届いている LINE の形式。UIの設定値ではなく**電線上の値**
+                    ui.monospace(pixfmt_name(m.pixfmt));
                     // htotal×vtotal もボードの実測値。モード表を作る調査で必要なので出す
                     ui.monospace(format!("total {}x{}", m.htotal, m.vtotal));
                     ui.monospace(format!("dotclk {:.4} MHz", m.dotclk_hz as f64 / 1e6));
@@ -3006,6 +3024,26 @@ impl eframe::App for ViewerApp {
                     }
                 });
                 ui.horizontal(|ui| {
+                    // 伝送形式。RGB888 は 3B/px で帯域は 1.5 倍だが、
+                    // X68000 の 65536色モードのように元が5bitを超える階調を
+                    // 持つ場合に丸めが乗らない。RGB555 は 2B/px で帯域が軽い。
+                    // ゲートウェアは実行時に切り替えるので再ビルドは要らない。
+                    ui.monospace("伝送形式");
+                    let mut f = self.tune_pixfmt;
+                    egui::ComboBox::from_id_salt("pixfmt")
+                        .selected_text(pixfmt_name(f as u8))
+                        .show_ui(ui, |ui| {
+                            for v in [protocol::PIXFMT_RGB888, protocol::PIXFMT_RGB555,
+                                      protocol::PIXFMT_YC8] {
+                                ui.selectable_value(&mut f, v as i32, pixfmt_name(v));
+                            }
+                        });
+                    if f != self.tune_pixfmt {
+                        self.tune_pixfmt = f;
+                        self.send_cfg(protocol::CFG_KEY_PIXFMT, f as u32);
+                    }
+                });
+                ui.horizontal(|ui| {
                     // ★**ドット復元(1タップ逆フィルタ)。**
                     //   X68000 768x512 では本体の出力段で既に1ドットのパルスが
                     //   立ち切っておらず、実測で 1ドット=白の64% / 2ドット=82% /
@@ -3015,7 +3053,11 @@ impl eframe::App for ViewerApp {
                     //
                     //   一次ローパスの逆演算なので、係数が合っていれば
                     //   オーバーシュート(輪郭のリンギング)は出ない。
-                    //   孤立1ドットの到達率が (1-a) なので a = 1 - 0.64 = 0.36 が既定。
+                    //   孤立1ドットの到達率が (1-a) なので a = 1 - 0.64 = 0.36 が理論値。
+                    //   ただし★**この式は「1サンプル=1ドット」でしか成立しない**
+                    //   (一次ローパスの逆演算なので、オーバーサンプリングだと前提が崩れる)。
+                    //   pll_divide を合わせた状態(X68000の512ドット系なら736)で
+                    //   実測すると、飽和ゼロで1pxが白に届くのは a=0.20 だった。既定はこちら。
                     ui.monospace("ドット復元");
                     let mut a = self.dot_a_milli as f32 / 1000.0;
                     if ui.add(egui::Slider::new(&mut a, 0.0..=0.9).fixed_decimals(2)).changed() {
