@@ -586,8 +586,15 @@ def cmd_status(c: Cfg, args) -> int:
             print("  (最長Lowが飽和しているが、TVPのlines/frame=%s は正常なので"
                   "信号は来ている。SOGOUTの測定はこの配線では当てにならない)" % lpf)
     # reg 14h: bit6=SOGD(SOG検出) bit3=AVS(垂直有効) bit2=AHS(水平有効)
-    print("syncdet (reg 14h) = 0x%02X   SOGD=%d AVS=%d AHS=%d"
-          % (det, (det >> 6) & 1, (det >> 3) & 1, (det >> 2) & 1))
+    # ★**5線同期では AVS/AHS は立たない。** あのビットはSOG系の同期セパレータの
+    #   状態で、別線で入れた HSYNC/VSYNC は通らない。実測(2026-09-04、X68000の
+    #   31.5kHz 512x512): syncdet=0x93 で AVS=AHS=0 なのに、絵は正常に出ていて
+    #   DATACLK も 736 × 31500 = 23.184MHz と正しい。ここを健全性の判断に使うと
+    #   「水平がロックしていない」と誤警告する(実際にしていた)。
+    print("syncdet (reg 14h) = 0x%02X   SOGD=%d AVS=%d AHS=%d%s"
+          % (det, (det >> 6) & 1, (det >> 3) & 1, (det >> 2) & 1,
+             "" if sctl is None or (sctl & 0x08)
+             else "  (5線同期なので AVS/AHS は0で正常)"))
     print("lines/frame        = %s   (期待: 15.7kHz系なら262〜263、480iなら525前後)"
           % lpf)
     # ★clocks/line(reg 39h:3Ah)は **DATACLK ではなく内部基準クロック(約6.5MHz)**で
@@ -612,8 +619,19 @@ def cmd_status(c: Cfg, args) -> int:
         bad.append("SOGを検出していない → 入力ピンの選択(0x69)が合っているか確認。"
                    "合っていれば 0x50(SOG閾値、既定0x0B=124mV)と "
                    "0x5D(SOG LPFを0x52=10MHzへ)を振る")
-    if not (det >> 2) & 1:
-        bad.append("水平がロックしていない → 0x19(チャージポンプ)を 0x08/0x10/0x18 で振る")
+    if sog_mode:
+        if not (det >> 2) & 1:
+            bad.append("水平がロックしていない → "
+                       "0x19(チャージポンプ)を 0x08/0x10/0x18 で振る")
+    elif fh_raw and fh:
+        # 5線同期では 14h が使えないので、**TVPのHSOUTが生HSYNCと一致するか**で
+        # 見る。ロックが外れると別の周期を数えるので、まず周波数が食い違う
+        # (実測で半分のライン周期にロックした例がある。retrocastx_stream.py の
+        #  pll_ctl_for のコメント参照)。0.2%は測定窓のずれぶんの余裕。
+        if abs(fh - fh_raw) > max(50, fh_raw * 0.002):
+            bad.append("TVPのHSOUT(%d Hz)が生HSYNC(%d Hz)と一致しない → 水平が"
+                       "ロックしていない。0x19(チャージポンプ)を "
+                       "0x08/0x10/0x18 で振る" % (fh, fh_raw))
     # 内部基準クロックはデータシートで「typically 6.5 MHz、精確な値とみなさないこと」。
     # 大きく外れるのは同期が取れていないとき(clocks/lineが別の周期を数えている)。
     if cpl and fh and not (5.0e6 <= cpl * fh <= 8.0e6):
