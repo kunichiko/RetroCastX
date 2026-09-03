@@ -13,9 +13,11 @@
 //! --mac は購読対象ボードのMACを指名する(複数ボードLANで必須。省略時は
 //! ワイルドカード=全ボード、単一ボードLAN専用)。
 //!
-//! 既定ではSUBSCRIBEを255.255.255.255にブロードキャストし、ボードの
-//! ストリームを自分に向ける。sender_sim相手なら --no-subscribe でよい
-//! (sender_simはSUBSCRIBEを無視して--dest宛に送るため)。
+//! 既定ではSUBSCRIBEを**各NICのサブネット宛**にブロードキャストし、ボードの
+//! ストリームを自分に向ける。限定ブロードキャスト(255.255.255.255)は使わない:
+//! あれは既定経路に載るので、VPN接続中は送信自体が失敗する
+//! (receiver.rs の broadcast_targets 参照)。sender_sim相手なら --no-subscribe
+//! でよい(sender_simはSUBSCRIBEを無視して--dest宛に送るため)。
 
 // Windows: コンソール窓を出さずに起動する。これが無いと、Explorerから起動しても
 // 先に真っ黒なコンソールが開いてからUIが出る(通常のGUIアプリの見た目にならない)。
@@ -99,10 +101,9 @@ fn main() -> eframe::Result {
             "--mac" => target_mac = Some(parse_mac(&args.next().expect("--mac needs AA:BB:.."))),
             "--port" => port = args.next().expect("--port needs a value").parse().unwrap(),
             "--no-subscribe" => subscribe_to = None,
-            // 受信ソケットを縛るローカルアドレス。**VPN接続中に必要**:
-            // 既定経路がVPNだと 0.0.0.0 からの 255.255.255.255 宛 SUBSCRIBE が
-            // utun に載ろうとして失敗し、ボードに届かない。ボードと同じL2に
-            // いるIFのアドレスを渡すと迂回できる(例 --bind 192.168.11.24)。
+            // 受信/送信ソケットを1つのNICに縛る。**VPN下でも通常は不要**
+            // (宛先がNICごとのサブネット宛なので既定経路を参照しない。
+            //  receiver.rs の broadcast_targets 参照)。NICを1つに絞りたいときだけ。
             "--bind" => bind = args.next().expect("--bind needs an IP (e.g. 192.168.11.24)"),
             // ドット復元(1タップ逆フィルタ)の係数 a を 0.0..0.9 で指定。
             // 0 で無効。設定ファイルの値を一時的に上書きする(A/B検証用)。
@@ -3061,8 +3062,20 @@ impl eframe::App for ViewerApp {
                                  ブロードキャストになるのはこの2秒ごとの要求だけで、\n\
                                  映像はユニキャストです");
                     } else {
-                        ui.label(format!("SUBSCRIBE → {dest}"));
+                        // NICごとのサブネット宛。複数NICがあれば空白区切りで並ぶ
+                        ui.label(format!("SUBSCRIBE → {dest}"))
+                            .on_hover_text(
+                                "各NICのサブネット宛ブロードキャストへ2秒ごとに送っています。\n\
+                                 限定ブロードキャスト(255.255.255.255)は使いません。\n\
+                                 あれは既定経路に載るので、VPN接続中は送信自体が\n\
+                                 失敗します(receiver.rs の broadcast_targets 参照)。\n\
+                                 サブネットが違っても同じL2セグメントにいれば届きます");
                     }
+                }
+                // ★**送れていないことを明示する。** 「何も映らない」だけだと
+                //   受信側の問題と区別できず、原因の切り分けに時間がかかる。
+                if let Some(err) = self.shared.net_error.lock().unwrap().clone() {
+                    ui.colored_label(egui::Color32::from_rgb(220, 170, 60), err);
                 }
                 ui.separator();
 

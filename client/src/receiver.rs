@@ -36,12 +36,15 @@ pub struct Config {
     pub port: u16,
     /// 受信ソケットを縛るローカルアドレス。既定は 0.0.0.0(全IF)。
     ///
-    /// ★**VPN 接続中は指定が要る**(2026-09-02)。VPN が既定経路を握ると、
-    ///   0.0.0.0 に bind したソケットからの 255.255.255.255 宛 SUBSCRIBE が
-    ///   point-to-point の utun に載ろうとして
-    ///   `Can't assign requested address` で失敗し、ボードに届かない。
-    ///   `--bind 192.168.11.24` のようにボードと同じL2にいるIFのアドレスを
-    ///   指定すると既定経路を迂回する。
+    /// ★**VPN 接続中でも指定は要らない**(2026-09-04以降)。かつては 0.0.0.0 からの
+    ///   255.255.255.255 宛 SUBSCRIBE が point-to-point の utun に載ろうとして
+    ///   `Can't assign requested address` で失敗するため `--bind` が必須だったが、
+    ///   宛先を**NICごとのサブネット宛**にしたので既定経路を参照しなくなった
+    ///   (詳細は `broadcast_targets`)。実測: VPN接続のまま `--bind` 無しで
+    ///   644フレーム / 58.8Mbps / lost 0。
+    ///
+    ///   いまは「NICを1つに絞りたい」ときだけ指定する。指定するとブロードキャストの
+    ///   宛先もそのNICだけになる。
     pub bind: String,
     /// SUBSCRIBE keepalive の宛先。None なら購読しない(sender_sim等の受け専用)。
     pub subscribe_to: Option<String>,
@@ -544,6 +547,12 @@ pub struct Shared {
     /// 内訳を分けるために持つ。捨て場所を作ったなら見えるようにしておかないと、
     /// どちらが詰まっているのか判断できない。
     pub queue_drops: AtomicU64,
+    /// 送信そのものが失敗しているときの説明。None なら送れている。
+    ///
+    /// **「何も映らない」を「送れていない」と区別するために持つ。** VPNが既定経路を
+    /// 握っていると送信が EADDRNOTAVAIL で落ちるが、以前は `let _ =` で捨てていたので
+    /// 症状が受信側の問題と見分けられなかった。
+    pub net_error: Mutex<Option<String>>,
     /// いま実際に SUBSCRIBE / CONFIG を送っている宛先。UI表示用。
     ///
     /// 指定値そのものではない。ユニキャスト指定で何も返ってこない場合は
@@ -671,6 +680,81 @@ fn rx_thread(
     }
 }
 
+/// ブロードキャスト送信の宛先を、**NICごとのサブネット宛**で列挙する。
+///
+/// ★**`255.255.255.255`(限定ブロードキャスト)を使ってはいけない。**
+///   限定ブロードキャストはサブネット経路を持たないので既定経路に載る。既定経路が
+///   point-to-point の VPN トンネル(utun*)だと送信元アドレスを割り当てられず、
+///   `Can't assign requested address` で送信そのものが失敗する。VPNに繋いだまま
+///   Viewer を起動するとボードが見つからない、という形で出る(2026-09-04)。
+///
+///   サブネット宛(例 192.168.11.255)なら経路が「そのNICのサブネット経路」に
+///   決まるので、既定経路を一切参照しない。実測でも、bind を 0.0.0.0 のまま
+///   192.168.11.255 へ送ればVPN接続中でもレジスタの読み書きが通った
+///   (255.255.255.255 は同条件で EADDRNOTAVAIL)。
+///
+///   **ボードと別サブネットでも届く。** ボード 192.168.10.50 / PC 192.168.11.24 で
+///   確認済み。同じL2にいればL2ブロードキャストで届き、返りはボード側の
+///   `retrocastx_net.py`(受信パケットから相手のMACを学習する層)が処理する。
+///
+/// `bind` に具体的なアドレスが指定されていれば、そのNICだけに絞る(明示指定を尊重)。
+/// 候補が1つも作れないときだけ、最後の手段として限定ブロードキャストを返す。
+fn broadcast_targets(bind: &str) -> Vec<String> {
+    let pinned: Option<std::net::Ipv4Addr> = bind
+        .parse::<std::net::Ipv4Addr>()
+        .ok()
+        .filter(|a| !a.is_unspecified());
+    let ifs = if_addrs::get_if_addrs().unwrap_or_default();
+    pick_targets(
+        ifs.into_iter().filter_map(|i| match i.addr {
+            if_addrs::IfAddr::V4(v4) => Some((v4.ip, v4.broadcast)),
+            _ => None,
+        }),
+        pinned,
+    )
+}
+
+/// `broadcast_targets` の選び方だけを切り出したもの。NICの列挙結果を受ける。
+///
+/// 実機のNIC構成に依存せずに規則を試験できるように分けてある。
+fn pick_targets(
+    ifs: impl Iterator<Item = (std::net::Ipv4Addr, Option<std::net::Ipv4Addr>)>,
+    pinned: Option<std::net::Ipv4Addr>,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (ip, bcast) in ifs {
+        if ip.is_loopback() {
+            continue;
+        }
+        // point-to-point(VPNトンネル等)は broadcast を持たないので自然に落ちる
+        let Some(b) = bcast else { continue };
+        if pinned.is_some_and(|p| p != ip) {
+            continue;
+        }
+        let b = b.to_string();
+        if !out.contains(&b) {
+            out.push(b);
+        }
+    }
+    if out.is_empty() {
+        // NICを列挙できない環境向けの保険。VPN下では失敗するが、
+        // 失敗したことは net_error で見えるようにしてある
+        out.push("255.255.255.255".to_string());
+    }
+    out
+}
+
+/// 宛先すべてへ送り、成功した数を返す。0 なら1つも出せていない。
+fn send_all(sock: &UdpSocket, port: u16, targets: &[String], pkt: &[u8]) -> usize {
+    let mut ok = 0usize;
+    for t in targets {
+        if sock.send_to(pkt, (t.as_str(), port)).is_ok() {
+            ok += 1;
+        }
+    }
+    ok
+}
+
 fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     // 受信専用スレッドへ渡す。送信(SUBSCRIBE/CONFIG)はこちらのスレッドが
     // 複製したソケットで行う。同じソケットなので、ボードが覚える送信元は変わらない。
@@ -730,11 +814,35 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut got_any = false;
     let started = Instant::now();
     let mut fell_back = false;
+    // ブロードキャスト時の実際の宛先(NICごとのサブネット宛)。NICは後から増減する
+    // (Wi-Fiに繋ぐ、ケーブルを差す、VPNを上げ下げする)ので定期的に作り直す。
+    let mut targets: Vec<String> = Vec::new();
+    let mut targets_at: Option<Instant> = None;
     if let Some(d) = dest.clone() {
         *shared.sub_dest.lock().unwrap() = d;
     }
 
     while !shared.stop.load(Ordering::Relaxed) {
+        // 宛先の実体を決める。ユニキャスト指定ならその1つ、ブロードキャストなら
+        // NICごとのサブネット宛(理由は broadcast_targets のコメント)。
+        let bcast = dest.as_deref() == Some(&broadcast);
+        if bcast {
+            if targets_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(10)) {
+                targets_at = Some(Instant::now());
+                let fresh = broadcast_targets(&cfg.bind);
+                if fresh != targets {
+                    *shared.sub_dest.lock().unwrap() = fresh.join(" ");
+                    targets = fresh;
+                }
+            }
+        } else if let Some(d) = &dest {
+            if targets.len() != 1 || targets[0] != *d {
+                targets = vec![d.clone()];
+                *shared.sub_dest.lock().unwrap() = d.clone();
+            }
+        } else {
+            targets.clear();
+        }
         // 購読キープアライブ(ボードは10秒で失効させる)
         // ユニキャスト指定で3秒間何も来なければブロードキャストへ落とす
         if !got_any && !fell_back && dest.is_some() && dest.as_deref() != Some(&broadcast)
@@ -747,14 +855,24 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             *shared.sub_dest.lock().unwrap() = broadcast.clone();
             last_subscribe = None;   // すぐ送り直す
         }
-        if let Some(dest) = &dest {
+        if !targets.is_empty() {
             let due = last_subscribe.map_or(true, |t| t.elapsed() >= Duration::from_secs(2));
             if due {
                 let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
-                let _ = send_sock.send_to(
-                    &proto::pack_subscribe(sub_seq, false, &mac),
-                    (dest.as_str(), cfg.port),
-                );
+                let pkt = proto::pack_subscribe(sub_seq, false, &mac);
+                // ★**送信失敗を黙って捨てない。** 以前は `let _ =` で捨てていたので、
+                //   VPNで送れないときの症状が「何も映らない」だけになり、原因を
+                //   突き止めるのに何度も時間を使った。1つも出せていないなら言う。
+                let ok = send_all(&send_sock, cfg.port, &targets, &pkt);
+                *shared.net_error.lock().unwrap() = if ok == 0 {
+                    Some(format!(
+                        "SUBSCRIBE を送信できません(宛先 {})。\n\
+                         VPN が既定経路を握っていると限定ブロードキャストが送れません。\n\
+                         有線/Wi-Fi のNICが有効か、ボードと同じL2にいるかを確認してください",
+                        targets.join(" ")))
+                } else {
+                    None
+                };
                 sub_seq = sub_seq.wrapping_add(1);
                 last_subscribe = Some(Instant::now());
             }
@@ -764,15 +882,15 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         {
             let mut q = shared.config_queue.lock().unwrap();
             if !q.is_empty() {
-                if let Some(dest) = &dest {
+                if targets.is_empty() {
+                    q.clear();
+                } else {
                     let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
                     for (key, value) in q.drain(..) {
                         let pkt = proto::pack_config(sub_seq, 0, 0, key, value, &mac);
-                        let _ = send_sock.send_to(&pkt, (dest.as_str(), cfg.port));
+                        send_all(&send_sock, cfg.port, &targets, &pkt);
                         sub_seq = sub_seq.wrapping_add(1);
                     }
-                } else {
-                    q.clear();
                 }
             }
         }
@@ -799,15 +917,15 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         {
             let mut q = shared.config_get_queue.lock().unwrap();
             if !q.is_empty() {
-                if let Some(dest) = &dest {
+                if targets.is_empty() {
+                    q.clear();
+                } else {
                     let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
                     for key in q.drain(..) {
                         let pkt = proto::pack_config(sub_seq, 0, 1, key, 0, &mac);
-                        let _ = send_sock.send_to(&pkt, (dest.as_str(), cfg.port));
+                        send_all(&send_sock, cfg.port, &targets, &pkt);
                         sub_seq = sub_seq.wrapping_add(1);
                     }
-                } else {
-                    q.clear();
                 }
             }
         }
@@ -1060,4 +1178,84 @@ fn tick_stats(
     *frames_since = 0;
     *publish_wait_us = 0;
     *publish_wait_max_us = 0;
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::pick_targets;
+    use std::net::Ipv4Addr;
+
+    fn ip(s: &str) -> Ipv4Addr {
+        s.parse().unwrap()
+    }
+
+    /// ★**実在するNICがあるなら 255.255.255.255 を返してはいけない。**
+    ///
+    /// 限定ブロードキャストは既定経路に載るので、VPN接続中は送信自体が
+    /// EADDRNOTAVAIL で落ちる。ここが崩れると「VPNを繋いだままだとボードが
+    /// 見つからない」に戻る(2026-09-04 に .app で実際に踏んだ)。
+    #[test]
+    fn prefers_per_nic_directed_broadcast() {
+        let ifs = vec![
+            (ip("127.0.0.1"), Some(ip("127.255.255.255"))),  // ループバック
+            (ip("192.168.11.24"), Some(ip("192.168.11.255"))), // 有線
+            (ip("172.23.24.193"), None),                       // VPN(point-to-point)
+        ];
+        let got = pick_targets(ifs.into_iter(), None);
+        assert_eq!(got, vec!["192.168.11.255"], "得られた宛先: {got:?}");
+        assert!(!got.iter().any(|t| t == "255.255.255.255"));
+    }
+
+    /// 複数NICがあれば全部へ出す。どれがボードと同じL2かは分からないので、
+    /// 絞らずに並べる(2秒ごとに数十バイトなので実害は無い)。
+    #[test]
+    fn lists_every_usable_nic() {
+        let ifs = vec![
+            (ip("192.168.11.24"), Some(ip("192.168.11.255"))),
+            (ip("10.0.0.5"), Some(ip("10.0.0.255"))),
+            (ip("127.0.0.1"), Some(ip("127.255.255.255"))),
+        ];
+        let got = pick_targets(ifs.into_iter(), None);
+        assert_eq!(got, vec!["192.168.11.255", "10.0.0.255"]);
+    }
+
+    /// 同じサブネットに複数アドレスが付いていても宛先は1つにまとめる
+    #[test]
+    fn dedups_same_subnet() {
+        let ifs = vec![
+            (ip("192.168.11.24"), Some(ip("192.168.11.255"))),
+            (ip("192.168.11.33"), Some(ip("192.168.11.255"))),
+        ];
+        assert_eq!(pick_targets(ifs.into_iter(), None), vec!["192.168.11.255"]);
+    }
+
+    /// --bind で明示指定したらそのNICだけに絞る(明示指定を尊重する)
+    #[test]
+    fn pinned_bind_restricts_to_that_nic() {
+        let ifs = vec![
+            (ip("192.168.11.24"), Some(ip("192.168.11.255"))),
+            (ip("10.0.0.5"), Some(ip("10.0.0.255"))),
+        ];
+        assert_eq!(
+            pick_targets(ifs.clone().into_iter(), Some(ip("10.0.0.5"))),
+            vec!["10.0.0.255"]
+        );
+        // 指定したアドレスがどのNICにも無ければ候補ゼロ → 最後の手段
+        assert_eq!(
+            pick_targets(ifs.into_iter(), Some(ip("192.168.99.1"))),
+            vec!["255.255.255.255"]
+        );
+    }
+
+    /// 使えるNICが1つも無いときだけ限定ブロードキャストへ落ちる。
+    /// VPN下では送れないが、送れないことは net_error でUIに出る。
+    #[test]
+    fn falls_back_only_when_nothing_usable() {
+        let ifs = vec![
+            (ip("127.0.0.1"), Some(ip("127.255.255.255"))),
+            (ip("172.23.24.193"), None),
+        ];
+        assert_eq!(pick_targets(ifs.into_iter(), None), vec!["255.255.255.255"]);
+    }
 }

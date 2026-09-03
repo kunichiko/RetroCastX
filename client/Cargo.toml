@@ -42,3 +42,4 @@ socket2 = "0.6.5"
 # macOSのスケジューラにQoSを伝えるためだけに使う(pthread_set_qos_class_self_np)
 libc = "0.2"
 winit = "0.30.13"
+if-addrs = "0.15.0"
