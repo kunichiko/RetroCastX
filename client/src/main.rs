@@ -2093,9 +2093,21 @@ impl ViewerApp {
         // 100MHzを超えてボードごとハングした。いまは下の「自動調整」が絵の
         // スペクトルから倍率を割り出すので、初期値がどれだけ外れていても収束する。
         let st = self.shared.stats.lock().unwrap().clone();
+        // 縦はスロット単位で測っている。プログレッシブでは行が1つ飛びに並ぶので
+        // スロットの範囲は実際の行数の2倍になる(上の Mode 表示と同じ理由)。
+        // ここは表示だけ映像源の行数に直す。計算に使う st の値はそのまま。
+        let il_v = {
+            let m = self.shared.mode.lock().unwrap().clone();
+            m.map_or(false, |m| m.mflags & 0x0001 != 0) || st.interlace_measured
+        };
+        let (ah, ay) = if il_v {
+            (st.active_h, st.active_y)
+        } else {
+            (st.active_h / 2, st.active_y / 2)
+        };
         ui.monospace(format!(
             "active {}x{} at ({},{})",
-            st.active_w, st.active_h, st.active_x, st.active_y
+            st.active_w, ah, st.active_x, ay
         ));
         // 1ラインがバッファに入り切っていない状態。過剰サンプルの明確な兆候で、
         // このとき外接矩形は有効映像の幅ではなくバッファ幅を表すので、そこから
@@ -2695,7 +2707,26 @@ impl eframe::App for ViewerApp {
                 // 周波数インジケータ(実機モニタのLEDに相当)。同期している帯域が点灯する
                 self.band_leds(ui);
                 if let Some(m) = self.shared.mode.lock().unwrap().clone() {
-                    ui.monospace(format!("{}x{} (id {})", m.hactive, m.vactive, m.mode_id));
+                    // ★vactive は**スロット数**であって映像源の行数ではない。
+                    //
+                    //   行位置は常に半ライン単位のスロットに置かれる(捕捉側が
+                    //   インタレースかどうかで分岐しないための設計)。だから
+                    //   プログレッシブでは1つ飛びに並び、スロットの範囲は
+                    //   実際の行数の2倍になる。768x512 の X68000 が 768x1024 と
+                    //   表示されていたのはこれで、誤判定ではない。
+                    //
+                    //   インタレースのときは vactive がそのままフレーム行数に
+                    //   なる(フィールド行数×2 = フレーム行数)ので割らない。
+                    //   判定は assembler と同じ「mflags か、測定した交互性」。
+                    //   mflags bit0 だけでは決まらない (フィールドごとに VSYNC が
+                    //   来る本物のインタレースでは 0 になる) ことに注意。
+                    let il = m.mflags & 0x0001 != 0
+                        || self.shared.stats.lock().unwrap().interlace_measured;
+                    let vsrc = if il { m.vactive } else { m.vactive / 2 };
+                    ui.monospace(format!("{}x{} (id {})", m.hactive, vsrc, m.mode_id));
+                    if vsrc != m.vactive {
+                        ui.weak(format!("スロット {}", m.vactive));
+                    }
                     // 実際に届いている LINE の形式。UIの設定値ではなく**電線上の値**
                     ui.monospace(pixfmt_name(m.pixfmt));
                     // htotal×vtotal もボードの実測値。モード表を作る調査で必要なので出す
