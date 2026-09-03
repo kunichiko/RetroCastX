@@ -59,6 +59,7 @@ KNOWN = [
     (0x001E, "gain_r",            "reg 0Ah 赤ファインゲイン"),
     (0x001F, "phase",             "reg 04h サンプル位相"),
     (0x0022, "sync_ctl",          "reg 0Eh 同期制御 0x52=5線 / 0x53=4線CSYNC / 0x5B=SOG"),
+    (0x002D, "il_status",         "インターレース判定 bit0=生位相が交互 bit1=生同期OK bit2=TVPのP/I bit3=TVP vtotalが2フィールド分(読専)"),
     (0x0030, "full_line",         "1ラインまるごと送る(診断)"),
     (0x0036, "pixfmt",            "伝送形式 1=RGB555(既定) 3=YC8(生8bit、CVBS用)"),
     (0x0050, "sog_thresh",        "reg 10h bit[7:3] SOGスライス閾値(5bit)"),

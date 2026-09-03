@@ -738,6 +738,9 @@ class RetroCastXStreamer(LiteXModule):
                 0x2A: reply_mux.eq(capture.meas_fh_raw),
                 0x2B: reply_mux.eq(capture.meas_fv_raw),
                 0x2C: reply_mux.eq(capture.meas_lines_raw),
+                # インターレース判定の内訳。bit0=生位相が交互 bit1=生同期OK
+                # bit2=TVPのP/I検出 bit3=TVPのvtotalが2フィールド分
+                0x2D: reply_mux.eq(capture.stat_il),
                 # TVPのHSOUT/VSOUTをsysクロック基準で測った絶対値。SOG運用では
                 # 0x2A〜0x2C が無信号で0になるので、ロック判定はこちらを見る
                 0x58: reply_mux.eq(capture.meas_fh_tvp),

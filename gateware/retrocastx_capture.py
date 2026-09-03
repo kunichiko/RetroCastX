@@ -370,6 +370,19 @@ class TvpCapture(Module):
         self.stat_hs_len_raw = Signal(16)   # 生HSYNCの周期[pixクロック]
         ph_raw = Signal()                   # 生同期から見た半ライン位相
         raw_ok = Signal()                   # 生同期が使える状態か
+        # ★**生同期から見た「インターレースかどうか」。**
+        #
+        #   半ライン位相がフィールドごとに交互になっていればインターレース。これは
+        #   インターレースの定義そのもので、TVPの検出ビットに聞く必要が無い。
+        #
+        #   なぜ足したか: TVPのP/I検出(38h bit5)は X68000 の24kHz 1024x848 を
+        #   **progressive と誤答する**(2026-09-03 実機: 0x57=0x21 でbit5=1。
+        #   reg22h bit0 を立ててVSOUTを同期セパレータ直結にしても変わらなかった)。
+        #   一方そのとき生VSYNCの位相は 715 と 11 を 106:94 で交互に取っていて、
+        #   差 704 は生HSYNC周期 1407 のちょうど半分。判定材料としては完璧だった。
+        #   il_det が 0 だと fld_pos も in_f2 も 0 に固定されるので、**織り込みが
+        #   丸ごと止まり、2つのフィールドが上下に積まれた絵になる**(実機で発生)。
+        il_raw = Signal()
         if hasattr(pads, "hs_raw") and hasattr(pads, "vs_raw"):
             hr0 = Signal(); hr = Signal(); hr_p = Signal()
             vr0 = Signal(); vr = Signal(); vr_p = Signal()
@@ -410,12 +423,31 @@ class TvpCapture(Module):
             # 552 = 生HSYNC周期1103 のちょうど半分だった。判定はライン周期の
             # 1/4〜3/4 を「中央付近」とする(TVP経由の判定と同じ考え方)。
             q_r = Signal(16)
-            self.comb += q_r.eq(hs_len_r[2:])       # 周期/4
+            ph_now_r = Signal()                     # このVSYNCの位相(登録前の値)
+            self.comb += [
+                q_r.eq(hs_len_r[2:]),               # 周期/4
+                ph_now_r.eq((xr > q_r) & (xr < (hs_len_r - q_r))),
+            ]
+            # 位相の交互性からインターレースを判定する。
+            #
+            # 上下カウンタにヒステリシスを付ける。交互で+1、同じで-1、0〜15で飽和。
+            # 12でセット、4でクリア。**1回の取りこぼしで落ちないこと**が要点で、
+            # ここが落ちると織り込みが止まって絵が上下に割れるので、判定は
+            # 鈍いほうがよい。12フィールド≒0.2秒でロックする。
+            il_cnt = Signal(4)
             self.sync.pix += If(vr_edge,
-                ph_raw.eq((xr > q_r) & (xr < (hs_len_r - q_r))),
+                ph_raw.eq(ph_now_r),
                 # 生同期が生きているか。周期が妥当な範囲にあるかで見る。
                 # 配線が無い/浮いている場合は周期が0か飽和値になる
                 raw_ok.eq((hs_len_r > 64) & (hs_len_r < 0xF000)),
+                # ph_raw はこの時点ではまだ「前のフィールドの位相」なので、
+                # ph_now_r と比べれば交互かどうかが分かる
+                If(ph_now_r != ph_raw,
+                    If(il_cnt != 15, il_cnt.eq(il_cnt + 1)),
+                ).Elif(il_cnt != 0,
+                    il_cnt.eq(il_cnt - 1),
+                ),
+                If(il_cnt >= 12, il_raw.eq(1)).Elif(il_cnt <= 4, il_raw.eq(0)),
             )
 
         # --- SOGOUT(同期スライサ出力)からコンポジット同期を分離して半ライン位相を測る ---
@@ -612,8 +644,27 @@ class TvpCapture(Module):
         )
         self.specials += MultiReg(il_frame_sys, il_frame, "pix")
         il_det = Signal()
+        # インターレース判定は**2つの情報源のORにする。**
+        #
+        #   cfg_il_detect  TVPのP/I検出(38h bit5)。X68000の24kHz 1024x848 を
+        #                  progressive と誤答する(2026-09-03 実機で確認)
+        #   il_raw         生VSYNCの半ライン位相が交互かどうか。上の実測では
+        #                  715/11 を 106:94 で交互に取っていて完璧だった
+        #
+        # ORにするのは、**いま動いているモードを絶対に壊さないため**。TVPが検出
+        # できている帯域(15kHz系)は今までどおり通り、TVPが取りこぼす帯域だけを
+        # 生同期が拾う。片方を優先する形にすると、生同期側が想定外の信号で
+        # 落ちたときに今動いているものが止まる。
+        #
+        # ★レジスタに落としてから使う。ここは il_det → in_f2 → frow → fe →
+        #   row_eff と伸びる組合せ経路の起点で、cfg_il_detect は sys 側から
+        #   来ている。以前この経路に比較を1つ足しただけで eth_rx が 123.59MHz
+        #   まで落ちて要求125MHzを割った。判定はモード切替時にしか変わらないので
+        #   1クロック遅れは無害。
+        il_det_r = Signal()
+        self.sync.pix += il_det_r.eq(self.cfg_il_detect | il_raw)
         self.comb += [
-            il_det.eq(self.cfg_il_detect),
+            il_det.eq(il_det_r),
             f2_row.eq(self.cfg_vtotal[1:]),             # 折り返し点 = vtotal/2
             # 折り返すのはフレーム単位のときだけ
             in_f2.eq(il_det & il_frame & (row >= f2_row)),
@@ -1101,6 +1152,15 @@ class TvpCapture(Module):
         # フレーム単位のインターレース(折り返しあり)のときだけ vtotal 個になる。
         self.il_slot1 = Signal()
         self.comb += self.il_slot1.eq(il_det & il_frame)
+        # インターレース判定の内訳(読み出し用)。「織り込まれない」を追うとき、
+        # どの材料が0なのかが分からないと切り分けられない。
+        #   bit0 il_raw   生VSYNCの半ライン位相が交互か
+        #   bit1 raw_ok   生同期が使える状態か
+        #   bit2 TVPのP/I検出(38h bit5 の反転)
+        #   bit3 il_frame TVPのvtotalが2フィールドを覆っているか
+        self.stat_il = Signal(4)
+        self.specials += MultiReg(Cat(il_raw, raw_ok, self.cfg_il_detect, il_frame),
+                                  self.stat_il, "sys")
 
         # 報告用の行数。行位置は常に半ライン単位のスロットなので、フィールド内
         # 行数の2倍になる(プログレッシブでも1つ飛びに並ぶだけで範囲は2倍)。

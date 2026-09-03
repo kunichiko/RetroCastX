@@ -246,6 +246,137 @@ def run_mode2(nframes=6):
     return groups[2:-1]
 
 
+# --- 生同期からのインターレース判定(2026-09-03 追加) ---
+#
+# ★**これが無かったせいで実機が壊れた。** X68000 24kHz 1024x848 で、TVPの
+#   P/I検出(38h bit5)が progressive と誤答した(実測 0x57=0x21。reg22h bit0 を
+#   立ててVSOUTをフィールドごとにしても変わらず)。il_det が 0 だと fld_pos も
+#   in_f2 も 0 に固定されるので織り込みが丸ごと止まり、2枚のフィールドが上下に
+#   積まれた絵になった。
+#
+#   生VSYNCの半ライン位相はそのとき 715/11 を 106:94 で交互に取っていて、判定
+#   材料としては完璧だった。ここではその経路だけでインターレースと判定できるかを
+#   確かめる。**cfg_il_detect は 0 のまま**(=TVPが誤答している状況の再現)。
+RAW_LINE = 96         # 1ラインの長さ[pixクロック]。raw_ok の下限64を超えること
+RAW_VT = 16           # TVPのVSOUT間の行数(2フィールド分)
+RAW_F2 = RAW_VT // 2  # 第2フィールドの先頭 row
+RAW_VACT = 4          # フィールドあたりの有効行数
+
+
+class _PadsRaw(_Pads):
+    """生HSYNC/生VSYNCを持つ基板(v0.9.0)相当。"""
+
+    def __init__(self):
+        super().__init__()
+        self.hs_raw = Signal(reset=1)
+        self.vs_raw = Signal(reset=1)
+
+
+class WrapRaw(Module):
+    def __init__(self):
+        self.clock_domains.cd_sys = ClockDomain()
+        self.clock_domains.cd_pix = ClockDomain()
+        self.pads = _PadsRaw()
+        self.submodules.cap = TvpCapture(
+            self.pads, width=W, height=RAW_VT, nface=8,
+            vtotal=RAW_VT, vs_min_rows=RAW_VT - 2, vs_offset=0, hs_offset=0,
+            vs_row_at_sync=0)
+
+
+def run_raw_il(nframes=10):
+    """TVPはprogressiveと誤答。生VSYNCの半ライン位相だけで織り込ませる。"""
+    dut = WrapRaw()
+    p = dut.pads
+    cap = dut.cap
+    got = []
+
+    def hline(tag=None, vs_raw_at=None):
+        """1ライン。TVPのHSYNCと生HSYNCを同時に立てる。
+
+        vs_raw_at を与えると、行内のその位置で生VSYNCを1クロック落とす。
+        フィールドごとにこの位置を変えるのが半ライン位相そのもの。
+        """
+        yield p.hs.eq(0); yield p.hs_raw.eq(0); yield
+        yield p.hs.eq(1); yield p.hs_raw.eq(1); yield
+        for i in range(RAW_LINE - 2):
+            if vs_raw_at is not None and i == vs_raw_at:
+                yield p.vs_raw.eq(0)
+            if vs_raw_at is not None and i == vs_raw_at + 1:
+                yield p.vs_raw.eq(1)
+            if tag is not None and i < W:
+                yield p.r.eq((i << 3) & 0xFF)
+                yield p.g.eq((tag << 3) & 0xFF)
+                yield p.b.eq(0)
+            else:
+                yield p.r.eq(0); yield p.g.eq(0)
+            yield
+
+    def vpulse():
+        """TVPのVSOUT。フレーム(2フィールド)に1回しか来ない。"""
+        yield p.vs.eq(0); yield
+        yield p.vs.eq(1); yield
+        yield
+
+    def drain():
+        while (yield cap.line_valid):
+            row = (yield cap.line_row)
+            frame = (yield cap.line_frame)
+            face = (yield cap.line_face)
+            px = []
+            for word in range(W // 2):
+                yield cap.rd_face.eq(face)
+                yield cap.rd_word.eq(word)
+                yield
+                yield
+                px.append((yield cap.rd_data))
+            got.append((row, frame, px))
+            yield cap.line_ack.eq(1); yield
+            yield cap.line_ack.eq(0); yield
+
+    def tb():
+        # ★**TVPは「progressive」と言っている。** これが実機で起きたこと
+        yield cap.cfg_il_detect.eq(0)
+        # TVPのVSOUTはフレームに1回 → cfg_vtotal が2フィールドを覆う → il_frame=1
+        yield cap.cfg_lpf_tvp.eq(RAW_VT)
+        yield cap.cfg_hs_total.eq(RAW_LINE)
+        yield cap.cfg_vtotal.eq(RAW_VT)
+        yield cap.cfg_vactive.eq(RAW_VACT)
+        for _ in range(5):
+            yield
+        yield from vpulse()
+        for _ in range(4):
+            yield
+        for _ in range(nframes):
+            for r in range(RAW_VT):
+                if r < RAW_VACT:
+                    tag = r                            # 第1フィールド
+                elif RAW_F2 <= r < RAW_F2 + RAW_VACT:
+                    tag = 8 + (r - RAW_F2)             # 第2フィールド
+                else:
+                    tag = None
+                # 生VSYNCはフィールドごと。片方は行頭、もう片方は行の中央
+                vs_at = 0 if r == 0 else (RAW_LINE // 2 if r == RAW_F2 else None)
+                yield from hline(tag, vs_at)
+                yield from drain()
+            yield from vpulse()
+            for _ in range(4):
+                yield
+            yield from drain()
+        for _ in range(20):
+            yield
+        yield from drain()
+
+    run_simulation(dut, tb(), clocks={"sys": 10, "pix": 10}, vcd_name=None)
+
+    groups = []
+    for row, frame, px in got:
+        if groups and groups[-1][0] == frame:
+            groups[-1][1].append((row, px))
+        else:
+            groups.append((frame, [(row, px)]))
+    return groups
+
+
 def main():
     print("=== インターレース検出 → フレームを折り返して偶奇へ振り分ける ===")
     # TVPはインターレース入力でも Lines per Frame をフレーム全体で報告し、VSOUTも
@@ -299,6 +430,33 @@ def main():
             f"1フィールド分の行が揃っていない: {tags}"
         print(f"           中身 tag {tags}")
     print(f"  [OK] 折り返さずに1フィールド{VACT2}行が等間隔・連番で並ぶ")
+
+    print("\n=== 生同期の半ライン位相だけで織り込む(TVPはprogressiveと誤答) ===")
+    # 判定はヒステリシス付きカウンタなので、立ち上がるまで十数フィールドかかる。
+    # 後半のフレームだけを見る
+    groups = run_raw_il()
+    assert len(groups) >= 4, f"検証可能なフレームが足りない: {len(groups)}"
+    checked = 0
+    for frame, lines in groups[-3:-1]:
+        rows = [r for r, _ in lines]
+        tags = [tag_of(px) for _, px in lines]
+        print(f"  frame {frame}: slots {rows}  中身 tag {tags}")
+        assert len(rows) == 2 * RAW_VACT, f"行数が合わない: {rows}"
+        assert sorted(rows) == list(range(2 * RAW_VACT)), (
+            f"織り込まれていない: {rows} "
+            f"(期待 0..{2 * RAW_VACT - 1} が1つずつ)")
+        # 2枚のフィールドが**別々の偶奇**に入っていること。どちらが偶数側かは
+        # 位相の物理で決まるので固定しない
+        p1 = {r & 1 for r in rows[:RAW_VACT]}
+        p2 = {r & 1 for r in rows[RAW_VACT:]}
+        assert len(p1) == 1 and len(p2) == 1 and p1 != p2, (
+            f"フィールドが同じ偶奇に入っている: {rows}")
+        # 中身: 第1フィールドは tag 0..3、第2フィールドは 8..11 の順
+        assert tags[:RAW_VACT] == list(range(RAW_VACT)), f"第1フィールドの中身: {tags}"
+        assert tags[RAW_VACT:] == [8 + k for k in range(RAW_VACT)], \
+            f"第2フィールドの中身: {tags}"
+        checked += 1
+    print(f"  [OK] {checked}フレーム: TVPが誤答していても生同期だけで織り込めた")
 
     print("\nALL OK")
 
