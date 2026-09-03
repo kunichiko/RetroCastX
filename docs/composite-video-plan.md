@@ -65,19 +65,34 @@ IRE         -40.0           0.0          37.4   -3.9..79.4   (1 IRE = 0.78 コ�
 
 ### 入力方式の切り替えは全部CONFIGで済む(焼き直し不要)
 
-**手組みボードの配線**(排他。同時には繋がらない):
+**v0.9.0 基板の配線**(排他。同時には繋がらない):
+
+| モード | コネクタ | 映像 | 同期 | reg 19h | reg 0Eh |
+|---|---|---|---|---|---|
+| `x68k` | D-SUB(DA-15) | Rin3/Gin3/Bin3 | HSYNC_A / VSYNC_A | 0xAA | 0x52 |
+| `msx` | aux 2x5 | Rin2/Gin2/Bin2 | **SOGin2** (CSYNC) | **0x55** | 0x5B |
+| `composite` | J5 2x4 | **Gin1**(Yピンに CVBS) | **SOGin1**(Yから分岐) | **0x00** | 0x5B |
+| `svideo` | J5 2x4 | **Gin1=Y / Rin1=C** | **SOGin1**(Yから分岐) | **0x00** | 0x5B |
+
+★**v0.9.0 で系統の割り当てが手組み機から変わった。** 手組み機は S端子も
+コンポジットも MSX も映像を3番系統に仮配線して同期だけ振り分けていたが、
+v0.9.0 は**入力ごとに系統が分かれている**(`main.ato` が正)。
+S端子/コンポジットは専用の2x4ヘッダ(J5)から1番系統へ、MSX等の第2入力は
+2x5ヘッダから2番系統へ入る。**19h は「SOGだけ別」ではなく全ビット同じ値**になった。
+
+<details><summary>手組みボードの配線(v0.9.0 以前・歴史的記録)</summary>
 
 | モード | 映像 | 同期 | reg 19h | reg 0Eh |
 |---|---|---|---|---|
 | `x68k` | Rin3/Gin3/Bin3 | HSYNC_A / VSYNC_A | 0xAA | 0x52 |
 | `msx` | Rin3/Gin3/Bin3 | **SOGin2** (CSYNC) | **0x6A** | 0x5B |
-| `composite` | Gin3 (CVBS) | SOGin3 (Gin3から分岐) | 0xAA | 0x5B |
-| `svideo` | Gin3=Y / Rin3=C | SOGin3 (Yから分岐) | 0xAA | 0x5B |
+| `composite` | Gin3 (CVBS) | SOGin3 | 0xAA | 0x5B |
+| `svideo` | Gin3=Y / Rin3=C | SOGin3 | 0xAA | 0x5B |
 
-★**msx だけ SOG の入力ピンが違う**(SOGIN_2)。レジスタ19h は
-`MUX1 = ((2 << 6) | ...)` でSOG=_3に焼き込まれた**ビルド時定数**だったので、
-**ビットストリームを焼き直さないと MSX に切り替えられなかった**。
-key 0x69 を足して実行時に振れるようにした。これで3方式とも CONFIG だけで済む。
+</details>
+
+★レジスタ19h は元々ビルド時定数だったので焼き直さないと入力方式を
+切り替えられなかった。key 0x69 を足して実行時に振れるようにしてある。
 
 HSYNC_A/VSYNC_A の選択は 19h ではなく **1Ah bit0/bit2**(key 0x5D)。混同しやすい。
 
@@ -87,8 +102,8 @@ HSYNC_A/VSYNC_A の選択は 19h ではなく **1Ah bit0/bit2**(key 0x5D)。混�
 
 ```
 生HSYNC/VSYNC(TTL)に信号がある            → x68k
-SOGIN_2 で fH が安定する(19h=0x6A)       → msx
-SOGIN_3 で fH が安定する(19h=0xAA)       → composite / svideo
+SOGIN_2 で fH が安定する(19h=0x55)       → msx
+SOGIN_1 で fH が安定する(19h=0x00)       → composite / svideo
 ```
 
 最初の分岐に使う `key 0x2A`(生HSYNC周波数)は **TVPを通らない経路**を

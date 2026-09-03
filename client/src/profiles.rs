@@ -78,15 +78,30 @@ pub struct Profile {
 }
 
 /// 入力MUX(19h)。[7:6]=SOG [5:4]=R [3:2]=G [1:0]=B、各 00=_1 / 01=_2 / 10=_3
-const MUX_SOG3: u32 = 0xAA; // SOG=_3, R/G/B=_3 … コンポジット / S端子 / X68000
-const MUX_SOG2: u32 = 0x6A; // SOG=_2, R/G/B=_3 … MSX(CSYNCがSOGIN_2に来る)
+///
+/// ★**v0.9.0 で系統の割り当てが手組み機から変わっている。**
+///   手組み機では S端子/コンポジット/MSX の映像をすべて3番系統(D-SUB)に
+///   仮配線して同期だけ振り分けていたが、v0.9.0 は入力ごとに系統が分かれた
+///   (main.ato で確認):
+///
+///     1番系統 … S端子/コンポジット(J5 2x4ヘッダ)
+///                 svideo.y -> gin_1 / svideo.c -> rin_1
+///                 Y から分岐した同期 -> sogin_1
+///                 ※コンポジットは Y ピンに CVBS を入れる(同期も同じ1本)
+///     2番系統 … 汎用の第2入力(aux 2x5ヘッダ。MSXや2台目のX68000)
+///                 aux.r/g/b -> rin_2/gin_2/bin_2
+///                 aux.csync -> 75Ω終端 -> 1/2分圧 -> sogin_2
+///     3番系統 … D-SUB(X68000)  vin_r/g/b -> rin_3/gin_3/bin_3, sogin_3
+const MUX_ALL3: u32 = 0xAA; // SOG/R/G/B すべて _3 … D-SUB(X68000)
+const MUX_ALL2: u32 = 0x55; // SOG/R/G/B すべて _2 … 2x5ヘッダ(MSX/2台目)
+const MUX_ALL1: u32 = 0x00; // SOG/R/G/B すべて _1 … S端子/コンポジット(J5)
 /// 同期制御(0Eh)
 const SYNC_5WIRE: u32 = 0x52; // HSYNC/VSYNC を別線で受ける(X68000)
 const SYNC_SOG: u32 = 0x5B; // H も V も SOG から取る(MSXのCSYNC / コンポジット)
 
 /// X68000 RGB: Rin3/Gin3/Bin3 + HSYNC_A/VSYNC_A
 const REGS_X68000: InputRegs = &[
-    (proto::CFG_KEY_IN_MUX1, MUX_SOG3, "SOG/R/G/B すべて _3(SOGは使わない)"),
+    (proto::CFG_KEY_IN_MUX1, MUX_ALL3, "SOG/R/G/B すべて _3(SOGは使わない)"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_5WIRE, "HSYNC/VSYNCを別線で受ける"),
     (proto::CFG_KEY_IN_MUX2, 0x12, "HSYNC_A/VSYNC_A を選択"),
     (proto::CFG_KEY_SOG_THRESH, 0x0B, "SOGは使わないので既定"),
@@ -132,10 +147,10 @@ const REGS_X68000: InputRegs = &[
     (proto::CFG_KEY_PIXFMT, proto::PIXFMT_RGB555 as u32, "伝送はRGB555"),
 ];
 
-/// MSX RGB: Rin3/Gin3/Bin3 + SOGin2 に CSYNC
+/// MSX RGB: Rin2/Gin2/Bin2 + SOGin2 に CSYNC (aux 2x5ヘッダ)
 const REGS_MSX: InputRegs = &[
     // ★ここが 19h を CONFIG キーにした理由。SOGだけ _2 にする
-    (proto::CFG_KEY_IN_MUX1, MUX_SOG2, "★SOGだけ _2(CSYNCがSOGIN_2に来る)"),
+    (proto::CFG_KEY_IN_MUX1, MUX_ALL2, "映像もCSYNCも2番系統(aux 2x5ヘッダ)"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOG(=CSYNC)から取る"),
     (proto::CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz + クランプLPF 0.5MHz"),
     (proto::CFG_KEY_SOG_THRESH, 0x0B, "CSYNCのスライス位置(実機で成立している既定)"),
@@ -156,7 +171,7 @@ const REGS_MSX: InputRegs = &[
 
 /// コンポジット NTSC: Gin3 に CVBS、SOGin3 へ分岐
 const REGS_COMPOSITE: InputRegs = &[
-    (proto::CFG_KEY_IN_MUX1, MUX_SOG3, "SOG/R/G/B すべて _3"),
+    (proto::CFG_KEY_IN_MUX1, MUX_ALL1, "SOG/R/G/B すべて _1(J5)"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOGから取る"),
     (proto::CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz(バーストで誤トリガしない)"),
     (proto::CFG_KEY_SOG_THRESH, 0x0B, "CVBSのスライス位置(実機で成立している既定)"),
@@ -179,7 +194,7 @@ const REGS_COMPOSITE: InputRegs = &[
 
 /// S端子: Gin3 = Y / Rin3 = C、SOGin3 へ Y から分岐
 const REGS_SVIDEO: InputRegs = &[
-    (proto::CFG_KEY_IN_MUX1, MUX_SOG3, "SOG/R/G/B すべて _3"),
+    (proto::CFG_KEY_IN_MUX1, MUX_ALL1, "SOG/R/G/B すべて _1(J5)"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOG(Yから分岐)から取る"),
     (proto::CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz"),
     (proto::CFG_KEY_SOG_THRESH, 20,
