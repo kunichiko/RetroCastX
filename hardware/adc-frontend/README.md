@@ -9,13 +9,36 @@ ArgusX制御コネクタ搭載。回路は `main.ato`(Atopile)。
 
 | 系統 | 経路 | 変換 |
 |---|---|---|
-| RGB端子音声 | J10(D-SUB15)**ピン10=L / ピン11=R** → U1 PCM1808(直結) | 16bit/48kHz I2S |
-| LINE入力 | J12(3.5mmステレオ) → U12 PCM1808 | 16bit/48kHz I2S |
+| RGB端子音声 | J10(D-SUB15)**ピン10=L / ピン11=R** → **U13** PCM1808(直結) | 16bit/48kHz I2S |
+| LINE入力 | J12(3.5mmステレオ) → **U14** PCM1808 | 16bit/48kHz I2S |
 | 光デジタル | J13(TOSLINKモジュール) → FPGA直結 | S/PDIFをゲートウェアでデコード |
 
-- **クロック**: X2(12.288MHz XO =256fs@48kHz)→ 両ADCのSCKIとFPGA(F1=PCLKC6_1)。
-  BCK/LRCKはFPGAがMCLKから分周して共通供給。**DOUTのみ個別**なので
-  アナログ2系統は同時キャプチャ可能。S/PDIFのDIRチップは不要(FPGAでデコード)
+- **クロック**: X3(12.288MHz XO =256fs@48kHz)は **FPGAにだけ**入る
+  (SO-DIMM 130 = F1 = PCLKC6_1)。**ADCのSCKIはFPGAが出し直したもの**で、
+  SO-DIMM 147(D2)から両ADCへ配る。BCK(143)= MCLK/4 = 3.072MHz、
+  LRCK(145)= MCLK/256 = 48kHz も同じくFPGA生成の共通供給。
+  **DOUTのみ個別**(U13=141, U14=139)なのでアナログ2系統は同時キャプチャ可能。
+  S/PDIFのDIRチップは不要(FPGAでデコード)
+
+  ★**XOはADCに直接は繋がっていない。** 以前この節は「XO→両ADCのSCKIとFPGA」と
+  書いていたが誤りで、音が出ない件の切り分けで探す場所を間違える原因になった
+  (2026-09-03)。信号を追うときは必ず FPGA の出力(147)から見ること。
+
+- ★**実装の注意: SCKI(6番)は DGND(5番)の真隣。** TSSOP-14 の 0.65mm ピッチなので
+  5-6間がブリッジすると MCLK が GND に落ちる。**両ADCがMCLKを共有しているので、
+  片方のICの下のブリッジで音声が2系統とも死ぬ。** 実際に v0.9.0 で発生した
+  (2026-09-03)。そのときの症状:
+
+  | 観測 | 値 |
+  |---|---|
+  | 転送される音声サンプル | 両ch**ビット単位で完全にゼロ**(入力無しならディザが出るはず) |
+  | サンプルレート | 48kHz で正常(FPGA内部とBCK/LRCK生成は無事) |
+  | ADC 7番(LRCK)/ 8番(BCK) | 正常に観測できる |
+  | ADC 6番(SCKI) | **完全に平坦**(鈍りではない) |
+  | ADC 1番(VREF) | **0V**(SCKIが無いとリセットが解けず基準電圧が立たない) |
+  | アナログ5V(C60) | 正常 |
+
+  VREF=0V は原因ではなく**結果**。この並びが出たら 5-6 間のブリッジを疑う
 - **D-SUB音声の切り離しジャンパは削除した**(2026-08-11)。当初は「VGA HD-15の
   ピン4/11はID/DDCなので、一般VGAケーブルを挿す運用では切り離せるように」という
   理由で入れていたが、**コネクタを2列DA-15(X68000式)に変えた時点で3列のVGAケーブルは
@@ -771,11 +794,17 @@ python3 tools/restore_tuning_patterns.py   # GbEの等長配線が基板外へ�
 python3 tools/restore_pcb_settings.py      # 基板の原点とリビジョン番号を戻す
 python3 tools/lock_designators.py          # 番号を戻す(欠番は再利用しない。発注後は必須)
 python3 tools/gen_parts_table.py           # README の主要部品表を実装に追随させる
+python3 tools/gen_designator_map.py        # docs/designator-map.md を実装に追随させる
 python3 tools/gen_order_bom.py --tag v0.9.0 --boards 2   # 発注リスト
 python3 tools/gen_order_xlsx.py --tag v0.9.0 --boards 2  # 調達管理表
 ```
 
-`--check` を付けると書き換えずに食い違いだけ報告する(`gen_parts_table.py` のみ)。
+`--check` を付けると書き換えずに食い違いだけ報告する
+(`gen_parts_table.py` と `gen_designator_map.py`)。
+
+★**対応表を放置すると実害が出る。** `designator-map.md` は手書きのままだったため
+195行中129行の番号が実装とずれ、音が出ない件の切り分けで測る場所を間違えた
+(2026-09-03)。生成ツールは「一度回して終わり」にせず、`ato build` のたびに回すこと。
 
 ### 1. 等長配線オブジェクト
 
