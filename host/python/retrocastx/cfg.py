@@ -168,20 +168,26 @@ def _no_reply(args):
 
     「キー未対応」だけを出していると、実際には**経路の問題**なのに
     ファームの機能不足だと誤読する(2026-09-03 に実際にやった)。
-    ボードにはゲートウェイが無いので、別サブネットからだとユニキャストの
-    応答を返せない。ANNOUNCE はブロードキャストなので discover では
-    見つかってしまい、余計に紛らわしい。
+
+    いちばん多いのは **VPN接続中にボードのIPをユニキャストで指定した**場合。
+    既定経路がVPNトンネルなので、ボードが同じL2にいてもパケットは
+    トンネルへ吸われて届かない:
+
+        route -n get 192.168.10.50
+          gateway: 172.23.60.199   interface: utun4    ← ここ
+
+    このとき ANNOUNCE はブロードキャストなので discover では見つかってしまい、
+    「ボードは居るのに CONFIG だけ通らない」という紛らわしい形になる。
+    --board 255.255.255.255 にすれば discover と同じ経路で届く
+    (ボードは ArpLearner が受信パケットから相手のMACを学習して返す)。
     """
     print("応答なし: key 0x%04X" % args.key)
-    board_net = ".".join(args.board.split(".")[:3])
-    bind_net = ".".join(args.bind.split(".")[:3])
-    if args.bind != "0.0.0.0" and board_net != bind_net:
-        print("  ★--bind %s がボード %s と別サブネットです。"
-              % (args.bind, args.board))
-        print("    ボードにゲートウェイは無いので、応答を返せません。")
-        print("    ボードと同じ帯のアドレスを足してください:")
-        print("      sudo ifconfig en0 alias %s.1 255.255.255.0" % board_net)
-        print("    (使い終わったら sudo ifconfig en0 -alias %s.1)" % board_net)
+    if args.board != "255.255.255.255":
+        print("  ★まず --board 255.255.255.255 を試してください。")
+        print("    VPN接続中はボードのIPを直接指定すると、同じL2にいても")
+        print("    既定経路のトンネルへ吸われて届きません。確認:")
+        print("      route -n get %s   # interface が utun* ならこれ" % args.board)
+        print("    ブロードキャストなら discover と同じ経路で届きます。")
     else:
         print("  このファームでは未対応のキーかもしれません。")
         print("  Viewerが同じポートを掴んでいないかも確認してください。")
