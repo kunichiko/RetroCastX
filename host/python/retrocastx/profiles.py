@@ -50,8 +50,13 @@ class Profile:
     """
     name: str
     desc: str
-    oscillators: Tuple[Tuple[str, float], ...]
-    dividers: Tuple[int, ...] = (1, 2, 4, 8)
+    # (名前, 周波数[Hz], その水晶で実在する分周比)。
+    # ★分周比を水晶ごとに持つ。機種の中でも系統によって使える分周比が違い、
+    #   共通のリストにすると実在しないドットクロックが候補に混ざる。X68000が
+    #   まさにそうで、69.552MHz側は /2,3,4,6,8 が全部使われるのに 38.864MHz側は
+    #   /4,8 しか無い。共通リストだと 38.864/2 = 19.432MHz という存在しない値が
+    #   生まれ、他機種の fH に誤マッチする余地を作る。
+    oscillators: Tuple[Tuple[str, float, Tuple[int, ...]], ...]
     # htotal の粒度。X68000のCRTCは水平トータルを8ドット単位で持つので、
     # 正解は必ず8の倍数になる。この制約が候補をさらに絞る
     htotal_multiple: int = 1
@@ -59,8 +64,8 @@ class Profile:
     verified: bool = False
 
     def dot_clocks(self):
-        for label, f in self.oscillators:
-            for d in self.dividers:
+        for label, f, divs in self.oscillators:
+            for d in divs:
                 yield (f"{label}/{d}" if d != 1 else label), f / d
 
 
@@ -68,9 +73,28 @@ PROFILES = {
     # 実測で裏を取った唯一のプロファイル。3帯域すべてが2つの水晶の分周で説明できた
     "x68000": Profile(
         name="x68000",
-        desc="X68000(水晶 69.55199MHz / 38.86363MHz、CRTCは8ドット単位)",
-        oscillators=(("69.55199MHz", 69.55199e6), ("38.86363MHz", 38.86363e6)),
-        dividers=(1, 2, 3, 4, 8),   # ★3 は512ドット系グラフィック(/3=23.184MHz→htotal 736)
+        desc="X68000(水晶 69.55199 / 38.86363 / 50.3498MHz、CRTCは8ドット単位)",
+        # ★XEiJ(X68000エミュレータ)の CRTC.java の実装表から起こした。
+        #   https://stdkmd.net/xeij/source/xeij-CRTC.java.htm
+        #
+        #   ドットクロックは R20 の bit4(解像度)と bit1-0(水平解像度)、それに
+        #   $E8E007 bit1 の HRL で決まる。XEiJ の CRT_OSCS / CRT_DIVS を展開すると:
+        #
+        #     低解像度(bit4=0) … 38.86363MHz の /8(256系)と /4(512系)だけ。
+        #                        bit1-0 が 2/3 でも /8 に落ちるので新しい値は出ない
+        #     高解像度(bit4=1) … 69.55199MHz の /6(256) /3(512) /2(768)。
+        #                        HRL=1 で /6→/8、/3→/4 に変わる
+        #     VGA(bit4=1, bit1-0=3) … 50.3498MHz の /2 のみ
+        #                        (X68000 Compact / IPLROM 1.2 以降)
+        #
+        #   /6 と 50.3498MHz を入れないと、高解像度256x256(11.592MHz)と
+        #   VGA 640x480(25.1749MHz)が候補に出せない。逆に実在しない
+        #   38.864/1,/2,/3 と 69.552/1 は入れない。
+        oscillators=(
+            ("69.55199MHz", 69.55199e6, (2, 3, 4, 6, 8)),
+            ("38.86363MHz", 38.86363e6, (4, 8)),
+            ("50.3498MHz", 50.3498e6, (2,)),
+        ),
         htotal_multiple=8,
         verified=True,
     ),
@@ -79,14 +103,14 @@ PROFILES = {
     "vga": Profile(
         name="vga",
         desc="IBM VGA互換(25.175MHz / 28.322MHz)【未検証】",
-        oscillators=(("25.175MHz", 25.175e6), ("28.322MHz", 28.322e6)),
-        dividers=(1, 2),
+        oscillators=(("25.175MHz", 25.175e6, (1, 2)),
+                     ("28.322MHz", 28.322e6, (1, 2))),
     ),
     "pc98": Profile(
         name="pc98",
         desc="PC-9801(21.0525MHz / 25.175MHz)【未検証】",
-        oscillators=(("21.0525MHz", 21.0525e6), ("25.175MHz", 25.175e6)),
-        dividers=(1, 2),
+        oscillators=(("21.0525MHz", 21.0525e6, (1, 2)),
+                     ("25.175MHz", 25.175e6, (1, 2))),
     ),
 }
 
