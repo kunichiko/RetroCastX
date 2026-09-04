@@ -103,9 +103,61 @@ brew install yosyshq/tap/oss-cad-suite   # または GitHub Release のバイナ
 # LiteX(専用venv推奨)
 python3 -m venv ~/litex-env && source ~/litex-env/bin/activate
 pip install meson ninja
-wget https://raw.githubusercontent.com/enjoy-digital/litex/master/litex_setup.py
-python3 litex_setup.py --init --install
+wget -O litex_setup.py https://raw.githubusercontent.com/enjoy-digital/litex/master/litex_setup.py
+mkdir -p litex-src && cd litex-src
+python3 ../litex_setup.py --dev --init --install    # ★--dev を必ず付ける
 ```
+
+### ★`--dev` を必ず付けること
+
+`litex_setup.py` は起動時に**自分自身と `litex_repos.py` を upstream の master で
+無条件に上書きする**。`litex_repos.py` は各リポジトリを sha1 で固定している
+このリポジトリの管理対象ファイルなので、`--dev` を付けずに走らせると**固定が
+丸ごと消えて、次のビルドが別バージョンの LiteX で行われる**。
+
+`--dev` は自動更新を止めるフラグで、`GITHUB_ACTIONS=true` のときは clone URL を
+SSH に書き換えない作りになっているため、CI でもそのまま使える。
+
+固定を今の環境で取り直したいときは:
+
+```sh
+cd litex-src && python3 ../litex_setup.py --dev --freeze --freeze-output=../litex_repos.py
+```
+
+### ★タイミングはビルドの成否で分からない
+
+LiteX は nextpnr に `--timing-allow-fail` を渡すので、**タイミング違反でもビルドは
+成功する**。しかも eth_rx(125MHz要求)は配置シード次第で通ったり落ちたりする
+(`retrocastx_stream.py` の `--seed` のコメント参照)。ビルド後は必ずログの
+`Max frequency` を全ドメイン確認し、`FAIL at` が無いことを見ること。
+CI(`.github/workflows/gateware-release.yml`)はこれを自動で検査して落とす。
+
+## リリース
+
+`gw-vX.Y.Z` の注釈付きタグを push すると、`gateware-release.yml` が
+
+1. 固定した LiteX + oss-cad-suite でビルド
+2. タイミング検査(`FAIL at` があれば落とす)
+3. WebUSB フラッシャのシミュレータに通す
+4. GitHub Release を作成して `.bit` を添付
+5. 同じ `.bit` を main の `docs/flash/bitstreams/` に commit し `manifest.json` を更新
+
+まで行う。5 まで済むと <https://kunichiko.github.io/RetroCastX/flash/> の一覧に出て、
+ブラウザから焼けるようになる。
+
+```sh
+git tag -a gw-v0.9.0 -m "gw-v0.9.0: タイトル
+
+タグの注釈メッセージが Release の本文と、フラッシャの一覧の説明文になる。"
+git push origin gw-v0.9.0
+```
+
+★**前置きの `gw-` は必須。** Viewer のリリース(`viewer-release.yml`)が `v*.*.*`
+で走るので、素の `v0.9.0` を打つと両方動いてしまう。
+
+タグを打たずに CI のビルドだけ試したいときは、Actions から
+`Gateware Release` を手動実行する(既定では Release も docs/ への配置もせず、
+成果物は artifact から取れる。`seed` も指定できる)。
 
 ## ビルド・書き込み(ボード入手後)
 

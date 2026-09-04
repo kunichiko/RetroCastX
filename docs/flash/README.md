@@ -32,8 +32,16 @@ USB を挿せばいつでも書ける。
 
 ## 配布ビットストリームの追加
 
-`bitstreams/manifest.json` に追記し、同じディレクトリに `.bit` を置く。
-GitHub Pages と同一オリジンなので CORS の制約を受けずに fetch できる。
+通常は **`gw-vX.Y.Z` タグを push すれば CI が自動でやる**
+(`.github/workflows/gateware-release.yml`)。ビルド → タイミング検査 →
+Release 作成 → `bitstreams/` への配置と `manifest.json` の更新まで行う。
+手順は `gateware/README.md` の「リリース」を参照。
+
+★**実体をここに置くのは GitHub Release のアセットが
+`access-control-allow-origin` を返さないため**(2026-09-04 実測)。Pages 上の
+このページから fetch するには同一オリジンに無ければならない。
+
+手で足す場合は `bitstreams/manifest.json` に追記し、同じディレクトリに `.bit` を置く。
 
 ```json
 {

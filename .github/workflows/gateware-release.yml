@@ -1,0 +1,215 @@
+name: Gateware Release
+
+# gw-vX.Y.Z タグを push すると、ゲートウェアをビルドして配布まで行う。
+#
+#   1. 固定した LiteX + oss-cad-suite でビットストリームをビルド
+#   2. タイミングを満たしているか確認(満たしていなければ落とす)
+#   3. WebUSB フラッシャのシミュレータに通す(配布物が実際に焼けるか)
+#   4. GitHub Release を作って .bit を添付
+#   5. 同じ .bit を main の docs/flash/bitstreams/ に commit し manifest.json を更新
+#
+# ★タグの前置き `gw-` は Viewer と衝突させないため。viewer-release.yml は
+#   `v*.*.*` で走るので、素の v0.9.0 を打つと両方が動いてしまう。
+#
+# ★手動実行(workflow_dispatch)は既定でビルドと検査だけ行い、Release も
+#   docs/ への配置もしない。成果物は artifact から取れる。
+#
+# ★5 で Release のアセットではなく docs/ に実体を置いているのは、**GitHub Release の
+#   アセットが access-control-allow-origin を返さない**ため。Pages 上のフラッシャから
+#   fetch するには同一オリジンに置くしかない(2026-09-04 実測)。
+
+on:
+  push:
+    tags: ['gw-v*']
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: 'nextpnr placement seed(空ならスクリプトの既定)'
+        required: false
+        default: ''
+      publish:
+        description: 'Release 作成と docs/ への配置まで行う'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  # ★再現性はこの2つの固定で担保している。どちらかを動かすと、手元で検証した
+  #   ビットストリームと配布物が別物になる。
+  OSS_CAD_SUITE_TAG:  '2026-09-03'
+  OSS_CAD_SUITE_DATE: '20260903'
+  # gateware/litex_repos.py で固定している litex と同じコミット。
+  LITEX_SHA: '93c8d230e2e7e66fa823fb26d3f7fe5e442c72ee'
+
+jobs:
+  build:
+    name: ビットストリームをビルドして配布する
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # タグの注釈メッセージを読むので全履歴が要る
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: oss-cad-suite をキャッシュ
+        id: cache-oss
+        uses: actions/cache@v4
+        with:
+          path: ~/oss-cad-suite
+          key: oss-cad-suite-${{ env.OSS_CAD_SUITE_TAG }}
+
+      - name: oss-cad-suite を取得
+        if: steps.cache-oss.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          url="https://github.com/YosysHQ/oss-cad-suite-build/releases/download/${OSS_CAD_SUITE_TAG}/oss-cad-suite-linux-x64-${OSS_CAD_SUITE_DATE}.tgz"
+          curl -fsSL "$url" -o /tmp/oss-cad-suite.tgz
+          tar -xzf /tmp/oss-cad-suite.tgz -C "$HOME"
+
+      - name: ツールチェーンに PATH を通す
+        run: |
+          echo "$HOME/oss-cad-suite/bin" >> "$GITHUB_PATH"
+
+      - name: LiteX を固定版で入れる
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install meson ninja
+          mkdir -p gateware/litex-src
+          # litex_setup.py 自体も固定する(gitignore 対象なので毎回取ってくる)
+          curl -fsSL "https://raw.githubusercontent.com/enjoy-digital/litex/${LITEX_SHA}/litex_setup.py" \
+            -o gateware/litex_setup.py
+          # ★--dev が必須。これが無いと litex_setup.py は起動時に自分自身と
+          #   litex_repos.py を upstream の master で上書きするので、sha1 の固定が
+          #   丸ごと消えて再現性が失われる。--dev は GITHUB_ACTIONS=true を見て
+          #   clone URL を SSH に書き換えない作りなので、CI でそのまま使える。
+          cd gateware/litex-src
+          python ../litex_setup.py --dev --init --install --config=standard
+
+      - name: ビットストリームをビルド
+        run: |
+          set -euo pipefail
+          cd gateware
+          seed_arg=""
+          if [ -n "${SEED}" ]; then seed_arg="--seed ${SEED}"; fi
+          python retrocastx_stream.py --build ${seed_arg} 2>&1 | tee /tmp/build.log
+        env:
+          SEED: ${{ github.event.inputs.seed }}
+
+      - name: タイミングを満たしているか確認
+        run: |
+          set -euo pipefail
+          # ★LiteX は nextpnr に --timing-allow-fail を渡すので、**タイミング違反でも
+          #   ビルドは成功してしまう**。しかも eth_rx(125MHz要求)は配置シード次第で
+          #   通ったり落ちたりする(retrocastx_stream.py の --seed のコメント参照)。
+          #   違反したまま配布すると実機で不可解な壊れ方をするので、ここで止める。
+          grep -E "Max (frequency|delay)" /tmp/build.log > /tmp/timing.txt || true
+          {
+            echo '## タイミング'
+            echo '```'
+            cat /tmp/timing.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if grep -q "FAIL at" /tmp/build.log; then
+            grep "FAIL at" /tmp/build.log
+            echo "::error::タイミング違反があります。--seed を変えて再実行してください(数シード試すこと)。"
+            exit 1
+          fi
+          echo "全ドメイン PASS"
+
+      - name: WebUSB フラッシャで扱えるか確認
+        run: |
+          set -euo pipefail
+          # 配布するビットストリームが、そのままページから焼ける形かを確認する。
+          # .bit のパースと IDCODE 照合、フラッシュ書き込み経路まで通る。
+          node docs/flash/simtest.mjs gateware/build/colorlight_i5/gateware/colorlight_i5.bit
+
+      - name: バージョンと配布物を決める
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/gw-v* ]]; then
+            version="${GITHUB_REF#refs/tags/gw-}"
+            publish=true
+            git tag -l --format='%(contents)' "gw-${version}" > /tmp/note.md
+            if [ ! -s /tmp/note.md ]; then
+              echo "ゲートウェア ${version}" > /tmp/note.md
+            fi
+          else
+            version="v0.0.0-$(git rev-parse --short HEAD)"
+            publish="${PUBLISH_INPUT}"
+            echo "手動ビルド ($(git rev-parse --short HEAD))" > /tmp/note.md
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+          cp gateware/build/colorlight_i5/gateware/colorlight_i5.bit "retrocastx_${version}.bit"
+          ls -l "retrocastx_${version}.bit"
+        env:
+          PUBLISH_INPUT: ${{ github.event.inputs.publish || 'false' }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bitstream-${{ steps.ver.outputs.version }}
+          path: retrocastx_*.bit
+
+      - name: GitHub Release を作る
+        if: steps.ver.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "gw-${VERSION}" \
+            --title "ゲートウェア ${VERSION}" \
+            --notes-file /tmp/note.md \
+            "retrocastx_${VERSION}.bit"
+
+      - name: docs/flash/bitstreams へ配置して manifest を更新
+        if: steps.ver.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Pages は main の /docs を配信しているので、main に直接 commit する。
+          # タグを checkout している状態なので main を取り直す(ワークスペース直下の
+          # retrocastx_*.bit は untracked なので checkout をまたいでも残る)。
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B main origin/main
+
+          cp "retrocastx_${VERSION}.bit" "docs/flash/bitstreams/retrocastx_${VERSION}.bit"
+
+          cat > /tmp/update-manifest.mjs <<'JS'
+          import { readFileSync, writeFileSync } from 'fs';
+          const [version, note] = [process.env.VERSION, readFileSync('/tmp/note.md', 'utf8').trim()];
+          const path = 'docs/flash/bitstreams/manifest.json';
+          const m = JSON.parse(readFileSync(path, 'utf8'));
+          const file = `retrocastx_${version}.bit`;
+          m.bitstreams = [
+            { name: version, file, date: new Date().toISOString().slice(0, 10), note },
+            ...m.bitstreams.filter((b) => b.file !== file),
+          ];
+          writeFileSync(path, JSON.stringify(m, null, 2) + '\n');
+          console.log(`manifest に ${version} を追加しました (${m.bitstreams.length} 件)`);
+          JS
+          node /tmp/update-manifest.mjs
+
+          git add docs/flash/bitstreams
+          git commit -s -m "ゲートウェア ${VERSION} をフラッシャの配布一覧に追加
+
+          gw-${VERSION} タグのビルド成果物。GitHub Release のアセットは
+          access-control-allow-origin を返さないので、Pages 上のフラッシャから
+          fetch できるよう同一オリジンに実体を置いている。
+
+          gateware-release.yml による自動コミット。"
+          git push origin main
