@@ -38,6 +38,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 GW=build/colorlight_i5/gateware
 
+# 手元は専用 venv、CI は素の python。決め打ちにすると CI から使えないので
+# 環境変数で差し替えられるようにしてある。
+PYTHON="${PYTHON:-./.venv/bin/python}"
+
 # 最初に試す順。過去に余裕が大きかったものを前に置いてある(2026-09-03 実測:
 # seed 4=143.7 / 6=140.1 / 7=137.9 / 1=137.8 MHz)。あくまで初期値で、
 # 論理が変われば当たり外れは変わるので「通るまで振る」ことに意味がある。
@@ -70,7 +74,7 @@ FIRST_SEED="${SEEDS%% *}"
 REST="${SEEDS#* }"
 
 echo "=== 1回目のビルド (seed $FIRST_SEED) ==="
-./.venv/bin/python retrocastx_stream.py --build --seed "$FIRST_SEED" "$@" \
+"$PYTHON" retrocastx_stream.py --build --seed "$FIRST_SEED" "$@" \
     > /tmp/build_closed.log 2>&1 || {
         echo "ビルドが失敗しました。/tmp/build_closed.log を見てください" >&2
         tail -20 /tmp/build_closed.log >&2

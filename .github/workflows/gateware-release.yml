@@ -23,8 +23,8 @@ on:
     tags: ['gw-v*']
   workflow_dispatch:
     inputs:
-      seed:
-        description: 'nextpnr placement seed(空ならスクリプトの既定)'
+      seeds:
+        description: '試す配置シードの順(空なら build_closed.sh の既定)'
         required: false
         default: ''
       publish:
@@ -95,15 +95,19 @@ jobs:
           cd gateware/litex-src
           python ../litex_setup.py --dev --init --install --config=standard
 
-      - name: ビットストリームをビルド
+      - name: ビットストリームをビルド(タイミングが閉じるまでシードを振る)
         run: |
           set -euo pipefail
-          cd gateware
-          seed_arg=""
-          if [ -n "${SEED}" ]; then seed_arg="--seed ${SEED}"; fi
-          python retrocastx_stream.py --build ${seed_arg} 2>&1 | tee /tmp/build.log
+          # ★素の `retrocastx_stream.py --build` ではいけない。eth_rx(125MHz)の
+          #   クリティカルパスは LiteEth の CDC FIFO 内にあり、実測 8.13ns のうち
+          #   76% が配線なので、同じ論理でもシードだけで 122.6〜143.7MHz と ±9% 振れる
+          #   (12シード中9通過)。既定シード1回では普通に落ちる。実際 gw-v0.9.0 の
+          #   初回タグビルドが eth_rx 123.82MHz で落ちた。
+          #   tools/build_closed.sh は yosys の結果を使い回して nextpnr だけ振り直すので、
+          #   振り直しは1回あたり数十秒で済む。
+          PYTHON=python bash gateware/tools/build_closed.sh 2>&1 | tee /tmp/build.log
         env:
-          SEED: ${{ github.event.inputs.seed }}
+          SEEDS: ${{ github.event.inputs.seeds }}
 
       - name: タイミングを満たしているか確認
         run: |
@@ -163,6 +167,16 @@ jobs:
           print(f"全 {len(last)} ドメイン PASS")
           PY
 
+          # 採用シードを記録する。配布物がどのシードで閉じたかは再現に要る。
+          seed=$(grep -oE '採用シード: [0-9]+|タイミング成立 \(seed [0-9]+\)' /tmp/build.log \
+                 | grep -oE '[0-9]+' | tail -1 || true)
+          if [ -n "${seed}" ]; then
+            echo "採用シード: ${seed}"
+            echo "" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            echo "採用シード: \`${seed}\`" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            echo "SEED=${seed}" >> "${GITHUB_ENV:-/dev/null}"
+          fi
+
       - name: WebUSB フラッシャで扱えるか確認
         run: |
           set -euo pipefail
@@ -186,6 +200,12 @@ jobs:
             publish="${PUBLISH_INPUT}"
             echo "手動ビルド ($(git rev-parse --short HEAD))" > /tmp/note.md
           fi
+          # 再現に要る条件をノート末尾に残す(どのシード・どのツールチェーンか)
+          {
+            echo ""
+            echo "---"
+            echo "ビルド: seed ${SEED:-?} / oss-cad-suite ${OSS_CAD_SUITE_TAG} / litex ${LITEX_SHA:0:9}"
+          } >> /tmp/note.md
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "publish=${publish}" >> "$GITHUB_OUTPUT"
           cp gateware/build/colorlight_i5/gateware/colorlight_i5.bit "retrocastx_${version}.bit"
