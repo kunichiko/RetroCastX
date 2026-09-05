@@ -1,3 +1,10 @@
 {
-  "bitstreams": []
+  "bitstreams": [
+    {
+      "name": "v0.9.0",
+      "file": "retrocastx_v0.9.0.bit",
+      "date": "2026-09-05",
+      "note": "Merge pull request #4 from kunichiko/ci-seed-sweep\n\nCIのビルドをタイミングが閉じるまでシードを振る方式にする\n\n---\nビルド: seed 7 / oss-cad-suite 2026-09-03 / litex 93c8d230e"
+    }
+  ]
 }
