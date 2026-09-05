@@ -154,7 +154,7 @@ const REGS_X68000: InputRegs = &[
     //     クロップ済みダンプ / host側の全幅バッファ)を混ぜると、同じゲインで
     //     違う値が出て切り分けが壊れる(実際に一度混乱した)。
     //
-    //   緑が落ちるのは、3chの中で緑だけが SOGIN_3 への結合コンデンサという
+    //   緑が落ちるのは、D-SUB の3chの中で緑だけが SOGIN_3 への結合コンデンサという
     //   追加の負荷を持つためと考えられる(Sync-on-Green 対応の分岐)。
     //   設計上の想定内で、それを埋めるのがこのレジスタ。
     //   ★2026-09-03: ohnakaさんの目視で **R=64 / G=61 / B=57 の方が鮮やか**
@@ -185,11 +185,16 @@ const REGS_X68000: InputRegs = &[
 
 /// MSX RGB: Rin2/Gin2/Bin2 + SOGin2 に CSYNC (aux 2x5ヘッダ)
 const REGS_MSX: InputRegs = &[
-    // ★ここが 19h を CONFIG キーにした理由。SOGだけ _2 にする
+    // ★ここが 19h を CONFIG キーにした理由。v0.9.0 では映像もCSYNCも2番系統に来る
+    //   (手組み機は映像だけ3番系統で、SOGだけ _2 という食い違いがあった)
     (proto::CFG_KEY_IN_MUX1, MUX_ALL2, "映像もCSYNCも2番系統(aux 2x5ヘッダ)"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOG(=CSYNC)から取る"),
     (proto::CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz + クランプLPF 0.5MHz"),
-    (proto::CFG_KEY_SOG_THRESH, 0x0B, "CSYNCのスライス位置(実機で成立している既定)"),
+    // ★v0.9.0 は CSYNC を 75Ω終端 + 1/2分圧してから SOGIN_2 へ入れる
+    //   (main.ato の r_cs_term / r_cs_top / r_cs_bot)。手組み機は直結だったので、
+    //   同じ 0x0B でスライスできるかは v0.9.0 実機で確かめること。振れ幅が半分に
+    //   なっているので、同期を拾えないときはここを下げる。
+    (proto::CFG_KEY_SOG_THRESH, 0x0B, "CSYNCのスライス位置(手組み機で成立していた既定)"),
     (proto::CFG_KEY_PLL_DIVIDE, 1368, "起点=MSXのhtotal(この後で詰める)"),
     (proto::CFG_KEY_PLL_CTL, 0x10, "ICP = 40×75/1368 = 2.2 → 2"),
     (proto::CFG_KEY_CLAMP_SEL, 0b000, "R/G/B全てボトムレベルクランプ"),
@@ -207,7 +212,7 @@ const REGS_MSX: InputRegs = &[
     (proto::CFG_KEY_SYNC_CTL2, 0x08, "TVP既定のまま(MSXでは未実測)"),
 ];
 
-/// コンポジット NTSC: Gin3 に CVBS、SOGin3 へ分岐
+/// コンポジット NTSC: J5(2x4)の Y ピンに CVBS → Gin1、同期は SOGin1 へ分岐
 const REGS_COMPOSITE: InputRegs = &[
     (proto::CFG_KEY_IN_MUX1, MUX_ALL1, "SOG/R/G/B すべて _1(J5)"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOGから取る"),
@@ -232,7 +237,7 @@ const REGS_COMPOSITE: InputRegs = &[
     (proto::CFG_KEY_SYNC_CTL2, 0x08, "TVP既定のまま(この方式では未実測)"),
 ];
 
-/// S端子: Gin3 = Y / Rin3 = C、SOGin3 へ Y から分岐
+/// S端子: J5(2x4)の Gin1 = Y / Rin1 = C、SOGin1 へ Y から分岐
 const REGS_SVIDEO: InputRegs = &[
     (proto::CFG_KEY_IN_MUX1, MUX_ALL1, "SOG/R/G/B すべて _1(J5)"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOG(Yから分岐)から取る"),
@@ -876,6 +881,43 @@ mod tests {
             let mut u = ks.clone();
             u.dedup();
             assert_eq!(u.len(), ks.len(), "{key} に重複したキーがある");
+        }
+    }
+
+    /// 入力MUX(19h)が v0.9.0 の系統割り当てと一致していること。
+    ///
+    /// ★**ここを取り違えると絵が一切出ない。** 別系統の(その方式では何も繋がって
+    ///   いない)ピンを見にいくだけなので、同期も映像も来ない。実際 v0.9.0 の
+    ///   bring-up でこれを踏んだ(手組み機の値 0xAA/0x6A のままだった)。
+    ///   `main.ato` が正で、対応は 1番=J5(S端子/コンポジット) /
+    ///   2番=aux 2x5 / 3番=D-SUB。
+    ///
+    /// v0.9.0 は入力ごとに系統が丸ごと分かれているので、**19h は全ビットが同じ
+    /// 系統を指す**。手組み機のような「SOGだけ別ピン」はもう存在しない。
+    #[test]
+    fn input_mux_matches_v090_wiring() {
+        let want = [
+            ("x68000", MUX_ALL3),
+            ("msx", MUX_ALL2),
+            ("composite", MUX_ALL1),
+            ("svideo", MUX_ALL1),
+        ];
+        for (key, mux) in want {
+            let p = by_key(key).unwrap_or_else(|| panic!("{key} が無い"));
+            let got = p
+                .input_regs
+                .iter()
+                .find(|(k, _, _)| *k == proto::CFG_KEY_IN_MUX1)
+                .map(|(_, v, _)| *v)
+                .unwrap_or_else(|| panic!("{key} が 19h を書いていない"));
+            assert_eq!(got, mux, "{key} の 19h が v0.9.0 の配線と違う");
+            for sh in [6, 4, 2, 0] {
+                assert_eq!(
+                    (got >> sh) & 3,
+                    got >> 6,
+                    "{key} の 19h が系統ごとにばらけている(v0.9.0 では全ビット同じ)"
+                );
+            }
         }
     }
 

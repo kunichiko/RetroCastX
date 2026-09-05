@@ -316,14 +316,15 @@ class StatusDisplay(Module):
         #
         # ★以前はビルド時定数 MUX1 だったが、**実行時に振れないと入力方式を
         #   切り替えられない**ので CONFIG キーにした(key 0x69)。
-        #   手組みボードの配線で必要になった具体例:
+        #   v0.9.0 は**入力ごとに系統が丸ごと分かれている**ので全ビット同じ値になる:
         #
-        #     コンポジット  Gin3 + SOGin3      → 0xAA (SOG=_3, R/G/B=_3)
-        #     MSX RGB       Rin3/Gin3/Bin3 + SOGin2 → **0x6A** (SOG=_2, R/G/B=_3)
-        #     X68000 RGB    Rin3/Gin3/Bin3 + HSYNC_A/VSYNC_A → 0xAA (SOGは不使用)
+        #     S端子/コンポジット  J5 2x4  Gin1(=Y or CVBS)/Rin1(=C) + SOGin1 → 0x00
+        #     第2入力(MSX等)     aux 2x5 Rin2/Gin2/Bin2 + SOGin2(CSYNC)    → 0x55
+        #     X68000 RGB          D-SUB   Rin3/Gin3/Bin3 + HSYNC_A/VSYNC_A  → 0xAA
         #
-        #   MSX だけ SOG の入力ピンが違うので、19h が固定だと**ビットストリームを
-        #   焼き直さないと追従できなかった**。
+        #   方式ごとに見にいくピンが違うので、19h が固定だと**ビットストリームを
+        #   焼き直さないと追従できなかった**(手組み機では MSX だけ SOG が別ピンで、
+        #   コンポジット/S端子は D-SUB の3番系統に仮配線していた)。
         #
         # 同期入力(HSYNC_A/_B, VSYNC_A/_B)の選択は 19h ではなく 1Ah bit0/bit2
         # (= cfg_in_mux2、key 0x5D)。混同しないこと。
