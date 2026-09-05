@@ -87,12 +87,27 @@ def drive_rgb(x, row):
     return ((v >> 10) & 0x1F) << 3, ((v >> 5) & 0x1F) << 3, (v & 0x1F) << 3
 
 
+# 送出範囲の整列単位(画素)。retrocastx_stream の PX_ALIGN と一致させること。
+# RGB888 が4画素=3語なので4。RGB555 でも4の倍数は2の倍数を満たすので共用できる。
+PX_ALIGN = 4
+
+
 def want_entries(row):
-    """その行の非黒範囲を entry(=x/2)単位で返す。全黒なら None。"""
+    """その行の非黒範囲を entry(=x/2)単位で返す。全黒なら None。
+
+    ★ゲートウェアは範囲の両端を PX_ALIGN に**外側へ**丸める(lo は切り下げ、
+      hi は切り上げ、幅でクランプ)。ワード整列のために必要な処理で、
+      増えるのは端の黒画素だけなので内容は欠けない。
+      期待値も同じ丸めをしないと、この試験が「範囲の取り違え」ではなく
+      整列そのものを不一致として報告してしまう。
+      この試験が見たいのはメタFIFOによる**別の行の範囲とのすり替わり**の方。
+    """
     xs = [x for x in range(W) if want_pix(x, row) != 0]
     if not xs:
         return None
-    return (min(xs) // 2, max(xs) // 2)
+    lo = min(xs) & ~(PX_ALIGN - 1)
+    hi = min(W, (max(xs) + PX_ALIGN) & ~(PX_ALIGN - 1))   # 上端は排他
+    return (lo // 2, (hi - 1) // 2)
 
 
 class _Pads:

@@ -95,7 +95,13 @@ class TvpCapture(Module):
         self.line_ack   = Signal()                # 1パルスで pop(送出開始時)
         self.rd_face    = Signal(nface_bits)      # 読み出す面(送信側がラッチして固定)
         self.rd_word    = Signal(max=max(entries, 2))   # 面内ワード位置(=x/2)
-        self.rd_data    = Signal(32)              # {pix1, pix0}
+        self.rd_data    = Signal(64)              # {pix1, pix0} 各32bitスロット
+        #   スロットの中身は **8bit×3 の生値**(byte0=R byte1=G byte2=B)。
+        #   ★伝送形式(RGB555 / RGB888 / YC8)への変換は**送出側で行う**。
+        #     バッファに8bitのまま持てば、形式を増やしてもここは変わらない。
+        #     RGB555 は5bitしか運べず、X68000 の32階調を 1:1 で載せるには
+        #     ゲイン誤差の余裕がゼロになる(実測 29/32)。8bit で運べば
+        #     PC 側で32階調へ吸着できる。
         # 指定した行の「push時点の非黒範囲」を pix ドメインでラッチして見る窓。
         # FIFOも送信FSMも通らないので、キャプチャの判定そのものが正しいかを
         # 切り分けられる。実測で「範囲だけがFIFOの滞留段数ぶん遅れて見える」
@@ -209,7 +215,9 @@ class TvpCapture(Module):
         self.meas_lines_tvp = Signal(16)          # VSOUT間のHSOUT数(=vtotal)
 
         # --- ラインバッファ(true dual-port: write=pix / read=sys)---
-        self.specials.mem = mem = Memory(32, nface * entries)
+        # 32bit→64bit へ広げた(2画素/エントリは維持、各画素32bitスロット)。
+        # BRAM: 64 × nface × entries = 512 Kbit / LFE5U-25F の EBR 1008 Kbit
+        self.specials.mem = mem = Memory(64, nface * entries)
         wr = mem.get_port(write_capable=True, clock_domain="pix")
         rd = mem.get_port(clock_domain="sys")
         self.specials += wr, rd
@@ -251,7 +259,7 @@ class TvpCapture(Module):
         # 先に存在している必要がある)
         skip_cnt = Signal(4)
         send_frame = Signal(reset=1)              # 間引きで落とすフレームでは 0
-        pair_lo = Signal(16)                      # 偶数xピクセル保持
+        pair_lo = Signal(32)                      # 偶数xピクセル保持(32bitスロット)
 
         # VSYNCエッジ行数ガード: 前回受理VSYNCからの経過行数(vrow)が vs_min_rows 以上の
         # エッジのみ受理する。row ではなく vrow を使うのは、vs_row_at_sync で表示位相を
@@ -298,13 +306,41 @@ class TvpCapture(Module):
         self.cfg_raw_yc = Signal()          # 1 = YC8(生8bit) / 0 = RGB555
         raw_yc = Signal()                   # pixドメインへ同期した版
         self.specials += MultiReg(self.cfg_raw_yc, raw_yc, "pix")
-        pixw = Signal(16)
-        self.comb += pixw.eq(Mux(raw_yc, Cat(g, r), rgb888_to_555(r, g, b)))
-        # 「黒でない」の判定しきい値(RGB555の各成分, 0..31)。ノイズで真っ暗な所が
-        # 0にならないので、少し上げないと範囲が毎ライン全幅に広がってしまう。
+        # ★バッファには**変換せず8bitのまま**入れる(byte0=R byte1=G byte2=B)。
+        #   YC8 だけは「下位=緑ch / 上位=赤ch」という別の意味を持つ形式なので、
+        #   ここで詰め替えておく(復調に8bitの生値が要るのは元から同じ)。
+        pixw = Signal(32)
+        self.comb += pixw.eq(Mux(raw_yc,
+                                 Cat(g, r, C(0, 16)),      # YC8: byte0=緑 byte1=赤
+                                 Cat(r, g, b, C(0, 8))))   # 生RGB888
+        # 「黒でない」の判定しきい値(各成分の**上位5bit** = code>>3, 0..31)。
+        # 範囲(送出する画素の左右端)を決めるためのもの。
+        #
+        # ★**この閾値は「暗い絵の中身」も黒と見なす。** 範囲から外れた画素は
+        #   送られないので、受信側では 0 のままになる。閾値2は code>=24 でないと
+        #   非黒にならないため、X68000 の32階調のうち**下2段(code 8,16)が
+        #   丸ごと消えていた**(2026-09-03、RGB888で段ごとに実測して確定)。
+        #   アナログでもクランプでもなく、ここが原因だった。粗オフセットを振っても
+        #   直らなかったのは、デジタルの閾値だから。
+        #
+        # 既定を 2 → 0 にした。0 でも code 0..7 は非黒になれない(0>>3=0 で
+        # 「> 0」を満たせない)ので、真っ黒は依然として範囲から外れる =
+        # 帯域の最適化は生きている。実測した代償:
+        #
+        #     black_th=2   平均 count_px 304.4   314.7 Mbps
+        #     black_th=0   平均 count_px 284.6   329.2 Mbps   (+4.6%)
+        #
+        #   以前は「ノイズで真っ暗な所が0にならないので、少し上げないと範囲が
+        #   毎ライン全幅に広がる」としていたが、**v0.9.0 では起きなかった**。
+        #   行数は増える(全黒扱いだった行が送られる)が1行あたりは短くなり、
+        #   合計は +4.6% に収まる。仮配線の試作機で決めた値だったと思われる
+        #   (MCLKがアナログRGBを横切っていた頃)。
+        #   ※真っ黒画面でのノイズによる範囲の広がりは未測定。もし広がったら
+        #     key 0x37 で実行時に上げられる。
+        #
         # ★YC8では意味を持たない(ブランキングもバーストも「中身」なので、
         #   ライン全体を送る。上位が cfg_full_line 相当を強制する)。
-        self.cfg_black_th = Signal(5, reset=2)
+        self.cfg_black_th = Signal(5, reset=0)
 
         # 有効行 row_eff = row - vs_offset(アクティブ行の0起点index)
         #
@@ -334,6 +370,19 @@ class TvpCapture(Module):
         self.stat_hs_len_raw = Signal(16)   # 生HSYNCの周期[pixクロック]
         ph_raw = Signal()                   # 生同期から見た半ライン位相
         raw_ok = Signal()                   # 生同期が使える状態か
+        # ★**生同期から見た「インターレースかどうか」。**
+        #
+        #   半ライン位相がフィールドごとに交互になっていればインターレース。これは
+        #   インターレースの定義そのもので、TVPの検出ビットに聞く必要が無い。
+        #
+        #   なぜ足したか: TVPのP/I検出(38h bit5)は X68000 の24kHz 1024x848 を
+        #   **progressive と誤答する**(2026-09-03 実機: 0x57=0x21 でbit5=1。
+        #   reg22h bit0 を立ててVSOUTを同期セパレータ直結にしても変わらなかった)。
+        #   一方そのとき生VSYNCの位相は 715 と 11 を 106:94 で交互に取っていて、
+        #   差 704 は生HSYNC周期 1407 のちょうど半分。判定材料としては完璧だった。
+        #   il_det が 0 だと fld_pos も in_f2 も 0 に固定されるので、**織り込みが
+        #   丸ごと止まり、2つのフィールドが上下に積まれた絵になる**(実機で発生)。
+        il_raw = Signal()
         if hasattr(pads, "hs_raw") and hasattr(pads, "vs_raw"):
             hr0 = Signal(); hr = Signal(); hr_p = Signal()
             vr0 = Signal(); vr = Signal(); vr_p = Signal()
@@ -374,12 +423,31 @@ class TvpCapture(Module):
             # 552 = 生HSYNC周期1103 のちょうど半分だった。判定はライン周期の
             # 1/4〜3/4 を「中央付近」とする(TVP経由の判定と同じ考え方)。
             q_r = Signal(16)
-            self.comb += q_r.eq(hs_len_r[2:])       # 周期/4
+            ph_now_r = Signal()                     # このVSYNCの位相(登録前の値)
+            self.comb += [
+                q_r.eq(hs_len_r[2:]),               # 周期/4
+                ph_now_r.eq((xr > q_r) & (xr < (hs_len_r - q_r))),
+            ]
+            # 位相の交互性からインターレースを判定する。
+            #
+            # 上下カウンタにヒステリシスを付ける。交互で+1、同じで-1、0〜15で飽和。
+            # 12でセット、4でクリア。**1回の取りこぼしで落ちないこと**が要点で、
+            # ここが落ちると織り込みが止まって絵が上下に割れるので、判定は
+            # 鈍いほうがよい。12フィールド≒0.2秒でロックする。
+            il_cnt = Signal(4)
             self.sync.pix += If(vr_edge,
-                ph_raw.eq((xr > q_r) & (xr < (hs_len_r - q_r))),
+                ph_raw.eq(ph_now_r),
                 # 生同期が生きているか。周期が妥当な範囲にあるかで見る。
                 # 配線が無い/浮いている場合は周期が0か飽和値になる
                 raw_ok.eq((hs_len_r > 64) & (hs_len_r < 0xF000)),
+                # ph_raw はこの時点ではまだ「前のフィールドの位相」なので、
+                # ph_now_r と比べれば交互かどうかが分かる
+                If(ph_now_r != ph_raw,
+                    If(il_cnt != 15, il_cnt.eq(il_cnt + 1)),
+                ).Elif(il_cnt != 0,
+                    il_cnt.eq(il_cnt - 1),
+                ),
+                If(il_cnt >= 12, il_raw.eq(1)).Elif(il_cnt <= 4, il_raw.eq(0)),
             )
 
         # --- SOGOUT(同期スライサ出力)からコンポジット同期を分離して半ライン位相を測る ---
@@ -576,8 +644,27 @@ class TvpCapture(Module):
         )
         self.specials += MultiReg(il_frame_sys, il_frame, "pix")
         il_det = Signal()
+        # インターレース判定は**2つの情報源のORにする。**
+        #
+        #   cfg_il_detect  TVPのP/I検出(38h bit5)。X68000の24kHz 1024x848 を
+        #                  progressive と誤答する(2026-09-03 実機で確認)
+        #   il_raw         生VSYNCの半ライン位相が交互かどうか。上の実測では
+        #                  715/11 を 106:94 で交互に取っていて完璧だった
+        #
+        # ORにするのは、**いま動いているモードを絶対に壊さないため**。TVPが検出
+        # できている帯域(15kHz系)は今までどおり通り、TVPが取りこぼす帯域だけを
+        # 生同期が拾う。片方を優先する形にすると、生同期側が想定外の信号で
+        # 落ちたときに今動いているものが止まる。
+        #
+        # ★レジスタに落としてから使う。ここは il_det → in_f2 → frow → fe →
+        #   row_eff と伸びる組合せ経路の起点で、cfg_il_detect は sys 側から
+        #   来ている。以前この経路に比較を1つ足しただけで eth_rx が 123.59MHz
+        #   まで落ちて要求125MHzを割った。判定はモード切替時にしか変わらないので
+        #   1クロック遅れは無害。
+        il_det_r = Signal()
+        self.sync.pix += il_det_r.eq(self.cfg_il_detect | il_raw)
         self.comb += [
-            il_det.eq(self.cfg_il_detect),
+            il_det.eq(il_det_r),
             f2_row.eq(self.cfg_vtotal[1:]),             # 折り返し点 = vtotal/2
             # 折り返すのはフレーム単位のときだけ
             in_f2.eq(il_det & il_frame & (row >= f2_row)),
@@ -684,9 +771,12 @@ class TvpCapture(Module):
         #   成立しない。上位(retrocastx_stream.py)が cfg_full_line 相当を強制し、
         #   ここの ln_first/ln_last を使わないようにしてある。
         def _nz(p):
-            return ((p[0:5] > self.cfg_black_th)
-                    | (p[5:10] > self.cfg_black_th)
-                    | (p[10:15] > self.cfg_black_th))
+            # ★しきい値は RGB555 の 5bit 値(0..31)で定義されているので、
+            #   8bit スロットの**上位5bit**と比べる。こうすると 32bit 化しても
+            #   非黒範囲の判定が従来とビット単位で一致する。
+            return ((p[3:8] > self.cfg_black_th)        # R
+                    | (p[11:16] > self.cfg_black_th)    # G
+                    | (p[19:24] > self.cfg_black_th))   # B
         pair_nz = Signal()
         self.comb += pair_nz.eq(pix_we & (_nz(pixw) | _nz(pair_lo)))
         ln_first = Signal(entry_bits, reset=2 ** entry_bits - 1)
@@ -1062,6 +1152,15 @@ class TvpCapture(Module):
         # フレーム単位のインターレース(折り返しあり)のときだけ vtotal 個になる。
         self.il_slot1 = Signal()
         self.comb += self.il_slot1.eq(il_det & il_frame)
+        # インターレース判定の内訳(読み出し用)。「織り込まれない」を追うとき、
+        # どの材料が0なのかが分からないと切り分けられない。
+        #   bit0 il_raw   生VSYNCの半ライン位相が交互か
+        #   bit1 raw_ok   生同期が使える状態か
+        #   bit2 TVPのP/I検出(38h bit5 の反転)
+        #   bit3 il_frame TVPのvtotalが2フィールドを覆っているか
+        self.stat_il = Signal(4)
+        self.specials += MultiReg(Cat(il_raw, raw_ok, self.cfg_il_detect, il_frame),
+                                  self.stat_il, "sys")
 
         # 報告用の行数。行位置は常に半ライン単位のスロットなので、フィールド内
         # 行数の2倍になる(プログレッシブでも1つ飛びに並ぶだけで範囲は2倍)。

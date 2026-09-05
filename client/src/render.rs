@@ -116,15 +116,34 @@ impl Params {
 ///
 /// `reset` はモードが変わったとき。追従を待つと一瞬絵が伸びるので即座に飛ばす。
 /// 大きく外れた値(8スロット超)も同様に飛ばす。
-pub fn smooth_vtotal(cur: f32, raw: f32, reset: bool) -> f32 {
+///
+/// ★**時定数は時間で決める。フレーム数で決めてはいけない。**
+///
+///   最初は毎描画フレームで `cur += (raw - cur) * 0.1` としていたが、これでは
+///   平均されない。`raw` の出どころは MODE パケットで、届くのは**1秒に1〜2回**。
+///   一方この関数は描画のたび(60Hz)に呼ばれるので、同じ `raw` に対して0.5秒ほどで
+///   収束しきってしまう。つまり 260 と 261 を平均するのではなく、MODEが来るたびに
+///   新しい値へ**追従**していた。
+///
+///   実機の症状(2026-09-03、X68000 15kHz インターレース): 数秒に1回、縦に数ピクセル
+///   伸び縮みする。MODEの vtotal は 260 と 261 をほぼ半々(31:28)で返していて、
+///   2スロット = 0.38% が 848行に対して約3ピクセルにあたる。
+///
+///   `dt` を受けて `alpha = 1 - exp(-dt/TAU)` にすれば、呼ばれる頻度に依らず
+///   時定数どおりになる。TAU=3秒なら1Hzで交互に来る2スロットの揺れは
+///   0.3スロット(0.06%、1ピクセル未満)まで落ちる。
+const VTOTAL_TAU_S: f32 = 3.0;
+
+pub fn smooth_vtotal(cur: f32, raw: f32, reset: bool, dt_s: f32) -> f32 {
     if !(raw > 0.0) {
         return cur;
     }
     if reset || (raw - cur).abs() > 8.0 {
-        raw
-    } else {
-        cur + (raw - cur) * 0.1
+        return raw;
     }
+    // dt が異常(初回・スリープ復帰・巨大な停止)でも 0..1 に収まる
+    let alpha = 1.0 - (-dt_s.clamp(0.0, 10.0) / VTOTAL_TAU_S).exp();
+    cur + (raw - cur) * alpha
 }
 
 impl Default for Params {
@@ -388,13 +407,42 @@ pub struct EguiBlit {
     pub uniform: wgpu::Buffer,
     /// (テクスチャ, ビュー, バインド, 幅, 高さ)
     pub tex: Option<(wgpu::Texture, wgpu::TextureView, wgpu::BindGroup, u32, u32)>,
+    /// 映像テクスチャのフォーマット。**描画先に合わせて決める**(video_tex_format)
+    tex_format: wgpu::TextureFormat,
+}
+
+/// 映像テクスチャのフォーマットを描画先に合わせて選ぶ。
+///
+/// ★**フレームバッファは表示用の値をそのまま持っている**(assembler が作る
+///   8bit の RGB)。だから画面までに何の変換もかからないのが正しい。
+///   ところがテクスチャとレンダーターゲットの sRGB 性が食い違うと、GPU が
+///   片側だけ変換して素通りしなくなる:
+///
+///     テクスチャ Srgb + 描画先リニア → サンプル時に sRGB→リニア へ復号
+///       されるが再符号化されないので、**暗部が大きく潰れる**。
+///       実測(2026-09-03): FB 8/16/24/32/41/49/57 が画面上で
+///       1/1/2/4/6/8/11 になっていた。sRGB→リニアの曲線そのもの。
+///     テクスチャ Unorm + 描画先 Srgb → 復号されないまま符号化され、
+///       二重にかかって中間調が持ち上がる(フルスクリーンで実際に起きた)。
+///
+///   どちらも「片側だけ変換」が原因なので、**両者の sRGB 性を揃える**。
+///   揃えれば復号と再符号化が打ち消し合う(または両方起きない)ので、
+///   格納バイトがそのまま画面に出る。
+pub fn video_tex_format(target: wgpu::TextureFormat) -> wgpu::TextureFormat {
+    if target.is_srgb() {
+        wgpu::TextureFormat::Rgba8UnormSrgb
+    } else {
+        wgpu::TextureFormat::Rgba8Unorm
+    }
 }
 
 impl EguiBlit {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let pipeline = Pipeline::new(device, format);
         let uniform = pipeline.make_uniform_buffer(device);
-        Self { pipeline, uniform, tex: None }
+        let tex_format = video_tex_format(format);
+        eprintln!("video texture format: {tex_format:?} (target {format:?})");
+        Self { pipeline, uniform, tex: None, tex_format }
     }
 
     /// 受信した RGBA をテクスチャへ載せる(寸法が変わったら作り直す)
@@ -410,9 +458,8 @@ impl EguiBlit {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                // 映像データはsRGB符号化済み。リニア扱いにすると出力段で二重に
-                // 符号化され中間調が持ち上がる(フルスクリーンで実際に起きた)
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                // 描画先の sRGB 性に合わせる。詳細は video_tex_format
+                format: self.tex_format,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
@@ -487,30 +534,59 @@ mod tests {
     use super::*;
 
     /// **交互する vtotal で幾何が動かないこと。** これが崩れると絵が上下に震える。
+    ///
+    /// ★**実際の呼ばれ方を再現すること。** 以前のテストは「1呼び出しごとに値が
+    ///   交互に変わる」前提で書いていたので通っていたが、実機はそうならない。
+    ///   `raw` の出どころは MODE パケットで**1秒に1〜2回**しか更新されないのに、
+    ///   この関数は描画のたび(60Hz)に呼ばれる。同じ値が60回続けて入るので
+    ///   フレーム数ベースの減衰では収束しきってしまい、平均されずに追従した
+    ///   (実機で数秒に1回、縦に数ピクセル伸び縮みした)。
+    ///   ここでは 60Hz の呼び出しの中で 1Hz ごとに値が変わる形を再現する。
     #[test]
     fn smooth_vtotal_averages_the_alternation() {
+        const DT: f32 = 1.0 / 60.0;
         // インターレースの 262.5 ライン/フィールド → スロットでは 524/526 が交互
         let mut v = 524.0f32;
-        for i in 0..200 {
-            v = smooth_vtotal(v, if i % 2 == 0 { 524.0 } else { 526.0 }, false);
+        let sample = |sec: usize| if sec % 2 == 0 { 524.0 } else { 526.0 };
+        for frame in 0..60 * 40 {
+            v = smooth_vtotal(v, sample(frame / 60), false, DT);
         }
-        assert!((v - 525.0).abs() < 0.2, "525付近へ収束していない: {v:.2}");
+        assert!((v - 525.0).abs() < 0.3, "525付近へ収束していない: {v:.2}");
 
-        // 収束後、1サンプルで動く量が「見える」量を大きく下回ること。
-        // 瞬間値をそのまま使うと 2スロット(=0.38%)動いていた。
-        let a = smooth_vtotal(v, 524.0, false);
-        let b = smooth_vtotal(v, 526.0, false);
-        assert!((a - b).abs() < 0.4,
-                "平滑後もフレーム間で {:.2} スロット動く(生の値なら2.0)", (a - b).abs());
+        // 収束後、1秒(=MODEが1回更新される間)で動く量が「見える」量を下回ること。
+        // 瞬間値をそのまま使うと 2スロット(=0.38%、848行で約3px)動いていた。
+        let mut lo = v;
+        for _ in 0..60 { lo = smooth_vtotal(lo, 524.0, false, DT); }
+        let mut hi = v;
+        for _ in 0..60 { hi = smooth_vtotal(hi, 526.0, false, DT); }
+        assert!((hi - lo).abs() < 0.7,
+                "平滑後も1秒で {:.2} スロット動く(生の値なら2.0)", (hi - lo).abs());
+    }
+
+    /// 時定数がフレームレートに依らないこと。
+    ///
+    /// 同じ実時間ぶん進めたら、呼ばれる回数が違っても同じところへ来る。
+    /// ここが崩れると、描画レートの違う機械で挙動が変わる。
+    #[test]
+    fn smooth_vtotal_is_frame_rate_independent() {
+        let step = |n: usize, dt: f32| {
+            let mut v = 520.0f32;
+            for _ in 0..n { v = smooth_vtotal(v, 526.0, false, dt); }
+            v
+        };
+        let a = step(60, 1.0 / 60.0);      // 60Hzで1秒
+        let b = step(240, 1.0 / 240.0);    // 240Hzで1秒
+        assert!((a - b).abs() < 0.05, "レート依存がある: {a:.3} vs {b:.3}");
     }
 
     /// モード切替では待たずに飛ぶこと(追従を待つと一瞬絵が伸びる)
     #[test]
     fn smooth_vtotal_jumps_on_mode_change() {
-        assert_eq!(smooth_vtotal(525.0, 1050.0, true), 1050.0);
+        const DT: f32 = 1.0 / 60.0;
+        assert_eq!(smooth_vtotal(525.0, 1050.0, true, DT), 1050.0);
         // reset が来なくても、大きく外れたら飛ぶ
-        assert_eq!(smooth_vtotal(525.0, 626.0, false), 626.0);
+        assert_eq!(smooth_vtotal(525.0, 626.0, false, DT), 626.0);
         // 0以下は無視(MODE未受信)
-        assert_eq!(smooth_vtotal(525.0, 0.0, false), 525.0);
+        assert_eq!(smooth_vtotal(525.0, 0.0, false, DT), 525.0);
     }
 }

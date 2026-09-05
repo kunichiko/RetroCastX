@@ -28,6 +28,7 @@ import time
 
 import numpy as np
 
+from . import netutil
 from . import protocol as proto
 from .receiver import FrameAssembler
 
@@ -35,12 +36,20 @@ from .receiver import FrameAssembler
 class Board:
     """SUBSCRIBEを維持しつつフレームを受け、CONFIGを送る。"""
 
-    def __init__(self, board_ip: str, port: int):
-        self.ip = board_ip
+    def __init__(self, board_ip: str, port: int, bind: str = "0.0.0.0"):
+        # ★宛先が限定ブロードキャストのときは**NICごとのサブネット宛**に展開する。
+        #   限定ブロードキャストは既定経路に載るので、VPN接続中は sendto そのものが
+        #   EADDRNOTAVAIL で落ちる。詳細と実測値は netutil の冒頭コメント。
+        if board_ip in (netutil.LIMITED, "auto", "", None):
+            self.dsts = netutil.broadcast_targets(bind)
+        else:
+            self.dsts = [board_ip]
         self.port = port
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 << 20)
-        self.sock.bind(("0.0.0.0", port))
+        self.sock.bind((bind, port))
         self.sock.settimeout(0.2)
         self.asm = FrameAssembler()
         self.seq = 0
@@ -49,15 +58,16 @@ class Board:
     def _keepalive(self):
         now = time.monotonic()
         if now - self.last_sub >= 2.0:
-            self.sock.sendto(proto.pack_subscribe(self.seq), (self.ip, self.port))
+            netutil.send_all(self.sock, self.dsts, self.port,
+                             proto.pack_subscribe(self.seq))
             self.seq = (self.seq + 1) & 0xFFFF
             self.last_sub = now
 
     def set_cfg(self, key: int, value: int):
-        self.sock.sendto(
+        netutil.send_all(
+            self.sock, self.dsts, self.port,
             proto.pack_config(self.seq, proto.CFG_TARGET_BOARD, proto.CFG_OP_SET,
-                              key, value),
-            (self.ip, self.port))
+                              key, value))
         self.seq = (self.seq + 1) & 0xFFFF
 
     def frames(self, count: int, timeout: float = 5.0):
@@ -553,7 +563,11 @@ def cmd_autotune(board: Board, args):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--board", required=True, help="ボードのIP")
+    ap.add_argument("--board", default=netutil.LIMITED,
+                    help="ボードのIP。既定はブロードキャスト(NICごとのサブネット宛へ"
+                         "自動展開するのでVPN下でも通る)")
+    ap.add_argument("--bind", default="0.0.0.0",
+                    help="ソケットを縛るローカルアドレス。通常は不要")
     ap.add_argument("--port", type=int, default=proto.DEFAULT_PORT)
     ap.add_argument("--frames", type=int, default=4, help="1点あたり平均するフレーム数")
     ap.add_argument("--settle", type=float, default=0.6,
@@ -576,7 +590,7 @@ def main():
                     help="pll探索中に使う位相(最後に最適値へ振り直す)")
     args = ap.parse_args()
 
-    board = Board(args.board, args.port)
+    board = Board(args.board, args.port, bind=args.bind)
     print(f"ボード {args.board}:{args.port} に購読中...")
     board.drain(1.0)
     if args.cmd == "probe":

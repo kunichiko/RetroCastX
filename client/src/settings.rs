@@ -20,6 +20,26 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 
+/// ドット復元の係数 a の既定値 ×1000。
+///
+/// ★**この係数は「1サンプル=1ドット」でしか意味を持たない。** 一次ローパスの
+///   逆演算なので、オーバーサンプリングしているとモデルが成立しない。
+///   合わせる前に pll_divide を必ず合わせること
+///   (X68000 の512ドット系グラフィックなら 736)。
+///
+/// 2026-09-03 に RGB888 伝送・pll_div 736(1サンプル=1ドット)で実測:
+///
+///     a      1px縞  4px縞  1px/4px  飽和
+///     0.00   195    233     84%     0.00%
+///     0.20   234    233    100%     0.00%   ← 採用
+///     0.28   255    255    100%    16.84%   過補正
+///
+/// **0.20 で 1px が白レベルに完全到達し、飽和ゼロ。**
+///
+/// ※以前の既定 0.28 は RGB555 時代に pll_div=1104(1.5倍オーバーサンプリング)
+///   で詰めた値で、前提が崩れた状態での調整だった。
+fn default_dot_a() -> u32 { 200 }
+
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub volume: f32,
@@ -69,6 +89,10 @@ pub struct Settings {
     pub bezel_off: bool,
     /// 補間 0=ニアレスト 1=バイリニア 2=sharp-bilinear
     pub filter: u32,
+    /// ドット復元(1タップ逆フィルタ)の係数 a ×1000。0 = 無効。
+    /// R/G/B 独立に掛かる(劣化も3経路で独立に起きているため)。
+    /// 既定値の根拠は default_dot_a() を参照。
+    pub dot_a_milli: u32,
     /// インターレース時の残光。1.0=前フィールドの行をそのまま残す(既定、チラつき無し)。
     /// 下げるとCRTの残光に近づくが、面全体がフィールドレートでちらつく。
     pub interlace_decay: f32,
@@ -148,6 +172,7 @@ impl Default for Settings {
             bezel: String::new(),
             bezel_off: false,
             filter: 2,
+            dot_a_milli: default_dot_a(),
             interlace_decay: 1.0,
             crop_x: 0,
             crop_y: 0,
@@ -271,6 +296,7 @@ impl Settings {
                 "netcheck_muted" => s.netcheck_muted = v == "true",
                 "bezel_off" => s.bezel_off = v == "true",
                 "filter" => { if let Ok(x) = v.parse::<u32>() { s.filter = x.min(2) } }
+                "dot_a_milli" => { if let Ok(x) = v.parse::<u32>() { s.dot_a_milli = x.min(900) } }
                 "interlace_decay" => {
                     if let Ok(x) = v.parse::<f32>() { s.interlace_decay = x.clamp(0.0, 1.0) }
                 }
@@ -331,6 +357,7 @@ impl Settings {
              netcheck_muted = {}\n\
              bezel_off = {}\n\
              filter = {}\n\
+             dot_a_milli = {}\n\
              interlace_decay = {}\n\
              crop_x = {}\n\
              crop_y = {}\n\
@@ -363,6 +390,7 @@ impl Settings {
             self.netcheck_muted,
             self.bezel_off,
             self.filter,
+            self.dot_a_milli,
             self.interlace_decay,
             self.crop_x,
             self.crop_y,

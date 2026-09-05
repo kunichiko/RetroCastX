@@ -13,9 +13,11 @@
 //! --mac は購読対象ボードのMACを指名する(複数ボードLANで必須。省略時は
 //! ワイルドカード=全ボード、単一ボードLAN専用)。
 //!
-//! 既定ではSUBSCRIBEを255.255.255.255にブロードキャストし、ボードの
-//! ストリームを自分に向ける。sender_sim相手なら --no-subscribe でよい
-//! (sender_simはSUBSCRIBEを無視して--dest宛に送るため)。
+//! 既定ではSUBSCRIBEを**各NICのサブネット宛**にブロードキャストし、ボードの
+//! ストリームを自分に向ける。限定ブロードキャスト(255.255.255.255)は使わない:
+//! あれは既定経路に載るので、VPN接続中は送信自体が失敗する
+//! (receiver.rs の broadcast_targets 参照)。sender_sim相手なら --no-subscribe
+//! でよい(sender_simはSUBSCRIBEを無視して--dest宛に送るため)。
 
 // Windows: コンソール窓を出さずに起動する。これが無いと、Explorerから起動しても
 // 先に真っ黒なコンソールが開いてからUIが出る(通常のGUIアプリの見た目にならない)。
@@ -55,6 +57,17 @@ fn attach_parent_console() {
 #[cfg(not(windows))]
 fn attach_parent_console() {}
 
+/// 伝送形式の表示名。数値のままだと 0=888 / 1=555 が直感に反するので名前で出す
+fn pixfmt_name(f: u8) -> &'static str {
+    match f {
+        protocol::PIXFMT_RGB888 => "RGB888 (3B/px)",
+        protocol::PIXFMT_RGB555 => "RGB555 (2B/px)",
+        protocol::PIXFMT_RGB565 => "RGB565 (2B/px)",
+        protocol::PIXFMT_YC8 => "YC8 (2B/px)",
+        _ => "unknown",
+    }
+}
+
 fn main() -> eframe::Result {
     attach_parent_console();
     let mut port = protocol::DEFAULT_PORT;
@@ -80,6 +93,7 @@ fn main() -> eframe::Result {
     eprintln!("settings: {}", settings::Settings::path().display());
     let mut audio = receiver::AudioOpts::default();
     audio.source = cfg.audio_source;
+    let mut bind = String::from("0.0.0.0");
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -87,6 +101,17 @@ fn main() -> eframe::Result {
             "--mac" => target_mac = Some(parse_mac(&args.next().expect("--mac needs AA:BB:.."))),
             "--port" => port = args.next().expect("--port needs a value").parse().unwrap(),
             "--no-subscribe" => subscribe_to = None,
+            // 受信/送信ソケットを1つのNICに縛る。**VPN下でも通常は不要**
+            // (宛先がNICごとのサブネット宛なので既定経路を参照しない。
+            //  receiver.rs の broadcast_targets 参照)。NICを1つに絞りたいときだけ。
+            "--bind" => bind = args.next().expect("--bind needs an IP (e.g. 192.168.11.24)"),
+            // ドット復元(1タップ逆フィルタ)の係数 a を 0.0..0.9 で指定。
+            // 0 で無効。設定ファイルの値を一時的に上書きする(A/B検証用)。
+            "--dot-restore" => {
+                let a: f32 = args.next().expect("--dot-restore needs a (e.g. 0.36)")
+                    .parse().expect("--dot-restore は 0.0〜0.9 の数値");
+                cfg.dot_a_milli = (a.clamp(0.0, 0.9) * 1000.0).round() as u32;
+            }
             "--dump-seq" => {
                 dump_seq = Some(args.next().expect("--dump-seq needs a count")
                                 .parse().unwrap())
@@ -181,8 +206,8 @@ fn main() -> eframe::Result {
     }
 
     if let Some(secs) = headless_secs {
-        return run_headless(port, subscribe_to, target_mac, secs, decay, interlace_decay,
-                            audio, dump_frame, dump_seq);
+        return run_headless(port, bind, subscribe_to, target_mac, secs, decay, interlace_decay,
+                            audio, dump_frame, dump_seq, cfg.dot_a_milli);
     }
     if fullscreen_mode {
         let rot = if rotate == u32::MAX { cfg.rotate } else { rotate };
@@ -195,7 +220,7 @@ fn main() -> eframe::Result {
             h_size: 1.0, h_pos: 0.0, v_size: 1.0, v_pos: 0.0,
             ..Default::default()
         };
-        fullscreen::run(port, subscribe_to, target_mac, decay, interlace_decay, audio, p); // 戻らない
+        fullscreen::run(port, bind, subscribe_to, target_mac, decay, interlace_decay, audio, p); // 戻らない
     }
 
     let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
@@ -222,7 +247,7 @@ fn main() -> eframe::Result {
         "RetroCast X",
         options,
         Box::new(move |cc| {
-            Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, no_vsync, decay, interlace_decay,
+            Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, bind.clone(), no_vsync, decay, interlace_decay,
                                        audio, cfg.clone())))
         }),
     )
@@ -278,6 +303,7 @@ fn parse_mac(s: &str) -> [u8; 6] {
 /// GUIなしで受信パイプラインだけ動かし、毎秒統計を出力する(検証・CI用)。
 fn run_headless(
     port: u16,
+    bind: String,
     subscribe_to: Option<String>,
     target_mac: Option<[u8; 6]>,
     secs: u64,
@@ -286,10 +312,12 @@ fn run_headless(
     audio: receiver::AudioOpts,
     dump_frame: Option<String>,
     dump_seq: Option<usize>,
+    dot_a_milli: u32,
 ) -> eframe::Result {
     let shared = Arc::new(receiver::Shared::default());
+    shared.dot_a_milli.store(dot_a_milli, std::sync::atomic::Ordering::Relaxed);
     receiver::spawn(
-        receiver::Config { port, subscribe_to, target_mac, decay, interlace_decay, audio },
+        receiver::Config { port, bind: bind.clone(), subscribe_to, target_mac, decay, interlace_decay, audio },
         shared.clone(),
         || {},
     )
@@ -519,18 +547,101 @@ fn signal_is_valid(m: &protocol::Mode) -> bool {
 /// 有理比なので本物の局所ピークに見える)。そこで、まず上限まで意図的に過剰
 /// サンプルしてスペクトル占有率から倍率を割り出し、そこから8の倍数で±7%だけ
 /// 局所探索して詰める。最後に位相を振る。
+///
+/// ## 簡易(Quick)とフル(Full)
+///
+/// 上のフルスキャンは**探索範囲が広すぎる**。プロファイルを選んでいるなら
+/// pll_divide は「水晶÷分周 ÷ fH が整数」を満たす数点しか取り得ないので、
+/// その数点だけを見ればよい(例: X68000の31.5kHzなら htotal 1104/736/552/368)。
+///
+/// **機種固有の分岐は一切書かない。** 候補は `profiles::scan_candidates` が
+/// プロファイルの水晶/分周表と fH から作るので、機種を足すときは
+/// `profiles.rs` の表を書けばここは触らなくてよい。
+///
+/// ### 何で1:1を判定するか — 位相感度
+///
+/// 使うのは**位相感度**。1ドット=1サンプルなら、位相を半ドット動かせば全サンプルが
+/// ドットの中央から境目へ移るので鮮鋭度が大きく落ちる。過剰サンプルだと、位相を
+/// 動かしても「一部のサンプルが境目に来る」状態が入れ替わるだけなので変化が小さい。
+/// **同じ pll_divide での比**なので、絵の内容にも入力の帯域にも依存しない。
+///
+/// ★**スペクトル占有率で1:1を判定してはいけない。** 一度これで実装して外した。
+///   占有率は「1:1ならスペクトルがNyquistまで埋まる」を前提にするが、入力の
+///   アナログ帯域がドットレートに対して足りていない機種ではその前提が崩れる。
+///   X68000の768x512(34.776MHz)がまさにそれで、1ドットが白の64%までしか
+///   立たない。正解の1104で測っても占有率は0.7程度しか出ないので、
+///   `1104 × 0.7 = 773` から「736だ」と誤って1段降りた(実機で発生)。
+///   1.0倍と1.5倍を占有率で見分けるのは、この機種では原理的に無理。
+///
+///   占有率にも使い道はあって、`est = 設定値 × 占有率 = 真のhtotal × 帯域率`
+///   なので **真の htotal の下限**になる(帯域率 ≤ 1 だから)。下限としてなら
+///   信用できるので、枝刈りと最後のフォールバックにだけ使う。
+///
+/// ### 選び方
+///
+/// **全候補の位相感度を測ってから、いちばん感度が強い(最悪÷最良がいちばん小さい)
+/// 点を採る。** どれもしきい値を下回らなければ判別できていないので、いちばん
+/// 大きい候補に倒す。大きい側は整数倍の過剰サンプルで眠くなるだけだが、小さい側は
+/// ドットを飛ばして絵が壊れる。非対称なので迷ったら上。この経路に来るのはたいてい、
+/// そのモードが1:1にできない(TVPの下限12MHzで整数倍を強いられている)場合。
+///
+/// ★**「感度が立った最初の候補で止まり、降りる先を占有率で枝刈りする」形は
+///   実機で外した**(2026-09-04、31.5kHz の 512x512 で 1104 のまま動かなかった。
+///   降下が一度も起きていなかった)。枝刈りの根拠は「est = 設定値 × 占有率 は
+///   真の htotal の下限」だったが成り立っていなかった。真値 736 を 1104 で測った
+///   ときの占有率の理論上の上限は 736/1104 = 0.667 なのに実測は 0.716 出た
+///   (99%エネルギーの裾がノイズを拾う)。下限として使えない量で枝刈りしていた
+///   ので、正解が候補から消えていた。
+///
+///   判定材料の側は十分な差が出ていた。実測(31.5kHz 512x512、真値736):
+///
+/// ```text
+///     pll 1104  最良 160.25  最悪 156.58  → 98%   1.5倍オーバーサンプル
+///     pll  736  最良 377.11  最悪 200.92  → 53%   ★1:1
+///     pll  552  最良 406.15  最悪 351.23  → 87%
+/// ```
+///
+///   **鮮鋭度の絶対値では選べない**ことにも注意(552 の最良 406 は 736 の 377 より
+///   大きい)。見るのは同じ設定内での比。`quick_pick` の試験でこの値を固定してある。
+///
+/// ### 結果には内訳を出す
+///
+/// 「pll_div 1104 / 位相 0 で完了(要確認: 最悪の位相は 98%)」だけでは、候補を1つ
+/// しか測っていないのか、全部測って選べなかったのかが分からない。上の不具合の
+/// 切り分けに手間をかけたので、候補ごとの位相感度を必ず並べる。
 enum AutoPhase {
     /// 上限まで過剰サンプルして占有率を測る
     Oversample,
     /// 8の倍数で局所探索(pll候補, 結果)
     Sweep { cands: Vec<u32>, i: usize, best: (u32, f32), med: Vec<f32> },
+    /// 簡易: 候補を htotal の**大きい順**に、位相を8点振って「1:1かどうか」を見る。
+    /// `k` は位相の点番号(位相 = k*4)
+    QuickProbe { i: usize, k: u8, best: (u8, f32), worst: f32 },
     /// 位相を粗く振る
     PhaseCoarse { i: u8, best: (u8, f32), all: Vec<f32> },
     /// 位相を1刻みで詰める
     PhaseFine { list: Vec<u8>, i: usize, best: (u8, f32) },
 }
 
+/// スキャンの種類。**探索空間の広さだけが違う**。測り方(占有率と鮮鋭度)も
+/// 位相の詰め方も同じ。
+enum AutoMode {
+    /// 簡易: プロファイルの水晶/分周が許すモードだけを見る。
+    Quick {
+        /// 測る順番。htotal の**降順**で、設定値(pll_divide)の重複は除いてある。
+        /// 設定値が同じ点は測っても区別できないので1回で済ませる
+        ladder: Vec<profiles::ScanPoint>,
+        /// 候補ごとの (最良位相, その鮮鋭度, 最悪の鮮鋭度)。測った順に積む。
+        /// 全候補を測り終えたら、位相感度(最悪÷最良)がいちばん小さい点を採る
+        probes: Vec<(u8, f32, f32)>,
+    },
+    /// フル: プロファイルを使わず、絵のスペクトルだけから範囲を割り出して
+    /// 8刻みで舐める。プロファイルに無いモードや、未知の機種で使う
+    Full,
+}
+
 struct AutoTune {
+    mode: AutoMode,
     phase: AutoPhase,
     /// この時刻まではボードの反映待ち
     wait_until: std::time::Instant,
@@ -542,6 +653,42 @@ struct AutoTune {
     worst: f32,
     /// 半分にして測り直した回数
     attempt: u8,
+    /// 簡易スキャンで選んだ点のオーバーサンプル倍率。
+    /// **1より大きいなら位相感度が弱いのが正常**なので、最後の判定に使う
+    over: u32,
+    /// 簡易スキャンの判定の内訳(例 "1104→98% 736→53% 552→87%")。
+    /// **結果だけだと外したときに切り分けられない。** 実機で1度そうなった
+    report: String,
+}
+
+/// 位相を振っても鮮鋭度が変わらない(最悪÷最良がこれより大きい)なら、まだ
+/// 1ドットが複数サンプルに広がっている = 過剰サンプル、と判定する。
+///
+/// 0.85 はフルスキャン側で実機から決めた値(15kHz帯で 0.95 = ほぼ変わらない、が
+/// 過剰サンプルの実測)。簡易スキャンが1段降りるかどうかもこの1つの数字で決まる。
+const PHASE_SENSITIVE: f32 = 0.85;
+
+/// 全候補を測り終えたあと、どれを採るかを決める。返り値は (添字, その位相感度)。
+///
+/// 位相感度(最悪÷最良)がいちばん小さい = 1ドットが1サンプルに載っている点を採る。
+/// どれも `PHASE_SENSITIVE` を下回らなければ判別できていないので、**いちばん
+/// 大きい候補(添字0)** に倒す。大きい側は整数倍の過剰サンプルで眠くなるだけだが、
+/// 小さい側はドットを飛ばして絵が壊れる。非対称なので迷ったら上。
+///
+/// `probes` は (最良位相, 最良の鮮鋭度, 最悪の鮮鋭度) を候補の順(htotal降順)に。
+fn quick_pick(probes: &[(u8, f32, f32)]) -> (usize, f32) {
+    let rel_of = |p: &(u8, f32, f32)| if p.1 > 0.0 { p.2 / p.1 } else { 1.0 };
+    let (mut j, mut min_rel) = (0usize, f32::MAX);
+    for (idx, p) in probes.iter().enumerate() {
+        let r = rel_of(p);
+        if r < min_rel {
+            (j, min_rel) = (idx, r);
+        }
+    }
+    if min_rel > PHASE_SENSITIVE {
+        j = 0;
+    }
+    (j, min_rel)
 }
 
 const AUTO_PLL_MIN: u32 = 200;
@@ -588,6 +735,10 @@ struct ViewerApp {
     ///   残ったので、織り込みではなく幾何側だと切り分けられた)。
     /// (描画中に更新するので Cell。paint_tube を &mut self にすると波及が大きい)
     vtotal_smooth: std::cell::Cell<f32>,
+    /// 前回 vtotal_smooth を更新した時刻。平滑の時定数を**時間で**決めるのに使う。
+    /// フレーム数で決めると、MODEが1秒に1〜2回しか来ないのに60Hzで回るせいで
+    /// 収束しきってしまい、平均されずに追従する(実機で縦が数ピクセル伸び縮みした)
+    vtotal_last_t: std::cell::Cell<Option<std::time::Instant>>,
     /// 平滑をリセットする判定用。モードが変わったら追従を待たずに飛ばす
     vtotal_mode_id: std::cell::Cell<u16>,
     /// 直近で入力設定を書き込んだソース(ラベル, 件数)。パネルの確認表示用。
@@ -603,6 +754,14 @@ struct ViewerApp {
     tune_get_at: Option<std::time::Instant>,
     /// ボードの現在値を取り込み済みか。起動時に1回だけ合わせる
     tune_synced: bool,
+    /// TVPの細ゲイン(レジスタ08h/09h/0Ah)。ゲイン = 1 + N/256。
+    /// **基板ごとに違う**ので手で詰められるようにする。値はボードから読み戻す。
+    tune_gain_r: i32,
+    /// 伝送形式(0x36)。0=RGB888 / 1=RGB555 / 3=YC8。
+    /// ゲートウェアは実行時に切り替えるので、他の tune 値と同じ扱いにする
+    tune_pixfmt: i32,
+    tune_gain_g: i32,
+    tune_gain_b: i32,
     /// 現在のウィンドウ内寸(保存用)
     window_size: egui::Vec2,
     /// 中央の描画領域と画のサイズ。ウィンドウを等倍に合わせるのに使う
@@ -634,6 +793,8 @@ struct ViewerApp {
     bezel_tex: Option<(egui::TextureHandle, u32)>,
     /// 補間 0=ニアレスト 1=バイリニア 2=sharp-bilinear
     filter: u32,
+    /// ドット復元の係数 a ×1000。0=無効。詳細は assembler の dot_a_milli
+    dot_a_milli: u32,
     /// インターレース時の残光(1.0=減衰しない)。設定に保存する
     interlace_decay: f32,
     /// 管面が映す時間窓 [h0,h1,v0,v1]。CRTのH位置/H幅・V位置/V幅に相当
@@ -683,6 +844,7 @@ impl ViewerApp {
         port: u16,
         subscribe_to: Option<String>,
         target_mac: Option<[u8; 6]>,
+        bind: String,
         no_vsync: bool,
         decay: f32,
     interlace_decay: f32,
@@ -693,9 +855,14 @@ impl ViewerApp {
         install_cjk_font(&cc.egui_ctx);
         // 通常モードもフルスクリーンと同じシェーダで描く。見え方が食い違わないように。
         if let Some(rs) = cc.wgpu_render_state.as_ref() {
-            // ★描画先の色空間を出す。**ここが sRGB でないと中間調が暗くなる。**
-            //   テクスチャは Rgba8UnormSrgb なのでサンプラがリニアへ復号する。
-            //   出力先が非sRGBだとリニアのまま書かれ、ガンマ2.2ぶん暗く出る。
+            // 描画先の色空間を出す。映像テクスチャはこれに合わせて選ぶ
+            // (render::video_tex_format が sRGB 性を揃える)。
+            //
+            // ★このコメントは以前「ここが sRGB でないと中間調が暗くなる」と
+            //   **機構を正しく書いていたのに、診断の出力を足しただけで直して
+            //   いなかった**。2026-09-03 まで暗部が潰れたまま残り、その間
+            //   ガンマを上げて相殺していた(ntsc.rs の Adjust::gamma 参照)。
+            //   原因が分かっているなら、その場で直すか issue にすること。
             eprintln!("render target format: {:?}", rs.target_format);
             let blit = render::EguiBlit::new(&rs.device, rs.target_format);
             rs.renderer.write().callback_resources.insert(blit);
@@ -703,7 +870,7 @@ impl ViewerApp {
         let shared = Arc::new(receiver::Shared::default());
         let ctx = cc.egui_ctx.clone();
         let rx_error = receiver::spawn(
-            receiver::Config { port, subscribe_to: subscribe_to.clone(), target_mac, decay, interlace_decay, audio },
+            receiver::Config { port, bind: bind.clone(), subscribe_to: subscribe_to.clone(), target_mac, decay, interlace_decay, audio },
             shared.clone(),
             move || ctx.request_repaint(),
         )
@@ -734,12 +901,19 @@ impl ViewerApp {
                 gamma: if cfg.adj_gamma > 0.0 { cfg.adj_gamma } else { 1.0 },
             },
             vtotal_smooth: std::cell::Cell::new(0.0),
+            vtotal_last_t: std::cell::Cell::new(None),
             vtotal_mode_id: std::cell::Cell::new(u16::MAX),
             input_regs_sent: None,
             source_profile: cfg.source_profile.clone(),
             tune_pending: Default::default(),
             tune_get_at: None,
             tune_synced: false,
+            // 初期値は REGS_X68000 と同じ(v0.9.0 で校正した値)。
+            // 実際の値はボードから読み戻して上書きされる
+            tune_gain_r: 64,
+            tune_pixfmt: protocol::PIXFMT_RGB555 as i32,
+            tune_gain_g: 61,
+            tune_gain_b: 57,
             window_size: egui::vec2(cfg.window_w, cfg.window_h),
             last_avail: egui::Vec2::ZERO,
             last_tex: egui::Vec2::ZERO,
@@ -756,6 +930,7 @@ impl ViewerApp {
             bezel_off: cfg.bezel_off,
             bezel_tex: None,
             filter: cfg.filter,
+            dot_a_milli: cfg.dot_a_milli,
             interlace_decay: cfg.interlace_decay,
             window: cfg.window,
             tube_time_based: cfg.tube_time_based,
@@ -869,6 +1044,7 @@ impl ViewerApp {
             audio_device: self.audio_device_sel.clone(),
             rotate: self.rotate,
             tube_aspect: self.tube_aspect,
+            dot_a_milli: self.dot_a_milli,
             show_panel: self.show_panel,
             netcheck_muted: self.netcheck_muted,
             bezel: self.bezel.clone(),
@@ -1034,12 +1210,21 @@ impl ViewerApp {
         };
         // vtotal を平滑する。**262/263 の交互は正常なので、その平均(262.5)を使う。**
         // モードが変わったときだけ即座に飛ばす(追従を待つと一瞬絵が伸びる)。
+        // 時定数は**経過時間**で効かせる。ここは描画のたびに呼ばれるが、raw の
+        // 出どころ(MODE)は1秒に1〜2回しか更新されないので、フレーム数で減衰させると
+        // 同じ値へ収束しきって平均にならない(render.rs の smooth_vtotal 参照)。
         {
+            let now = std::time::Instant::now();
+            let dt = self
+                .vtotal_last_t
+                .get()
+                .map_or(1.0 / 60.0, |t| now.duration_since(t).as_secs_f32());
+            self.vtotal_last_t.set(Some(now));
             let raw = m.as_ref().map_or(0.0, |m| (m.vtotal as u32 * slot_k) as f32);
             let id = m.as_ref().map_or(u16::MAX, |m| m.mode_id as u16);
             let reset = id != self.vtotal_mode_id.get();
             self.vtotal_smooth
-                .set(render::smooth_vtotal(self.vtotal_smooth.get(), raw, reset));
+                .set(render::smooth_vtotal(self.vtotal_smooth.get(), raw, reset, dt));
             if raw > 0.0 {
                 self.vtotal_mode_id.set(id);
             }
@@ -1088,7 +1273,7 @@ impl ViewerApp {
     }
 
     /// 実行時に調整できるキーの一覧。読み戻しと表示の同期に使う
-    const TUNE_KEYS: [u16; 7] = [
+    const TUNE_KEYS: [u16; 11] = [
         protocol::CFG_KEY_VBP,
         protocol::CFG_KEY_HS_OFFSET,
         protocol::CFG_KEY_PLL_DIVIDE,
@@ -1096,6 +1281,10 @@ impl ViewerApp {
         protocol::CFG_KEY_PHASE,
         protocol::CFG_KEY_FULL_LINE,
         protocol::CFG_KEY_FRAME_SKIP,
+        protocol::CFG_KEY_GAIN_R,
+        protocol::CFG_KEY_GAIN_G,
+        protocol::CFG_KEY_GAIN_B,
+        protocol::CFG_KEY_PIXFMT,
     ];
 
     /// ボードの現在値を表示へ反映する。
@@ -1366,6 +1555,10 @@ impl ViewerApp {
                 protocol::CFG_KEY_FULL_LINE => self.tune_full_line = val != 0,
                 protocol::CFG_KEY_FRAME_SKIP => self.tune_frame_skip = val as u8,
                 protocol::CFG_KEY_PHASE => self.tune_phase = (val as u8).min(31),
+                protocol::CFG_KEY_PIXFMT => self.tune_pixfmt = val as i32,
+                protocol::CFG_KEY_GAIN_R => self.tune_gain_r = val as i32,
+                protocol::CFG_KEY_GAIN_G => self.tune_gain_g = val as i32,
+                protocol::CFG_KEY_GAIN_B => self.tune_gain_b = val as i32,
                 _ => {}
             }
         }
@@ -1432,7 +1625,7 @@ impl ViewerApp {
         }
     }
 
-    /// 自動調整を開始する。上限まで過剰サンプルするところから始める
+    /// フルスキャンを開始する。上限まで過剰サンプルするところから始める
     fn auto_start(&mut self) {
         // YC8 は pll_divide が規格で決まっているので探索してはいけない
         if self.pll_locked_by_format() {
@@ -1442,13 +1635,104 @@ impl ViewerApp {
         self.send_cfg(protocol::CFG_KEY_PLL_DIVIDE, AUTO_PLL_MAX);
         self.tune_pll_divide = AUTO_PLL_MAX as i32;
         self.auto = Some(AutoTune {
+            mode: AutoMode::Full,
             phase: AutoPhase::Oversample,
             wait_until: std::time::Instant::now() + std::time::Duration::from_millis(1800),
             base_n: self.shared.stats.lock().unwrap().tune_n,
             note: "過剰サンプル中...".into(),
             worst: 0.0,
             attempt: 0,
+            over: 1,
+            report: String::new(),
         });
+    }
+
+    /// いま選んでいるプロファイル(「自動」なら fH から推定したもの)で、
+    /// この fH に対して実在しうるモードの一覧。簡易スキャンの探索空間。
+    ///
+    /// **機種固有の分岐はここにも無い。** プロファイルの表と fH だけで決まる。
+    fn scan_candidates(&self) -> Vec<profiles::ScanPoint> {
+        let fh_hz = self
+            .shared
+            .mode
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|m| m.hfreq_mhz_x1000 as f64 / 1000.0)
+            .unwrap_or(0.0);
+        if !(fh_hz > 0.0) {
+            return Vec::new();
+        }
+        let p = if self.source_profile.is_empty() {
+            profiles::best_over_all(fh_hz).map(|(p, _)| p)
+        } else {
+            profiles::by_key(&self.source_profile)
+        };
+        p.map(|p| profiles::scan_candidates(p, fh_hz))
+            .unwrap_or_default()
+    }
+
+    /// 簡易スキャンを開始する。
+    ///
+    /// **htotal のいちばん大きい候補から始めて、下へしか動かない。** これが安全側:
+    /// 真値より大きい pll_divide は整数倍の過剰サンプルなので情報は落ちない
+    /// (絵が眠くなるだけ)が、小さい値はドットを飛ばすので絵が壊れる。
+    /// 降りるには「位相を振っても鮮鋭度が変わらない」= 過剰サンプルという
+    /// 積極的な証拠を要求する。証拠が無ければその場に留まる。
+    fn auto_start_quick(&mut self) {
+        if self.pll_locked_by_format() {
+            self.auto_done = Some("YC8では pll_divide は規格値。自動調整しません".into());
+            return;
+        }
+        let mut cands = self.scan_candidates();
+        if cands.is_empty() {
+            self.auto_done =
+                Some("この fH を説明できる候補がありません。フルスキャンを使ってください".into());
+            return;
+        }
+        // htotal の降順に並べ替える。これが測る順番(=降りる順番)
+        cands.sort_by(|a, b| b.htotal.cmp(&a.htotal));
+        // 設定値が同じ点は測っても区別できない(31.5kHzの htotal 736 と 368 は
+        // どちらも pll 736)。htotal 降順なので、残るのは大きい htotal の解釈
+        let mut ladder: Vec<profiles::ScanPoint> = Vec::new();
+        for c in &cands {
+            if !ladder.iter().any(|l| l.pll_divide == c.pll_divide) {
+                ladder.push(c.clone());
+            }
+        }
+        let first = ladder[0].clone();
+        let n = ladder.len();
+        self.send_cfg(protocol::CFG_KEY_PLL_DIVIDE, first.pll_divide);
+        self.tune_pll_divide = first.pll_divide as i32;
+        self.send_cfg(protocol::CFG_KEY_PHASE, 0);
+        self.tune_phase = 0;
+        self.auto = Some(AutoTune {
+            mode: AutoMode::Quick { ladder, probes: Vec::new() },
+            phase: AutoPhase::QuickProbe { i: 0, k: 0, best: (0, 0.0), worst: f32::MAX },
+            wait_until: std::time::Instant::now() + std::time::Duration::from_millis(1800),
+            base_n: self.shared.stats.lock().unwrap().tune_n,
+            note: if n > 1 {
+                format!("候補 {n}通り。pll {} から位相を振ります...", first.pll_divide)
+            } else {
+                format!("候補は pll {} だけ。位相を振ります...", first.pll_divide)
+            },
+            worst: 0.0,
+            attempt: 0,
+            over: first.oversample,
+            report: String::new(),
+        });
+    }
+
+    /// 位相を1刻みで詰める段へ入る。`ph` を中心に±2
+    fn auto_enter_phase_fine(&mut self, ph: u8, sharp: f32, note: String) {
+        let list: Vec<u8> = (0..5)
+            .map(|k| ((ph as i32 + k - 2).rem_euclid(32)) as u8)
+            .collect();
+        let head = list[0];
+        if let Some(a) = self.auto.as_mut() {
+            a.phase = AutoPhase::PhaseFine { list, i: 0, best: (ph, sharp) };
+        }
+        self.auto_next(protocol::CFG_KEY_PHASE, head as u32, note, 600);
     }
 
     /// 新しい測定が来ていれば (鋭さ, 占有率) を返す。まだなら None
@@ -1507,6 +1791,108 @@ impl ViewerApp {
             None => return,
         };
         match phase {
+            // --- 簡易スキャン: 候補の中を上から降りる ---
+            //
+            // 占有率は「Nyquistまでのうち実際に使われている割合」で、過剰サンプル
+            // 側にいる限り 1/倍率 に一致する。だから (いまの pll_divide)×占有率 が
+            // 1:1 の値の推定になる。フルスキャンはこの推定を ±7% の局所探索で
+            // 詰めるが、こちらは**候補にスナップするだけ**でよい。候補は 4/3 倍
+            // 以上離れているので、推定に -3% のバイアスと ±0.5% のばらつきが
+            // あっても取り違えようがない。
+            AutoPhase::QuickProbe { i, k, mut best, mut worst } => {
+                if sharp > best.1 {
+                    best = (k * 4, sharp);
+                }
+                worst = worst.min(sharp);
+                // 位相は32段。粗く8点(4刻み)見れば感度の有無は分かる
+                if k + 1 < 8 {
+                    let n = match self.auto.as_ref().map(|a| &a.mode) {
+                        Some(AutoMode::Quick { ladder, .. }) => ladder.len(),
+                        _ => 1,
+                    };
+                    if let Some(a) = self.auto.as_mut() {
+                        a.phase = AutoPhase::QuickProbe { i, k: k + 1, best, worst };
+                    }
+                    let pll = self.tune_pll_divide;
+                    self.auto_next(protocol::CFG_KEY_PHASE, ((k + 1) * 4) as u32,
+                                   format!("候補{}/{n} pll {pll}: 位相 {}/8",
+                                           i + 1, k + 2),
+                                   600);
+                    return;
+                }
+                let ladder = match self.auto.as_ref().map(|a| &a.mode) {
+                    Some(AutoMode::Quick { ladder, .. }) => ladder.clone(),
+                    _ => return,
+                };
+                if let Some(AutoMode::Quick { probes, .. }) =
+                    self.auto.as_mut().map(|a| &mut a.mode)
+                {
+                    probes.push((best.0, best.1, worst));
+                }
+                // --- 次の候補へ。**全部測ってから選ぶ。** ---
+                //
+                // ★以前は「感度が立った最初の候補で止まり、降りる先は占有率で
+                //   枝刈りする」形だった。**枝刈りが効きすぎて実機で外した**
+                //   (2026-09-04、31.5kHz の 512x512 で 1104 のまま動かなかった。
+                //   降下が一度も起きていなかった)。
+                //
+                //   枝刈りの根拠は「est = 設定値 × 占有率 は真の htotal の下限」
+                //   だったが、これが成り立っていなかった。真値 736 を 1104 で
+                //   測ったときの占有率の理論上の上限は 736/1104 = 0.667 なのに、
+                //   実測は 0.716 出た(99%エネルギーの裾がノイズを拾う)。下限として
+                //   使えない量で枝刈りしていたので、正解が候補から消えていた。
+                //
+                //   いまは全候補の位相感度を測り、**いちばん感度が強い点**を採る。
+                //   しきい値ちょうどの値に結果が左右されず、内訳も残せる。
+                //   実測(31.5kHz 512x512): 1104→98% / 736→53% / 552→87%。
+                //   正解の 736 が突出するので、取り違えようがない。
+                let next = i + 1;
+                if next < ladder.len() {
+                    let c = ladder[next].clone();
+                    let n = ladder.len();
+                    if let Some(a) = self.auto.as_mut() {
+                        a.phase = AutoPhase::QuickProbe {
+                            i: next, k: 0, best: (0, 0.0), worst: f32::MAX,
+                        };
+                    }
+                    self.send_cfg(protocol::CFG_KEY_PLL_DIVIDE, c.pll_divide);
+                    self.tune_pll_divide = c.pll_divide as i32;
+                    self.auto_next(protocol::CFG_KEY_PHASE, 0,
+                                   format!("候補{}/{n} pll {}: 位相 1/8",
+                                           next + 1, c.pll_divide),
+                                   900);
+                    return;
+                }
+                // --- 全候補を測り終えた。位相感度がいちばん強い点を採る ---
+                let probes = match self.auto.as_ref().map(|a| &a.mode) {
+                    Some(AutoMode::Quick { probes, .. }) => probes.clone(),
+                    _ => return,
+                };
+                let (j, min_rel) = quick_pick(&probes);
+                let rel_of = |p: &(u8, f32, f32)| if p.1 > 0.0 { p.2 / p.1 } else { 1.0 };
+                // 判定の内訳を残す。**これが無くて原因の切り分けに手間をかけた。**
+                let report = ladder
+                    .iter()
+                    .zip(probes.iter())
+                    .map(|(c, p)| format!("{}→{:.0}%", c.pll_divide, rel_of(p) * 100.0))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let c = ladder[j].clone();
+                let p = probes[j];
+                if let Some(a) = self.auto.as_mut() {
+                    a.worst = p.2;
+                    a.over = c.oversample;
+                    a.report = report;
+                }
+                if self.tune_pll_divide != c.pll_divide as i32 {
+                    self.send_cfg(protocol::CFG_KEY_PLL_DIVIDE, c.pll_divide);
+                    self.tune_pll_divide = c.pll_divide as i32;
+                }
+                self.auto_enter_phase_fine(
+                    p.0, p.1,
+                    format!("pll {} を採用(位相感度 {:.0}%)→ 位相を詰めています",
+                            c.pll_divide, min_rel * 100.0));
+            }
             AutoPhase::Oversample => {
                 // 1:1の pll_divide ≒ 過剰サンプル時の pll_divide x 占有率。
                 // 実測では真値に対して -3% の系統バイアスが残るので、局所探索で吸収する
@@ -1618,12 +2004,25 @@ impl ViewerApp {
                     // 動かせば全サンプルが中央から縁へ移るので鮮鋭度が大きく変わる。
                     // 変わらないなら「半分のサンプルが既に縁にいる」= 過剰サンプル。
                     // 実機の15kHzモードで最悪95%(=変わらない)のまま2.3倍の値に
-                    // 着地したので、その場合は半分にして測り直す。
+                    // 着地したので、フルスキャンではその場合に半分にして測り直す。
                     // 半分にできるのは、それがTVPの下限以上のときだけ。下限で
                     // 過剰サンプルを強いられている帯域(15kHz)では位相感度が弱いのが
                     // 正常なので、ここで下げてしまうとPLLが範囲外の無効な領域へ入る
                     // (実機で432まで落ちて絵が壊れた)。
-                    if rel > 0.85 && attempt < 2 && pll / 2 >= self.pll_min_hw() {
+                    //
+                    // ★**簡易スキャンではこの再測定をしない。** 探索空間が候補に
+                    //   限られているので、位相感度で降りる先は「1つ下の候補」= 真値
+                    //   より小さい実在しない設定になり、ドットを飛ばす方へ倒れる。
+                    //   そもそも**倍率は分かっている**(選んだ点の oversample)。
+                    //   下限のせいで×2になっている点なら位相感度が弱いのは当たり前で、
+                    //   これは異常ではないので、判定にそう書けば足りる。
+                    let quick = matches!(
+                        self.auto.as_ref().map(|a| &a.mode),
+                        Some(AutoMode::Quick { .. })
+                    );
+                    let over = self.auto.as_ref().map_or(1, |a| a.over);
+                    let report = self.auto.as_ref().map_or(String::new(), |a| a.report.clone());
+                    if !quick && rel > 0.85 && attempt < 2 && pll / 2 >= self.pll_min_hw() {
                         if let Some(a) = self.auto.as_mut() {
                             a.attempt = attempt + 1;
                         }
@@ -1639,15 +2038,29 @@ impl ViewerApp {
                     self.tune_phase = best.0;
                     self.auto = None;
                     let at_floor = pll <= self.pll_min_hw() + 8;
-                    let judge = if at_floor {
-                        "TVPの下限(12MHz)。このモードは1:1不可"
+                    let judge = if quick && over > 1 {
+                        // 候補の htotal がTVPの下限を割るので、整数倍にせざるを
+                        // 得なかった点。1:1にはできないが、位相ロックはしている
+                        format!("TVPの下限で×{over}オーバーサンプル。このモードは1:1不可")
+                    } else if at_floor {
+                        "TVPの下限(12MHz)。このモードは1:1不可".to_string()
                     } else if rel <= 0.85 {
-                        "1:1"
+                        "1:1".to_string()
                     } else {
-                        "要確認"
+                        "要確認".to_string()
+                    };
+                    let how = if quick { "簡易" } else { "フル" };
+                    // ★**判定の内訳を必ず出す。** 「pll_div 1104 / 位相 0 で完了
+                    //   (要確認: 最悪の位相は 98%)」だけでは、候補を1つしか測って
+                    //   いないのか全部測って選べなかったのかが分からず、実機で
+                    //   外したときに切り分けられなかった(2026-09-04)。
+                    let detail = if report.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  候補の位相感度: {report}")
                     };
                     self.auto_done = Some(format!(
-                        "pll_div {} / 位相 {} で完了({judge}: 最悪の位相は {:.0}%)",
+                        "{how}: pll_div {} / 位相 {} で完了({judge}: 最悪の位相は {:.0}%){detail}",
                         pll, best.0, rel * 100.0));
                     self.want_fit = true;
                 }
@@ -1748,7 +2161,7 @@ impl ViewerApp {
         // htotal = f_dot / fH が整数になる f_dot を選べば一意に決まる。fH は
         // pll_divide に依存しない絶対値で、MODEが持っている。絵の内容を一切
         // 見ないので、真っ黒な画面でも模様が無くても当たる(スペクトル探索の
-        // 「自動調整」が変な値に着地するのはここが理由)。
+        // 「フルスキャン」が変な値に着地するのはここが理由)。
         let fh_hz = self
             .shared
             .mode
@@ -1801,26 +2214,65 @@ impl ViewerApp {
                 .clicked();
             if let Some(p) = prof {
                 if (changed || write) && !p.input_regs.is_empty() {
+                    // ★伝送形式は、**いまのボードの値でこのソースが成立するなら
+                    //   上書きしない**。実行時に選べるようにしたので、
+                    //   X68000 RGB を RGB888 で見ているところへ入力設定を書いて
+                    //   黙って RGB555 に戻されると、選択が消えたように見える。
+                    //   YC8 が要るソース(コンポジット/S端子)や、ボードが
+                    //   別種の形式で止まっている場合は上書きする(救済が要る)。
+                    let have = self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt);
+                    let is_rgb = |f: u8| matches!(f, protocol::PIXFMT_RGB888
+                                                    | protocol::PIXFMT_RGB555
+                                                    | protocol::PIXFMT_RGB565);
+                    let keep_fmt = match (p.pixfmt(), have) {
+                        (Some(want), Some(h)) if want != protocol::PIXFMT_YC8 => is_rgb(h),
+                        _ => false,
+                    };
+                    let mut n = 0;
                     for (k, v, _) in p.input_regs {
+                        if keep_fmt && *k == protocol::CFG_KEY_PIXFMT {
+                            continue;
+                        }
                         send.push((*k, *v));
+                        n += 1;
                     }
-                    self.input_regs_sent = Some((p.label, p.input_regs.len()));
+                    self.input_regs_sent = Some((p.label, n));
                 }
             }
         });
-        // ボードの伝送形式が選択と食い違っていたら言う。**電源断でTVPのレジスタが
-        // 消えた状態がこれ**で、絵は出るが復調できない(コンポジットなのにRGB555)。
+        // ボードの伝送形式が**このソースで成立しない**ときだけ言う。
+        //
+        // ★「プロファイルの値と一致するか」で見てはいけない。伝送形式は
+        //   実行時に選べる(上の「伝送形式」コンボ)ので、X68000 RGB を
+        //   RGB888 で受けるのは**正当な選択**であって異常ではない。
+        //   一致で判定すると、そこで「設定が消えた」と嘘の警告が出る
+        //   (2026-09-03 に実際に出た)。
+        //
+        // 成立するかどうかは形式の**種類**で決まる:
+        //   YC8 … コンポジット/S端子の復調には生の8bitが要る。必須
+        //   RGB … RGB555 も RGB888 も絵になる。どちらでもよい
+        // 電源断でTVPのレジスタが消えた状態は、この「種類が違う」側に出る
+        // (コンポジットなのに RGB555 になっていて復調できない)。
         if let Some(p) = profiles::by_key(&self.source_profile) {
             if let (Some(want), Some(have)) = (
                 p.pixfmt(),
                 self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt),
             ) {
-                if want != have {
+                let is_rgb = |f: u8| matches!(f, protocol::PIXFMT_RGB888
+                                                | protocol::PIXFMT_RGB555
+                                                | protocol::PIXFMT_RGB565);
+                let ok = if want == protocol::PIXFMT_YC8 {
+                    have == protocol::PIXFMT_YC8
+                } else {
+                    is_rgb(have)
+                };
+                if !ok {
                     ui.colored_label(
                         egui::Color32::from_rgb(220, 170, 60),
                         format!(
-                            "ボードの伝送形式が {have}(このソースは {want})。\
-                             電源を入れ直して設定が消えた可能性 → 「入力設定を書く」"
+                            "ボードの伝送形式が {} で、このソース({})では絵になりません。\
+                             電源を入れ直して設定が消えた可能性 → 「入力設定を書く」",
+                            pixfmt_name(have), pixfmt_name(want)
                         ),
                     );
                 }
@@ -1997,12 +2449,24 @@ impl ViewerApp {
         // ここには「目標の有効幅から pll_div を比例計算する」UI(target w / ×8 /
         // → pll)があったが撤去した。比例計算は有効映像の実測が信用できないと
         // 上限まで走り、実機で pll_div が 2304 に達して絵が崩れ、DATACLKが
-        // 100MHzを超えてボードごとハングした。いまは下の「自動調整」が絵の
+        // 100MHzを超えてボードごとハングした。いまは下のスキャンが絵の
         // スペクトルから倍率を割り出すので、初期値がどれだけ外れていても収束する。
         let st = self.shared.stats.lock().unwrap().clone();
+        // 縦はスロット単位で測っている。プログレッシブでは行が1つ飛びに並ぶので
+        // スロットの範囲は実際の行数の2倍になる(上の Mode 表示と同じ理由)。
+        // ここは表示だけ映像源の行数に直す。計算に使う st の値はそのまま。
+        let il_v = {
+            let m = self.shared.mode.lock().unwrap().clone();
+            m.map_or(false, |m| m.mflags & 0x0001 != 0) || st.interlace_measured
+        };
+        let (ah, ay) = if il_v {
+            (st.active_h, st.active_y)
+        } else {
+            (st.active_h / 2, st.active_y / 2)
+        };
         ui.monospace(format!(
             "active {}x{} at ({},{})",
-            st.active_w, st.active_h, st.active_x, st.active_y
+            st.active_w, ah, st.active_x, ay
         ));
         // 1ラインがバッファに入り切っていない状態。過剰サンプルの明確な兆候で、
         // このとき外接矩形は有効映像の幅ではなくバッファ幅を表すので、そこから
@@ -2090,6 +2554,38 @@ impl ViewerApp {
             }
             ui.monospace(format!("{:.0}度", self.tune_phase as f32 * 360.0 / 32.0));
         });
+        // --- TVPの細ゲイン(白バランスと白レベル)---
+        //
+        // ★**基板ごとに違う。** アナログ3経路のばらつきを埋める値なので、
+        //   基板が変われば正解が変わる。v0.9.0 の校正値は R=43 / G=39 / B=35
+        //   (白ベタが3chとも RGB555 のコード28=231 に載る)。
+        //
+        //   合わせ方: 白いベタ塗りの**内側**(縁の立ち上がり途中を除く)を見て、
+        //   3chが同じコードに載るようにする。**コードが変わる境目ではなく、
+        //   同じコードに載る範囲の中央に置くこと。** 端に置くと温度ドリフトで
+        //   1コード揺れる。RGB555 の1コードは 3.6% あるので目に見える。
+        //
+        //   白を最上位コード(255)まで上げるとX68000の32階調が1:1で載るが、
+        //   最上位には上の境目が無いためドリフトに弱く、クリップも検出できない。
+        //   階調の並んだ映像源(カラーバー/グレースケールランプ)で
+        //   ゲインとオフセットを同時に合わせるまでは、余裕のある値にしておく。
+        ui.horizontal(|ui| {
+            ui.monospace("細ゲイン");
+            ui.monospace("ゲイン = 1 + N/256");
+        });
+        row(ui, "  gain_R", &mut self.tune_gain_r, 0, 255,
+            protocol::CFG_KEY_GAIN_R, &mut send);
+        row(ui, "  gain_G", &mut self.tune_gain_g, 0, 255,
+            protocol::CFG_KEY_GAIN_G, &mut send);
+        row(ui, "  gain_B", &mut self.tune_gain_b, 0, 255,
+            protocol::CFG_KEY_GAIN_B, &mut send);
+        ui.horizontal(|ui| {
+            ui.monospace(format!(
+                "  R×{:.3}  G×{:.3}  B×{:.3}",
+                1.0 + self.tune_gain_r as f32 / 256.0,
+                1.0 + self.tune_gain_g as f32 / 256.0,
+                1.0 + self.tune_gain_b as f32 / 256.0));
+        });
         ui.horizontal(|ui| {
             if ui.button("読む").on_hover_text(
                 "ボードの現在値を取り込んで表示を合わせる").clicked()
@@ -2107,6 +2603,22 @@ impl ViewerApp {
         // (実機で pll_div が 2304 まで行って絵が崩れた)。こちらは絵の
         // スペクトルから倍率を割り出すので、いまの値がどれだけ外れていても
         // 1回で正しい範囲に入る。
+        //
+        // ★**簡易とフルの2本立てにしてある。**
+        //   すぐ上の「適用」は fH と水晶だけで決める(絵を一切見ない)ので速いが、
+        //   同じ fH を作れるドットクロックが複数あると決め切れない。X68000の
+        //   31.5kHz がまさにそれで、768x512(1104)と512x512(736)と HRL付き(552)が
+        //   全部 fH 31.500kHz ちょうど。「適用」は安全側の最大値=1104 を返すので、
+        //   512x512 のときは 1.5倍オーバーサンプルのままになる。
+        //
+        //   簡易スキャンはその**候補(この例では htotal 4点 = 設定値3通り)だけ**を、
+        //   htotal の大きい方から位相を振って調べ、位相感度が立った最初の点を採る。
+        //   降りるには「位相を動かしても鮮鋭度が変わらない = 過剰サンプル」という
+        //   積極的な証拠を要求するので、迷ったときは大きい側(安全側)に留まる。
+        //   フルスキャンは候補という前提を置かずに数十点を舐めるので、桁違いに遅く、
+        //   絵に模様が無いと変な値へ着地することもある。
+        //   まず簡易、駄目ならフル、という順番で使う。
+        let quick_cands = self.scan_candidates();
         ui.horizontal(|ui| {
             if self.auto.is_some() {
                 if ui.button("中止").clicked() {
@@ -2117,19 +2629,60 @@ impl ViewerApp {
                     ui.monospace(a.note.clone());
                 }
             } else {
-                if ui.button("自動調整")
-                    .on_hover_text("pll_divide と位相を実測で決める(40秒ほど)。\n\
+                let n = quick_cands.len();
+                let list = quick_cands
+                    .iter()
+                    .map(|c| {
+                        if c.oversample > 1 {
+                            format!("htotal {} → pll {} (×{})",
+                                    c.htotal, c.pll_divide, c.oversample)
+                        } else {
+                            format!("htotal {} → pll {}", c.htotal, c.pll_divide)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n         ");
+                let btn = ui.add_enabled(n > 0, egui::Button::new("簡易スキャン"));
+                let btn = if n > 0 {
+                    btn.on_hover_text(format!(
+                        "プロファイルの水晶/分周と fH から出る候補**全部**の位相感度を\n\
+                         測って、いちばん感度が強い点を採ります\n\
+                         (候補1つにつき8秒ほど。位相もそのまま最適値に合わせます)。\n\
+                         候補 {n}点:\n\
+                         {list}\n\
+                         **まずこちらを試す。**\n\
+                         どれも感度が立たなければ大きい側に留まります\n\
+                         (=過剰サンプル。眠いだけで壊れない)。\n\
+                         結果には候補ごとの位相感度が並ぶので、外したときに追えます"
+                    ))
+                } else {
+                    btn.on_hover_text(
+                        "この fH を説明できる候補がありません\n\
+                         (MODE未受信か、プロファイルに無いドットクロック)。\n\
+                         フルスキャンを使ってください",
+                    )
+                };
+                if btn.clicked() {
+                    self.auto_done = None;
+                    self.auto_start_quick();
+                }
+                if ui.button("フルスキャン")
+                    .on_hover_text("候補を前提にせず pll_divide を総当たりで探し、\n\
+                                    そのあと位相(0〜31)も振って決めます(40秒ほど)。\n\
+                                    プロファイルに無いモードや未知の機種向け。\n\
                                     文字など細かい模様が出ている画面で実行してください")
                     .clicked()
                 {
                     self.auto_done = None;
                     self.auto_start();
                 }
-                if let Some(d) = self.auto_done.clone() {
-                    ui.monospace(d);
-                }
             }
         });
+        if self.auto.is_none() {
+            if let Some(d) = self.auto_done.clone() {
+                ui.monospace(d);
+            }
+        }
         if ui.button("send all").clicked() {
             send.push((protocol::CFG_KEY_VBP, self.tune_vbp as u32));
             send.push((protocol::CFG_KEY_HS_OFFSET, self.tune_hs_offset as u32));
@@ -2494,6 +3047,12 @@ impl eframe::App for ViewerApp {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let t_ui = std::time::Instant::now();
         let ctx = root.ctx().clone();
+        // ドット復元の係数を受信スレッドへ渡す(組立時に生のADCコードへ掛ける)。
+        // 毎フレームの store は Relaxed で十分に安い。
+        self.shared.dot_a_milli.store(
+            self.dot_a_milli,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let t_tex = std::time::Instant::now();
         self.refresh_texture(&ctx);
         self.pace.note_upload(t_tex.elapsed());
@@ -2555,8 +3114,20 @@ impl eframe::App for ViewerApp {
                                  ブロードキャストになるのはこの2秒ごとの要求だけで、\n\
                                  映像はユニキャストです");
                     } else {
-                        ui.label(format!("SUBSCRIBE → {dest}"));
+                        // NICごとのサブネット宛。複数NICがあれば空白区切りで並ぶ
+                        ui.label(format!("SUBSCRIBE → {dest}"))
+                            .on_hover_text(
+                                "各NICのサブネット宛ブロードキャストへ2秒ごとに送っています。\n\
+                                 限定ブロードキャスト(255.255.255.255)は使いません。\n\
+                                 あれは既定経路に載るので、VPN接続中は送信自体が\n\
+                                 失敗します(receiver.rs の broadcast_targets 参照)。\n\
+                                 サブネットが違っても同じL2セグメントにいれば届きます");
                     }
+                }
+                // ★**送れていないことを明示する。** 「何も映らない」だけだと
+                //   受信側の問題と区別できず、原因の切り分けに時間がかかる。
+                if let Some(err) = self.shared.net_error.lock().unwrap().clone() {
+                    ui.colored_label(egui::Color32::from_rgb(220, 170, 60), err);
                 }
                 ui.separator();
 
@@ -2564,8 +3135,28 @@ impl eframe::App for ViewerApp {
                 // 周波数インジケータ(実機モニタのLEDに相当)。同期している帯域が点灯する
                 self.band_leds(ui);
                 if let Some(m) = self.shared.mode.lock().unwrap().clone() {
-                    ui.monospace(format!("{}x{} (id {})", m.hactive, m.vactive, m.mode_id));
-                    ui.monospace(format!("pixfmt {}", m.pixfmt));
+                    // ★vactive は**スロット数**であって映像源の行数ではない。
+                    //
+                    //   行位置は常に半ライン単位のスロットに置かれる(捕捉側が
+                    //   インタレースかどうかで分岐しないための設計)。だから
+                    //   プログレッシブでは1つ飛びに並び、スロットの範囲は
+                    //   実際の行数の2倍になる。768x512 の X68000 が 768x1024 と
+                    //   表示されていたのはこれで、誤判定ではない。
+                    //
+                    //   インタレースのときは vactive がそのままフレーム行数に
+                    //   なる(フィールド行数×2 = フレーム行数)ので割らない。
+                    //   判定は assembler と同じ「mflags か、測定した交互性」。
+                    //   mflags bit0 だけでは決まらない (フィールドごとに VSYNC が
+                    //   来る本物のインタレースでは 0 になる) ことに注意。
+                    let il = m.mflags & 0x0001 != 0
+                        || self.shared.stats.lock().unwrap().interlace_measured;
+                    let vsrc = if il { m.vactive } else { m.vactive / 2 };
+                    ui.monospace(format!("{}x{} (id {})", m.hactive, vsrc, m.mode_id));
+                    if vsrc != m.vactive {
+                        ui.weak(format!("スロット {}", m.vactive));
+                    }
+                    // 実際に届いている LINE の形式。UIの設定値ではなく**電線上の値**
+                    ui.monospace(pixfmt_name(m.pixfmt));
                     // htotal×vtotal もボードの実測値。モード表を作る調査で必要なので出す
                     ui.monospace(format!("total {}x{}", m.htotal, m.vtotal));
                     ui.monospace(format!("dotclk {:.4} MHz", m.dotclk_hz as f64 / 1e6));
@@ -2931,6 +3522,53 @@ impl eframe::App for ViewerApp {
                     }
                 });
                 ui.horizontal(|ui| {
+                    // 伝送形式。RGB888 は 3B/px で帯域は 1.5 倍だが、
+                    // X68000 の 65536色モードのように元が5bitを超える階調を
+                    // 持つ場合に丸めが乗らない。RGB555 は 2B/px で帯域が軽い。
+                    // ゲートウェアは実行時に切り替えるので再ビルドは要らない。
+                    ui.monospace("伝送形式");
+                    let mut f = self.tune_pixfmt;
+                    egui::ComboBox::from_id_salt("pixfmt")
+                        .selected_text(pixfmt_name(f as u8))
+                        .show_ui(ui, |ui| {
+                            for v in [protocol::PIXFMT_RGB888, protocol::PIXFMT_RGB555,
+                                      protocol::PIXFMT_YC8] {
+                                ui.selectable_value(&mut f, v as i32, pixfmt_name(v));
+                            }
+                        });
+                    if f != self.tune_pixfmt {
+                        self.tune_pixfmt = f;
+                        self.send_cfg(protocol::CFG_KEY_PIXFMT, f as u32);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    // ★**ドット復元(1タップ逆フィルタ)。**
+                    //   X68000 768x512 では本体の出力段で既に1ドットのパルスが
+                    //   立ち切っておらず、実測で 1ドット=白の64% / 2ドット=82% /
+                    //   4ドット以上=100%(2026-09-02, v0.9.0)。オシロでコネクタ
+                    //   直後と基板フィルタ後に差が無かったので、基板ではなく
+                    //   信号源側が原因と確定している。
+                    //
+                    //   一次ローパスの逆演算なので、係数が合っていれば
+                    //   オーバーシュート(輪郭のリンギング)は出ない。
+                    //   孤立1ドットの到達率が (1-a) なので a = 1 - 0.64 = 0.36 が理論値。
+                    //   ただし★**この式は「1サンプル=1ドット」でしか成立しない**
+                    //   (一次ローパスの逆演算なので、オーバーサンプリングだと前提が崩れる)。
+                    //   pll_divide を合わせた状態(X68000の512ドット系なら736)で
+                    //   実測すると、飽和ゼロで1pxが白に届くのは a=0.20 だった。既定はこちら。
+                    ui.monospace("ドット復元");
+                    let mut a = self.dot_a_milli as f32 / 1000.0;
+                    if ui.add(egui::Slider::new(&mut a, 0.0..=0.9).fixed_decimals(2)).changed() {
+                        self.dot_a_milli = (a * 1000.0).round() as u32;
+                        self.mark_settings_dirty();
+                    }
+                    ui.monospace(if self.dot_a_milli == 0 {
+                        "切".to_string()
+                    } else {
+                        format!("1px を {:.0}% → 100% へ", 100.0 * (1.0 - a))
+                    });
+                });
+                ui.horizontal(|ui| {
                     // インターレースの残光。
                     //
                     // インターレースでは毎フレーム半分の行しか来ないのが正常なので、
@@ -3146,5 +3784,82 @@ impl eframe::App for ViewerApp {
 impl Drop for ViewerApp {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::{quick_pick, PHASE_SENSITIVE};
+
+    /// ★**実機で測った値をそのまま固定する。**
+    ///
+    /// 2026-09-04、X68000 の 31.5kHz 512x512(高解像度、真の htotal は 736)を
+    /// 候補ごとに位相8点振って測った実測値。正解の 736 が突出する。
+    ///
+    /// ```text
+    ///     pll 1104  最良 160.25  最悪 156.58  → 98%   1.5倍オーバーサンプル
+    ///     pll  736  最良 377.11  最悪 200.92  → 53%   ★1:1
+    ///     pll  552  最良 406.15  最悪 351.23  → 87%
+    /// ```
+    ///
+    /// このとき実機は 1104 のまま動かなかった。原因は判定ではなく、降りる先を
+    /// 占有率で枝刈りしていたこと(真値 736 が候補から消えていた)。判定材料の側は
+    /// このとおり十分な差が出ていたので、**枝刈りを外して全候補を測る**形にした。
+    #[test]
+    fn quick_pick_uses_the_real_measurements() {
+        let probes = [
+            (4u8, 160.25f32, 156.58f32),   // pll 1104
+            (24, 377.11, 200.92),          // pll 736 ← 正解
+            (8, 406.15, 351.23),           // pll 552
+        ];
+        let (j, rel) = quick_pick(&probes);
+        assert_eq!(j, 1, "736(添字1)ではなく添字{j}を選んだ");
+        assert!((rel - 0.533).abs() < 0.01, "位相感度 {rel:.3}");
+        assert!(rel <= PHASE_SENSITIVE);
+    }
+
+    /// **鮮鋭度の絶対値が大きい方に釣られないこと。**
+    ///
+    /// 上の実測でも 552 の最良鮮鋭度(406)は 736(377)より大きい。鮮鋭度の最大値で
+    /// 選ぶと 552 を採ってしまう(= 真値より小さい値なのでドットを飛ばす)。
+    /// 見るのは**同じ設定内での比**であって絶対値ではない。
+    #[test]
+    fn quick_pick_ignores_absolute_sharpness() {
+        let probes = [
+            (4u8, 160.25f32, 156.58f32),
+            (24, 377.11, 200.92),
+            (8, 406.15, 351.23),
+        ];
+        let peak = probes
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1 .1.partial_cmp(&b.1 .1).unwrap())
+            .unwrap()
+            .0;
+        assert_eq!(peak, 2, "鮮鋭度の最大は 552 のはず");
+        assert_ne!(quick_pick(&probes).0, peak, "絶対値に釣られている");
+    }
+
+    /// どれも感度が立たないなら**いちばん大きい候補**へ倒す。
+    ///
+    /// TVPの下限12MHzで1:1にできないモード(X68000の15kHz帯など)がこれ。
+    /// 全部が過剰サンプルなのでどれを選んでも絵は壊れないが、推測で降りない。
+    #[test]
+    fn quick_pick_falls_back_to_the_largest() {
+        let probes = [
+            (0u8, 100.0f32, 96.0f32),   // 96%
+            (0, 100.0, 92.0),           // 92% ← 最小だがしきい値を下回らない
+            (0, 100.0, 95.0),           // 95%
+        ];
+        let (j, rel) = quick_pick(&probes);
+        assert_eq!(j, 0, "安全側(添字0)に倒していない");
+        assert!(rel > PHASE_SENSITIVE);
+    }
+
+    /// 候補が1つだけなら当然それを返す(X68000のVGAモードなど)
+    #[test]
+    fn quick_pick_single_candidate() {
+        assert_eq!(quick_pick(&[(0u8, 100.0f32, 40.0f32)]).0, 0);
     }
 }

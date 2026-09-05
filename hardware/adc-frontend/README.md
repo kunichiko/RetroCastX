@@ -9,13 +9,36 @@ ArgusX制御コネクタ搭載。回路は `main.ato`(Atopile)。
 
 | 系統 | 経路 | 変換 |
 |---|---|---|
-| RGB端子音声 | J10(D-SUB15)**ピン10=L / ピン11=R** → U1 PCM1808(直結) | 16bit/48kHz I2S |
-| LINE入力 | J12(3.5mmステレオ) → U12 PCM1808 | 16bit/48kHz I2S |
+| RGB端子音声 | J10(D-SUB15)**ピン10=L / ピン11=R** → **U13** PCM1808(直結) | 16bit/48kHz I2S |
+| LINE入力 | J12(3.5mmステレオ) → **U14** PCM1808 | 16bit/48kHz I2S |
 | 光デジタル | J13(TOSLINKモジュール) → FPGA直結 | S/PDIFをゲートウェアでデコード |
 
-- **クロック**: X2(12.288MHz XO =256fs@48kHz)→ 両ADCのSCKIとFPGA(F1=PCLKC6_1)。
-  BCK/LRCKはFPGAがMCLKから分周して共通供給。**DOUTのみ個別**なので
-  アナログ2系統は同時キャプチャ可能。S/PDIFのDIRチップは不要(FPGAでデコード)
+- **クロック**: X3(12.288MHz XO =256fs@48kHz)は **FPGAにだけ**入る
+  (SO-DIMM 130 = F1 = PCLKC6_1)。**ADCのSCKIはFPGAが出し直したもの**で、
+  SO-DIMM 147(D2)から両ADCへ配る。BCK(143)= MCLK/4 = 3.072MHz、
+  LRCK(145)= MCLK/256 = 48kHz も同じくFPGA生成の共通供給。
+  **DOUTのみ個別**(U13=141, U14=139)なのでアナログ2系統は同時キャプチャ可能。
+  S/PDIFのDIRチップは不要(FPGAでデコード)
+
+  ★**XOはADCに直接は繋がっていない。** 以前この節は「XO→両ADCのSCKIとFPGA」と
+  書いていたが誤りで、音が出ない件の切り分けで探す場所を間違える原因になった
+  (2026-09-03)。信号を追うときは必ず FPGA の出力(147)から見ること。
+
+- ★**実装の注意: SCKI(6番)は DGND(5番)の真隣。** TSSOP-14 の 0.65mm ピッチなので
+  5-6間がブリッジすると MCLK が GND に落ちる。**両ADCがMCLKを共有しているので、
+  片方のICの下のブリッジで音声が2系統とも死ぬ。** 実際に v0.9.0 で発生した
+  (2026-09-03)。そのときの症状:
+
+  | 観測 | 値 |
+  |---|---|
+  | 転送される音声サンプル | 両ch**ビット単位で完全にゼロ**(入力無しならディザが出るはず) |
+  | サンプルレート | 48kHz で正常(FPGA内部とBCK/LRCK生成は無事) |
+  | ADC 7番(LRCK)/ 8番(BCK) | 正常に観測できる |
+  | ADC 6番(SCKI) | **完全に平坦**(鈍りではない) |
+  | ADC 1番(VREF) | **0V**(SCKIが無いとリセットが解けず基準電圧が立たない) |
+  | アナログ5V(C60) | 正常 |
+
+  VREF=0V は原因ではなく**結果**。この並びが出たら 5-6 間のブリッジを疑う
 - **D-SUB音声の切り離しジャンパは削除した**(2026-08-11)。当初は「VGA HD-15の
   ピン4/11はID/DDCなので、一般VGAケーブルを挿す運用では切り離せるように」という
   理由で入れていたが、**コネクタを2列DA-15(X68000式)に変えた時点で3列のVGAケーブルは
@@ -293,18 +316,41 @@ J12 (y=77.0, 下側)  eth1_* = SO-DIMM 奇数ピン 15/17/23/21/27/29/35/33
 さらに**呼び名が資料間で逆**。`docs/sodimm-pinmap.html`(出典: wuxx ext-board 図)は
 偶数ピンを Eth2 と呼ぶが、rainbow-board は同じ偶数ピンを ETH1 と呼ぶ。配線は同じで
 ラベルだけの違いだが、ゲートウェアの PHY インデックス選択で迷う原因になる。
-本リポジトリの流儀は **ETH2=jack(J11)=PHY0=litex eth1**(映像ストリーム既定)。
 → v1.0 でシルクに ETH1/ETH2 を入れること。
 
-**2. センタータップのネット名が入れ違っている(電気的には無害)。**
+★**litex の eth index との対応(2026-09-02 実機で確定)**。以前ここには
+「ETH2=jack(J11)=PHY0=litex eth1」と書いていたが**逆だった**。
+`litex_boards/platforms/colorlight_i5.py` 自身にこう書いてある:
+
+> The order of the two PHYs is swapped with the naming of the connectors on the
+> board so to match with the configuration of their PHYA[0] pins.
 
 ```
-main.ato:1933  eth.jack.ct.override_net_name  = "eth1_ct"   ← jack は eth2_* を運ぶ
-main.ato:1934  eth.jack2.ct.override_net_name = "eth2_ct"   ← jack2 は eth1_*
+platform.request("eth", 0) = コネクタ ETH2 = eth2_*(偶数ピン) = J11
+platform.request("eth", 1) = コネクタ ETH1 = eth1_*(奇数ピン) = J12  ← gateware 既定
 ```
 
-各ポートに独立した 100nF が付いているので電気的には問題ないが、名前が逆。
-v1.0 で直す。
+手組み試作機では配線がたまたま index=1 と一致していたので露見せず、v0.9.0 で J11 に
+挿した瞬間に「リンクはするのに ARP も ping も返らない」という形で出た。
+**判断はコネクタ表記ではなく SO-DIMM ピン番号の偶奇で行うこと。**
+`retrocastx_stream.py --eth-phy {0,1}` で切り替えられる(既定 1 = J12)。
+J11 へ移す場合は **seed 3 では index=0 の eth_rx が 122.55MHz(制約125)で閉じない**
+のでシード探索が要る(index=1 は seed 3 で 131.51MHz PASS)。
+
+**2. センタータップのネット名が入れ違っていた(2026-09-02 に main.ato 側を修正済み)。**
+
+```
+修正前  eth.jack.ct  = "eth1_ct"   ← jack は eth2_* を運ぶのに eth1_ct
+        eth.jack2.ct = "eth2_ct"   ← jack2 は eth1_* を運ぶのに eth2_ct
+修正後  eth.jack.ct  = "eth2_ct"   (= J11, C80, 表面)
+        eth.jack2.ct = "eth1_ct"   (= J12, C81, 裏面)
+```
+
+電気的には各ポートに独立した 100nF が付いているだけなので無害だったが、
+**この名前の逆転が実機デバッグで実害を出した**。v0.9.0 の実装で C81 が
+未実装だったとき、「eth2_ct が載っていない」を J11 側の欠品と誤読した
+(実際に欠品していたのは J12 の C81)。★**基板は v0.9.0 のまま**なので、
+現物のシルク/ネット名は旧のまま。次に `ato build` を流した時点で新名称になる。
 
 ## Ethernet LED: PHY直結 / GPIO の二経路(2026-08-11)
 
@@ -748,11 +794,17 @@ python3 tools/restore_tuning_patterns.py   # GbEの等長配線が基板外へ�
 python3 tools/restore_pcb_settings.py      # 基板の原点とリビジョン番号を戻す
 python3 tools/lock_designators.py          # 番号を戻す(欠番は再利用しない。発注後は必須)
 python3 tools/gen_parts_table.py           # README の主要部品表を実装に追随させる
+python3 tools/gen_designator_map.py        # docs/designator-map.md を実装に追随させる
 python3 tools/gen_order_bom.py --tag v0.9.0 --boards 2   # 発注リスト
 python3 tools/gen_order_xlsx.py --tag v0.9.0 --boards 2  # 調達管理表
 ```
 
-`--check` を付けると書き換えずに食い違いだけ報告する(`gen_parts_table.py` のみ)。
+`--check` を付けると書き換えずに食い違いだけ報告する
+(`gen_parts_table.py` と `gen_designator_map.py`)。
+
+★**対応表を放置すると実害が出る。** `designator-map.md` は手書きのままだったため
+195行中129行の番号が実装とずれ、音が出ない件の切り分けで測る場所を間違えた
+(2026-09-03)。生成ツールは「一度回して終わり」にせず、`ato build` のたびに回すこと。
 
 ### 1. 等長配線オブジェクト
 

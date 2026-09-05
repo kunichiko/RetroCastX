@@ -157,7 +157,8 @@ CONFIG(key 0x0001)で選択する。
 
 | target | key | 説明 |
 |---|---|---|
-| 0 (board) | 0x0036 | pixfmt: 伝送ピクセル形式。1=RGB555(既定) / 3=YC8(生8bit) |
+| 0 (board) | 0x0036 | pixfmt: 伝送ピクセル形式。0=RGB888 / 1=RGB555(既定) / 3=YC8(生8bit) |
+| 0 (board) | 0x0037 | black_th: 非黒判定の閾値(成分の上位5bit と比較, 0..31)。既定0。**上げると暗い絵の中身が範囲から外れて送られなくなる** |
 | 0 (board) | 0x005E | clamp_sel (TVP reg 10h[2:0]): bit2=Blue bit1=Green bit0=Red。0=ボトム 1=ミッド |
 | 0 (board) | 0x005F | coarse_gain_gb (TVP reg 1Bh): **[7:4]=Green [3:0]=Blue**。Gain = 0.5 + N/10 |
 | 0 (board) | 0x0065 | coarse_off_g (TVP reg 1Fh[5:0]): 粗アナログオフセット Green。10h=+64コード |
@@ -183,7 +184,7 @@ CONFIG(key 0x0001)で選択する。
 - **0x0013〜0x0016 は空いていない。** インターレース判定が「設定」から「測定」へ
   移ったのでゲートウェアは読まなくなったが、`CFG_KEY_INTERLACE` などの名前が
   host/client に残っているので再利用してはいけない。
-  現時点で真に空いているのは 0x002D〜0x002F / 0x0037〜0x003F / 0x0046〜0x004F /
+  現時点で真に空いているのは 0x002D〜0x002F / 0x0038〜0x003F / 0x0046〜0x004F /
   0x006A 以降
 
 キーの割り当ては `host/python/retrocastx/protocol.py` の `CFG_KEY_*` を正とし、

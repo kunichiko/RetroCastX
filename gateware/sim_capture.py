@@ -38,7 +38,17 @@ class Wrap(Module):
 
 
 def expect_pix(x, row):
-    return ((x & 0x1F) << 10) | ((row & 0x1F) << 5)
+    """ラインバッファの1画素スロット(32bit)の期待値。
+
+    ★2026-09-03 に**バッファの表現が変わった**。以前は RGB555 に変換済みの
+      16bit を格納していたが、いまは **8bit の生値** (byte0=R byte1=G byte2=B)
+      を 32bit スロットに入れる。伝送形式への変換は送出側で行う
+      (RGB555 の5bitでは X68000 の32階調を 1:1 で載せる余裕が無いため、
+       8bit のまま持って RGB888 でも出せるようにした)。
+
+    駆動側は r = xpix<<3 / g = row<<3 / b = 0。
+    """
+    return ((x & 0x1F) << 3) | (((row & 0x1F) << 3) << 8)
 
 
 def main():
@@ -110,9 +120,9 @@ def main():
         words = res["faces"][row]
         decoded = []
         for e, w in enumerate(words):
-            lo, hi = w & 0xFFFF, (w >> 16) & 0xFFFF
+            lo, hi = w & 0xFFFFFFFF, (w >> 32) & 0xFFFFFFFF
             decoded.append((lo, hi))
-        print(f"  row{row}: " + " ".join(f"{w:08X}" for w in words))
+        print(f"  row{row}: " + " ".join(f"{w:016X}" for w in words))
 
     # 検証
     rows_seen = [m[1] for m in res["meta"]]
@@ -127,12 +137,12 @@ def main():
     for line in range(NL):
         words = res["faces"][2 * line]
         for e in range(W // 2):
-            lo = words[e] & 0xFFFF
-            hi = (words[e] >> 16) & 0xFFFF
+            lo = words[e] & 0xFFFFFFFF          # 偶数x のスロット
+            hi = (words[e] >> 32) & 0xFFFFFFFF   # 奇数x のスロット
             exp_lo = expect_pix(2 * e, line)
             exp_hi = expect_pix(2 * e + 1, line)
-            assert lo == exp_lo, f"line{line} e{e} lo={lo:#06x} exp={exp_lo:#06x}"
-            assert hi == exp_hi, f"line{line} e{e} hi={hi:#06x} exp={exp_hi:#06x}"
+            assert lo == exp_lo, f"line{line} e{e} lo={lo:#010x} exp={exp_lo:#010x}"
+            assert hi == exp_hi, f"line{line} e{e} hi={hi:#010x} exp={exp_hi:#010x}"
 
     print(f"\n[OK] TvpCapture: {NL}アクティブ行を座標どおり face に格納 + "
           f"メタCDC(スロット 0,2,4,6 / frame 1)を確認")

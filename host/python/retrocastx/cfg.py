@@ -37,6 +37,7 @@ import argparse
 import socket
 import time
 
+from . import netutil
 from . import protocol as proto
 
 # 実行時に振れるキー(gateware/retrocastx_stream.py の cfg_* と対応)。
@@ -59,6 +60,7 @@ KNOWN = [
     (0x001E, "gain_r",            "reg 0Ah 赤ファインゲイン"),
     (0x001F, "phase",             "reg 04h サンプル位相"),
     (0x0022, "sync_ctl",          "reg 0Eh 同期制御 0x52=5線 / 0x53=4線CSYNC / 0x5B=SOG"),
+    (0x002D, "il_status",         "インターレース判定 bit0=生位相が交互 bit1=生同期OK bit2=TVPのP/I bit3=TVP vtotalが2フィールド分(読専)"),
     (0x0030, "full_line",         "1ラインまるごと送る(診断)"),
     (0x0036, "pixfmt",            "伝送形式 1=RGB555(既定) 3=YC8(生8bit、CVBS用)"),
     (0x0050, "sog_thresh",        "reg 10h bit[7:3] SOGスライス閾値(5bit)"),
@@ -96,8 +98,16 @@ def _num(s: str) -> int:
 
 
 class Cfg:
-    def __init__(self, ip: str, port: int, timeout: float = 0.3):
-        self.dst = (ip, port)
+    def __init__(self, ip: str, port: int, timeout: float = 0.3,
+                 bind: str = "0.0.0.0"):
+        # ★宛先が限定ブロードキャストのときは**NICごとのサブネット宛**に展開する。
+        #   限定ブロードキャストは既定経路に載るので、VPN接続中は sendto そのものが
+        #   EADDRNOTAVAIL で落ちる。詳細と実測値は netutil の冒頭コメント。
+        if ip in (netutil.LIMITED, "auto", "", None):
+            self.dsts = netutil.broadcast_targets(bind)
+        else:
+            self.dsts = [ip]
+        self.port = port
         self.seq = 1
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -107,19 +117,25 @@ class Cfg:
         #   エフェメラルポートにbindすると応答が受け取れず「キー未対応」に見えるので、
         #   受信ポートに合わせてbindする(他のツールも同じ流儀)。
         #   Viewerが起動中は同じポートを掴んでいるので bind に失敗する。
+        #
+        # ★かつては VPN 接続中に --bind が必須だったが、宛先をNICごとの
+        #   サブネット宛にしたので不要になった(2026-09-04)。NICを1つに絞りたい
+        #   ときだけ指定する。psutil が無くてNICを列挙できない環境では、
+        #   従来どおり限定ブロードキャストに落ちるので --bind が要る。
         try:
-            self.sock.bind(("0.0.0.0", port))
+            self.sock.bind((bind, port))
         except OSError as e:
             raise SystemExit(
-                "UDP %d を bind できません (%s)\n"
-                "Viewer など同じポートを使うアプリを閉じてから実行してください。" % (port, e))
+                "UDP %d を %s で bind できません (%s)\n"
+                "Viewer など同じポートを使うアプリを閉じてから実行してください。"
+                % (port, bind, e))
 
     def _xfer(self, op: int, key: int, value: int = 0, retries: int = 4):
         """SET/GET を送って REPLY の value を返す。来なければ None。"""
         for _ in range(retries):
-            self.sock.sendto(
-                proto.pack_config(self.seq, proto.CFG_TARGET_BOARD, op, key, value),
-                self.dst)
+            pkt = proto.pack_config(self.seq, proto.CFG_TARGET_BOARD, op, key, value)
+            if netutil.send_all(self.sock, self.dsts, self.port, pkt) == 0:
+                raise SystemExit(netutil.explain_failure(self.dsts))
             self.seq = (self.seq + 1) & 0xFFFF
             end = time.monotonic() + 0.3
             while time.monotonic() < end:
@@ -154,11 +170,47 @@ def _label(key: int) -> str:
     return "?"
 
 
+def _no_reply(args):
+    """応答が無いときの案内。
+
+    「キー未対応」だけを出していると、実際には**経路の問題**なのに
+    ファームの機能不足だと誤読する(2026-09-03 に実際にやった)。
+
+    いちばん多いのは **VPN接続中にボードのIPをユニキャストで指定した**場合。
+    既定経路がVPNトンネルなので、ボードが同じL2にいてもパケットは
+    トンネルへ吸われて届かない:
+
+        route -n get 192.168.10.50
+          gateway: 172.23.60.199   interface: utun4    ← ここ
+
+    このとき ANNOUNCE はブロードキャストなので discover では見つかってしまい、
+    「ボードは居るのに CONFIG だけ通らない」という紛らわしい形になる。
+    --board 255.255.255.255 にすれば discover と同じ経路で届く
+    (ボードは ArpLearner が受信パケットから相手のMACを学習して返す)。
+    """
+    print("応答なし: key 0x%04X" % args.key)
+    if args.board != "255.255.255.255":
+        print("  ★まず --board 255.255.255.255 を試してください。")
+        print("    VPN接続中はボードのIPを直接指定すると、同じL2にいても")
+        print("    既定経路のトンネルへ吸われて届きません。確認:")
+        print("      route -n get %s   # interface が utun* ならこれ" % args.board)
+        print("    ブロードキャストなら discover と同じ経路で届きます。")
+    else:
+        print("  このファームでは未対応のキーかもしれません。")
+        print("  Viewerが同じポートを掴んでいないかも確認してください。")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--board", required=True,
-                    help="ボードのIP(255.255.255.255 でブロードキャストも可)")
+    ap.add_argument("--board", default=netutil.LIMITED,
+                    help="ボードのIP。既定はブロードキャスト(NICごとのサブネット宛へ"
+                         "自動展開するのでVPN下でも通る)")
     ap.add_argument("--port", type=int, default=proto.DEFAULT_PORT)
+    ap.add_argument("--bind", default="0.0.0.0",
+                    help="受信ソケットを縛るローカルアドレス。**VPN接続中は必須**: "
+                         "既定経路がVPNだと 255.255.255.255 への送信が "
+                         "EADDRNOTAVAIL で落ちる。ボードと同じL2にいるIFの "
+                         "アドレスを指定する(例 192.168.11.24)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     g = sub.add_parser("get", help="現在値を読む")
@@ -185,19 +237,19 @@ def main():
             print("0x%04X   %-20s %s" % (k, name, desc))
         return
 
-    c = Cfg(args.board, args.port)
+    c = Cfg(args.board, args.port, bind=args.bind)
 
     if args.cmd == "get":
         v = c.get(args.key)
         if v is None:
-            print("応答なし: key 0x%04X はこのファームでは未対応かもしれません" % args.key)
+            _no_reply(args)
             raise SystemExit(1)
         print("key 0x%04X (%s) = 0x%X (%d)" % (args.key, _label(args.key), v, v))
 
     elif args.cmd == "set":
         v = c.set(args.key, args.value)
         if v is None:
-            print("応答なし: key 0x%04X はこのファームでは未対応かもしれません" % args.key)
+            _no_reply(args)
             raise SystemExit(1)
         ok = "OK" if v == args.value else "★不一致(値が丸められた/未対応の可能性)"
         print("key 0x%04X (%s): 要求 0x%X → 反映 0x%X  %s"

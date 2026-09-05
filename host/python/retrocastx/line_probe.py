@@ -27,10 +27,11 @@ import collections
 import socket
 import time
 
+from . import netutil
 from . import protocol as proto
 
 
-def collect(sock, dst, seconds, seq0=0):
+def collect(sock, dsts, port, seconds, seq0=0):
     """LINEパケットを frame ごとにまとめて返す。"""
     seq = seq0
     by_frame = collections.defaultdict(list)
@@ -40,7 +41,7 @@ def collect(sock, dst, seconds, seq0=0):
     while time.monotonic() < end:
         now = time.monotonic()
         if now - last_sub >= 2.0:
-            sock.sendto(proto.pack_subscribe(seq), dst)
+            netutil.send_all(sock, dsts, port, proto.pack_subscribe(seq))
             seq = (seq + 1) & 0xFFFF
             last_sub = now
         try:
@@ -139,7 +140,7 @@ def report_frame(frame, pkts, mode, want_rows):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--board", required=True)
+    netutil.add_args(ap)
     ap.add_argument("--port", type=int, default=proto.DEFAULT_PORT)
     ap.add_argument("--seconds", type=float, default=3.0)
     ap.add_argument("--frames", type=int, default=2, help="詳しく出すフレーム数")
@@ -148,14 +149,15 @@ def main():
     args = ap.parse_args()
 
     want_rows = [int(x) for x in args.rows.split(",") if x.strip()]
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock = netutil.prep_socket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 << 20)
-    sock.bind(("0.0.0.0", args.port))
+    sock.bind((args.bind, args.port))
     sock.settimeout(0.2)
 
     print(f"ボード {args.board}:{args.port} を {args.seconds}秒ぶん観測します")
     print("(Viewer が開いていると購読先が奪い合いになります。閉じてください)")
-    mode, by_frame = collect(sock, (args.board, args.port), args.seconds)
+    dsts = netutil.targets_for(args.board, args.bind)
+    mode, by_frame = collect(sock, dsts, args.port, args.seconds)
     if mode is not None:
         print(f"\nMODE {mode.hactive}x{mode.vactive} htotal={mode.htotal} "
               f"vtotal={mode.vtotal} fH={mode.hfreq_mhz_x1000/1e6:.3f}kHz "

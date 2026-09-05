@@ -55,6 +55,7 @@ import socket
 import statistics
 import time
 
+from . import netutil
 from . import protocol as proto
 from .cfg import Cfg
 from .line_probe import collect
@@ -396,14 +397,15 @@ def cmd_capture(c: Cfg, args) -> int:
     #   macOS では bind は通るがブロードキャストが片方にしか配られず、無言で0行になる。
     #   下の「Viewerを閉じてから実行する」と明示的に失敗する方がまだ良い。
     try:
-        sock.bind(("0.0.0.0", args.port))
+        sock.bind((args.bind, args.port))
     except OSError as e:
         print("UDP %d を bind できません (%s)。Viewerを閉じてから実行する"
               % (args.port, e))
         return 1
     sock.settimeout(1.0)
     print("LINEを %.1f 秒集める" % args.seconds)
-    mode, by_frame = collect(sock, (args.board, args.port), args.seconds)
+    mode, by_frame = collect(sock, netutil.targets_for(args.board, args.bind),
+                                args.port, args.seconds)
     sock.close()
     if mode is None or not by_frame:
         print("MODEかLINEが来ない")
@@ -482,9 +484,10 @@ def cmd_synctest(c: Cfg, args) -> int:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.bind(("0.0.0.0", args.port))
+        sock.bind((args.bind, args.port))
         sock.settimeout(1.0)
-        mode, by_frame = collect(sock, (args.board, args.port), args.seconds)
+        mode, by_frame = collect(sock, netutil.targets_for(args.board, args.bind),
+                                args.port, args.seconds)
         sock.close()
         if mode is None:
             return None
@@ -502,18 +505,18 @@ def cmd_synctest(c: Cfg, args) -> int:
     got = {}
     for start, label in ((230, "バースト後 (230)"), (50, "同期チップ上 (50)")):
         # Cfg はポート34600をbindするので、受信の前に手放す
-        cfg = Cfg(args.board, args.port)
+        cfg = Cfg(args.board, args.port, bind=args.bind)
         cfg.set(proto.CFG_KEY_CLAMP_START, start)
         del cfg
         m = measure()
         if m is None:
             print("%-26s 測定できず(LINEが来ない)" % label)
-            Cfg(args.board, args.port).set(proto.CFG_KEY_CLAMP_START, 230)
+            Cfg(args.board, args.port, bind=args.bind).set(proto.CFG_KEY_CLAMP_START, 230)
             return 1
         tip, blank = m
         got[start] = blank - tip
         print("%-26s %10.1f %14.1f %8.1f" % (label, tip, blank, blank - tip))
-    Cfg(args.board, args.port).set(proto.CFG_KEY_CLAMP_START, 230)
+    Cfg(args.board, args.port, bind=args.bind).set(proto.CFG_KEY_CLAMP_START, 230)
 
     swing = abs(got[230] - got[50])
     print("\nクランプ移動による差の入れ替わり = %.1f コード" % swing)
@@ -583,8 +586,15 @@ def cmd_status(c: Cfg, args) -> int:
             print("  (最長Lowが飽和しているが、TVPのlines/frame=%s は正常なので"
                   "信号は来ている。SOGOUTの測定はこの配線では当てにならない)" % lpf)
     # reg 14h: bit6=SOGD(SOG検出) bit3=AVS(垂直有効) bit2=AHS(水平有効)
-    print("syncdet (reg 14h) = 0x%02X   SOGD=%d AVS=%d AHS=%d"
-          % (det, (det >> 6) & 1, (det >> 3) & 1, (det >> 2) & 1))
+    # ★**5線同期では AVS/AHS は立たない。** あのビットはSOG系の同期セパレータの
+    #   状態で、別線で入れた HSYNC/VSYNC は通らない。実測(2026-09-04、X68000の
+    #   31.5kHz 512x512): syncdet=0x93 で AVS=AHS=0 なのに、絵は正常に出ていて
+    #   DATACLK も 736 × 31500 = 23.184MHz と正しい。ここを健全性の判断に使うと
+    #   「水平がロックしていない」と誤警告する(実際にしていた)。
+    print("syncdet (reg 14h) = 0x%02X   SOGD=%d AVS=%d AHS=%d%s"
+          % (det, (det >> 6) & 1, (det >> 3) & 1, (det >> 2) & 1,
+             "" if sctl is None or (sctl & 0x08)
+             else "  (5線同期なので AVS/AHS は0で正常)"))
     print("lines/frame        = %s   (期待: 15.7kHz系なら262〜263、480iなら525前後)"
           % lpf)
     # ★clocks/line(reg 39h:3Ah)は **DATACLK ではなく内部基準クロック(約6.5MHz)**で
@@ -609,8 +619,19 @@ def cmd_status(c: Cfg, args) -> int:
         bad.append("SOGを検出していない → 入力ピンの選択(0x69)が合っているか確認。"
                    "合っていれば 0x50(SOG閾値、既定0x0B=124mV)と "
                    "0x5D(SOG LPFを0x52=10MHzへ)を振る")
-    if not (det >> 2) & 1:
-        bad.append("水平がロックしていない → 0x19(チャージポンプ)を 0x08/0x10/0x18 で振る")
+    if sog_mode:
+        if not (det >> 2) & 1:
+            bad.append("水平がロックしていない → "
+                       "0x19(チャージポンプ)を 0x08/0x10/0x18 で振る")
+    elif fh_raw and fh:
+        # 5線同期では 14h が使えないので、**TVPのHSOUTが生HSYNCと一致するか**で
+        # 見る。ロックが外れると別の周期を数えるので、まず周波数が食い違う
+        # (実測で半分のライン周期にロックした例がある。retrocastx_stream.py の
+        #  pll_ctl_for のコメント参照)。0.2%は測定窓のずれぶんの余裕。
+        if abs(fh - fh_raw) > max(50, fh_raw * 0.002):
+            bad.append("TVPのHSOUT(%d Hz)が生HSYNC(%d Hz)と一致しない → 水平が"
+                       "ロックしていない。0x19(チャージポンプ)を "
+                       "0x08/0x10/0x18 で振る" % (fh, fh_raw))
     # 内部基準クロックはデータシートで「typically 6.5 MHz、精確な値とみなさないこと」。
     # 大きく外れるのは同期が取れていないとき(clocks/lineが別の周期を数えている)。
     if cpl and fh and not (5.0e6 <= cpl * fh <= 8.0e6):
@@ -840,7 +861,7 @@ def cmd_probe(c: Cfg, args) -> int:
     #   macOS では bind は通るがブロードキャストが片方にしか配られず、無言で0行になる。
     #   下の「Viewerを閉じてから実行する」と明示的に失敗する方がまだ良い。
     try:
-        sock.bind(("0.0.0.0", args.port))
+        sock.bind((args.bind, args.port))
     except OSError as e:
         print("UDP %d を bind できません (%s)。Viewerを閉じてから実行する"
               % (args.port, e))
@@ -848,7 +869,8 @@ def cmd_probe(c: Cfg, args) -> int:
     sock.settimeout(1.0)
     print("LINEを %.1f 秒集める(このツールが購読先を奪うのでViewerは止まる)"
           % args.seconds)
-    mode, by_frame = collect(sock, (args.board, args.port), args.seconds)
+    mode, by_frame = collect(sock, netutil.targets_for(args.board, args.bind),
+                                args.port, args.seconds)
     sock.close()
     if mode is None:
         print("MODEが来ない。ボードのIPとサブネットを確認する")
@@ -1005,8 +1027,7 @@ def report(rows_out, lines, sps, role="cvbs") -> str:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--board", required=True,
-                    help="ボードのIP(255.255.255.255 でブロードキャストも可)")
+    netutil.add_args(ap)
     ap.add_argument("--port", type=int, default=proto.DEFAULT_PORT)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -1057,7 +1078,7 @@ def main():
     if args.cmd == "capture":
         raise SystemExit(cmd_capture(None, args))
 
-    c = Cfg(args.board, args.port) if args.cmd != "probe" else None
+    c = Cfg(args.board, args.port, bind=args.bind) if args.cmd != "probe" else None
     if args.cmd == "apply":
         raise SystemExit(cmd_apply(c, args))
     if args.cmd == "auto":

@@ -24,14 +24,14 @@ use crate::receiver;
 use crate::remote_input;
 use crate::render;
 
-pub fn run(port: u16, subscribe_to: Option<String>, target_mac: Option<[u8; 6]>, decay: f32,
+pub fn run(port: u16, bind: String, subscribe_to: Option<String>, target_mac: Option<[u8; 6]>, decay: f32,
            interlace_decay: f32,
            audio: receiver::AudioOpts, params: render::Params) -> ! {
     let shared = Arc::new(receiver::Shared::default());
     let subscribe_dest = subscribe_to.clone();
     let (tx, rx): (Sender<()>, Receiver<()>) = std::sync::mpsc::channel();
     receiver::spawn(
-        receiver::Config { port, subscribe_to, target_mac, decay, interlace_decay, audio },
+        receiver::Config { port, bind, subscribe_to, target_mac, decay, interlace_decay, audio },
         shared.clone(),
         move || {
             let _ = tx.send(());
@@ -293,6 +293,9 @@ fn render_thread(
     let mut last_log = Instant::now();
     // 幾何に使う vtotal の平滑値(main.rs の vtotal_smooth と同じ理由)
     let mut vtotal_smooth = 0.0f32;
+    // 平滑の時定数は**時間**で効かせる。フレーム数で減衰させると、MODEが1秒に
+    // 1〜2回しか更新されないのに毎フレーム呼ぶせいで収束しきり、平均されない
+    let mut vtotal_last_t: Option<std::time::Instant> = None;
 
     loop {
         // 新フレーム到着まで待つ(タイムアウトでハートビート描画: 統計・黒画面維持)
@@ -321,13 +324,9 @@ fn render_thread(
                         mip_level_count: 1,
                         sample_count: 1,
                         dimension: wgpu::TextureDimension::D2,
-                        // 映像データはsRGB符号化済みなので、テクスチャもsRGBで
-                        // 作る。Rgba8Unorm(リニア扱い)にすると、サンプル時に
-                        // 復号されないまま出力段でリニア→sRGBに符号化され、
-                        // 二重にかかって中間調が持ち上がる(全体が明るく見える)。
-                        // 通常モードのeguiは ColorImage をsRGBとして扱うので、
-                        // こちらを合わせないと見え方が食い違う。
-                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        // 描画先(サーフェス)の sRGB 性に合わせる。
+                        // 詳細は render::video_tex_format のコメント。
+                        format: crate::render::video_tex_format(gpu.config.format),
                         usage: wgpu::TextureUsages::TEXTURE_BINDING
                             | wgpu::TextureUsages::COPY_DST,
                         view_formats: &[],
@@ -348,8 +347,12 @@ fn render_thread(
                         // (インターレースは262.5ライン/フィールド)なので、瞬間値を
                         // 幾何に使うと縦のスケールがフレームごとに0.38%変わり、
                         // 絵が上下に震える。詳細は main.rs の vtotal_smooth のコメント。
-                        vtotal_smooth =
-                            render::smooth_vtotal(vtotal_smooth, m.vtotal as f32, false);
+                        let now = std::time::Instant::now();
+                        let dt = vtotal_last_t
+                            .map_or(1.0 / 60.0, |t| now.duration_since(t).as_secs_f32());
+                        vtotal_last_t = Some(now);
+                        vtotal_smooth = render::smooth_vtotal(
+                            vtotal_smooth, m.vtotal as f32, false, dt);
                         p.vtotal = vtotal_smooth;
                         // 管面を時間ベースで決めるのに必要(実CRTと同じ挙動)
                         p.fh_hz = (m.hfreq_mhz_x1000 / 1000) as u32;
