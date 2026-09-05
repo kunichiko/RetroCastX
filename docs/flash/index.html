@@ -31,6 +31,9 @@ pre{background:#0b1211;color:#8fe3ef;padding:12px;border-radius:8px;font-size:12
 .ng{color:var(--ng);font-weight:600}
 a{color:var(--accent-ink)}
 .note{font-size:13px;color:var(--muted)}
+/* リリースノートはタグの注釈文をそのまま入れるので、改行を保たないと
+   箇条書きが1行に潰れて読めなくなる。ここだけ pre-wrap にする。 */
+#b-note{white-space:pre-wrap}
 </style>
 </head>
 <body>
