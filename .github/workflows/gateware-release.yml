@@ -191,10 +191,25 @@ jobs:
           if [[ "${GITHUB_REF}" == refs/tags/gw-v* ]]; then
             version="${GITHUB_REF#refs/tags/gw-}"
             publish=true
-            git tag -l --format='%(contents)' "gw-${version}" > /tmp/note.md
+            tag="gw-${version}"
+            # ★actions/checkout は注釈付きタグを取ったあと、同名のローカル ref を
+            #   コミットSHAへ張り替える:
+            #     git fetch --no-tags ... +<sha>:refs/tags/<tag>
+            #   その結果 ref が軽量タグ相当になり、%(contents) が注釈文ではなく
+            #   **コミットメッセージ**を返す。gw-v0.9.0 の初回リリースでこれを踏んで、
+            #   Release 本文と配布一覧の説明にマージコミットの文面が入った。
+            #   注釈オブジェクトを取り直してから読む。
+            git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+            if [ "$(git cat-file -t "${tag}")" = "tag" ]; then
+              git tag -l --format='%(contents)' "${tag}" > /tmp/note.md
+            else
+              echo "::warning::${tag} は注釈付きタグではありません(git tag -a で打つこと)"
+              : > /tmp/note.md
+            fi
             if [ ! -s /tmp/note.md ]; then
               echo "ゲートウェア ${version}" > /tmp/note.md
             fi
+            echo "--- リリースノート ---"; cat /tmp/note.md; echo "---"
           else
             version="v0.0.0-$(git rev-parse --short HEAD)"
             publish="${PUBLISH_INPUT}"

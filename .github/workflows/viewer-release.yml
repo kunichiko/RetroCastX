@@ -24,6 +24,10 @@ on:
       - 'gateware/**'
       - 'hardware/**'
       - '**.md'
+      # Viewer と無関係なワークフロー。自分自身(viewer-release.yml)は除外しない
+      # ——変えたら一度走らせて壊れていないか見たいので。
+      - '.github/workflows/gateware-release.yml'
+      - '.github/workflows/flasher-test.yml'
   workflow_dispatch:
     inputs:
       platform:
