@@ -12,7 +12,12 @@ name: Viewer Release Build
 
 on:
   push:
-    tags: ['v*.*.*']
+    # ★Viewer のリリースタグは素の vX.Y.Z。接尾辞付きは除外する。
+    #   2026-08-19 に基板のタグ v0.9.0-pcb が v*.*.* にマッチしてここが起動し、
+    #   client/Cargo.toml (0.1.0) と食い違って prepare で落ちた。
+    #   Viewer 以外のリリースには接頭辞を付ける規約にしている(ゲートウェア = gw-)。
+    #   v0.9.0-pcb はその規約より前のものなので、ここで除外しておく。
+    tags: ['v*.*.*', '!v*-pcb']
   pull_request:
     branches: [main]
     # Viewer(client/)と無関係な変更で macOS/Windows のフルビルド(約10分、署名込み)を

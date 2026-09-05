@@ -240,9 +240,15 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
+          # ★--latest=false。付けないとゲートウェアのリリースが "Latest" を奪い、
+          #   リポジトリのトップと Releases ページの先頭が .bit になる。利用者が
+          #   直接ダウンロードするのは Viewer なので、"Latest" は Viewer に持たせる。
+          #   ゲートウェアはフラッシャのページから配るもので、ここの Release は
+          #   記録とトレーサビリティ用。
           gh release create "gw-${VERSION}" \
             --title "ゲートウェア ${VERSION}" \
             --notes-file /tmp/note.md \
+            --latest=false \
             "retrocastx_${VERSION}.bit"
 
       - name: docs/flash/bitstreams へ配置して manifest を更新
