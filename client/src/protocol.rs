@@ -343,7 +343,9 @@ pub const CFG_KEY_COARSE_OFF_R: u16 = 0x0068;
 pub const CFG_KEY_SOG_THRESH: u16 = 0x0050;
 
 /// レジスタ19h [7:6]=SOG [5:4]=R [3:2]=G [1:0]=B、00=_1 / 01=_2 / 10=_3。
-/// 0xAA=全て_3 / 0x6A=SOGだけ_2(MSXのCSYNC配線)。**入力方式の切替に必須**
+/// v0.9.0 は入力ごとに系統が分かれているので**全ビット同じ値**になる:
+/// 0x00=S端子/コンポジット(J5) / 0x55=第2入力(aux 2x5) / 0xAA=D-SUB。
+/// **入力方式の切替に必須**(手組み機では「SOGだけ_2」= 0x6A が要った)
 pub const CFG_KEY_IN_MUX1: u16 = 0x0069;
 
 /// SUBSCRIBE(16B): 共通ヘッダ8B + 宛先MAC 6B + 予約2B。

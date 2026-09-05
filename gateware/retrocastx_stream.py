@@ -471,10 +471,11 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_coarse_gain_r  = Signal(8, reset=0x07)           # key 0x67 (reg 1Ch)
         self.cfg_coarse_off_r   = Signal(6, reset=0x10)           # key 0x68 (reg 20h[5:0])
         # 入力MUX(reg 19h)。[7:6]=SOG [5:4]=Red [3:2]=Green [1:0]=Blue、00=_1/01=_2/10=_3。
-        # **これが実行時に振れないと入力方式を切り替えられない。** 手組みボードでは
-        # MSXだけ CSYNC が SOGIN_2 に来ているので、0xAA(SOG=_3)固定では追従不可だった。
-        #   コンポジット / X68000 RGB → 0xAA (SOG=_3, R/G/B=_3)
-        #   MSX RGB                  → 0x6A (SOG=_2, R/G/B=_3)
+        # **これが実行時に振れないと入力方式を切り替えられない。** v0.9.0 は入力ごとに
+        # 系統が分かれているので、方式ごとに 19h が丸ごと別の系統を指す:
+        #   S端子 / コンポジット (J5 2x4) → 0x00 (全て _1)
+        #   第2入力 MSX等 (aux 2x5)      → 0x55 (全て _2、CSYNCは SOGIN_2)
+        #   X68000 RGB (D-SUB)           → 0xAA (全て _3)
         # 初期値はビルド引数由来(retrocastx_i2c.py の MUX1 と同じ式)。
         self.cfg_in_mux1        = Signal(8, reset=cfg_in_mux1)    # key 0x69 (reg 19h)
         # SOGOUTのLow期間を「垂直ブロードパルス」とみなす閾値[pixクロック]。

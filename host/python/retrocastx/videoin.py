@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """映像入力の方式を切り替える。全部 CONFIG だけで済み、焼き直しは要らない。
 
-対応する方式(**現在の手組みボードの配線**に合わせてある):
+対応する方式(**v0.9.0 基板の配線**に合わせてある。`hardware/adc-frontend/main.ato` が正):
 
-    モード       映像               同期                    TVP側
-    x68k        Rin3/Gin3/Bin3     HSYNC_A / VSYNC_A       19h=0xAA 0Eh=0x52
-    msx         Rin3/Gin3/Bin3     SOGin2 (CSYNC)          19h=0x6A 0Eh=0x5B
-    composite   Gin3 (CVBS)        SOGin3 (Gin3から分岐)   19h=0xAA 0Eh=0x5B
-    svideo      Gin3=Y / Rin3=C    SOGin3 (Y から分岐)     19h=0xAA 0Eh=0x5B
+    モード     コネクタ      映像                同期                 TVP側
+    x68k      D-SUB(DA-15)  Rin3/Gin3/Bin3      HSYNC_A / VSYNC_A    19h=0xAA 0Eh=0x52
+    msx       aux 2x5       Rin2/Gin2/Bin2      SOGin2 (CSYNC)       19h=0x55 0Eh=0x5B
+    composite J5 2x4        Gin1 (YピンにCVBS)  SOGin1 (Yから分岐)   19h=0x00 0Eh=0x5B
+    svideo    J5 2x4        Gin1=Y / Rin1=C     SOGin1 (Yから分岐)   19h=0x00 0Eh=0x5B
 
-★**msx だけ SOG の入力ピンが違う**(SOGIN_2)。19h は以前ビルド時定数だったので、
-  実行時に切り替えられなかった。key 0x69 を足して解決した。
+★**v0.9.0 で系統の割り当てが手組み機から変わった。** 手組み機は S端子もコンポジットも
+  MSX も映像を3番系統(D-SUB)に仮配線して同期だけ振り分けていたので「19h は SOG だけ
+  別ピン」だったが、v0.9.0 は**入力ごとに系統が丸ごと分かれている**ので
+  **19h は全ビット同じ値**になる。19h は以前ビルド時定数だったので実行時に
+  切り替えられなかった。key 0x69 を足して解決した。
 
     # 方式を切り替える
     python3 -m retrocastx.videoin --board 192.168.10.50 apply x68k
@@ -31,8 +34,8 @@
 `auto` が成立する理由。3方式は排他配線で、**同期がどこに来るかが違う**:
 
     生HSYNC/VSYNC(TTL)に信号がある            → x68k
-    SOGIN_2 に同期がある(19h=0x6A で確認)    → msx
-    SOGIN_3 に同期がある(19h=0xAA で確認)    → composite / svideo
+    SOGIN_2 に同期がある(19h=0x55 で確認)    → msx
+    SOGIN_1 に同期がある(19h=0x00 で確認)    → composite / svideo
 
 生同期は TVP を通らない経路を sys ドメインで数えているので(key 0x2A)、
 TVPの設定に関係なく読める。これが最初の分岐に使えるのが大きい。
@@ -77,8 +80,15 @@ BURST_PP_MIN = 24
 
 # --- 入力MUX(reg 19h)の値 ---
 # [7:6]=SOG [5:4]=Red [3:2]=Green [1:0]=Blue、各 00=_1 / 01=_2 / 10=_3。
-MUX_SOG3 = 0xAA         # SOG=_3, R/G/B=_3 … コンポジット / S端子 / X68000
-MUX_SOG2 = 0x6A         # SOG=_2, R/G/B=_3 … MSX(CSYNCがSOGIN_2に来る)
+#
+# ★v0.9.0 は**入力ごとに系統が分かれている**ので、どの方式でも全ビットが同じ値になる:
+#
+#     1番系統 … S端子/コンポジット(J5 2x4)  y→gin_1 / c→rin_1 / Yから分岐→sogin_1
+#     2番系統 … 汎用の第2入力(aux 2x5)      r/g/b→rin_2/gin_2/bin_2 / csync→sogin_2
+#     3番系統 … D-SUB(X68000)               r/g/b→rin_3/gin_3/bin_3 / 緑→sogin_3
+MUX_ALL3 = 0xAA         # SOG/R/G/B すべて _3 … D-SUB(X68000)
+MUX_ALL2 = 0x55         # SOG/R/G/B すべて _2 … aux 2x5ヘッダ(MSX / 2台目のX68000)
+MUX_ALL1 = 0x00         # SOG/R/G/B すべて _1 … S端子/コンポジット(J5 2x4ヘッダ)
 
 # --- 同期制御(reg 0Eh)の値 ---
 SYNC_5WIRE = 0x52       # HSYNC/VSYNC を別線で受ける(X68000)
@@ -133,7 +143,7 @@ _RGB_ANALOG = _FINE_GAIN_RGB + [
 
 # コンポジット/S端子で共通のタイミング(8fsc NTSC)とクランプ窓
 _CVBS_TIMING = [
-    (proto.CFG_KEY_IN_MUX1,     MUX_SOG3, "SOG/R/G/B すべて _3"),
+    (proto.CFG_KEY_IN_MUX1,     MUX_ALL1, "SOG/R/G/B すべて _1(J5 2x4ヘッダ)"),
     (proto.CFG_KEY_SYNC_CTL,    SYNC_SOG, "HもVもSOGから取る"),
     (proto.CFG_KEY_PLL_DIVIDE,      1820, "PLL分周 = 8fsc NTSC"),
     (proto.CFG_KEY_PLL_CTL,         0x10, "VCO=UltraLow + チャージポンプ2"),
@@ -146,7 +156,7 @@ MODES = {
         "label": "X68000 RGB (Rin3/Gin3/Bin3 + HSYNC_A/VSYNC_A)",
         "roles": ("rgb", None),
         "regs": [
-            (proto.CFG_KEY_IN_MUX1, MUX_SOG3, "SOG/R/G/B すべて _3(SOGは使わない)"),
+            (proto.CFG_KEY_IN_MUX1, MUX_ALL3, "SOG/R/G/B すべて _3(D-SUB。SOGは使わない)"),
             (proto.CFG_KEY_SYNC_CTL, SYNC_5WIRE, "HSYNC/VSYNCを別線で受ける"),
             (proto.CFG_KEY_IN_MUX2, 0x12, "HSYNC_A/VSYNC_A を選択(bit0=0 bit2=0)"),
             (proto.CFG_KEY_SOG_THRESH, 0x0B, "SOGは使わないので既定"),
@@ -156,14 +166,19 @@ MODES = {
         ] + _RGB_ANALOG,
     },
     "msx": {
-        "label": "MSX RGB (Rin3/Gin3/Bin3 + SOGin2にCSYNC)",
+        "label": "MSX RGB (aux 2x5: Rin2/Gin2/Bin2 + SOGin2にCSYNC)",
         "roles": ("rgb", None),
         "regs": [
-            # ★ここが 19h キーを足した理由。SOGだけ _2 にする
-            (proto.CFG_KEY_IN_MUX1, MUX_SOG2, "★SOGだけ _2(CSYNCがSOGIN_2に来る)"),
+            # ★ここが 19h キーを足した理由。v0.9.0 では映像もCSYNCも2番系統に来る
+            #   (手組み機は映像だけ3番系統で、SOGだけ _2 という食い違いがあった)
+            (proto.CFG_KEY_IN_MUX1, MUX_ALL2, "映像もCSYNCも2番系統(aux 2x5ヘッダ)"),
             (proto.CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOG(=CSYNC)から取る"),
             (proto.CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz + クランプLPF 0.5MHz"),
-            (proto.CFG_KEY_SOG_THRESH, 0x0B, "CSYNCのスライス位置(実機で成立している既定)"),
+            # ★v0.9.0 では CSYNC を 75Ω終端 + 1/2分圧してから SOGIN_2 へ入れている
+            #   (main.ato の r_cs_term / r_cs_top / r_cs_bot)。手組み機は直結だったので、
+            #   同じ 0x0B でスライスできるかは v0.9.0 実機で確かめること。
+            #   同期を拾えないときはここを下げる(振れ幅が半分になっている)。
+            (proto.CFG_KEY_SOG_THRESH, 0x0B, "CSYNCのスライス位置(手組み機で成立していた既定)"),
             # 同期セパレータ(11h/12h/13h/22h)は**触らない**。ゲートウェアの既定が
             # 15.7kHz族向けに調整済み(sep 0x75 / pre 3 / post 3)で、実測の根拠も
             # retrocastx_i2c.py に書かれている。ここで上書きすると出所が二重になる。
@@ -177,7 +192,7 @@ MODES = {
         ] + _RGB_ANALOG,
     },
     "composite": {
-        "label": "コンポジット NTSC (Gin3にCVBS、SOGin3へ分岐)",
+        "label": "コンポジット NTSC (J5のYピンにCVBS → Gin1、SOGin1へ分岐)",
         "roles": ("cvbs", None),
         "regs": _CVBS_TIMING + [
             (proto.CFG_KEY_SOG_THRESH, 0x0B, "CVBSのスライス位置(実機で成立している既定)"),
@@ -196,7 +211,7 @@ MODES = {
         ],
     },
     "svideo": {
-        "label": "S端子 (Gin3=Y / Rin3=C、SOGin3へYから分岐)",
+        "label": "S端子 (J5: Gin1=Y / Rin1=C、SOGin1へYから分岐)",
         "roles": ("y", "c"),
         "regs": _CVBS_TIMING + [
             # ★**Yはボトムレベル + クランプ窓を同期チップの中へ。** ここは2回間違えた。
@@ -275,7 +290,7 @@ def cmd_apply(c: Cfg, args) -> int:
 #   1. 生HSYNC/VSYNC(TTLピン)に信号があるか
 #      key 0x2A は **TVPを通らない経路**を sysドメインで1秒数えた絶対値なので、
 #      TVPの設定に一切依存せず読める。ここが最初の分岐に使えるのが大きい。
-#   2. 無ければ SOG。19h を _2 と _3 で切り替えて、どちらでロックするかを見る。
+#   2. 無ければ SOG。19h を _1 / _2 / _3 で振って、どれでロックするかを見る。
 #
 # 各段で待つのは、H-PLLのロックとTVPの測定窓(フレーム単位)のぶん。
 
@@ -284,7 +299,22 @@ RECHECK_S = 1.2         # 安定性を見るための2回目の読みまでの�
 FH_MIN, FH_MAX = 10_000, 70_000      # 同期を「有る」とみなす範囲 [Hz]
 FH_DRIFT_MAX = 0.005                 # 2回の読みの相対差の上限
 
-MUX_SOG1 = 0x2A         # SOG=_1(このボードでは未接続)。**陰性対照に使う**
+# 19h を振って同期を探す順番と、その系統に対応する方式。
+#
+# ★**陰性対照の取り方が v0.9.0 で変わった。** 手組み機は SOGIN_1 が未接続だったので
+#   そこを「安定と出たら判定器が壊れている」対照に使えたが、v0.9.0 は
+#   **3本とも実配線がある**(_1=J5 / _2=aux CSYNC / _3=D-SUB緑)ので未接続ピンが無い。
+#   代わりに**3本とも測って「安定は1本だけ」を要求する**。入力は排他配線なので、
+#   2本以上が安定と出るのは判定器が壊れている印(浮いたスライサの自己発振)で、
+#   そのまま答えを返すより止める方がよい。
+#
+# _3(D-SUB緑)で安定するのはどの方式でもない。X68000 は TTL の5線同期で来るので
+# 1段目で捕まっているはずで、ここに残るのは sync-on-green を出す未知の機種か誤検出。
+SOG_PINS = (
+    (MUX_ALL1, "SOG=_1 (J5 S端子/コンポジット)", "composite"),
+    (MUX_ALL2, "SOG=_2 (aux 2x5 CSYNC)",        "msx"),
+    (MUX_ALL3, "SOG=_3 (D-SUB 緑)",             None),
+)
 
 
 def _sync_quality(c: Cfg):
@@ -300,6 +330,10 @@ def _sync_quality(c: Cfg):
         SOG=_1 未接続      fH = 28309 → 29529 Hz(単調に漂う)
         SOG=_2 未接続      fH = 29766 → 30734 Hz(同上)
         SOG=_3 コンポジット fH = 15734 → 15733 Hz(収束して動かない)
+
+      ※この実測は手組み機のもの(コンポジットが3番系統だった頃)。v0.9.0 では
+        コンポジットが _1 に移っただけで、「未接続は漂う / 本物は収束する」という
+        分かれ方そのものは系統に依らない。
 
     未接続は「範囲外の値をゆっくり漂う」、本物は「規定値に収束して動かない」
     という形で必ず分かれる。だから2回読んで一致するかを見る。
@@ -335,25 +369,33 @@ def detect_mode(c: Cfg, verbose: bool = True) -> str:
         c.set(proto.CFG_KEY_IN_MUX1, mux)
         time.sleep(SETTLE_S)
         stable, fh = _sync_quality(c)
-        say("  19h=0x%02X (%-16s): fH=%-6s Hz  %s"
+        say("  19h=0x%02X %-26s : fH=%-6s Hz  %s"
             % (mux, label, fh, "安定" if stable else "不安定/範囲外"))
         return stable
 
-    # ★陰性対照を先に取る。未接続のはずの SOGIN_1 が「安定」と出るなら、
-    #   判定そのものが信用できないので、誤った答えを返すより止める。
-    if probe_mux(MUX_SOG1, "SOG=_1 陰性対照"):
-        say("  ★陰性対照(未接続のはずのSOGIN_1)が安定と出た。"
-            "判定できないので中止する。SOGIN_1 に何か繋がっていないか確認する")
+    # ★**3本とも測る。** 最初に安定したところで打ち切ると、陰性対照が取れない。
+    #   入力は排他配線なので、安定するのは1本だけのはず。2本以上が安定と出たら
+    #   判定器の方が壊れている(浮いたスライサの自己発振)ので、答えを返さない。
+    stable = [(mux, label, name) for mux, label, name in SOG_PINS
+              if probe_mux(mux, label)]
+    if len(stable) > 1:
+        say("  ★%d本のSOG入力が同時に安定と出た(%s)。排他配線なので有り得ない。"
+            % (len(stable), " / ".join(l for _, l, _ in stable)))
+        say("    判定器が信用できないので中止する。"
+            "映像源を1つだけ繋いだ状態でやり直す")
         return None
-
-    for mux, label, name in ((MUX_SOG2, "SOG=_2", "msx"),
-                             (MUX_SOG3, "SOG=_3", "composite")):
-        if probe_mux(mux, label):
-            say("  → **%s**" % name)
-            return name
-    say("  → どのピンでも安定しない。信号が来ていないか、"
-        "SOG閾値(0x50)が合っていない")
-    return None
+    if not stable:
+        say("  → どのピンでも安定しない。信号が来ていないか、"
+            "SOG閾値(0x50)が合っていない")
+        return None
+    _, label, name = stable[0]
+    if name is None:
+        say("  ★%s だけが安定した。この系統を同期に使う方式は無い"
+            "(X68000はTTLの5線同期で、1段目で判定される)。" % label)
+        say("    D-SUBに sync-on-green の機種を繋いでいないか確認する")
+        return None
+    say("  → **%s**" % name)
+    return name
 
 
 def cmd_auto(c: Cfg, args) -> int:
@@ -841,7 +883,7 @@ def verdict(tip, blank, burst_pp, act_max, code_per_ire, role="cvbs"):
             bad.append("Cが255に飽和している → 0x67(赤の粗ゲイン)を下げる")
         if burst_pp < BURST_PP_MIN_C:
             bad.append("Cのバーストが %.0f コードしかない(設計値は88コード)。"
-                       "配線(C→Rin3)と 0x67(赤の粗ゲイン)を確認" % burst_pp)
+                       "配線(J5のCピン→Rin1)と 0x67(赤の粗ゲイン)を確認" % burst_pp)
     return bad
 
 
@@ -1038,8 +1080,8 @@ def main():
 
     au = sub.add_parser("auto", help="繋がっている方式を当てて設定する")
     au.add_argument("--svideo", action="store_true",
-                    help="SOGIN_3側でロックしたとき composite ではなく svideo にする"
-                         "(同期の出方が同じなので同期だけでは区別できない)")
+                    help="SOGIN_1側でロックしたとき composite ではなく svideo にする"
+                         "(同じJ5の同じピンから同期を取るので同期だけでは区別できない)")
 
     sub.add_parser("status", help="入力選択と同期/PLLのロック状態を見る")
     sub.add_parser("modes", help="方式の一覧とレジスタ値を表示する")

@@ -181,12 +181,22 @@ def main():
 
     # --- モード表そのものの整合 ---
     # 設定漏れ・取り違えは実機でしか出ないので、表の性質を先に固定しておく。
-    ok.append(check("msx だけ SOG が _2(19hキーを足した理由)",
-                    _reg(comp.MODES["msx"], comp.proto.CFG_KEY_IN_MUX1) == comp.MUX_SOG2
-                    and all(_reg(comp.MODES[m], comp.proto.CFG_KEY_IN_MUX1)
-                            == comp.MUX_SOG3
-                            for m in ("x68k", "composite", "svideo")),
-                    "19hの割り当てが想定と違う"))
+    # ★v0.9.0 は入力ごとに系統が分かれている(main.ato が正)。手組み機のように
+    #   「SOGだけ別ピン」ではなく、方式ごとに 19h が丸ごと1つの系統を指す。
+    #   ここを取り違えると**絵が一切出ない**(別系統の未接続ピンを見にいく)ので、
+    #   実機を触る前に表で止める。
+    want_mux = {"x68k": comp.MUX_ALL3, "msx": comp.MUX_ALL2,
+                "composite": comp.MUX_ALL1, "svideo": comp.MUX_ALL1}
+    ok.append(check("19hが v0.9.0 の系統割り当てと一致する",
+                    all(_reg(comp.MODES[m], comp.proto.CFG_KEY_IN_MUX1) == v
+                        for m, v in want_mux.items()),
+                    "19hの割り当てが想定と違う: "
+                    + str({m: _reg(comp.MODES[m], comp.proto.CFG_KEY_IN_MUX1)
+                           for m in want_mux})))
+    ok.append(check("19hは全ビットが同じ系統を指す(SOGだけ別ピンではない)",
+                    all(v >> 6 == ((v >> 4) & 3) == ((v >> 2) & 3) == (v & 3)
+                        for v in want_mux.values()),
+                    "系統がビットごとにばらけている"))
     ok.append(check("x68k だけ5線同期、他はSOG",
                     _reg(comp.MODES["x68k"], comp.proto.CFG_KEY_SYNC_CTL)
                     == comp.SYNC_5WIRE
