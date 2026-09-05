@@ -1,0 +1,57 @@
+name: Flasher Test
+
+# docs/flash/ の WebUSB フラッシャを、ECP5 + SPI フラッシュのシミュレータ相手に
+# 通す。実機もブラウザも要らないので PR で毎回回せる。
+#
+# 見ているのは JTAG の TAP 遷移・ビット順・SPI 手順・ページ書き込みループで、
+# 最後に「フラッシュの中身がビットストリームと一致するか」まで確かめる。
+# 偽の CH347 は応答をわざと分割して返すので、「1回の transferIn で応答が全部
+# 来る」前提が入り込むと落ちる(実機で踏んだバグ。docs/flash/README.md 参照)。
+#
+# ビットストリームは引数で渡せるが、無ければテスト側が合成するので
+# FPGA ツールチェーンは不要。
+
+on:
+  pull_request:
+    paths:
+      - 'docs/flash/**'
+      - '.github/workflows/flasher-test.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'docs/flash/**'
+      - '.github/workflows/flasher-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  simtest:
+    name: シミュレータで全経路を通す
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: シミュレータテスト
+        run: node docs/flash/simtest.mjs
+
+      - name: manifest.json が壊れていないか
+        run: |
+          node -e '
+            const m = require("./docs/flash/bitstreams/manifest.json");
+            if (!Array.isArray(m.bitstreams)) throw new Error("bitstreams が配列ではありません");
+            for (const b of m.bitstreams) {
+              for (const k of ["name", "file"]) {
+                if (typeof b[k] !== "string") throw new Error(`${k} が無いエントリがあります: ${JSON.stringify(b)}`);
+              }
+              const fs = require("fs");
+              const path = "docs/flash/bitstreams/" + b.file;
+              if (!fs.existsSync(path)) throw new Error(`ファイルがありません: ${path}`);
+            }
+            console.log(`manifest OK (${m.bitstreams.length} 件)`);
+          '

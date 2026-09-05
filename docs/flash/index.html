@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RetroCastX ゲートウェア書き込み</title>
+<style>
+:root{--bg:#eef2f1;--surface:#fff;--ink:#132220;--muted:#5c6f6c;--line:#d3dedb;--accent:#0e8fa3;--accent-ink:#065c6a;--ok:#1a7f47;--ng:#b3261e;--warn:#8a5a00;--warn-bg:#fff6e0}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1413;--surface:#131e1c;--ink:#e5efec;--muted:#8da09c;--line:#243330;--accent:#37c2d6;--accent-ink:#8fe3ef;--ok:#5fd08a;--ng:#ff8b80;--warn:#e8c274;--warn-bg:#2a2312}}
+*{box-sizing:border-box}html{color-scheme:light dark}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:40px 20px;line-height:1.7}
+.wrap{max-width:720px;margin:0 auto}
+.eyebrow{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent-ink);font-weight:600;margin:0 0 4px}
+h1{font-size:24px;margin:0 0 20px;border-bottom:2px solid var(--accent);padding-bottom:12px}
+h2{font-size:15px;margin:0 0 12px;color:var(--accent-ink)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px;margin:14px 0}
+button{font-size:15px;padding:10px 20px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer;font-family:inherit}
+button.ghost{background:transparent;color:var(--accent-ink)}
+button:disabled{opacity:.45;cursor:not-allowed}
+select,input[type=file]{width:100%;padding:8px;margin:6px 0;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font-family:inherit;font-size:14px}
+label{font-size:13px;color:var(--muted)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+dl{display:grid;grid-template-columns:auto 1fr;gap:2px 14px;margin:10px 0 0;font-size:14px}
+dt{color:var(--muted)}
+dd{margin:0;font-variant-numeric:tabular-nums}
+.warn{background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);border-radius:8px;padding:12px 14px;font-size:13px;margin:14px 0}
+progress{width:100%;height:14px;margin-top:10px}
+#phase{font-size:13px;color:var(--muted);margin-top:6px}
+pre{background:#0b1211;color:#8fe3ef;padding:12px;border-radius:8px;font-size:12px;line-height:1.5;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:12px 0 0}
+.ok{color:var(--ok);font-weight:600}
+.ng{color:var(--ng);font-weight:600}
+a{color:var(--accent-ink)}
+.note{font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<p class="eyebrow">RetroCastX · Colorlight i5 + CH347F</p>
+<h1>ゲートウェアをブラウザから書き込む</h1>
+
+<p class="note">
+基板の USB-C を PC に挿し、Chrome / Edge でこのページを開いて書き込みます。追加の
+ソフトは要りません(Windows のみ下記の準備が必要)。書き込み経路はオンボードの
+CH347F → ポゴピン → Colorlight i5 の JTAG で、ECP5 の SPI フラッシュを直接書き換えます。
+</p>
+
+<div class="warn" id="unsupported" style="display:none">
+このブラウザは WebUSB に対応していません。Chrome または Edge で開いてください
+(Safari / Firefox は非対応です)。
+</div>
+
+<div class="card">
+  <h2>1. 基板に接続</h2>
+  <div class="row">
+    <button id="btn-connect">接続</button>
+    <button id="btn-idcode" class="ghost" disabled>IDCODE を読む(非破壊)</button>
+    <button id="btn-refresh" class="ghost" disabled>FPGA を再起動</button>
+  </div>
+  <p class="note">「FPGA を再起動」は LSC_REFRESH を発行してフラッシュから読み直させる。
+  書き込みが途中で止まって FPGA が起動していないときの復帰に使う。</p>
+  <dl id="devinfo" style="display:none">
+    <dt>デバイス</dt><dd id="i-dev"></dd>
+    <dt>インターフェース</dt><dd id="i-intf"></dd>
+    <dt>TCK</dt><dd id="i-clk"></dd>
+    <dt>FPGA</dt><dd id="i-idcode">—</dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h2>2. ビットストリームを選ぶ</h2>
+  <label for="sel-bit">配布済みのビットストリーム</label>
+  <select id="sel-bit" disabled></select>
+  <div id="file-row" style="display:none">
+    <label for="file">ローカルの .bit ファイル</label>
+    <input type="file" id="file" accept=".bit">
+  </div>
+  <dl id="bitinfo" style="display:none">
+    <dt>サイズ</dt><dd id="b-size"></dd>
+    <dt>Part</dt><dd id="b-part"></dd>
+    <dt>要求 IDCODE</dt><dd id="b-idcode"></dd>
+  </dl>
+  <p class="note" id="b-note"></p>
+</div>
+
+<div class="card">
+  <h2>3. 書き込む</h2>
+  <div class="row">
+    <label for="sel-clk">TCK</label>
+    <select id="sel-clk" style="width:auto">
+      <option value="1875000">1.875 MHz(低速・確実)</option>
+      <option value="3750000" selected>3.75 MHz(既定)</option>
+      <option value="7500000">7.5 MHz</option>
+      <option value="15000000">15 MHz(高速)</option>
+    </select>
+    <label><input type="checkbox" id="chk-verify" checked> 書き込み後にベリファイする</label>
+  </div>
+  <div class="warn">
+    書き込み中は FPGA が停止するため、映像・音声のキャプチャは一時的に止まります。
+    完了すると自動で新しいゲートウェアが起動します。<b>途中で USB を抜かないでください。</b>
+  </div>
+  <button id="btn-flash" disabled>フラッシュに書き込む</button>
+  <progress id="bar" value="0" max="1"></progress>
+  <div id="phase">待機中</div>
+</div>
+
+<pre id="log"></pre>
+
+<div class="card">
+  <h2>うまくいかないとき</h2>
+  <p class="note">
+  <b>Windows</b>: CH347F の JTAG インターフェース(interface 4)に WinUSB ドライバを
+  当てる必要があります。Zadig を「Options → List All Devices」で起動し、
+  <code>UART+SPI+I2C+JTAG (Interface 4)</code> を選んで WinUSB をインストールしてください。
+  WCH 純正の CH347 ドライバが入っていると競合します。macOS / Linux / ChromeOS / Android では
+  追加作業は不要です。<br>
+  <b>デバイスが選択ダイアログに出ない</b>: USB-C ケーブルが充電専用(データ線なし)でないか
+  確認してください。<br>
+  <b>書き込みが途中で失敗した</b>: FPGA は起動しませんが JTAG は生きています。
+  そのままもう一度書き込めば復旧します。
+  </p>
+</div>
+
+</div>
+
+<script type="module">
+import { CH347Jtag, hex8 } from './ch347.js';
+import { Ecp5Flasher, parseLatticeBit, KNOWN_IDCODES } from './ecp5.js';
+
+const $ = (id) => document.getElementById(id);
+const logEl = $('log');
+const log = (s, cls) => {
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = s;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+};
+
+if (!navigator.usb) {
+  $('unsupported').style.display = '';
+  $('btn-connect').disabled = true;
+}
+
+const jtag = new CH347Jtag();
+const ecp5 = new Ecp5Flasher(jtag, log);
+let connected = false;
+let deviceIdcode = null;
+let bitstream = null;   // { data, idcode, header, name }
+
+function updateFlashButton() {
+  $('btn-flash').disabled = !(connected && bitstream);
+}
+
+$('btn-connect').addEventListener('click', async () => {
+  $('btn-connect').disabled = true;
+  try {
+    await jtag.connect();
+    const info = jtag.info;
+    $('i-dev').textContent = `${info.manufacturer} / ${info.product} (SN ${info.serial})`;
+    $('i-intf').textContent = `IF${info.interface} (vendor class 0xff)`;
+    const hz = await jtag.setClock(Number($('sel-clk').value));
+    $('i-clk').textContent = `${(hz / 1e6).toFixed(3)} MHz`;
+    $('devinfo').style.display = '';
+    connected = true;
+    $('btn-idcode').disabled = false;
+    $('btn-refresh').disabled = false;
+    $('btn-connect').textContent = '接続済み';
+    log(`接続しました: ${info.product} IF${info.interface}`, 'ok');
+    await readIdcode();
+    await loadManifest();
+  } catch (e) {
+    log(`接続エラー: ${e.message}`, 'ng');
+    $('btn-connect').disabled = false;
+  }
+  updateFlashButton();
+});
+
+async function readIdcode() {
+  await jtag.resetTap();
+  await jtag.gotoState('RTI');
+  deviceIdcode = await ecp5.idcode();
+  const name = KNOWN_IDCODES[deviceIdcode] || '未知のデバイス';
+  $('i-idcode').textContent = `0x${hex8(deviceIdcode)} (${name})`;
+  log(`IDCODE = 0x${hex8(deviceIdcode)} — ${name}`);
+}
+
+$('btn-idcode').addEventListener('click', async () => {
+  try { await readIdcode(); } catch (e) { log(`IDCODE 読み出しエラー: ${e.message}`, 'ng'); }
+});
+
+$('btn-refresh').addEventListener('click', async () => {
+  $('btn-refresh').disabled = true;
+  try {
+    await jtag.resetTap();
+    await jtag.gotoState('RTI');
+    await ecp5.refresh();
+    log('フラッシュから再コンフィグしました。', 'ok');
+  } catch (e) {
+    log(`再起動に失敗: ${e.message}`, 'ng');
+    log('フラッシュの中身が壊れている可能性があります。書き込み直してください。');
+  }
+  $('btn-refresh').disabled = false;
+});
+
+// --- ビットストリームの一覧 (同一オリジンの manifest.json) ---------------
+async function loadManifest() {
+  const sel = $('sel-bit');
+  sel.innerHTML = '';
+  const ph = new Option('-- 選択 --', '');
+  ph.disabled = true; ph.selected = true;
+  sel.appendChild(ph);
+  try {
+    const res = await fetch('bitstreams/manifest.json', { cache: 'no-cache' });
+    if (res.ok) {
+      const list = (await res.json()).bitstreams || [];
+      for (const b of list) {
+        const o = new Option(`${b.name}${b.date ? ` (${b.date})` : ''}`, `bitstreams/${b.file}`);
+        o.dataset.note = b.note || '';
+        sel.appendChild(o);
+      }
+      if (list.length === 0) log('配布済みビットストリームはまだありません。ローカルファイルを選んでください。');
+    }
+  } catch (e) {
+    log(`一覧を取得できませんでした: ${e.message}`);
+  }
+  sel.appendChild(new Option('ローカルファイルから選択...', '__local__'));
+  sel.disabled = false;
+}
+
+$('sel-bit').addEventListener('change', async () => {
+  const sel = $('sel-bit');
+  const val = sel.value;
+  const note = sel.options[sel.selectedIndex]?.dataset.note || '';
+  $('b-note').textContent = note;
+  bitstream = null;
+  $('bitinfo').style.display = 'none';
+  updateFlashButton();
+  if (val === '__local__') { $('file-row').style.display = ''; return; }
+  $('file-row').style.display = 'none';
+  try {
+    const res = await fetch(val);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    setBitstream(await res.arrayBuffer(), val.split('/').pop());
+  } catch (e) {
+    log(`ダウンロードに失敗しました: ${e.message}`, 'ng');
+  }
+});
+
+$('file').addEventListener('change', async () => {
+  const f = $('file').files[0];
+  if (!f) return;
+  try { setBitstream(await f.arrayBuffer(), f.name); }
+  catch (e) { log(`読み込みに失敗しました: ${e.message}`, 'ng'); }
+});
+
+function setBitstream(buf, name) {
+  const parsed = parseLatticeBit(buf);
+  bitstream = { ...parsed, name };
+  $('b-size').textContent = `${parsed.data.length.toLocaleString()} bytes (元ファイル ${buf.byteLength.toLocaleString()})`;
+  $('b-part').textContent = parsed.header.Part || '(不明)';
+  $('b-idcode').textContent = parsed.idcode === null ? '(取得できず)' : `0x${hex8(parsed.idcode)}`;
+  $('bitinfo').style.display = '';
+  log(`${name} を読み込みました (${parsed.data.length.toLocaleString()} bytes, Part=${parsed.header.Part || '?'})`);
+  if (parsed.idcode !== null && deviceIdcode !== null && parsed.idcode !== deviceIdcode) {
+    log(`警告: ビットストリームの IDCODE (0x${hex8(parsed.idcode)}) が実機 (0x${hex8(deviceIdcode)}) と一致しません`, 'ng');
+  }
+  updateFlashButton();
+}
+
+// --- 書き込み -----------------------------------------------------------
+$('btn-flash').addEventListener('click', async () => {
+  if (bitstream.idcode !== null && deviceIdcode !== null && bitstream.idcode !== deviceIdcode) {
+    if (!confirm('ビットストリームの IDCODE が実機と一致しません。続行しますか?')) return;
+  }
+  $('btn-flash').disabled = true;
+  $('btn-idcode').disabled = true;
+  const t0 = performance.now();
+  try {
+    const hz = await jtag.setClock(Number($('sel-clk').value));
+    $('i-clk').textContent = `${(hz / 1e6).toFixed(3)} MHz`;
+    await jtag.resetTap();
+    await jtag.gotoState('RTI');
+    await ecp5.program(bitstream.data, {
+      verify: $('chk-verify').checked,
+      onPhase: (p) => { $('phase').textContent = p; $('bar').value = 0; log(`── ${p}`); },
+      onProgress: (done, total) => { $('bar').value = done / total; },
+    });
+    $('bar').value = 1;
+    const sec = ((performance.now() - t0) / 1000).toFixed(1);
+    $('phase').textContent = `完了 (${sec} 秒)`;
+    log(`書き込み完了 (${sec} 秒)。新しいゲートウェアが起動しました。`, 'ok');
+  } catch (e) {
+    $('phase').textContent = '失敗';
+    log(`エラー: ${e.message}`, 'ng');
+    if (jtag.desynced) {
+      // USB の応答がずれた状態では以降の通信が全部化ける。ここで復帰を試みても
+      // 二次エラーが出るだけなので、再接続を促す (「接続」で同期を取り直す)。
+      log('USB の応答が同期を失いました。「接続」を押し直してから、'
+        + '「FPGA を再起動」または書き込みをやり直してください。', 'ng');
+      connected = false;
+      $('btn-connect').disabled = false;
+      $('btn-connect').textContent = '接続';
+    } else {
+      log('FPGA を復帰させます...');
+      try { await ecp5.refresh(); log('復帰しました(書き込み前の状態とは限りません)。'); }
+      catch (e2) { log(`復帰に失敗: ${e2.message}。もう一度書き込んでください。`, 'ng'); }
+    }
+  } finally {
+    $('btn-flash').disabled = false;
+    $('btn-idcode').disabled = false;
+  }
+});
+</script>
+</body>
+</html>
