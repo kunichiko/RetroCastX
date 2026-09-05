@@ -102,6 +102,8 @@ jobs:
       - name: Checkout
         if: needs.prepare.outputs.is_release == 'true'
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # タグの注釈文を読むので全履歴が要る
 
       - name: Create GitHub Release
         if: needs.prepare.outputs.is_release == 'true'
@@ -115,10 +117,30 @@ jobs:
           if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
             PRERELEASE_FLAG="--prerelease"
           fi
+          # 本文はタグの注釈文。--generate-notes だと「マージした PR の一覧」になり、
+          # v0.2.0 のときは Viewer と無関係な CI 系 PR が並んだ。main へ直接 push
+          # する運用なので、PR 一覧は変更内容を表さない。
+          #
+          # ★actions/checkout は注釈付きタグを取ったあと、同名のローカル ref を
+          #   コミットSHAへ張り替える(fetch --no-tags +<sha>:refs/tags/<tag>)ため、
+          #   そのままでは %(contents) がコミットメッセージを返す。取り直してから読む。
+          #   gateware-release.yml で同じ罠を踏んでいる。
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          NOTES_ARG="--generate-notes"
+          if [ "$(git cat-file -t "${GITHUB_REF_NAME}")" = "tag" ]; then
+            git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > /tmp/note.md
+            if [ -s /tmp/note.md ]; then
+              NOTES_ARG="--notes-file /tmp/note.md"
+            fi
+          else
+            echo "::warning::${GITHUB_REF_NAME} が注釈付きタグではありません。自動生成のノートを使います"
+          fi
+          echo "--- リリースノート ---"; cat /tmp/note.md 2>/dev/null || echo "(自動生成)"; echo "---"
+
           if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release create "${GITHUB_REF_NAME}" \
               --title "${GITHUB_REF_NAME}" \
-              --generate-notes \
+              ${NOTES_ARG} \
               --verify-tag \
               ${PRERELEASE_FLAG}
           fi
