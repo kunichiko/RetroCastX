@@ -15,6 +15,10 @@ on:
     tags: ['v*.*.*']
   pull_request:
     branches: [main]
+    # docs/ だけの変更で macOS/Windows のフルビルド(約8分)を回しても得るものが
+    # 無いのでスキップする。タグ push のリリースビルドには影響しない。
+    paths-ignore:
+      - 'docs/**'
   workflow_dispatch:
     inputs:
       platform:
