@@ -4,7 +4,7 @@
       "name": "v0.9.0",
       "file": "retrocastx_v0.9.0.bit",
       "date": "2026-09-05",
-      "note": "Merge pull request #4 from kunichiko/ci-seed-sweep\n\nCIのビルドをタイミングが閉じるまでシードを振る方式にする\n\n---\nビルド: seed 7 / oss-cad-suite 2026-09-03 / litex 93c8d230e"
+      "note": "gw-v0.9.0: v0.9.0 基板での実機動作\n\nv0.9.0 基板(TVP7002 + Colorlight i5)で実際に映像・音声を取得できる最初の版。\n\n- RGB888 伝送を追加し、伝送形式をCONFIGで実行時に切り替えられるようにした\n- ラインバッファを8bit RGB保持にして、形式変換を送出側へ寄せた\n- 黒判定の閾値と細ゲインを実行時に振れるようにした(機種ごとの校正用)\n- インターレース判定を生同期からも取れるようにした\n- Ethernet の PHY index がコネクタ表記 ETH1/ETH2 と逆だったのを訂正\n\n\n---\nビルド: seed 7 / oss-cad-suite 2026-09-03 / litex 93c8d230e"
     }
   ]
 }
