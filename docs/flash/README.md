@@ -28,7 +28,12 @@ USB を挿せばいつでも書ける。
 - **Windows のみ準備が必要**: CH347F は BOS ディスクリプタも MS OS ディスクリプタも
   持たないため、Windows が interface 4 に WinUSB を自動割り当てしない。Zadig を
   「Options → List All Devices」で開き、`UART+SPI+I2C+JTAG (Interface 4)` を選んで
-  WinUSB をインストールする。WCH 純正の CH347 ドライバが入っていると競合する
+  WinUSB をインストールする。WCH 純正の CH347 ドライバが入っていると競合する。
+  **★interface 4 であることを必ず確認すること。** 0〜3 は UART(CDC-ACM)なので、
+  そちらに当てるとシリアルが使えなくなる
+
+Windows / Chrome + Zadig での書き込みは 2026-09-06 に実機で確認済み
+(macOS / Chrome は 2026-09-04)。
 
 ## 配布ビットストリームの追加
 

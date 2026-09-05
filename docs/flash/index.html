@@ -114,7 +114,8 @@ CH347F → ポゴピン → Colorlight i5 の JTAG で、ECP5 の SPI フラッ�
   <b>Windows</b>: CH347F の JTAG インターフェース(interface 4)に WinUSB ドライバを
   当てる必要があります。Zadig を「Options → List All Devices」で起動し、
   <code>UART+SPI+I2C+JTAG (Interface 4)</code> を選んで WinUSB をインストールしてください。
-  WCH 純正の CH347 ドライバが入っていると競合します。macOS / Linux / ChromeOS / Android では
+  <b>interface 4 であることを必ず確認してください</b>(0〜3 は UART なので、そちらに
+  当てるとシリアルが使えなくなります)。WCH 純正の CH347 ドライバが入っていると競合します。macOS / Linux / ChromeOS / Android では
   追加作業は不要です。<br>
   <b>デバイスが選択ダイアログに出ない</b>: USB-C ケーブルが充電専用(データ線なし)でないか
   確認してください。<br>
