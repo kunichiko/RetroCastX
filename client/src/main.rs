@@ -741,8 +741,12 @@ struct ViewerApp {
     vtotal_last_t: std::cell::Cell<Option<std::time::Instant>>,
     /// 平滑をリセットする判定用。モードが変わったら追従を待たずに飛ばす
     vtotal_mode_id: std::cell::Cell<u16>,
-    /// 直近で入力設定を書き込んだソース(ラベル, 件数)。パネルの確認表示用。
-    input_regs_sent: Option<(&'static str, usize)>,
+    /// 直近で入力設定を書き込んだソース(ラベル, 件数, 自動か)。パネルの確認表示用。
+    input_regs_sent: Option<(&'static str, usize, bool)>,
+    /// 伝送形式が映像ソースと食い違ったので `input_regs` を自動で書いたか。
+    /// **食い違いが解消したら false に戻す**ので、ボードの電源を入れ直すたびに
+    /// 1回だけ書き直す。書いてから MODE が変わるまでの間に何度も書かないための掛け金。
+    input_regs_autowritten: bool,
     /// 映像ソースのプロファイル名(profiles::PROFILES の key)。空文字は「自動」。
     /// pll_divide を絵の内容ではなく fH とドットクロック候補から決めるのに使う
     source_profile: String,
@@ -904,6 +908,7 @@ impl ViewerApp {
             vtotal_last_t: std::cell::Cell::new(None),
             vtotal_mode_id: std::cell::Cell::new(u16::MAX),
             input_regs_sent: None,
+            input_regs_autowritten: false,
             source_profile: cfg.source_profile.clone(),
             tune_pending: Default::default(),
             tune_get_at: None,
@@ -1386,6 +1391,95 @@ impl ViewerApp {
         self.mark_settings_dirty();
     }
 
+    /// Tune欄の表示値(ボードの値のミラー)を1キーぶん更新する。
+    ///
+    /// ★**表示と実体がずれると、次に触ったときに古い値がボードへ飛ぶ。**
+    ///   映像ソースを選ぶと `input_regs` が伝送形式や細ゲインを書き換えるのに、
+    ///   ここを更新していなかったので Tune欄は起動時の値のままだった
+    ///   (`sync_tune_from_board` は同期が済むと二度と反映しない)。実機で
+    ///   S端子プロファイルを書いた直後に「伝送形式 RGB555 / 細ゲイン 64,61,57」
+    ///   = X68000 の値が表示されたままになっていた(2026-09-05)。この状態で
+    ///   伝送形式のコンボや gain の send を押すと、画面に見えている古い値が
+    ///   そのまま送られて**絵が消える**。書いた側が必ずここを呼ぶこと。
+    fn set_tune_mirror(&mut self, key: u16, val: u32) {
+        match key {
+            protocol::CFG_KEY_VBP => self.tune_vbp = val as i32,
+            protocol::CFG_KEY_HS_OFFSET => self.tune_hs_offset = val as i32,
+            protocol::CFG_KEY_PLL_DIVIDE => self.tune_pll_divide = val as i32,
+            protocol::CFG_KEY_VIDEO_BW => self.tune_video_bw = val as u8,
+            protocol::CFG_KEY_FULL_LINE => self.tune_full_line = val != 0,
+            protocol::CFG_KEY_FRAME_SKIP => self.tune_frame_skip = val as u8,
+            protocol::CFG_KEY_PHASE => self.tune_phase = (val as u8).min(31),
+            protocol::CFG_KEY_PIXFMT => self.tune_pixfmt = val as i32,
+            protocol::CFG_KEY_GAIN_R => self.tune_gain_r = val as i32,
+            protocol::CFG_KEY_GAIN_G => self.tune_gain_g = val as i32,
+            protocol::CFG_KEY_GAIN_B => self.tune_gain_b = val as i32,
+            _ => {}
+        }
+    }
+
+    /// ボードの伝送形式が映像ソースと食い違っていたら `input_regs` を自動で書く。
+    ///
+    /// ★**TVPのレジスタはボードの電源で消える。** ビットストリームはフラッシュに
+    ///   残るが、入力MUX・同期の取り方・クランプ・ゲイン・伝送形式は毎回 CONFIG で
+    ///   入れ直す必要がある。Viewer は映像ソースを**選び直したとき**にしか書かないので、
+    ///   前回の選択が保存されたまま起動すると誰も書かず、**選んであるのに映らない**
+    ///   状態になる(2026-09-05 に実機で踏んだ。コンポジットへ切り替えてから
+    ///   S端子へ戻すと「変化」になって書かれ、直ったように見えるので分かりにくい)。
+    ///
+    /// 条件は既にある警告と同じ「伝送形式の**種類**が成立しない」だけにしてある:
+    ///
+    ///   - YC8 が要るソース(コンポジット/S端子)なのにボードが RGB を流している
+    ///   - RGB のソースなのにボードが YC8 を流している
+    ///
+    /// **値の一致では判定しない。** 伝送形式は実行時に選べるので、X68000 RGB を
+    /// RGB888 で見るのは正当な選択であって異常ではない。ここで一致を要求すると、
+    /// 起動のたびに手で選んだ形式を RGB555 へ戻してしまう。
+    ///
+    /// 掛け金(`input_regs_autowritten`)は食い違いが解消したら外れるので、
+    /// **ボードを入れ直すたびに1回だけ**書く。書いても直らない場合
+    /// (パケットが落ちた等)は自動では追わない — 既存の警告と「入力設定を書く」が残る。
+    fn autowrite_input_regs(&mut self) {
+        let Some(p) = profiles::by_key(&self.source_profile) else {
+            return;
+        };
+        if p.input_regs.is_empty() {
+            return;
+        }
+        let Some(want) = p.pixfmt() else {
+            return;
+        };
+        // MODE が来ていないうちは判定できない。ボードが落ちたら掛け金も外す
+        // (次に上がってきたときが「新しい電源投入」なので、また1回書く)
+        let Some(have) = self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt) else {
+            self.input_regs_autowritten = false;
+            return;
+        };
+        let is_rgb = |f: u8| {
+            matches!(f, protocol::PIXFMT_RGB888
+                        | protocol::PIXFMT_RGB555
+                        | protocol::PIXFMT_RGB565)
+        };
+        let ok = if want == protocol::PIXFMT_YC8 {
+            have == protocol::PIXFMT_YC8
+        } else {
+            is_rgb(have)
+        };
+        if ok {
+            self.input_regs_autowritten = false;
+            return;
+        }
+        if self.input_regs_autowritten {
+            return;
+        }
+        self.input_regs_autowritten = true;
+        for (k, v, _) in p.input_regs {
+            self.send_cfg(*k, *v);
+            self.set_tune_mirror(*k, *v);
+        }
+        self.input_regs_sent = Some((p.label, p.input_regs.len(), true));
+    }
+
     /// いまの有効映像が何µsか。管面の掃引時間を決める基準になる
     fn active_us(&self) -> Option<f32> {
         let aw = {
@@ -1547,20 +1641,7 @@ impl ViewerApp {
                     self.tune_pending.remove(&key);
                 }
             }
-            match key {
-                protocol::CFG_KEY_VBP => self.tune_vbp = val as i32,
-                protocol::CFG_KEY_HS_OFFSET => self.tune_hs_offset = val as i32,
-                protocol::CFG_KEY_PLL_DIVIDE => self.tune_pll_divide = val as i32,
-                protocol::CFG_KEY_VIDEO_BW => self.tune_video_bw = val as u8,
-                protocol::CFG_KEY_FULL_LINE => self.tune_full_line = val != 0,
-                protocol::CFG_KEY_FRAME_SKIP => self.tune_frame_skip = val as u8,
-                protocol::CFG_KEY_PHASE => self.tune_phase = (val as u8).min(31),
-                protocol::CFG_KEY_PIXFMT => self.tune_pixfmt = val as i32,
-                protocol::CFG_KEY_GAIN_R => self.tune_gain_r = val as i32,
-                protocol::CFG_KEY_GAIN_G => self.tune_gain_g = val as i32,
-                protocol::CFG_KEY_GAIN_B => self.tune_gain_b = val as i32,
-                _ => {}
-            }
+            self.set_tune_mirror(key, val);
         }
         // 完了判定は「いま適用したのと同じスナップショット」で行う。config_state を
         // 取り直すと、スナップショット後に届いた応答を適用しないまま完了扱いになり、
@@ -2229,14 +2310,21 @@ impl ViewerApp {
                         _ => false,
                     };
                     let mut n = 0;
+                    let mut wrote: Vec<(u16, u32)> = Vec::new();
                     for (k, v, _) in p.input_regs {
                         if keep_fmt && *k == protocol::CFG_KEY_PIXFMT {
                             continue;
                         }
                         send.push((*k, *v));
+                        wrote.push((*k, *v));
                         n += 1;
                     }
-                    self.input_regs_sent = Some((p.label, n));
+                    // ★書いた値で Tune欄の表示も更新する。ここを忘れると
+                    //   表示が古いまま残り、次に触ったときに古い値が飛ぶ。
+                    for (k, v) in wrote {
+                        self.set_tune_mirror(k, v);
+                    }
+                    self.input_regs_sent = Some((p.label, n, false));
                 }
             }
         });
@@ -2278,8 +2366,14 @@ impl ViewerApp {
                 }
             }
         }
-        if let Some((label, n)) = self.input_regs_sent {
-            ui.monospace(format!("入力設定を書いた: {label} ({n}件)"));
+        if let Some((label, n, auto)) = self.input_regs_sent {
+            if auto {
+                ui.monospace(format!(
+                    "入力設定を自動で書いた: {label} ({n}件・伝送形式が食い違っていたため)"
+                ));
+            } else {
+                ui.monospace(format!("入力設定を書いた: {label} ({n}件)"));
+            }
         }
         // 見た目の調整。**復調の校正とは別に持つ。**
         //
@@ -3066,6 +3160,9 @@ impl eframe::App for ViewerApp {
         }
         // 変更があれば少し待って1回だけ保存する(スライダー操作中の連続書込を避ける)
         self.flush_settings();
+        // ★パネルの外に置く。Tab で隠していても全画面でも、電源を入れ直したあとに
+        //   入力設定が入り直さないと「選んであるのに映らない」ままになる。
+        self.autowrite_input_regs();
 
         // Tab で操作パネルを出し入れする。隠すと戻すUIが無くなるので、
         // キーだけは常に効くようにしておく(テキスト入力中は除く)。
