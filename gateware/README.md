@@ -127,10 +127,16 @@ cd litex-src && python3 ../litex_setup.py --dev --freeze --freeze-output=../lite
 ### ★タイミングはビルドの成否で分からない
 
 LiteX は nextpnr に `--timing-allow-fail` を渡すので、**タイミング違反でもビルドは
-成功する**。しかも eth_rx(125MHz要求)は配置シード次第で通ったり落ちたりする
-(`retrocastx_stream.py` の `--seed` のコメント参照)。ビルド後は必ずログの
-`Max frequency` を全ドメイン確認し、`FAIL at` が無いことを見ること。
+成功する**。しかも eth_rx(125MHz要求)や sys(45MHz要求)は配置シード次第で通ったり
+落ちたりする(`retrocastx_stream.py` の `--seed` のコメント参照)。
+
+★**見るのは「ルーティング後の最終値」**。nextpnr は Max frequency を2回出し、
+**配置後の見積りは通っているビルドでも普通に FAIL している**。ログを頭から grep すると
+健全なビルドを落とす(CI の初回実行で実際に踏んだ: crg_clkout は見積り 44.62MHz FAIL、
+最終 55.27MHz PASS)。クロックごとに最後の報告を見ること。
+
 CI(`.github/workflows/gateware-release.yml`)はこれを自動で検査して落とす。
+判定結果はジョブサマリに表で出る。
 
 ## リリース
 
