@@ -15,10 +15,15 @@ on:
     tags: ['v*.*.*']
   pull_request:
     branches: [main]
-    # docs/ だけの変更で macOS/Windows のフルビルド(約8分)を回しても得るものが
-    # 無いのでスキップする。タグ push のリリースビルドには影響しない。
+    # Viewer(client/)と無関係な変更で macOS/Windows のフルビルド(約10分、署名込み)を
+    # 回しても得るものが無いのでスキップする。paths-ignore は**変更ファイルが全て**
+    # 該当するときだけスキップするので、client/ を1ファイルでも触れば従来どおり走る。
+    # タグ push のリリースビルドは別トリガなので影響しない。
     paths-ignore:
       - 'docs/**'
+      - 'gateware/**'
+      - 'hardware/**'
+      - '**.md'
   workflow_dispatch:
     inputs:
       platform:

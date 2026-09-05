@@ -109,22 +109,59 @@ jobs:
         run: |
           set -euo pipefail
           # ★LiteX は nextpnr に --timing-allow-fail を渡すので、**タイミング違反でも
-          #   ビルドは成功してしまう**。しかも eth_rx(125MHz要求)は配置シード次第で
-          #   通ったり落ちたりする(retrocastx_stream.py の --seed のコメント参照)。
-          #   違反したまま配布すると実機で不可解な壊れ方をするので、ここで止める。
-          grep -E "Max (frequency|delay)" /tmp/build.log > /tmp/timing.txt || true
-          {
-            echo '## タイミング'
-            echo '```'
-            cat /tmp/timing.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          if grep -q "FAIL at" /tmp/build.log; then
-            grep "FAIL at" /tmp/build.log
-            echo "::error::タイミング違反があります。--seed を変えて再実行してください(数シード試すこと)。"
-            exit 1
-          fi
-          echo "全ドメイン PASS"
+          #   ビルドは成功してしまう**。しかも eth_rx(125MHz要求)や sys(45MHz要求)は
+          #   配置シード次第で通ったり落ちたりする(retrocastx_stream.py の --seed の
+          #   コメント参照)。違反したまま配布すると実機で不可解な壊れ方をするので止める。
+          python3 - <<'PY'
+          import os, re, sys
+
+          # ★nextpnr は Max frequency を2回出す。**配置後の見積り**と、**ルーティング後の
+          #   最終値**。見積りの方は通っているビルドでも普通に FAIL していることがあり、
+          #   ログ全体を grep すると健全なビルドを落としてしまう。実際に初回の CI 実行で
+          #   踏んだ: crg_clkout は見積り 44.62MHz FAIL、最終 55.27MHz PASS だった。
+          #   retrocastx_stream.py のコメントが「途中経過ではなくルーティング後の最終値を
+          #   見る」と書いているのはこのこと。クロックごとに**最後の**報告だけを見る。
+          pat = re.compile(
+              r"Max frequency for clock\s+'([^']+)':\s+([\d.]+) MHz \((PASS|FAIL) at ([\d.]+) MHz\)")
+          last, order = {}, []
+          with open("/tmp/build.log", errors="replace") as f:
+              for line in f:
+                  m = pat.search(line)
+                  if not m:
+                      continue
+                  name = m.group(1)
+                  if name not in last:
+                      order.append(name)
+                  last[name] = (float(m.group(2)), m.group(3), float(m.group(4)))
+
+          if not last:
+              print("::error::ビルドログから Max frequency を読めませんでした"
+                    "(nextpnr の出力形式が変わった可能性があります)")
+              sys.exit(1)
+
+          rows = ["## タイミング(ルーティング後の最終値)", "",
+                  "| クロック | 実測 | 要求 | 判定 |", "|---|---:|---:|---|"]
+          failed = []
+          for name in order:
+              mhz, verdict, req = last[name]
+              rows.append(f"| `{name}` | {mhz:.2f} MHz | {req:.2f} MHz | {verdict} |")
+              if verdict == "FAIL":
+                  failed.append((name, mhz, req))
+          report = "\n".join(rows)
+          print(report)
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a") as f:
+                  f.write(report + "\n")
+
+          for name, mhz, req in failed:
+              print(f"::error::タイミング違反: {name} は {mhz:.2f} MHz で要求 {req:.2f} MHz に届いていません")
+          if failed:
+              print("::error::--seed を変えて数シード試してください"
+                    "(retrocastx_stream.py の --seed のコメント参照)")
+              sys.exit(1)
+          print(f"全 {len(last)} ドメイン PASS")
+          PY
 
       - name: WebUSB フラッシャで扱えるか確認
         run: |
