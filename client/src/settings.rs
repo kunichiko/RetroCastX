@@ -141,6 +141,9 @@ pub struct Settings {
     /// クリーン出力ウィンドウの内寸。**モード切替では変えない**。
     /// 変えると OBS 側のソースサイズが動いて配信が破綻する。
     pub clean_size: [f32; 2],
+    /// クリーン出力ウィンドウのタイトルバーを消すか。
+    /// OBS のウィンドウキャプチャはタイトルバーごと取り込むので既定で消す。
+    pub clean_undecorated: bool,
 }
 
 fn default_clean_size() -> [f32; 2] {
@@ -182,6 +185,7 @@ impl Default for Settings {
             bezel_off: false,
             clean_open: false,
             clean_size: default_clean_size(),
+            clean_undecorated: true,
             filter: 2,
             dot_a_milli: default_dot_a(),
             interlace_decay: 1.0,
@@ -307,6 +311,7 @@ impl Settings {
                 "netcheck_muted" => s.netcheck_muted = v == "true",
                 "bezel_off" => s.bezel_off = v == "true",
                 "clean_open" => s.clean_open = v == "true",
+                "clean_undecorated" => s.clean_undecorated = v == "true",
                 "clean_size" => {
                     let a: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                     // 極端な値で開くと画面外に出て閉じられなくなるので範囲を切る
@@ -386,7 +391,8 @@ impl Settings {
              window_w = {:.0}\n\
              window_h = {:.0}\n\
              clean_open = {}\n\
-             clean_size = {:.0},{:.0}\n",
+             clean_size = {:.0},{:.0}\n\
+             clean_undecorated = {}\n",
             self.volume,
             self.muted,
             self.audio_source.map(|v| v.to_string()).unwrap_or_else(|| "off".into()),
@@ -422,6 +428,7 @@ impl Settings {
             self.window_h,
             self.clean_open,
             self.clean_size[0], self.clean_size[1],
+            self.clean_undecorated,
         );
         let mut body = body;
         for (khz, v) in &self.band_pll {
