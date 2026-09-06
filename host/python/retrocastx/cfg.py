@@ -44,6 +44,8 @@ from . import protocol as proto
 # ここに無いキーも --board 指定で送れる(数値を直接渡せばよい)。
 KNOWN = [
     (0x0001, "audio_enable_mask", "bit0=RGB音声 bit1=LINE bit2=S/PDIF"),
+    (0x0002, "spdif_rate_hz", "S/PDIFの実測レート[Hz]。0=デコーダが出していない(RO)"),
+    (0x0003, "spdif_fifo_level", "S/PDIF送出FIFOの滞留。レートが出ているのに0なら後段(RO)"),
     (0x0010, "vbp",               "キャプチャ窓の先頭をVSYNCの何行後にするか"),
     (0x0011, "hs_offset",         "水平バックポーチ[DATACLK]"),
     (0x0012, "pll_divide",        "H-PLL帰還分周比=1ライン当たりDATACLK数"),

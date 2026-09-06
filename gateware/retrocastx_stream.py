@@ -519,6 +519,13 @@ class RetroCastXStreamer(LiteXModule):
         self.stat_lpf       = Signal(16)     # key 0x55 (reg 37h:38h Lines/Frame)
         self.stat_cpl       = Signal(16)     # key 0x56 (reg 39h:3Ah Clocks/Line)
         self.stat_lpf_msbs  = Signal(8)      # key 0x57 (reg 38h 生値。bit5=P/I detect)
+        # ★S/PDIFの生存確認。**「マスクは立っているのにパケットが出ない」を
+        #   切り分けるために要る。** 実機で S/PDIF だけ止まり、電源再投入まで
+        #   戻らない事象が出たが、ボード側の状態を読む手段が無く、
+        #   「デコーダがロックを失った」までしか絞れなかった(2026-09-06)。
+        #     key 0x02 = 実測レート[Hz]。0 ならデコーダがサンプルを出していない
+        #     key 0x03 = 送出FIFOの滞留。レートが出ているのに0なら詰まりは後段
+        self.stat_spdif_level = Signal(16)   # key 0x03
         # ラインごとのHSYNC周期プローブ。key 0x27 で行を選び 0x28/0x29 で読む
         self.cfg_hs_probe_row = Signal(13)
         self.stat_hs_raw    = Signal(16)
@@ -740,6 +747,13 @@ class RetroCastXStreamer(LiteXModule):
             0x66: reply_mux.eq(self.cfg_field_invert),
             0x6A: reply_mux.eq(self.cfg_no_raw_phase),
         }
+        # S/PDIF(source 2)の診断。定数レートのアナログ2系統と違い、ここだけ
+        # gateware の実測値なので、0 かどうかで「生きているか」が分かる。
+        if len(audio_srcs) > 2:
+            _spdif_rate = audio_srcs[2][1]
+            if not isinstance(_spdif_rate, int):
+                reply_cases[0x02] = reply_mux.eq(_spdif_rate)
+            reply_cases[0x03] = reply_mux.eq(self.stat_spdif_level)
         # 診断用の読み出し(書き込みは無視される読み取り専用)。
         # フィールド極性をどちらから取るべきか、ラインごとのHSYNC周期が揺れて
         # いないか等を実機で判断するための生データ。
@@ -926,6 +940,8 @@ class RetroCastXStreamer(LiteXModule):
             self.sync += If(fifo.sink.valid & fifo.sink.ready &
                             (fifo.level == 0),
                             ts_first.eq(ts_line))
+            if k == 2:
+                self.comb += self.stat_spdif_level.eq(fifo.level)
             aud_fifos.append(fifo)
             aud_ts_arr.append(ts_first)
         if n_aud:

@@ -136,6 +136,8 @@ CONFIG(key 0x0001)で選択する。
 | target | key | 意味 |
 |---|---|---|
 | 0 (board) | 0x0001 | audio_enable_mask: bit0=RGB端子音声, bit1=LINE, bit2=S/PDIF |
+| 0 (board) | 0x0002 | spdif_rate_hz: S/PDIFの実測サンプルレート[Hz]。**読み取り専用**。0 ならデコーダがサンプルを出していない |
+| 0 (board) | 0x0003 | spdif_fifo_level: S/PDIF送出FIFOの滞留サンプル数。**読み取り専用**。レートが出ているのにここが0なら詰まりは後段 |
 | 1 (ArgusX) | 0x0001 | 映像入力選択(値の意味はArgusX側仕様で定義) |
 | 0 (board) | 0x0022 | sync_ctl (TVP reg 0Eh): 0x52=5線 / 0x53=4線TTL C-SYNC / 0x5B=SOG |
 | 0 (board) | 0x0050 | sog_thresh (TVP reg 10h): SOGスライス閾値 |
