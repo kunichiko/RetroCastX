@@ -149,6 +149,10 @@ _CVBS_TIMING = [
     (proto.CFG_KEY_PLL_CTL,         0x10, "VCO=UltraLow + チャージポンプ2"),
     (proto.CFG_KEY_IN_MUX2,         0x12, "SOG LPF 2.5MHz(バーストで誤トリガしない)"),
     (proto.CFG_KEY_PIXFMT, proto.PIXFMT_YC8, "生8bit伝送(復調に必要)"),
+    # ★生同期は繋がらない(J5にはY/Cしか無い)。未接続のシュミットバッファ入力が
+    #   自己発振して raw_ok が誤って立つと、存在しない同期の位相でフィールド極性が
+    #   決まり、両フィールドが同じスロットに交互に上書きされて絵が1ライン震える
+    (proto.CFG_KEY_NO_RAW_PHASE, 1, "★生同期は繋がらない(J5はY/Cのみ)"),
 ]
 
 MODES = {
@@ -163,6 +167,7 @@ MODES = {
             # 31kHz(768x512)の起点。Viewerのプロファイル/自動調整が上書きする
             (proto.CFG_KEY_PLL_DIVIDE, 1104, "起点=31kHzのhtotal(Viewerが上書きする)"),
             (proto.CFG_KEY_PLL_CTL, 0x18, "ICP = 40×75/1104 = 2.7 → 3"),
+            (proto.CFG_KEY_NO_RAW_PHASE, 0, "生同期が実際に来るので極性判定に使う"),
         ] + _RGB_ANALOG,
     },
     "msx": {
@@ -174,11 +179,12 @@ MODES = {
             (proto.CFG_KEY_IN_MUX1, MUX_ALL2, "映像もCSYNCも2番系統(aux 2x5ヘッダ)"),
             (proto.CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOG(=CSYNC)から取る"),
             (proto.CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz + クランプLPF 0.5MHz"),
-            # ★v0.9.0 では CSYNC を 75Ω終端 + 1/2分圧してから SOGIN_2 へ入れている
-            #   (main.ato の r_cs_term / r_cs_top / r_cs_bot)。手組み機は直結だったので、
-            #   同じ 0x0B でスライスできるかは v0.9.0 実機で確かめること。
-            #   同期を拾えないときはここを下げる(振れ幅が半分になっている)。
-            (proto.CFG_KEY_SOG_THRESH, 0x0B, "CSYNCのスライス位置(手組み機で成立していた既定)"),
+            # v0.9.0 では CSYNC を 75Ω終端 + 1/2分圧してから SOGIN_2 へ入れている
+            #   (main.ato の r_cs_term / r_cs_top / r_cs_bot)。手組み機は直結で、
+            #   振れ幅が半分になるぶん閾値を下げる必要があるかもしれないと見ていたが、
+            #   **2026-09-06 に v0.9.0 実機で 0x0B のまま同期に問題が無いことを確認した。**
+            #   MSXのCSYNCは1.8Vppで、1/2でも0.9Vpp = TVPの推奨0.5〜2Vppの中に十分入る。
+            (proto.CFG_KEY_SOG_THRESH, 0x0B, "CSYNCのスライス位置(v0.9.0実機で確認済み)"),
             # 同期セパレータ(11h/12h/13h/22h)は**触らない**。ゲートウェアの既定が
             # 15.7kHz族向けに調整済み(sep 0x75 / pre 3 / post 3)で、実測の根拠も
             # retrocastx_i2c.py に書かれている。ここで上書きすると出所が二重になる。
@@ -189,6 +195,9 @@ MODES = {
             # htotal 342×4 = 1368(TVPの下限12MHzを満たす整数倍。profiles.rs 参照)
             (proto.CFG_KEY_PLL_DIVIDE, 1368, "起点=MSXのhtotal(Viewerが上書きする)"),
             (proto.CFG_KEY_PLL_CTL, 0x10, "ICP = 40×75/1368 = 2.2 → 2"),
+            # ★生同期は繋がらない。未接続のシュミットバッファ入力が自己発振して
+            #   raw_ok が誤って立つと、存在しない同期の位相で極性が決まる
+            (proto.CFG_KEY_NO_RAW_PHASE, 1, "★生同期は繋がらない(CSYNCをSOGで受ける)"),
         ] + _RGB_ANALOG,
     },
     "composite": {

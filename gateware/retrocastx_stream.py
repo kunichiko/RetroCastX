@@ -487,6 +487,29 @@ class RetroCastXStreamer(LiteXModule):
         # 物理で決まるが、SOGOUTの極性やスライスの都合で逆に出ることがあるので、
         # 実機で見て入れ替えられるようにしておく (key 0x66)
         self.cfg_field_invert = Signal()                          # key 0x66
+        # 1 で**生同期の位相を使わず SOGOUT の位相からフィールド極性を決める**。
+        #
+        # ★**未接続の生同期入力は自己発振する。** コンポジット/S端子/MSX では
+        #   D-SUB の HSYNC/VSYNC に何も繋がらないが、5Vトレラントのシュミット
+        #   バッファ(main.ato の buf_sync)の入力が浮いて発振し、その周期が
+        #   raw_ok の窓 (64, 0xF000) にたまたま入る。すると捕捉側は
+        #   **存在しない同期の位相 ph_raw** でフィールド極性を決めてしまい、
+        #   極性が交互にならず**両フィールドが同じスロットに交互に上書きされて
+        #   絵が1ライン上下に震える**(実機 2026-09-06、コンポジット480i。
+        #   il: raw0 rawok1 P/I1 frame0 / SOG lowmax 773 = SOG側は健全だった)。
+        #   raw_ok の「配線が無いなら周期は0か飽和値」という前提が成り立たない。
+        #
+        #   ★**1 にして直ることを実機で確認した**(2026-09-06、同じコンポジット480i)。
+        #     震えが消え、Viewer の有効映像の高さが **217/240 → 432** になった
+        #     (それまでは片フィールドぶんしか無く、織り込みが成立していなかった)。
+        #     rawok は 1 のままなので、効いたかどうかは rawok ではなく
+        #     「織り込みが成立したか」で見ること。
+        #
+        #   ★raw_ok の条件を厳しくする案は採らない。fld_pos は組合せ経路が
+        #     eth_rx まで伸びていて、**以前この経路に比較を1つ足しただけで
+        #     123.59MHz まで落ちて要求125MHzを割った**。こちらは既に式の中にある
+        #     信号を定数0から実信号にするだけなので、論理段数が増えない。
+        self.cfg_no_raw_phase = Signal()                          # key 0x6A
         # TVPのステータス 38h(bit5=P/I detect)。上位から供給される読み出し専用
         self.stat_lpf_hi    = Signal(8)
         # TVP自身が測った値。**キャプチャロジックに依存しない絶対値**なので、
@@ -632,6 +655,9 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x66),
                         self.cfg_field_invert.eq(rx.data[0]),
                     ),
+                    If((cfg_target == 0) & (cfg_key == 0x6A),
+                        self.cfg_no_raw_phase.eq(rx.data[0]),
+                    ),
                     If((cfg_target == 0) & (cfg_key == 0x53),
                         self.cfg_postcoast.eq(rx.data[:8]),
                     ),
@@ -712,6 +738,7 @@ class RetroCastXStreamer(LiteXModule):
             0x69: reply_mux.eq(self.cfg_in_mux1),
             0x64: reply_mux.eq(self.cfg_sog_vth),
             0x66: reply_mux.eq(self.cfg_field_invert),
+            0x6A: reply_mux.eq(self.cfg_no_raw_phase),
         }
         # 診断用の読み出し(書き込みは無視される読み取り専用)。
         # フィールド極性をどちらから取るべきか、ラインごとのHSYNC周期が揺れて
@@ -1646,6 +1673,7 @@ class RetroCastXStream(SoCMini):
                                                 self.status.lpf_lo[0:4])),
                 self.capture.cfg_sog_vth.eq(self.streamer.cfg_sog_vth),
                 self.capture.cfg_field_invert.eq(self.streamer.cfg_field_invert),
+                self.capture.cfg_no_raw_phase.eq(self.streamer.cfg_no_raw_phase),
                 self.streamer.stat_lpf_hi.eq(self.status.lpf_hi),
                 self.streamer.stat_syncdet.eq(self.status.syncdet),
                 self.streamer.stat_lpf_msbs.eq(self.status.lpf_lo),
