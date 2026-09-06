@@ -815,8 +815,10 @@ struct ViewerApp {
     /// 配信用クリーン出力ウィンドウ(OBS のウィンドウキャプチャ用)
     clean_open: bool,
     clean_size: [f32; 2],
-    /// 実際にウィンドウへ適用済みのサイズ。プリセット変更を1回だけ送るために持つ
+    clean_undecorated: bool,
+    /// 実際にウィンドウへ適用済みの値。設定変更を1回だけ送るために持つ
     clean_size_applied: [f32; 2],
+    clean_undecorated_applied: bool,
     /// 枠のテクスチャ。ラスタライズした幅と一緒に持ち、幅が変わったら作り直す
     bezel_tex: Option<(egui::TextureHandle, u32)>,
     /// 補間 0=ニアレスト 1=バイリニア 2=sharp-bilinear
@@ -966,7 +968,9 @@ impl ViewerApp {
             bezel_off: cfg.bezel_off,
             clean_open: cfg.clean_open,
             clean_size: cfg.clean_size,
+            clean_undecorated: cfg.clean_undecorated,
             clean_size_applied: cfg.clean_size,
+            clean_undecorated_applied: cfg.clean_undecorated,
             bezel_tex: None,
             filter: cfg.filter,
             dot_a_milli: cfg.dot_a_milli,
@@ -1060,15 +1064,18 @@ impl ViewerApp {
         if !self.clean_open {
             return;
         }
-        let aspect = cleanout::display_aspect(
-            self.frame_size, self.crop, self.tube_aspect, self.rotate);
-        let has_video = self.frame_size.0 > 0;
-        let resize = self.clean_size != self.clean_size_applied;
-        let size = self.clean_size;
-        let keep = cleanout::show(ctx, size, resize, aspect, has_video, |ui, rect| {
-            self.paint_tube(ui, rect)
-        });
-        self.clean_size_applied = size;
+        let opts = cleanout::Opts {
+            size: self.clean_size,
+            resize: self.clean_size != self.clean_size_applied,
+            undecorated: self.clean_undecorated,
+            redecorate: self.clean_undecorated != self.clean_undecorated_applied,
+            aspect: cleanout::display_aspect(
+                self.frame_size, self.crop, self.tube_aspect, self.rotate),
+            has_video: self.frame_size.0 > 0,
+        };
+        let keep = cleanout::show(ctx, &opts, |ui, rect| self.paint_tube(ui, rect));
+        self.clean_size_applied = self.clean_size;
+        self.clean_undecorated_applied = self.clean_undecorated;
         if !keep {
             self.clean_open = false;
             self.mark_settings_dirty();
@@ -1114,6 +1121,7 @@ impl ViewerApp {
             bezel_off: self.bezel_off,
             clean_open: self.clean_open,
             clean_size: self.clean_size,
+            clean_undecorated: self.clean_undecorated,
             filter: self.filter,
             interlace_decay: self.interlace_decay,
             adj_hue_deg: self.adjust.hue_deg,
@@ -3870,6 +3878,17 @@ impl eframe::App for ViewerApp {
                         .changed()
                     {
                         self.clean_open = on;
+                        self.mark_settings_dirty();
+                    }
+                    let mut nodec = self.clean_undecorated;
+                    if ui.checkbox(&mut nodec, "枠なし")
+                        .on_hover_text(
+                            "タイトルバーを消します。OBS のウィンドウキャプチャは\n\
+                             タイトルバーごと取り込むので、既定で消しています。\n\
+                             枠なしのときは映像のどこを掴んでもウィンドウを動かせます。")
+                        .changed()
+                    {
+                        self.clean_undecorated = nodec;
                         self.mark_settings_dirty();
                     }
                     let sel = format!("{:.0}x{:.0}", self.clean_size[0], self.clean_size[1]);

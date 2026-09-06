@@ -73,34 +73,71 @@ pub fn fit_centered(area: egui::Rect, aspect: egui::Vec2) -> egui::Rect {
 /// `paint` には「映像を描くべき矩形」が渡る。本体の `paint_tube` をそのまま
 /// 渡せばよい。戻り値が `false` ならユーザーがウィンドウを閉じたので、
 /// 呼び出し側は開閉フラグを下ろすこと。
+/// 1フレーム分の描画に必要な指示。
+pub struct Opts {
+    /// ウィンドウ内寸
+    pub size: [f32; 2],
+    /// このフレームでサイズを送り直すか(プリセットを変えた直後だけ true)
+    pub resize: bool,
+    /// タイトルバーを消すか
+    pub undecorated: bool,
+    /// このフレームで装飾の有無を送り直すか
+    pub redecorate: bool,
+    /// 映像の表示比
+    pub aspect: egui::Vec2,
+    /// 映像が来ているか
+    pub has_video: bool,
+}
+
 pub fn show(
     ctx: &egui::Context,
-    size: [f32; 2],
-    resize: bool,
-    aspect: egui::Vec2,
-    has_video: bool,
+    opts: &Opts,
     paint: impl FnOnce(&mut egui::Ui, egui::Rect),
 ) -> bool {
     let builder = egui::ViewportBuilder::default()
         .with_title("RetroCastX 配信出力")
-        .with_inner_size(size);
+        .with_inner_size(opts.size)
+        // ★枠を消すのは見た目の問題ではない。OBS のウィンドウキャプチャは
+        //   タイトルバーごと取り込むので、枠があると配信に枠が写る。
+        .with_decorations(!opts.undecorated);
 
     let mut keep_open = true;
     let mut paint = Some(paint);
     ctx.show_viewport_immediate(viewport_id(), builder, |ctx, _class| {
-        // 既に開いているウィンドウにはビルダーの inner_size が効かないので、
-        // プリセットを変えたときは明示的にリサイズを送る。
-        if resize {
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size.into()));
+        // 既に開いているウィンドウにはビルダーの指定が効かないので、
+        // 設定を変えたときだけ明示的にコマンドを送る。
+        if opts.resize {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(opts.size.into()));
+        }
+        if opts.redecorate {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!opts.undecorated));
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
                 let area = ui.available_rect_before_wrap();
-                if !has_video || area.width() < 1.0 || area.height() < 1.0 {
+                if area.width() < 1.0 || area.height() < 1.0 {
+                    return;
+                }
+                // ★枠なしのときはタイトルバーが無いので、OS の手段では動かせない。
+                //   中身のどこを掴んでも動かせるようにする。映像しか無いウィンドウ
+                //   なので、ドラッグを他の操作と取り違える心配はない。
+                //   閉じるのは本体ウィンドウのチェックボックス。
+                if opts.undecorated {
+                    let r = ui.interact(
+                        area,
+                        ui.id().with("clean-drag"),
+                        egui::Sense::click_and_drag(),
+                    );
+                    if r.drag_started() {
+                        // 外側の ctx は show() に借りられているので ui 側から送る
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    }
+                }
+                if !opts.has_video {
                     return;   // 黒のまま。映像が無いときに枠だけ描いても意味がない
                 }
-                let rect = fit_centered(area, aspect);
+                let rect = fit_centered(area, opts.aspect);
                 if let Some(p) = paint.take() {
                     p(ui, rect);
                 }
@@ -111,6 +148,7 @@ pub fn show(
     });
     keep_open
 }
+
 
 #[cfg(test)]
 mod tests {
