@@ -99,7 +99,15 @@ pub fn show(
         .with_inner_size(opts.size)
         // ★枠を消すのは見た目の問題ではない。OBS のウィンドウキャプチャは
         //   タイトルバーごと取り込むので、枠があると配信に枠が写る。
-        .with_decorations(!opts.undecorated);
+        .with_decorations(!opts.undecorated)
+        // ★**リサイズさせない。** キャプチャ元はサイズが動かないことの方が、
+        //   任意サイズを取れることより価値が高い。OBS のソースサイズが動くと
+        //   レイアウトが崩れるので、モード切替で動かさないのと同じ理由で、
+        //   手でも動かせないようにする。枠なしだとリサイズ枠が見えないうえ、
+        //   映像のどこを掴んでも移動できる作りなので、端を掴んだときに
+        //   「動かすつもりがリサイズ」を取り違える事故も防げる。
+        //   サイズはプリセットから選ぶ。
+        .with_resizable(false);
 
     let mut keep_open = true;
     let mut paint = Some(paint);

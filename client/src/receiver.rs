@@ -59,7 +59,8 @@ pub struct Config {
     pub audio: AudioOpts,
 }
 
-#[derive(Clone, Copy)]
+// device に String を持つので Copy は外す(構築は起動時の一度きり)
+#[derive(Clone)]
 pub struct AudioOpts {
     /// 再生するsource(0=RGB端子音声, 1=LINE入力, 2=S/PDIF)。None なら再生しない。
     pub source: Option<u8>,
@@ -67,12 +68,17 @@ pub struct AudioOpts {
     pub prebuffer_ms: u32,
     /// バッファ上限[ms]。超えた分は古いサンプルを捨てて遅延の蓄積を防ぐ。
     pub max_ms: u32,
+    /// 使う出力デバイス名。None なら OS の既定。
+    ///
+    /// ★**起動時からこれを使う。** 以前は常に既定デバイスで開いていたので、
+    ///   UI が切替要求を出すまで「設定と違うデバイスで鳴っている」状態だった。
+    pub device: Option<String>,
 }
 
 impl Default for AudioOpts {
     fn default() -> Self {
         // D-SUB15音声を既定に。80ms貯めて最大240msで頭打ち(GbE LANなら十分小さい)
-        Self { source: Some(0), prebuffer_ms: 80, max_ms: 240 }
+        Self { source: Some(0), prebuffer_ms: 80, max_ms: 240, device: None }
     }
 }
 
@@ -523,6 +529,10 @@ pub struct Shared {
     pub stop: AtomicBool,
     /// 音声再生の統計(再生器が無い場合は既定値のまま)
     pub audio: Mutex<Option<Arc<crate::audio::AudioStats>>>,
+    /// 副系統(S/PDIF を混ぜる)の設定。
+    /// ★**再生器より長生きさせる。** 出力デバイスやソースを切り替えると
+    ///   AudioPlayer は作り直されるので、設定を向こうに置くと消える。
+    pub aux: Arc<crate::audio::AuxCtl>,
     /// UI→受信スレッドへの切替要求。cpalのStreamは生成スレッドから動かせないので、
     /// UIは要求を置くだけにして、受信スレッドが再生器を作り直す。
     pub audio_request: Mutex<Option<AudioRequest>>,
@@ -584,6 +594,13 @@ pub struct AudioRequest {
 pub struct AudioNow {
     pub device: String,
     pub source: Option<u8>,
+    /// 設定で選ばれているデバイス名。`device` と食い違っていたら開けなかった。
+    ///
+    /// ★**黙って既定デバイスへ落ちるのをやめる。** 起動直後は CoreAudio の
+    ///   列挙が揃っていないことがあり、保存した名前が見つからずに別のデバイスが
+    ///   開かれる。ユーザーからは「音が鳴らない」としか見えないので、
+    ///   食い違いを表に出す(実機で起きた: 2026-09-06)。
+    pub wanted: Option<String>,
 }
 
 pub fn spawn(
@@ -783,8 +800,12 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     raise_thread_qos();
 
     // 音声再生器(デバイスが開けなければ再生なしで続行)
-    let mut audio_dev: Option<String> = None;
-    let mut audio = open_audio(&cfg, &shared, cfg.audio.source, None);
+    // ★起動時から設定のデバイスを使う。以前は None(既定デバイス)で開いて
+    //   いたので、UIが要求を出すまで別のデバイスで鳴っていた。
+    let mut audio_dev: Option<String> = cfg.audio.device.clone();
+    let mut audio_src = cfg.audio.source;
+    let mut audio = open_audio(&cfg, &shared, audio_src, audio_dev.as_deref());
+    let mut last_dev_retry = Instant::now();
     let mut asm = FrameAssembler::new();
     asm.set_decay(cfg.decay);
     asm.set_interlace_decay(cfg.interlace_decay);
@@ -930,10 +951,28 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             }
         }
 
+        // ★**選んだデバイスを開けなかったら、後から開けるようになったか見に行く。**
+        //   起動直後は CoreAudio の列挙が揃っていないことがあり、保存した名前が
+        //   見つからずに既定デバイス(別物)が開かれる。ユーザーからは「音が
+        //   鳴らない」としか見えず、デバイスを選び直すまで直らなかった。
+        //   後から挿したデバイスにも同じ理屈で追従できる。
+        if last_dev_retry.elapsed() >= Duration::from_secs(2) {
+            last_dev_retry = Instant::now();
+            let want = audio_dev.clone();
+            let opened = audio.as_ref().map(|p| p.device_name.clone());
+            if let (Some(w), Some(o)) = (want.as_ref(), opened.as_ref()) {
+                if w != o && crate::audio::output_devices().iter().any(|d| d == w) {
+                    eprintln!("audio: 選んだ出力デバイス「{w}」が開けるようになったので開き直します");
+                    audio = open_audio(&cfg, &shared, audio_src, Some(w.as_str()));
+                }
+            }
+        }
+
         // UIからの音声切替要求(デバイス/source)を反映する
         if let Some(req) = shared.audio_request.lock().unwrap().take() {
             audio_dev = req.device.clone();
-            audio = open_audio(&cfg, &shared, req.source, audio_dev.as_deref());
+            audio_src = req.source;
+            audio = open_audio(&cfg, &shared, audio_src, audio_dev.as_deref());
         }
 
         // 受信スレッドから受け取る。ここでパース以降を全部やるが、受信側は
@@ -1028,7 +1067,16 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             if let Some(player) = &audio {
                 if let Ok(Packet::Audio(a)) = proto::parse(&buf[..n]) {
                     if a.source == player.source {
-                        player.push(a.samples);
+                        player.push(a.samples, a.rate_hz);
+                    } else if a.source == AUX_SOURCE
+                        && shared.aux.on.load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        // ★S/PDIF は**主系統を選び直さずに混ぜる**。ボードは
+                        //   audio_enable_mask の既定 0b111 で3系統とも送っていて、
+                        //   今までは Viewer が2系統を捨てていただけ。
+                        player.stats.aux_rate.store(
+                            a.rate_hz as u64, std::sync::atomic::Ordering::Relaxed);
+                        player.push_aux(a.samples, a.rate_hz);
                     }
                 }
             }
@@ -1097,6 +1145,9 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     }
 }
 
+/// 副系統として混ぜる音声ソース(S/PDIF)。
+pub const AUX_SOURCE: u8 = 2;
+
 /// 音声再生器を開き、Sharedの表示用状態を更新する。source=None なら再生しない。
 fn open_audio(
     cfg: &Config,
@@ -1105,7 +1156,8 @@ fn open_audio(
     device: Option<&str>,
 ) -> Option<AudioPlayer> {
     let player = source.and_then(|src| {
-        let p = AudioPlayer::new(src, cfg.audio.prebuffer_ms, cfg.audio.max_ms, device);
+        let p = AudioPlayer::new(src, cfg.audio.prebuffer_ms, cfg.audio.max_ms, device,
+                                 shared.aux.clone());
         if p.is_none() {
             eprintln!("audio: 出力デバイスを開けないため音声再生を無効化します");
         }
@@ -1115,6 +1167,7 @@ fn open_audio(
     *shared.audio_now.lock().unwrap() = AudioNow {
         device: player.as_ref().map(|p| p.device_name.clone()).unwrap_or_default(),
         source: player.as_ref().map(|p| p.source),
+        wanted: device.map(|d| d.to_string()),
     };
     player
 }

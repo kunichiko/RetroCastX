@@ -96,6 +96,8 @@ fn main() -> eframe::Result {
     eprintln!("settings: {}", settings::Settings::path().display());
     let mut audio = receiver::AudioOpts::default();
     audio.source = cfg.audio_source;
+    // 起動時から設定のデバイスで開く(既定デバイスで鳴り始めるのを防ぐ)
+    audio.device = cfg.audio_device.clone();
     let mut bind = String::from("0.0.0.0");
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -825,6 +827,10 @@ struct ViewerApp {
     show_advanced: bool,
     /// 音声入力を映像ソースに追従させるか
     audio_auto: bool,
+    /// S/PDIF を主系統へ混ぜるか
+    spdif_mix: bool,
+    /// S/PDIF の音量(主系統とは独立)
+    spdif_volume: f32,
     /// 実際にウィンドウへ適用済みの値。設定変更を1回だけ送るために持つ
     clean_size_applied: [f32; 2],
     clean_undecorated_applied: bool,
@@ -980,6 +986,8 @@ impl ViewerApp {
             clean_undecorated: cfg.clean_undecorated,
             show_advanced: cfg.show_advanced,
             audio_auto: cfg.audio_auto,
+            spdif_mix: cfg.spdif_mix,
+            spdif_volume: cfg.spdif_volume,
             clean_size_applied: cfg.clean_size,
             clean_undecorated_applied: cfg.clean_undecorated,
             bezel_tex: None,
@@ -1010,6 +1018,9 @@ impl ViewerApp {
         // ★起動時にも一度合わせる。設定に前回の音声入力が残っていても、
         //   復元した映像ソースと食い違ったままにしない。
         app.apply_auto_audio();
+        // ★パネルを一度も開かなくても効くように、起動時に一度入れておく。
+        //   UI の描画に依存させると「閉じたまま起動 → S/PDIF が鳴らない」になる。
+        app.shared.aux.set(app.spdif_mix, app.spdif_volume);
         app
     }
 
@@ -1208,6 +1219,8 @@ impl ViewerApp {
             clean_undecorated: self.clean_undecorated,
             show_advanced: self.show_advanced,
             audio_auto: self.audio_auto,
+            spdif_mix: self.spdif_mix,
+            spdif_volume: self.spdif_volume,
             filter: self.filter,
             interlace_decay: self.interlace_decay,
             adj_hue_deg: self.adjust.hue_deg,
@@ -1517,6 +1530,86 @@ impl ViewerApp {
         }
     }
 
+    /// S/PDIF(デジタル音声入力)を主系統へ混ぜる。
+    ///
+    /// ★**主系統の選択とは独立**。ボードは3系統とも常に送ってきている
+    ///   (audio_enable_mask の既定が 0b111)ので、混ぜるのは再生側の話でしかない。
+    ///   音量を別に持つのは、S/PDIF が別機材の音であることが多く、レベルが
+    ///   アナログ入力と揃っている保証が無いため。
+    fn spdif_ui(&mut self, ui: &mut egui::Ui) {
+        let astats = self.shared.audio.lock().unwrap().clone();
+        let (on0, vol0) = (self.spdif_mix, self.spdif_volume);
+        // ★**主系統が既に S/PDIF なら混ぜる意味が無い。** 同じ音を自分自身に
+        //   重ねることになるし、受信側も主系統で取ってしまうので副系統には
+        //   1パケットも回らない。以前はそれを「パケットが来ていません」と
+        //   出していて、鳴っているのに壊れているように見えた。
+        let main_is_spdif = self.audio_source == Some(receiver::AUX_SOURCE);
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "S/PDIF");
+            ui.add_enabled_ui(!main_is_spdif, |ui| {
+                // 主系統が S/PDIF のときは「混ぜない」状態として見せる。
+                // 設定そのものは保つので、入力を戻せば元どおりになる。
+                let mut on = self.spdif_mix && !main_is_spdif;
+                let r = ui.checkbox(&mut on, "混ぜる")
+                    .on_hover_text(
+                        "光デジタル入力(TOSLINK)を、いま選んでいる音声に重ねて鳴らします。\n\
+                         入力の選択とは独立なので、映像ソースを切り替えても外れません")
+                    .on_disabled_hover_text(
+                        "S/PDIF は音声の入力に選ばれています(自分自身には重ねません)");
+                if r.changed() {
+                    self.spdif_mix = on;
+                    self.mark_settings_dirty();
+                }
+                ui.add_enabled_ui(on, |ui| {
+                    theme::align_sliders(ui);
+                    ui.add(egui::Slider::new(&mut self.spdif_volume, 0.0..=1.5)
+                           .show_value(false))
+                        .on_hover_text("S/PDIF だけの音量(主系統とは別)");
+                    ui.monospace(format!("{:3.0}%", self.spdif_volume * 100.0));
+                });
+            });
+        });
+        // ★**混ぜていなくても状態は見せる。** S/PDIF を主系統に選んでいるときも
+        //   「いま何Hzで来ていて、詰まっていないか」は同じだけ知りたい。
+        //   どちらの系統で鳴っているかで、見るべき統計が入れ替わるだけ。
+        if self.show_advanced && (self.spdif_mix || main_is_spdif) {
+            if let Some(a) = &astats {
+                use std::sync::atomic::Ordering::Relaxed;
+                let rate = if main_is_spdif {
+                    a.src_rate.load(Relaxed)
+                } else {
+                    a.aux_rate.load(Relaxed)
+                };
+                // ★**pkts を必ず出す。** 音が出ないときに「ボードが送っていない」
+                //   のか「こちらが鳴らせていない」のかを分ける唯一の手掛かり。
+                let (pkts, buffered, underruns) = if main_is_spdif {
+                    (a.packets.load(Relaxed), a.buffered.load(Relaxed),
+                     a.underruns.load(Relaxed))
+                } else {
+                    (a.aux_packets.load(Relaxed), a.aux_buffered.load(Relaxed),
+                     a.aux_underruns.load(Relaxed))
+                };
+                if rate > 0 {
+                    theme::kv(ui, "", format!(
+                        "{}  buffered {} ms  underruns {}  pkts {pkts}",
+                        audio::describe_rate(rate as u32),
+                        buffered * 1000 / a.device_rate.load(Relaxed).max(1),
+                        underruns));
+                } else if pkts > 0 {
+                    theme::kv(ui, "", format!("レート未確定  pkts {pkts}"));
+                } else {
+                    ui.weak("S/PDIF のパケットが来ていません(pkts 0)");
+                }
+            }
+        }
+        if self.spdif_mix != on0 || self.spdif_volume != vol0 {
+            self.mark_settings_dirty();
+        }
+        // ★再生器ではなく Shared 側へ書く。再生器は作り直されるので、そちらに
+        //   書くと出力デバイスや入力を切り替えた瞬間に設定が消える。
+        self.shared.aux.set(self.spdif_mix, self.spdif_volume);
+    }
+
     /// 音量。よく触るのでパネル上部に置く。
     fn volume_ui(&mut self, ui: &mut egui::Ui) {
         let astats = self.shared.audio.lock().unwrap().clone();
@@ -1592,6 +1685,18 @@ impl ViewerApp {
                 if !now.device.is_empty() {
                     if self.show_advanced {
                         ui.monospace(format!("dev {}", now.device));
+                    }
+                    // ★**選んだデバイスと実際に開いたデバイスが違うことを黙らない。**
+                    //   見つからないと既定デバイスへ落ちる仕様なので、ユーザーからは
+                    //   「音が鳴らない」としか見えない。実機で起きた(2026-09-06)。
+                    //   2秒ごとに開き直しを試みているので、繋ぎ直せば自然に直る。
+                    if let Some(w) = now.wanted.as_ref() {
+                        if !w.is_empty() && *w != now.device {
+                            ui.colored_label(theme::AMBER, format!(
+                                "「{w}」を開けないので「{}」で鳴っています。\n\
+                                 接続を確認してください(開けるようになれば自動で切り替わります)",
+                                now.device));
+                        }
                     }
                 }
                 ui.monospace(format!(
@@ -2601,7 +2706,7 @@ impl ViewerApp {
         self.follow_mode();
         self.sync_tune_from_board();
         let mut send: Vec<(u16, u32)> = Vec::new();
-        let mut row = |ui: &mut egui::Ui, label: &str, val: &mut i32,
+        let row = |ui: &mut egui::Ui, label: &str, val: &mut i32,
                        lo: i32, hi: i32, key: u16, send: &mut Vec<(u16, u32)>| {
             ui.horizontal(|ui| {
                 ui.monospace(format!("{label:<10}"));
@@ -2733,7 +2838,7 @@ impl ViewerApp {
                 let mut a = self.adjust;
                 let mut ch = false;
                 theme::align_sliders(ui);
-                let mut row = |ui: &mut egui::Ui, label: &str, v: &mut f32,
+                let row = |ui: &mut egui::Ui, label: &str, v: &mut f32,
                                lo: f32, hi: f32, dec: usize, tip: &str, ch: &mut bool| {
                     ui.horizontal(|ui| {
                         theme::label_col(ui, label);
@@ -3759,6 +3864,7 @@ impl eframe::App for ViewerApp {
                 self.source_ui(ui);
                 self.audio_src_ui(ui);
                 self.volume_ui(ui);
+                self.spdif_ui(ui);
                 ui.separator();
 
                 Self::section(ui, "配信出力");

@@ -141,6 +141,10 @@ pub struct Settings {
     /// クリーン出力ウィンドウの内寸。**モード切替では変えない**。
     /// 変えると OBS 側のソースサイズが動いて配信が破綻する。
     pub clean_size: [f32; 2],
+    /// S/PDIF(デジタル音声入力)を主系統へ混ぜるか。
+    pub spdif_mix: bool,
+    /// S/PDIF の音量(主系統とは独立)。
+    pub spdif_volume: f32,
     /// 音声入力を映像ソースに追従させるか。
     /// 既定は on(入力を切り替えたら音声も付いてくるのが自然なので)。
     pub audio_auto: bool,
@@ -194,6 +198,8 @@ impl Default for Settings {
             clean_undecorated: true,
             show_advanced: false,
             audio_auto: true,
+            spdif_mix: false,
+            spdif_volume: 1.0,
             filter: 2,
             dot_a_milli: default_dot_a(),
             interlace_decay: 1.0,
@@ -322,6 +328,10 @@ impl Settings {
                 "clean_undecorated" => s.clean_undecorated = v == "true",
                 "show_advanced" => s.show_advanced = v == "true",
                 "audio_auto" => s.audio_auto = v != "false",
+                "spdif_mix" => s.spdif_mix = v == "true",
+                "spdif_volume" => {
+                    if let Ok(x) = v.parse::<f32>() { s.spdif_volume = x.clamp(0.0, 1.5) }
+                }
                 "clean_size" => {
                     let a: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                     // 極端な値で開くと画面外に出て閉じられなくなるので範囲を切る
@@ -404,7 +414,9 @@ impl Settings {
              clean_size = {:.0},{:.0}\n\
              clean_undecorated = {}\n\
              show_advanced = {}\n\
-             audio_auto = {}\n",
+             audio_auto = {}\n\
+             spdif_mix = {}\n\
+             spdif_volume = {:.3}\n",
             self.volume,
             self.muted,
             self.audio_source.map(|v| v.to_string()).unwrap_or_else(|| "off".into()),
@@ -443,6 +455,8 @@ impl Settings {
             self.clean_undecorated,
             self.show_advanced,
             self.audio_auto,
+            self.spdif_mix,
+            self.spdif_volume,
         );
         let mut body = body;
         for (khz, v) in &self.band_pll {

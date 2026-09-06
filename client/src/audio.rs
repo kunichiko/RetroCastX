@@ -19,6 +19,32 @@ use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
+/// 副系統(S/PDIF を混ぜる)の設定。
+///
+/// ★**AudioStats に置いてはいけない。** AudioStats は AudioPlayer と一緒に
+///   出力デバイスやソースを切り替えるたびに作り直される。「混ぜたい」という
+///   意思はアプリ側の設定であって再生器の状態ではないので、再生器より長生きする
+///   場所に置く。ここを間違えると、再生器が作り直された瞬間に S/PDIF が黙って
+///   落ち、パネルを開くまで戻らない(実際そうなった)。
+#[derive(Debug)]
+pub struct AuxCtl {
+    pub on: AtomicBool,
+    pub gain_bits: AtomicU32,
+}
+
+impl Default for AuxCtl {
+    fn default() -> Self {
+        Self { on: AtomicBool::new(false), gain_bits: AtomicU32::new(1.0f32.to_bits()) }
+    }
+}
+
+impl AuxCtl {
+    pub fn set(&self, on: bool, gain: f32) {
+        self.on.store(on, Ordering::Relaxed);
+        self.gain_bits.store(gain.to_bits(), Ordering::Relaxed);
+    }
+}
+
 pub struct AudioStats {
     /// 現在のバッファ長[フレーム]
     pub buffered: AtomicU64,
@@ -30,11 +56,21 @@ pub struct AudioStats {
     pub packets: AtomicU64,
     /// デバイスの実サンプルレート
     pub device_rate: AtomicU64,
+    /// 主系統の**入力**レート。デバイス側とは別物。
+    /// ★S/PDIF を主系統に選んだときも状態を見たいので、副系統と同じように記録する。
+    pub src_rate: AtomicU64,
     /// 再生中か(プリバッファ完了)
     pub playing: AtomicBool,
     /// 音量。f32をビットパターンで持つ(コールバックからロックなしで読むため)。
     /// 1.0=原音、0.0=無音。1.0超も許すが、クリップは出力時に飽和させる。
     pub gain_bits: AtomicU32,
+
+    // --- 副系統(S/PDIF を主系統へ混ぜる)の統計 ---
+    pub aux_buffered: AtomicU64,
+    pub aux_underruns: AtomicU64,
+    pub aux_packets: AtomicU64,
+    /// 副系統の実サンプルレート(S/PDIF は 44.1kHz のこともある)
+    pub aux_rate: AtomicU64,
 }
 
 impl Default for AudioStats {
@@ -45,8 +81,13 @@ impl Default for AudioStats {
             dropped: AtomicU64::new(0),
             packets: AtomicU64::new(0),
             device_rate: AtomicU64::new(0),
+            src_rate: AtomicU64::new(0),
             playing: AtomicBool::new(false),
             gain_bits: AtomicU32::new(1.0f32.to_bits()),
+            aux_buffered: AtomicU64::new(0),
+            aux_underruns: AtomicU64::new(0),
+            aux_packets: AtomicU64::new(0),
+            aux_rate: AtomicU64::new(0),
         }
     }
 }
@@ -58,9 +99,9 @@ impl Default for AudioStats {
 /// 滞留が目標より 1.25% 多い状態(80msなら+1ms)で、遅延としては無視できる。
 ///
 /// 歩幅は ±0.1%(1000ppm)で頭打ちにする。打ち消したいのは十数ppmなので桁で余る。
-fn track_ratio(ratio: f64, have: f64, target: f64) -> f64 {
+fn track_ratio(ratio: f64, base: f64, have: f64, target: f64) -> f64 {
     let err = ((have - target) / target.max(1.0)).clamp(-1.0, 1.0);
-    let want = (1.0 + err * 0.001).clamp(0.999, 1.001);
+    let want = (base * (1.0 + err * 0.001)).clamp(base * 0.999, base * 1.001);
     ratio + (want - ratio) * 0.05
 }
 
@@ -75,13 +116,71 @@ struct Ring {
     b: (f32, f32),
     /// a と b の間の位置 [0,1)
     frac: f64,
-    /// 出力1フレームあたり進む入力フレーム数。1.0 からのずれが追従量
+    /// 出力1フレームあたり進む入力フレーム数。base_ratio からのずれが追従量
     ratio: f64,
+    /// 入力レート / 出力レート。
+    ///
+    /// ★**ここを 1.0 決め打ちにしてはいけない。** 追従は ±0.1% しか動かないので、
+    ///   レートが本当に違う入力(S/PDIF は 44.1kHz のことがある)では
+    ///   追いつかず、バッファが片方向に溢れるか枯れる。アナログ2系統は
+    ///   PCM1808 の 48kHz 固定なので今まで表面化しなかっただけ。
+    base_ratio: f64,
     /// a,b を読み込んだか(枯渇後は読み直す)
     primed: bool,
+    /// このコールバックで枯渇したか(回数を数えるための一時フラグ)
+    dry: bool,
 }
 
 impl Ring {
+    /// 送られてきたレートに合わせて基準比を決める。
+    /// 変化したときだけ動かす(毎パケット書き換えると追従が乱れる)。
+    fn set_source_rate(&mut self, src_hz: u32, dev_hz: u32) {
+        if src_hz == 0 || dev_hz == 0 {
+            return;
+        }
+        // ★**素直に信じない。** gateware の rate_hz は「1秒間に数えたフレーム数」
+        //   なので、ロックした直後の1秒は途中までの値(12000 など)が乗る。
+        //   そのまま基準比にすると 1/4 の速さで鳴って、次の1秒まで直らない。
+        //   実在するレートの範囲から外れた値は無視する。
+        if !(32_000..=192_000).contains(&src_hz) {
+            return;
+        }
+        let base = src_hz as f64 / dev_hz as f64;
+        if (base - self.base_ratio).abs() > 1e-4 {
+            self.base_ratio = base;
+            self.ratio = base;
+        }
+    }
+
+    /// ASRC を1フレーム進めて出力を返す。枯渇したら None(呼び側は無音を出す)。
+    /// 枯渇したら `dry` を立てるので、呼び側はコールバックあたり1回だけ数える。
+    fn next_frame(&mut self) -> Option<(f32, f32)> {
+        if !self.primed {
+            match (self.pop_frame(), self.pop_frame()) {
+                (Some(a), Some(b)) => {
+                    self.a = a; self.b = b; self.frac = 0.0; self.primed = true;
+                }
+                _ => { self.started = false; self.dry = true; return None; }
+            }
+        }
+        let t = self.frac as f32;
+        let out = (self.a.0 + (self.b.0 - self.a.0) * t,
+                   self.a.1 + (self.b.1 - self.a.1) * t);
+        self.frac += self.ratio;
+        while self.frac >= 1.0 {
+            match self.pop_frame() {
+                Some(nx) => { self.a = self.b; self.b = nx; self.frac -= 1.0; }
+                None => {
+                    self.started = false;
+                    self.primed = false;
+                    self.dry = true;
+                    break;
+                }
+            }
+        }
+        Some(out)
+    }
+
     fn pop_frame(&mut self) -> Option<(f32, f32)> {
         let l = self.buf.pop_front()?;
         let r = self.buf.pop_front()?;
@@ -91,6 +190,10 @@ impl Ring {
 
 pub struct AudioPlayer {
     ring: Arc<Mutex<Ring>>,
+    /// 副系統(S/PDIF)。主系統に混ぜて出す
+    aux_ring: Arc<Mutex<Ring>>,
+    /// 副系統の設定。再生器より長生きする(作り直しても設定が消えないように)
+    pub aux: Arc<AuxCtl>,
     pub stats: Arc<AudioStats>,
     /// 実際に開いたデバイス名(UI表示用)
     pub device_name: String,
@@ -128,6 +231,7 @@ impl AudioPlayer {
         prebuffer_ms: u32,
         max_ms: u32,
         device_name: Option<&str>,
+        aux: Arc<AuxCtl>,
     ) -> Option<Self> {
         let host = cpal::default_host();
         let device = match device_name {
@@ -158,12 +262,29 @@ impl AudioPlayer {
             b: (0.0, 0.0),
             frac: 0.0,
             ratio: 1.0,
+            base_ratio: 1.0,
             primed: false,
+            dry: false,
+        }));
+        // 副系統(S/PDIF を混ぜる)。使わなくても確保しておく——ON にした瞬間から
+        // 積めるようにしておかないと、切り替えでデバイスを開き直すことになる。
+        let aux_ring = Arc::new(Mutex::new(Ring {
+            buf: std::collections::VecDeque::with_capacity(max_frames * 2 + 4096),
+            started: false,
+            a: (0.0, 0.0),
+            b: (0.0, 0.0),
+            frac: 0.0,
+            ratio: 1.0,
+            base_ratio: 1.0,
+            primed: false,
+            dry: false,
         }));
         let stats = Arc::new(AudioStats::default());
         stats.device_rate.store(device_rate as u64, Ordering::Relaxed);
 
         let ring_cb = ring.clone();
+        let aux_cb = aux_ring.clone();
+        let aux_ctl = aux.clone();
         let stats_cb = stats.clone();
         let err_fn = |e| eprintln!("audio stream error: {e}");
 
@@ -179,80 +300,76 @@ impl AudioPlayer {
             .build_output_stream(
                 cfg.config(),
                 move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    let mut r = ring_cb.lock().unwrap();
-                    // プリバッファに満たない間は無音(頭切れ/断続を防ぐ)
-                    if !r.started {
-                        if r.buf.len() >= prebuffer_frames * 2 {
-                            r.started = true;
-                            stats_cb.playing.store(true, Ordering::Relaxed);
-                        } else {
-                            out.fill(0.0);
-                            return;
-                        }
-                    }
+                    let mut m = ring_cb.lock().unwrap();
+                    let mut x = aux_cb.lock().unwrap();
                     // 音量はコールバックの頭で1回読む(ブロック内で一定にする)
                     let gain = f32::from_bits(stats_cb.gain_bits.load(Ordering::Relaxed));
+                    let aux_gain = f32::from_bits(aux_ctl.gain_bits.load(Ordering::Relaxed));
+                    let aux_on = aux_ctl.on.load(Ordering::Relaxed);
+
+                    // プリバッファに満たない間は無音(頭切れ/断続を防ぐ)。
+                    // ★**系統ごとに独立に待つ。** 副系統(S/PDIF)は繋がっていない
+                    //   ことが普通なので、そちらの充填を待つと主系統まで鳴らなくなる。
+                    if !m.started && m.buf.len() >= prebuffer_frames * 2 {
+                        m.started = true;
+                        stats_cb.playing.store(true, Ordering::Relaxed);
+                    }
+                    if aux_on && !x.started && x.buf.len() >= prebuffer_frames * 2 {
+                        x.started = true;
+                    }
+                    if !m.started && !(aux_on && x.started) {
+                        out.fill(0.0);
+                        stats_cb.buffered.store((m.buf.len() / 2) as u64, Ordering::Relaxed);
+                        return;
+                    }
 
                     // --- ASRC の追従。**ゆっくり動かす。** 速く動かすと音程が
                     //     揺れて聞こえる。滞留がプリバッファ量から離れた割合に
                     //     比例して歩幅を変える比例制御で、12.5ppm を打ち消すのに
                     //     必要なのは滞留が目標より 1.25% 多い状態(80msなら+1ms)。
-                    let have = (r.buf.len() / 2) as f64;
-                    r.ratio = track_ratio(r.ratio, have, prebuffer_frames as f64);
+                    let have = (m.buf.len() / 2) as f64;
+                    m.ratio = track_ratio(m.ratio, m.base_ratio, have, prebuffer_frames as f64);
+                    let have_x = (x.buf.len() / 2) as f64;
+                    x.ratio = track_ratio(x.ratio, x.base_ratio, have_x, prebuffer_frames as f64);
 
                     // ★**枯渇は「回数」で数える。** 以前はサンプルフレームごとに
                     //   +1 していたので、1回の枯渇でコールバックの残り全部
-                    //   (512フレームなら最大512)が加算され、数として読めなかった
-                    //   (実機で underruns 416 と出て「416回途切れた」と読めてしまう
-                    //    が、実際には1〜2回だった可能性がある)。
-                    let mut dry = false;
+                    //   (512フレームなら最大512)が加算され、数として読めなかった。
+                    m.dry = false;
+                    x.dry = false;
                     for f in out.chunks_mut(channels) {
-                        if !r.primed {
-                            match (r.pop_frame(), r.pop_frame()) {
-                                (Some(a), Some(b)) => {
-                                    r.a = a; r.b = b; r.frac = 0.0; r.primed = true;
-                                }
-                                _ => {
-                                    f.fill(0.0);
-                                    r.started = false;
-                                    stats_cb.playing.store(false, Ordering::Relaxed);
-                                    if !dry {
-                                        dry = true;
-                                        stats_cb.underruns.fetch_add(1, Ordering::Relaxed);
-                                    }
-                                    continue;
-                                }
+                        let (mut lf, mut rf) = (0.0f32, 0.0f32);
+                        if m.started {
+                            if let Some((a, b)) = m.next_frame() {
+                                lf += a * gain;
+                                rf += b * gain;
                             }
                         }
-                        // a と b の間を線形補間して1フレーム出す
-                        let t = r.frac as f32;
-                        let lf = ((r.a.0 + (r.b.0 - r.a.0) * t) * gain).clamp(-1.0, 1.0);
-                        let rf = ((r.a.1 + (r.b.1 - r.a.1) * t) * gain).clamp(-1.0, 1.0);
+                        if aux_on && x.started {
+                            if let Some((a, b)) = x.next_frame() {
+                                lf += a * aux_gain;
+                                rf += b * aux_gain;
+                            }
+                        }
+                        // ★**混ぜてから飽和させる。** 系統ごとにクリップすると、
+                        //   片方が歪んでいるのか合計で溢れたのかが分からなくなる。
+                        let (lf, rf) = (lf.clamp(-1.0, 1.0), rf.clamp(-1.0, 1.0));
                         for (i, sm) in f.iter_mut().enumerate() {
                             // ステレオ以上は L,R を先頭2chへ、残りは0
                             *sm = match i { 0 => lf, 1 => rf, _ => 0.0 };
                         }
-                        // 歩幅ぶん進め、跨いだら次の入力フレームを取り込む
-                        r.frac += r.ratio;
-                        while r.frac >= 1.0 {
-                            match r.pop_frame() {
-                                Some(n) => { r.a = r.b; r.b = n; r.frac -= 1.0; }
-                                None => {
-                                    r.started = false;
-                                    r.primed = false;
-                                    stats_cb.playing.store(false, Ordering::Relaxed);
-                                    if !dry {
-                                        dry = true;
-                                        stats_cb.underruns.fetch_add(1, Ordering::Relaxed);
-                                    }
-                                    break;
-                                }
-                            }
-                        }
                     }
+                    if m.dry {
+                        stats_cb.playing.store(false, Ordering::Relaxed);
+                        stats_cb.underruns.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if x.dry {
+                        stats_cb.aux_underruns.fetch_add(1, Ordering::Relaxed);
+                    }
+                    stats_cb.buffered.store((m.buf.len() / 2) as u64, Ordering::Relaxed);
                     stats_cb
-                        .buffered
-                        .store((r.buf.len() / 2) as u64, Ordering::Relaxed);
+                        .aux_buffered
+                        .store((x.buf.len() / 2) as u64, Ordering::Relaxed);
                 },
                 err_fn,
                 None,
@@ -262,6 +379,8 @@ impl AudioPlayer {
 
         Some(Self {
             ring,
+            aux_ring,
+            aux,
             stats,
             device_name: dev_name,
             source,
@@ -277,8 +396,10 @@ impl AudioPlayer {
     }
 
     /// AUDIOパケットのペイロード(s16le L/R interleaved)を積む。
-    pub fn push(&self, samples: &[u8]) {
+    pub fn push(&self, samples: &[u8], rate_hz: u32) {
+        self.stats.src_rate.store(rate_hz as u64, Ordering::Relaxed);
         let mut r = self.ring.lock().unwrap();
+        r.set_source_rate(rate_hz, self.stats.device_rate.load(Ordering::Relaxed) as u32);
         for c in samples.chunks_exact(2) {
             r.buf.push_back(i16::from_le_bytes([c[0], c[1]]));
         }
@@ -294,6 +415,27 @@ impl AudioPlayer {
         self.stats.packets.fetch_add(1, Ordering::Relaxed);
         self.stats
             .buffered
+            .store((r.buf.len() / 2) as u64, Ordering::Relaxed);
+        let _ = self.prebuffer_frames;
+    }
+
+    /// 副系統(S/PDIF)へ積む。主系統とは別のリング・別のレート・別の音量。
+    pub fn push_aux(&self, samples: &[u8], rate_hz: u32) {
+        let mut r = self.aux_ring.lock().unwrap();
+        r.set_source_rate(rate_hz, self.stats.device_rate.load(Ordering::Relaxed) as u32);
+        for c in samples.chunks_exact(2) {
+            r.buf.push_back(i16::from_le_bytes([c[0], c[1]]));
+        }
+        // 溜まりすぎ(遅延の蓄積)は古い方を捨てて上限内に保つ
+        let max = self.max_frames * 2;
+        if r.buf.len() > max {
+            let excess = r.buf.len() - max;
+            // ★溢れを主系統と混ぜて数えない。どちらが詰まったのか分からなくなる
+            r.buf.drain(..excess);
+        }
+        self.stats.aux_packets.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .aux_buffered
             .store((r.buf.len() / 2) as u64, Ordering::Relaxed);
         let _ = self.prebuffer_frames;
     }
@@ -322,7 +464,7 @@ mod tests {
         let blocks = (rate * 3600.0 * 4.0 / block) as usize;
         for _ in 0..blocks {
             if track {
-                ratio = track_ratio(ratio, have, target);
+                ratio = track_ratio(ratio, 1.0, have, target);
             }
             // 生産は drift ぶん速い/遅い、消費は歩幅ぶん
             have += block * ((1.0 + drift_ppm * 1e-6) - ratio);
@@ -363,11 +505,132 @@ mod tests {
     fn asrc_correction_is_inaudible() {
         let mut ratio = 1.0f64;
         for _ in 0..10000 {
-            ratio = track_ratio(ratio, 48000.0 * 0.240, 48000.0 * 0.080);
+            ratio = track_ratio(ratio, 1.0, 48000.0 * 0.240, 48000.0 * 0.080);
         }
         assert!(ratio <= 1.001 + 1e-9, "歩幅が上限を超えた: {ratio}");
         // 滞留が上限まで振れても補正は 0.1% = 約1.7セント
         let cents = 1200.0 * (ratio.ln() / 2.0f64.ln());
         assert!(cents.abs() < 3.0, "音程が {cents:.2} セント動く(3セント未満に)");
+    }
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::*;
+
+    fn ring() -> Ring {
+        Ring {
+            buf: Default::default(), started: false,
+            a: (0.0, 0.0), b: (0.0, 0.0), frac: 0.0,
+            ratio: 1.0, base_ratio: 1.0, primed: false, dry: false,
+        }
+    }
+
+    /// ★**44.1kHz の入力を 48kHz のデバイスへ出せること。**
+    ///   追従は基準比の ±0.1% しか動かないので、基準比を入れずに 1.0 のままだと
+    ///   1秒あたり 3900 フレームぶん食い違い、バッファが片方向に振り切れる。
+    ///   S/PDIF を混ぜる以上ここは避けて通れない(アナログ2系統は 48kHz 固定
+    ///   だったので今まで表面化していなかった)。
+    #[test]
+    fn base_ratio_follows_the_source_rate() {
+        let mut r = ring();
+        r.set_source_rate(44_100, 48_000);
+        assert!((r.base_ratio - 44_100.0 / 48_000.0).abs() < 1e-9, "{}", r.base_ratio);
+        // 追従はその周りだけを動く
+        let tracked = track_ratio(r.ratio, r.base_ratio, 100.0, 100.0);
+        assert!((tracked - r.base_ratio).abs() < r.base_ratio * 0.002,
+                "基準比から離れた: {tracked}");
+    }
+
+    /// 同じレートが続く間は基準比を動かさない(毎パケット書き換えると追従が乱れる)
+    #[test]
+    fn base_ratio_is_stable_for_the_same_rate() {
+        let mut r = ring();
+        r.set_source_rate(48_000, 48_000);
+        r.ratio = 1.0005;                 // 追従で動いた状態
+        r.set_source_rate(48_000, 48_000);
+        assert_eq!(r.ratio, 1.0005, "同じレートなのに追従値が捨てられた");
+    }
+
+    /// レートが変わったら入れ直す(S/PDIF は機器を差し替えると変わる)
+    #[test]
+    fn base_ratio_resets_when_the_rate_changes() {
+        let mut r = ring();
+        r.set_source_rate(48_000, 48_000);
+        r.set_source_rate(44_100, 48_000);
+        assert!((r.ratio - 44_100.0 / 48_000.0).abs() < 1e-9, "{}", r.ratio);
+    }
+
+    /// 0 は無視する(MODE/AUDIO が来る前のレート未確定を踏まない)
+    #[test]
+    fn zero_rate_is_ignored() {
+        let mut r = ring();
+        r.set_source_rate(0, 48_000);
+        assert_eq!(r.base_ratio, 1.0);
+    }
+}
+
+/// 実測レートを「標準レート + ずれ[ppm]」として言い表す。
+///
+/// ★**丸めない。** 44101 を 44100 と表示してしまうと、本当に非標準のレート
+///   (壊れた復号や未対応の機器)が来たときに気づけなくなる。実際 S/PDIF の
+///   復号が壊れていたとき 24645 という値が出ていて、それが異常だと一目で
+///   分かることに価値があった。
+///
+///   一方で 1Hz の差は 44.1kHz では 23ppm でしかなく、水晶の公差(±20〜100ppm)
+///   の範囲内。**送出側とボードの水晶がずれているという事実**であって異常では
+///   ないので、そう読めるように出す。
+pub fn describe_rate(hz: u32) -> String {
+    const STD: [u32; 6] = [32_000, 44_100, 48_000, 88_200, 96_000, 192_000];
+    // 公差の広い水晶でも 200ppm 程度。それを超えるものは標準レートと呼べない
+    const TOL_PPM: i64 = 500;
+    for std in STD {
+        let ppm = (hz as i64 - std as i64) * 1_000_000 / std as i64;
+        if ppm.abs() <= TOL_PPM {
+            let name = if std % 1000 == 0 {
+                format!("{}kHz", std / 1000)
+            } else {
+                format!("{:.1}kHz", std as f32 / 1000.0)
+            };
+            return if ppm == 0 {
+                name
+            } else {
+                format!("{name} ({ppm:+}ppm)")
+            };
+        }
+    }
+    format!("{hz} Hz")
+}
+
+#[cfg(test)]
+mod rate_name_tests {
+    use super::describe_rate;
+
+    /// ちょうどなら素直に出す
+    #[test]
+    fn exact_rates_are_plain() {
+        assert_eq!(describe_rate(48_000), "48kHz");
+        assert_eq!(describe_rate(44_100), "44.1kHz");
+    }
+
+    /// 水晶差はずれとして出す(丸めて隠さない)
+    #[test]
+    fn small_offsets_are_shown_as_ppm() {
+        assert_eq!(describe_rate(44_101), "44.1kHz (+22ppm)");
+        assert_eq!(describe_rate(47_998), "48kHz (-41ppm)");
+    }
+
+    /// ★**標準外はそのまま出す。** 復号が壊れているときの 24645 のような値が
+    ///   「44.1kHz」に化けると、異常を見逃す。
+    #[test]
+    fn non_standard_rates_stay_raw() {
+        assert_eq!(describe_rate(24_645), "24645 Hz");
+        assert_eq!(describe_rate(25_314), "25314 Hz");
+    }
+
+    /// 公差を超えたものは標準レート扱いしない
+    #[test]
+    fn far_offsets_are_not_snapped() {
+        assert_eq!(describe_rate(44_200), "44200 Hz");
     }
 }
