@@ -18,6 +18,23 @@ on:
     #   Viewer 以外のリリースには接頭辞を付ける規約にしている(ゲートウェア = gw-)。
     #   v0.9.0-pcb はその規約より前のものなので、ここで除外しておく。
     tags: ['v*.*.*', '!v*-pcb']
+    # ★**キャッシュを既定ブランチに作るために要る。** GitHub Actions のキャッシュは
+    #   「自分の ref」か「既定ブランチ」からしか読めない。以前はトリガが tag と
+    #   pull_request だけで main を通らなかったので、PR が作るキャッシュは
+    #   refs/pull/N/merge、タグが作るキャッシュは refs/heads/refs/tags/vX.Y.Z に入り、
+    #   **どれも他から読めずリリースビルドが毎回コールドだった**(2026-09-06 に実測:
+    #   復元0秒、Build 5分35秒、しかも二度と読まれない841MiBを毎回保存していた)。
+    #   main で1本通しておけば、以降の PR もタグもここから復元できる。
+    #   is_release は非タグなら false なので、Release 作成もアップロードも走らない。
+    branches: [main]
+    # 下の pull_request と同じ除外。YAML アンカーは on: では使えないので複製する
+    paths-ignore:
+      - 'docs/**'
+      - 'gateware/**'
+      - 'hardware/**'
+      - '**.md'
+      - '.github/workflows/gateware-release.yml'
+      - '.github/workflows/flasher-test.yml'
   pull_request:
     branches: [main]
     # Viewer(client/)と無関係な変更で macOS/Windows のフルビルド(約10分、署名込み)を
@@ -187,8 +204,16 @@ jobs:
           cargo --version
           rustup target add x86_64-apple-darwin
 
+      # ★**release プロファイル・同じ target で走らせる。** 既定の
+      #   `cargo test --locked` は **debug で487個の依存を丸ごともう一度**
+      #   ビルドする。debug の成果物は target/<triple>/release と別物なので
+      #   下の Build と一切共有されず、**純粋な二重作業**だった(実測1分24秒)。
+      #   ここを揃えると依存のコンパイルが Build と共有され、増分はこのクレートの
+      #   テストハーネスだけになる。
+      #   ランナーは arm64 なのでネイティブ実行。x86_64 側はコード生成先が違うだけで
+      #   中身は同じなので、テストは片方で足りる。
       - name: Test
-        run: cargo test --locked
+        run: cargo test --release --locked --target aarch64-apple-darwin
 
       # Intel Mac も対象にするため universal binary にする。arm64ランナー上で
       # x86_64 をクロスビルドし lipo で束ねる(実行時アセットは無いので他に同梱物なし)
@@ -236,8 +261,13 @@ jobs:
             echo "::error::タグからのリリースでは署名と公証が必須です。上に出ている Secret を設定してください"
             exit 1
           fi
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "note: PRでは公証しない(数分かかるため)"
+          # 公証は数分かかるうえ Apple のサービスを叩くので、**配布物になる
+          # ときだけ**行う。PR と、キャッシュを温めるための main への push は対象外。
+          # 手動実行(workflow_dispatch)は署名済みの成果物を試したい場合があるので残す。
+          if [ "${{ github.event_name }}" = "pull_request" ] \
+             || { [ "${{ github.event_name }}" = "push" ] \
+                  && [ "${{ needs.prepare.outputs.is_release }}" != "true" ]; }; then
+            echo "note: 配布物にならないビルドなので公証しない(数分かかるため)"
             SIGN=0
           fi
           echo "SIGN=${SIGN}" >> "${GITHUB_ENV}"
@@ -369,8 +399,11 @@ jobs:
           rustc --version
           cargo --version
 
+      # macOS 側と同じ理由で release に揃える(debug の二重ビルドを避ける)。
+      # Windows はクロスしないので target 指定は要らず、下の Build と同じ
+      # target/release を共有する。
       - name: Test
-        run: cargo test --locked
+        run: cargo test --release --locked
 
       - name: Build
         run: cargo build --release --locked
