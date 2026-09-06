@@ -29,6 +29,7 @@ mod appicon;
 mod assembler;
 mod audio;
 mod bezel;
+mod cleanout;
 mod fullscreen;
 mod keytap;
 mod netcheck;
@@ -811,6 +812,11 @@ struct ViewerApp {
     /// 枠を一時的に隠す。プルダウンの選択(bezel)は保ったまま切り替えたいので、
     /// 「なし」を選ぶのとは別に持つ。B キーで切り替える。
     bezel_off: bool,
+    /// 配信用クリーン出力ウィンドウ(OBS のウィンドウキャプチャ用)
+    clean_open: bool,
+    clean_size: [f32; 2],
+    /// 実際にウィンドウへ適用済みのサイズ。プリセット変更を1回だけ送るために持つ
+    clean_size_applied: [f32; 2],
     /// 枠のテクスチャ。ラスタライズした幅と一緒に持ち、幅が変わったら作り直す
     bezel_tex: Option<(egui::TextureHandle, u32)>,
     /// 補間 0=ニアレスト 1=バイリニア 2=sharp-bilinear
@@ -958,6 +964,9 @@ impl ViewerApp {
             show_panel: cfg.show_panel,
             bezel: cfg.bezel.clone(),
             bezel_off: cfg.bezel_off,
+            clean_open: cfg.clean_open,
+            clean_size: cfg.clean_size,
+            clean_size_applied: cfg.clean_size,
             bezel_tex: None,
             filter: cfg.filter,
             dot_a_milli: cfg.dot_a_milli,
@@ -1042,6 +1051,30 @@ impl ViewerApp {
         ));
     }
 
+    /// 配信用クリーン出力ウィンドウを1フレーム描く。
+    ///
+    /// 本体と同じ `paint_tube`(同じシェーダ)を、UIもベゼルも無い別ウィンドウへ
+    /// 出すだけ。OBS の「ウィンドウキャプチャ」でこれを掴めば、調整UIを写り込ませずに
+    /// 配信ソースにできる。
+    fn clean_output(&mut self, ctx: &egui::Context) {
+        if !self.clean_open {
+            return;
+        }
+        let aspect = cleanout::display_aspect(
+            self.frame_size, self.crop, self.tube_aspect, self.rotate);
+        let has_video = self.frame_size.0 > 0;
+        let resize = self.clean_size != self.clean_size_applied;
+        let size = self.clean_size;
+        let keep = cleanout::show(ctx, size, resize, aspect, has_video, |ui, rect| {
+            self.paint_tube(ui, rect)
+        });
+        self.clean_size_applied = size;
+        if !keep {
+            self.clean_open = false;
+            self.mark_settings_dirty();
+        }
+    }
+
     /// 現在のUI状態を設定として書き出す。スライダー操作中に毎フレーム書くのを
     /// 避けるため、変更を記録して少し待ってから1回だけ保存する。
     fn mark_settings_dirty(&mut self) {
@@ -1079,6 +1112,8 @@ impl ViewerApp {
             netcheck_muted: self.netcheck_muted,
             bezel: self.bezel.clone(),
             bezel_off: self.bezel_off,
+            clean_open: self.clean_open,
+            clean_size: self.clean_size,
             filter: self.filter,
             interlace_decay: self.interlace_decay,
             adj_hue_deg: self.adjust.hue_deg,
@@ -3824,6 +3859,39 @@ impl eframe::App for ViewerApp {
                     }
                 });
                 ui.horizontal(|ui| {
+                    // 配信用のクリーン出力。UIもベゼルも無い別ウィンドウを出す。
+                    ui.monospace("配信出力");
+                    let mut on = self.clean_open;
+                    if ui.checkbox(&mut on, "別窓")
+                        .on_hover_text(
+                            "映像だけを描く別ウィンドウを開きます。\n\
+                             OBS の「ウィンドウキャプチャ」でこれを掴むと、\n\
+                             調整UIやベゼルを写さずに配信ソースにできます。")
+                        .changed()
+                    {
+                        self.clean_open = on;
+                        self.mark_settings_dirty();
+                    }
+                    let sel = format!("{:.0}x{:.0}", self.clean_size[0], self.clean_size[1]);
+                    egui::ComboBox::from_id_salt("clean_size")
+                        .width(110.0)
+                        .selected_text(sel)
+                        .show_ui(ui, |ui| {
+                            for (label, size) in cleanout::PRESETS {
+                                let cur = self.clean_size == *size;
+                                if ui.selectable_label(cur, *label).clicked() && !cur {
+                                    self.clean_size = *size;
+                                    self.mark_settings_dirty();
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "ウィンドウの内寸。**映像の解像度が変わっても変えません**。\n\
+                             変えると OBS 側のソースサイズが動いて配信が崩れるためです。\n\
+                             中の映像はアスペクトを保って収め、余りは黒で埋めます。");
+                });
+                ui.horizontal(|ui| {
                     // 拡大時の補間。sharp-bilinear は非整数倍でもドット幅が不揃いに
                     // ならず、かつ全体がぼやけない。高解像度モニタ向けの既定。
                     ui.monospace("補間");
@@ -4068,6 +4136,7 @@ impl eframe::App for ViewerApp {
 
         self.remote_badge(&ctx);
         self.netcheck_modal(&ctx);
+        self.clean_output(&ctx);
 
         // ★**映像が来ている間は連続で描画する。**
         //
