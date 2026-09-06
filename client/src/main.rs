@@ -40,6 +40,8 @@ mod render;
 mod protocol;
 mod receiver;
 mod settings;
+mod theme;
+mod toast;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -248,6 +250,8 @@ fn main() -> eframe::Result {
         "RetroCast X",
         options,
         Box::new(move |cc| {
+            // アイコン由来の配色を先に当てる(ウィジェットが作られる前)
+            theme::apply(&cc.egui_ctx);
             Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, bind.clone(), no_vsync, decay, interlace_decay,
                                        audio, cfg.clone())))
         }),
@@ -743,7 +747,8 @@ struct ViewerApp {
     /// 平滑をリセットする判定用。モードが変わったら追従を待たずに飛ばす
     vtotal_mode_id: std::cell::Cell<u16>,
     /// 直近で入力設定を書き込んだソース(ラベル, 件数, 自動か)。パネルの確認表示用。
-    input_regs_sent: Option<(&'static str, usize, bool)>,
+    /// 一時通知(スナックバー)
+    toasts: toast::Toasts,
     /// 伝送形式が映像ソースと食い違ったので `input_regs` を自動で書いたか。
     /// **食い違いが解消したら false に戻す**ので、ボードの電源を入れ直すたびに
     /// 1回だけ書き直す。書いてから MODE が変わるまでの間に何度も書かないための掛け金。
@@ -816,6 +821,10 @@ struct ViewerApp {
     clean_open: bool,
     clean_size: [f32; 2],
     clean_undecorated: bool,
+    /// 調査用の数値と細かい設定を出すか
+    show_advanced: bool,
+    /// 音声入力を映像ソースに追従させるか
+    audio_auto: bool,
     /// 実際にウィンドウへ適用済みの値。設定変更を1回だけ送るために持つ
     clean_size_applied: [f32; 2],
     clean_undecorated_applied: bool,
@@ -906,7 +915,7 @@ impl ViewerApp {
         )
         .err()
         .map(|e| format!("UDP {port} bind failed: {e}"));
-        Self {
+        let mut app = Self {
             shared,
             audio_source,
             audio_devices: audio::output_devices(),
@@ -933,7 +942,7 @@ impl ViewerApp {
             vtotal_smooth: std::cell::Cell::new(0.0),
             vtotal_last_t: std::cell::Cell::new(None),
             vtotal_mode_id: std::cell::Cell::new(u16::MAX),
-            input_regs_sent: None,
+            toasts: toast::Toasts::default(),
             input_regs_autowritten: false,
             source_profile: cfg.source_profile.clone(),
             tune_pending: Default::default(),
@@ -969,6 +978,8 @@ impl ViewerApp {
             clean_open: cfg.clean_open,
             clean_size: cfg.clean_size,
             clean_undecorated: cfg.clean_undecorated,
+            show_advanced: cfg.show_advanced,
+            audio_auto: cfg.audio_auto,
             clean_size_applied: cfg.clean_size,
             clean_undecorated_applied: cfg.clean_undecorated,
             bezel_tex: None,
@@ -995,7 +1006,11 @@ impl ViewerApp {
             netcheck: None,
             netcheck_modal: false,
             netcheck_muted: cfg.netcheck_muted,
-        }
+        };
+        // ★起動時にも一度合わせる。設定に前回の音声入力が残っていても、
+        //   復元した映像ソースと食い違ったままにしない。
+        app.apply_auto_audio();
+        app
     }
 
     fn refresh_texture(&mut self, ctx: &egui::Context) {
@@ -1053,6 +1068,75 @@ impl ViewerApp {
                 dst: (rect.width() * ppp, rect.height() * ppp),
             },
         ));
+    }
+
+    /// パネルのセクション見出し。
+    ///
+    /// ★以前は `ui.strong()` だけだったので、本文の monospace と字面が近く
+    ///   「どこでセクションが切れているか」が読み取れなかった。区切り線は
+    ///   既に各セクションの終わりに入っているので、ここでは大きさと余白で
+    ///   段差を付ける。
+    fn section(ui: &mut egui::Ui, title: &str) {
+        theme::section(ui, title);
+    }
+
+    /// パネル最上部の簡易スキャン。
+    ///
+    /// ★**Tune の奥にもあるが、そこはスクロールしないと届かない。** モードが
+    ///   変わるたびに押すものなので、いちばん上に出して S キーでも叩けるように
+    ///   してある。実体は同じ `auto_start_quick()`。
+    fn quick_scan_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if self.auto.is_some() {
+                if ui.button("中止").clicked() {
+                    self.auto = None;
+                    self.auto_done = Some("中止しました".into());
+                }
+                if let Some(a) = self.auto.as_ref() {
+                    ui.monospace(a.note.clone());
+                }
+            } else {
+                let n = self.scan_candidates().len();
+                let btn = ui.add_enabled(
+                    n > 0,
+                    egui::Button::new(egui::RichText::new("簡易スキャン").strong()),
+                );
+                let btn = btn.on_hover_text(if n > 0 {
+                    format!(
+                        "候補 {n} 点の位相感度を測って、いちばん感度が強い点を採ります\n\
+                         (候補1つにつき8秒ほど。位相も最適値に合わせます)。\n\
+                         S キーでも実行できます。詳細は Tune の同じボタンを参照"
+                    )
+                } else {
+                    "この fH を説明できる候補がありません\n\
+                     (MODE未受信か、プロファイルに無いドットクロック)".to_string()
+                });
+                if btn.clicked() {
+                    self.auto_start_quick();
+                }
+                ui.weak("S");
+                // ★詳細の出し入れはここに置く。**調査用の数値と細かい設定が
+                //   常用時の表示に混ざっていて読みづらい**ため、既定では畳む。
+                ui.separator();
+                let mut adv = self.show_advanced;
+                if ui.checkbox(&mut adv, "詳細")
+                    .on_hover_text(
+                        "調査用の数値(present方式・CPU時間・パケット統計など)と、\n\
+                         細かい設定(vbp / hs_offset / pll_div / 間引き / 帯域制限 / 位相)を\n\
+                         出し入れします。問題を追うときだけ開けば十分です")
+                    .changed()
+                {
+                    self.show_advanced = adv;
+                    self.mark_settings_dirty();
+                }
+            }
+        });
+        // 直前の結果はここに出す。押した場所の近くに出ないと見落とす
+        if self.auto.is_none() {
+            if let Some(d) = self.auto_done.clone() {
+                ui.weak(d);
+            }
+        }
     }
 
     /// 配信用クリーン出力ウィンドウを1フレーム描く。
@@ -1122,6 +1206,8 @@ impl ViewerApp {
             clean_open: self.clean_open,
             clean_size: self.clean_size,
             clean_undecorated: self.clean_undecorated,
+            show_advanced: self.show_advanced,
+            audio_auto: self.audio_auto,
             filter: self.filter,
             interlace_decay: self.interlace_decay,
             adj_hue_deg: self.adjust.hue_deg,
@@ -1156,6 +1242,309 @@ impl ViewerApp {
     /// 音声の状態表示 + 出力デバイス/source の選択UI。
     /// cpalのStreamは生成スレッドから動かせないので、選択は「要求」として置き、
     /// 受信スレッドが再生器を作り直す。
+    /// 映像入力の選択。**もっともよく使う操作なのでパネル上部に置く。**
+    ///
+    /// ★以前は Tune の中にあったが、Tune は問題を追うときの場所なので
+    ///   常用の操作がそこにあるのは筋が悪かった。送信は自前で完結させて
+    ///   いるので、Tune が畳まれていても入力は切り替えられる。
+    fn source_ui(&mut self, ui: &mut egui::Ui) {
+        let mut send: Vec<(u16, u32)> = Vec::new();
+        // 映像ソースは「配線の方式」でもある。選んだらその入力設定をボードへ書く。
+        //
+        // ★**TVPのレジスタは電源で消える。** ビットストリームをSPIフラッシュに
+        //   焼いても、pixfmt・入力MUX・同期の取り方・クランプ・ゲインは
+        //   CONFIG で入れ直す必要がある。以前は毎回
+        //   `python3 -m retrocastx.videoin apply composite` を叩いていた。
+        //   同じ選択を選び直してもコンボは反応しないので、書き直しボタンも要る。
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "映像ソース");
+            let cur = self.source_profile.clone();
+            let mut sel = cur.clone();
+            let name = |k: &str| -> String {
+                if k.is_empty() {
+                    "自動".into()
+                } else {
+                    profiles::by_key(k).map_or_else(|| k.to_string(), |p| p.label.to_string())
+                }
+            };
+            egui::ComboBox::from_id_salt("srcprof")
+                .width(190.0)
+                .selected_text(name(&cur))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut sel, String::new(), "自動");
+                    for p in profiles::PROFILES {
+                        ui.selectable_value(&mut sel, p.key.to_string(), p.label);
+                    }
+                });
+            let changed = sel != cur;
+            if changed {
+                self.source_profile = sel;
+                self.mark_settings_dirty();
+                // ★入力を切り替えたら音声も付いてくる(「自動」のときだけ)
+                self.apply_auto_audio();
+            }
+            let prof = profiles::by_key(&self.source_profile);
+            let has_regs = prof.is_some_and(|p| !p.input_regs.is_empty());
+            let write = ui
+                .add_enabled(has_regs, egui::Button::new("入力設定を書き込む"))
+                .on_hover_text(
+                    "TVPの入力MUX・同期の取り方・クランプ・ゲイン・伝送形式を書く。\n\
+                     ボードの電源を入れ直すと消えるので、そのときはここを押す\n\
+                     (焼き直しは不要。全部CONFIGで済む)",
+                )
+                .clicked();
+            if let Some(p) = prof {
+                if (changed || write) && !p.input_regs.is_empty() {
+                    // ★伝送形式は、**いまのボードの値でこのソースが成立するなら
+                    //   上書きしない**。実行時に選べるようにしたので、
+                    //   X68000 RGB を RGB888 で見ているところへ入力設定を書いて
+                    //   黙って RGB555 に戻されると、選択が消えたように見える。
+                    //   YC8 が要るソース(コンポジット/S端子)や、ボードが
+                    //   別種の形式で止まっている場合は上書きする(救済が要る)。
+                    let have = self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt);
+                    let is_rgb = |f: u8| matches!(f, protocol::PIXFMT_RGB888
+                                                    | protocol::PIXFMT_RGB555
+                                                    | protocol::PIXFMT_RGB565);
+                    let keep_fmt = match (p.pixfmt(), have) {
+                        (Some(want), Some(h)) if want != protocol::PIXFMT_YC8 => is_rgb(h),
+                        _ => false,
+                    };
+                    let mut n = 0;
+                    let mut wrote: Vec<(u16, u32)> = Vec::new();
+                    for (k, v, _) in p.input_regs {
+                        if keep_fmt && *k == protocol::CFG_KEY_PIXFMT {
+                            continue;
+                        }
+                        send.push((*k, *v));
+                        wrote.push((*k, *v));
+                        n += 1;
+                    }
+                    // ★書いた値で Tune欄の表示も更新する。ここを忘れると
+                    //   表示が古いまま残り、次に触ったときに古い値が飛ぶ。
+                    for (k, v) in wrote {
+                        self.set_tune_mirror(k, v);
+                    }
+                    self.toasts.info(format!("{} の入力設定をボードへ書き込みました ({n}件)", p.label));
+                }
+            }
+        });
+        // ボードの伝送形式が**このソースで成立しない**ときだけ言う。
+        //
+        // ★「プロファイルの値と一致するか」で見てはいけない。伝送形式は
+        //   実行時に選べる(上の「伝送形式」コンボ)ので、X68000 RGB を
+        //   RGB888 で受けるのは**正当な選択**であって異常ではない。
+        //   一致で判定すると、そこで「設定が消えた」と嘘の警告が出る
+        //   (2026-09-03 に実際に出た)。
+        //
+        // 成立するかどうかは形式の**種類**で決まる:
+        //   YC8 … コンポジット/S端子の復調には生の8bitが要る。必須
+        //   RGB … RGB555 も RGB888 も絵になる。どちらでもよい
+        // 電源断でTVPのレジスタが消えた状態は、この「種類が違う」側に出る
+        // (コンポジットなのに RGB555 になっていて復調できない)。
+        if let Some(p) = profiles::by_key(&self.source_profile) {
+            if let (Some(want), Some(have)) = (
+                p.pixfmt(),
+                self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt),
+            ) {
+                let is_rgb = |f: u8| matches!(f, protocol::PIXFMT_RGB888
+                                                | protocol::PIXFMT_RGB555
+                                                | protocol::PIXFMT_RGB565);
+                let ok = if want == protocol::PIXFMT_YC8 {
+                    have == protocol::PIXFMT_YC8
+                } else {
+                    is_rgb(have)
+                };
+                if !ok {
+                    ui.colored_label(
+                        theme::AMBER,
+                        format!(
+                            "ボードの伝送形式が {} で、このソース({})では絵になりません。\
+                             電源を入れ直して設定が消えた可能性 → 「入力設定を書き込む」",
+                            pixfmt_name(have), pixfmt_name(want)
+                        ),
+                    );
+                }
+            }
+        }
+        self.queue_config(send);
+    }
+
+    /// 配信用クリーン出力の操作。**配信中いちばん触るものなので上に出す。**
+    fn clean_out_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            // 配信用のクリーン出力。UIもベゼルも無い別ウィンドウを出す。
+            // 行のラベルはセクション名と重複するので置かない。
+            let mut on = self.clean_open;
+            if ui.checkbox(&mut on, "別窓")
+                .on_hover_text(
+                    "映像だけを描く別ウィンドウを開きます。\n\
+                     OBS の「ウィンドウキャプチャ」でこれを掴むと、\n\
+                     調整UIやベゼルを写さずに配信ソースにできます。")
+                .changed()
+            {
+                self.clean_open = on;
+                self.mark_settings_dirty();
+            }
+            let mut nodec = self.clean_undecorated;
+            if ui.checkbox(&mut nodec, "枠なし")
+                .on_hover_text(
+                    "タイトルバーを消します。OBS のウィンドウキャプチャは\n\
+                     タイトルバーごと取り込むので、既定で消しています。\n\
+                     枠なしのときは映像のどこを掴んでもウィンドウを動かせます。")
+                .changed()
+            {
+                self.clean_undecorated = nodec;
+                self.mark_settings_dirty();
+            }
+            let sel = format!("{:.0}x{:.0}", self.clean_size[0], self.clean_size[1]);
+            egui::ComboBox::from_id_salt("clean_size")
+                .width(110.0)
+                .selected_text(sel)
+                .show_ui(ui, |ui| {
+                    for (label, size) in cleanout::PRESETS {
+                        let cur = self.clean_size == *size;
+                        if ui.selectable_label(cur, *label).clicked() && !cur {
+                            self.clean_size = *size;
+                            self.mark_settings_dirty();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "ウィンドウの内寸。**映像の解像度が変わっても変えません**。\n\
+                     変えると OBS 側のソースサイズが動いて配信が崩れるためです。\n\
+                     中の映像はアスペクトを保って収め、余りは黒で埋めます。");
+        });
+    }
+
+    /// CONFIG をボードへ送る。未確認の送信として記録し、設定も保存する。
+    fn queue_config(&mut self, send: Vec<(u16, u32)>) {
+        if send.is_empty() {
+            return;
+        }
+        let now = std::time::Instant::now();
+        for (k, v) in &send {
+            self.tune_pending.insert(*k, (*v, now));
+        }
+        self.shared.config_queue.lock().unwrap().extend(send);
+        self.mark_settings_dirty();
+    }
+
+    /// 音声入力の呼び名。0=RGB端子(D-SUB15) / 1=LINE入力 / 2=S/PDIF。
+    fn audio_src_name(src: Option<u8>) -> String {
+        match src {
+            None => "off".into(),
+            Some(0) => "0 RGB".into(),
+            Some(1) => "1 LINE".into(),
+            Some(2) => "2 S/PDIF".into(),
+            Some(n) => n.to_string(),
+        }
+    }
+
+    /// 音声入力を切り替えて受信スレッドへ要求を出す。
+    fn set_audio_source(&mut self, src: Option<u8>) {
+        if src == self.audio_source {
+            return;
+        }
+        self.audio_source = src;
+        self.mark_settings_dirty();
+        *self.shared.audio_request.lock().unwrap() = Some(receiver::AudioRequest {
+            device: self.audio_device_sel.clone(),
+            source: src,
+        });
+    }
+
+    /// 映像ソースに対応する音声入力へ合わせる。
+    ///
+    /// ★**入力を切り替えたら音声も付いてくるべき。** 基板の音声入力は3系統しか
+    ///   なく、どれと組になるかは配線で決まっている(RGB端子は X68000 式の
+    ///   2列DA-15 で、ピン10/11 に音声が来る)。映像と音声を別々に選ばせるのは、
+    ///   その決まっている対応を毎回人間に思い出させているだけだった。
+    ///
+    ///   対応表は profiles.rs の `audio_src`。「自動」を外せば従来どおり手で選べる。
+    fn apply_auto_audio(&mut self) {
+        if !self.audio_auto {
+            return;
+        }
+        if let Some(want) = profiles::by_key(&self.source_profile).and_then(|p| p.audio_src) {
+            self.set_audio_source(Some(want));
+        }
+    }
+
+    /// 音声入力の選択。映像ソースと組なので、パネル上部の「入力」に置く。
+    fn audio_src_ui(&mut self, ui: &mut egui::Ui) {
+        let (mut src, mut auto) = (self.audio_source, self.audio_auto);
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "音声");
+            let label = if auto {
+                format!("自動 ({})", Self::audio_src_name(self.audio_source))
+            } else {
+                Self::audio_src_name(self.audio_source)
+            };
+            egui::ComboBox::from_id_salt("audio_src")
+                .selected_text(label)
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(auto, "自動 (映像ソースに従う)").clicked() {
+                        auto = true;
+                    }
+                    for (v, name) in [
+                        (None, "off"),
+                        (Some(0u8), "0 RGB (D-SUB15)"),
+                        (Some(1), "1 LINE in"),
+                        (Some(2), "2 S/PDIF"),
+                    ] {
+                        if ui.selectable_label(!auto && src == v, name).clicked() {
+                            auto = false;
+                            src = v;
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "映像ソースと組になる音声入力。\n\
+                     「自動」なら映像を切り替えたときに一緒に切り替わります\n\
+                     (RGB端子のピン10/11 に音声が来るのは X68000 式のコネクタだけ\n\
+                      なので、それ以外は LINE 入力になります)");
+        });
+        if auto != self.audio_auto {
+            self.audio_auto = auto;
+            self.mark_settings_dirty();
+            self.apply_auto_audio();
+        }
+        if !auto {
+            self.set_audio_source(src);
+        }
+    }
+
+    /// 音量。よく触るのでパネル上部に置く。
+    fn volume_ui(&mut self, ui: &mut egui::Ui) {
+        let astats = self.shared.audio.lock().unwrap().clone();
+        // 音量。ミュートは値を保持したままゲインだけ0にする
+        let (vol0, mute0) = (self.audio_volume, self.audio_muted);
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "音量");
+            let icon = if self.audio_muted { "🔇" } else { "🔊" };
+            if ui.button(icon).on_hover_text("mute").clicked() {
+                self.audio_muted = !self.audio_muted;
+            }
+            ui.spacing_mut().slider_width = 150.0;
+            ui.add(
+                egui::Slider::new(&mut self.audio_volume, 0.0..=1.5)
+                    .show_value(false),
+            );
+            ui.monospace(format!("{:3.0}%", self.audio_volume * 100.0));
+        });
+        if self.audio_volume != vol0 || self.audio_muted != mute0 {
+            self.mark_settings_dirty();
+        }
+        if let Some(a) = &astats {
+            let g = if self.audio_muted { 0.0 } else { self.audio_volume };
+            audio::AudioPlayer::set_gain(a, g);
+        }
+
+    }
+
     fn audio_ui(&mut self, ui: &mut egui::Ui) {
         use std::sync::atomic::Ordering::Relaxed;
         let now = self.shared.audio_now.lock().unwrap().clone();
@@ -1163,34 +1552,6 @@ impl ViewerApp {
 
         let mut request: Option<receiver::AudioRequest> = None;
 
-        // 音声source(0=RGB端子, 1=LINE入力, 2=S/PDIF)。OFFで停止。
-        let mut src = self.audio_source;
-        ui.horizontal(|ui| {
-            ui.label("src");
-            let label = match src {
-                None => "off".to_string(),
-                Some(0) => "0 RGB".to_string(),
-                Some(1) => "1 LINE".to_string(),
-                Some(2) => "2 S/PDIF".to_string(),
-                Some(n) => n.to_string(),
-            };
-            egui::ComboBox::from_id_salt("audio_src")
-                .selected_text(label)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut src, None, "off");
-                    ui.selectable_value(&mut src, Some(0), "0 RGB (D-SUB15)");
-                    ui.selectable_value(&mut src, Some(1), "1 LINE in");
-                    ui.selectable_value(&mut src, Some(2), "2 S/PDIF");
-                });
-        });
-        if src != self.audio_source {
-            self.audio_source = src;
-            self.mark_settings_dirty();
-            request = Some(receiver::AudioRequest {
-                device: self.audio_device_sel.clone(),
-                source: src,
-            });
-        }
 
         // 出力デバイス
         let mut dev = self.audio_device_sel.clone();
@@ -1220,28 +1581,6 @@ impl ViewerApp {
             *self.shared.audio_request.lock().unwrap() = Some(req);
         }
 
-        // 音量。ミュートは値を保持したままゲインだけ0にする
-        let (vol0, mute0) = (self.audio_volume, self.audio_muted);
-        ui.horizontal(|ui| {
-            let icon = if self.audio_muted { "🔇" } else { "🔊" };
-            if ui.button(icon).on_hover_text("mute").clicked() {
-                self.audio_muted = !self.audio_muted;
-            }
-            ui.spacing_mut().slider_width = 150.0;
-            ui.add(
-                egui::Slider::new(&mut self.audio_volume, 0.0..=1.5)
-                    .show_value(false),
-            );
-            ui.monospace(format!("{:3.0}%", self.audio_volume * 100.0));
-        });
-        if self.audio_volume != vol0 || self.audio_muted != mute0 {
-            self.mark_settings_dirty();
-        }
-        if let Some(a) = &astats {
-            let g = if self.audio_muted { 0.0 } else { self.audio_volume };
-            audio::AudioPlayer::set_gain(a, g);
-        }
-
         match astats {
             Some(a) => {
                 let rate = a.device_rate.load(Relaxed).max(1);
@@ -1251,7 +1590,9 @@ impl ViewerApp {
                     rate
                 ));
                 if !now.device.is_empty() {
-                    ui.monospace(format!("dev {}", now.device));
+                    if self.show_advanced {
+                        ui.monospace(format!("dev {}", now.device));
+                    }
                 }
                 ui.monospace(format!(
                     "buffered {:.0} ms  pkts {}",
@@ -1537,7 +1878,7 @@ impl ViewerApp {
     ///
     /// 掛け金(`input_regs_autowritten`)は食い違いが解消したら外れるので、
     /// **ボードを入れ直すたびに1回だけ**書く。書いても直らない場合
-    /// (パケットが落ちた等)は自動では追わない — 既存の警告と「入力設定を書く」が残る。
+    /// (パケットが落ちた等)は自動では追わない — 既存の警告と「入力設定を書き込む」が残る。
     fn autowrite_input_regs(&mut self) {
         let Some(p) = profiles::by_key(&self.source_profile) else {
             return;
@@ -1576,7 +1917,11 @@ impl ViewerApp {
             self.send_cfg(*k, *v);
             self.set_tune_mirror(*k, *v);
         }
-        self.input_regs_sent = Some((p.label, p.input_regs.len(), true));
+        // ★頼まれていないのにボードのレジスタを書き換えた。黙ってやるのは
+        //   良くないので必ず伝える(ただし数秒で消す。状態ではなく出来事なので)
+        self.toasts.notice(format!(
+            "伝送形式が食い違っていたため、{} の入力設定を自動で書き込みました ({}件)",
+            p.label, p.input_regs.len()));
     }
 
     /// いまの有効映像が何µsか。管面の掃引時間を決める基準になる
@@ -1766,7 +2111,9 @@ impl ViewerApp {
                 let p = ui.painter();
                 // 消灯時も枠は見えるようにして、何段あるかが分かるようにする
                 let (fill, text) = if on {
-                    (egui::Color32::from_rgb(60, 220, 120), egui::Color32::BLACK)
+                    // ★点灯色はアクセントに揃える。緑のままだと見出しの teal と
+                    //   競合して、どちらが「いま効いているもの」か読めなくなる
+                    (theme::ACCENT, egui::Color32::BLACK)
                 } else {
                     (egui::Color32::from_rgb(38, 40, 44), egui::Color32::from_gray(110))
                 };
@@ -2276,19 +2623,25 @@ impl ViewerApp {
                 }
             });
         };
-        row(ui, "vbp", &mut self.tune_vbp, 0, 400,
-            protocol::CFG_KEY_VBP, &mut send);
+        // ★生の CONFIG レジスタは詳細送り。値そのものは保持したままなので、
+        //   send all・自動調整・プロファイル復元は従来どおり効く。
+        if self.show_advanced {
+            row(ui, "vbp", &mut self.tune_vbp, 0, 400,
+                protocol::CFG_KEY_VBP, &mut send);
+        }
         // 入力欄の範囲は固定にする。DragValue は範囲外の値を黙って書き換えて
         // 保持するので、上限を pll_div から動的に決めると、読み戻しや pll_div の
         // 変更のたびに hs_offset が勝手に動き、それが送信されてしまった
         // (実機で hs_offset が 160→607 に化けた)。
         // 実際の上限(pll_div/2)は gateware 側で守られるので、ここでは警告に留める。
-        row(ui, "hs_offset", &mut self.tune_hs_offset, 0, 2304,
-            protocol::CFG_KEY_HS_OFFSET, &mut send);
+        if self.show_advanced {
+            row(ui, "hs_offset", &mut self.tune_hs_offset, 0, 2304,
+                protocol::CFG_KEY_HS_OFFSET, &mut send);
+        }
         let hs_max = (self.tune_pll_divide / 2).max(1);
         if self.tune_hs_offset >= hs_max {
             ui.colored_label(
-                egui::Color32::from_rgb(220, 170, 60),
+                theme::AMBER,
                 format!("hs_offset は {hs_max} 未満に(ボード側で頭打ちになります)"),
             );
         }
@@ -2320,18 +2673,20 @@ impl ViewerApp {
                 self.tune_pll_divide = ht;
             }
         }
-        row(ui, "pll_div", &mut self.tune_pll_divide, pll_min, 2304,
-            protocol::CFG_KEY_PLL_DIVIDE, &mut send);
+        if self.show_advanced {
+            row(ui, "pll_div", &mut self.tune_pll_divide, pll_min, 2304,
+                protocol::CFG_KEY_PLL_DIVIDE, &mut send);
+        }
         if pll_locked {
             ui.colored_label(
-                egui::Color32::from_rgb(120, 200, 120),
+                theme::OK,
                 "YC8: pll_div は規格値(NTSC 8fsc=1820)。\n\
                  自動調整・プロファイル・send all では変更しません",
             );
         }
         if self.tune_pll_divide < pll_min {
             ui.colored_label(
-                egui::Color32::from_rgb(220, 170, 60),
+                theme::AMBER,
                 format!("pll_div は {pll_min} 以上に(12MHz未満はTVPの範囲外)"),
             );
         }
@@ -2350,719 +2705,603 @@ impl ViewerApp {
             .as_ref()
             .map(|m| m.hfreq_mhz_x1000 as f64 / 1000.0)
             .unwrap_or(0.0);
-        // 映像ソースは「配線の方式」でもある。選んだらその入力設定をボードへ書く。
-        //
-        // ★**TVPのレジスタは電源で消える。** ビットストリームをSPIフラッシュに
-        //   焼いても、pixfmt・入力MUX・同期の取り方・クランプ・ゲインは
-        //   CONFIG で入れ直す必要がある。以前は毎回
-        //   `python3 -m retrocastx.videoin apply composite` を叩いていた。
-        //   同じ選択を選び直してもコンボは反応しないので、書き直しボタンも要る。
-        ui.horizontal(|ui| {
-            ui.monospace("映像ソース");
-            let cur = self.source_profile.clone();
-            let mut sel = cur.clone();
-            let name = |k: &str| -> String {
-                if k.is_empty() {
-                    "自動".into()
-                } else {
-                    profiles::by_key(k).map_or_else(|| k.to_string(), |p| p.label.to_string())
-                }
-            };
-            egui::ComboBox::from_id_salt("srcprof")
-                .width(190.0)
-                .selected_text(name(&cur))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut sel, String::new(), "自動");
-                    for p in profiles::PROFILES {
-                        ui.selectable_value(&mut sel, p.key.to_string(), p.label);
-                    }
-                });
-            let changed = sel != cur;
-            if changed {
-                self.source_profile = sel;
-                self.mark_settings_dirty();
-            }
-            let prof = profiles::by_key(&self.source_profile);
-            let has_regs = prof.is_some_and(|p| !p.input_regs.is_empty());
-            let write = ui
-                .add_enabled(has_regs, egui::Button::new("入力設定を書く"))
-                .on_hover_text(
-                    "TVPの入力MUX・同期の取り方・クランプ・ゲイン・伝送形式を書く。\n\
-                     ボードの電源を入れ直すと消えるので、そのときはここを押す\n\
-                     (焼き直しは不要。全部CONFIGで済む)",
-                )
-                .clicked();
-            if let Some(p) = prof {
-                if (changed || write) && !p.input_regs.is_empty() {
-                    // ★伝送形式は、**いまのボードの値でこのソースが成立するなら
-                    //   上書きしない**。実行時に選べるようにしたので、
-                    //   X68000 RGB を RGB888 で見ているところへ入力設定を書いて
-                    //   黙って RGB555 に戻されると、選択が消えたように見える。
-                    //   YC8 が要るソース(コンポジット/S端子)や、ボードが
-                    //   別種の形式で止まっている場合は上書きする(救済が要る)。
-                    let have = self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt);
-                    let is_rgb = |f: u8| matches!(f, protocol::PIXFMT_RGB888
-                                                    | protocol::PIXFMT_RGB555
-                                                    | protocol::PIXFMT_RGB565);
-                    let keep_fmt = match (p.pixfmt(), have) {
-                        (Some(want), Some(h)) if want != protocol::PIXFMT_YC8 => is_rgb(h),
-                        _ => false,
-                    };
-                    let mut n = 0;
-                    let mut wrote: Vec<(u16, u32)> = Vec::new();
-                    for (k, v, _) in p.input_regs {
-                        if keep_fmt && *k == protocol::CFG_KEY_PIXFMT {
-                            continue;
-                        }
-                        send.push((*k, *v));
-                        wrote.push((*k, *v));
-                        n += 1;
-                    }
-                    // ★書いた値で Tune欄の表示も更新する。ここを忘れると
-                    //   表示が古いまま残り、次に触ったときに古い値が飛ぶ。
-                    for (k, v) in wrote {
-                        self.set_tune_mirror(k, v);
-                    }
-                    self.input_regs_sent = Some((p.label, n, false));
-                }
-            }
-        });
-        // ボードの伝送形式が**このソースで成立しない**ときだけ言う。
-        //
-        // ★「プロファイルの値と一致するか」で見てはいけない。伝送形式は
-        //   実行時に選べる(上の「伝送形式」コンボ)ので、X68000 RGB を
-        //   RGB888 で受けるのは**正当な選択**であって異常ではない。
-        //   一致で判定すると、そこで「設定が消えた」と嘘の警告が出る
-        //   (2026-09-03 に実際に出た)。
-        //
-        // 成立するかどうかは形式の**種類**で決まる:
-        //   YC8 … コンポジット/S端子の復調には生の8bitが要る。必須
-        //   RGB … RGB555 も RGB888 も絵になる。どちらでもよい
-        // 電源断でTVPのレジスタが消えた状態は、この「種類が違う」側に出る
-        // (コンポジットなのに RGB555 になっていて復調できない)。
-        if let Some(p) = profiles::by_key(&self.source_profile) {
-            if let (Some(want), Some(have)) = (
-                p.pixfmt(),
-                self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt),
-            ) {
-                let is_rgb = |f: u8| matches!(f, protocol::PIXFMT_RGB888
-                                                | protocol::PIXFMT_RGB555
-                                                | protocol::PIXFMT_RGB565);
-                let ok = if want == protocol::PIXFMT_YC8 {
-                    have == protocol::PIXFMT_YC8
-                } else {
-                    is_rgb(have)
-                };
-                if !ok {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(220, 170, 60),
-                        format!(
-                            "ボードの伝送形式が {} で、このソース({})では絵になりません。\
-                             電源を入れ直して設定が消えた可能性 → 「入力設定を書く」",
-                            pixfmt_name(have), pixfmt_name(want)
-                        ),
-                    );
-                }
-            }
-        }
-        if let Some((label, n, auto)) = self.input_regs_sent {
-            if auto {
-                ui.monospace(format!(
-                    "入力設定を自動で書いた: {label} ({n}件・伝送形式が食い違っていたため)"
-                ));
-            } else {
-                ui.monospace(format!("入力設定を書いた: {label} ({n}件)"));
-            }
-        }
         // 見た目の調整。**復調の校正とは別に持つ。**
         //
         // 信号内の基準(同期40 IRE / バースト40 IRE p-p)に合わせた結果が「正しい」絵で、
         // 既定値はそこを指す。ここはその上に載せる好みの調整。校正の方を歪めると
         // 「どこまでが信号でどこからが好みか」が分からなくなり、後で数値で追えない。
-        ui.horizontal(|ui| {
-            ui.monospace("画調");
-            if ui.small_button("既定へ").on_hover_text(
-                "信号どおり(彩度1.00 明るさ0 コントラスト1.00 色相0°)へ戻す")
-                .clicked()
+        // ★**折りたたむ。** 常用では触らないが「デバッグ用」でもないので、
+        //   詳細トグルではなく畳んで置く。開けばいつでも触れる。
+        egui::CollapsingHeader::new("画調")
+            .default_open(false)
+            .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.monospace("画調");
+                if ui.small_button("既定へ").on_hover_text(
+                    "信号どおり(彩度1.00 明るさ0 コントラスト1.00 色相0°)へ戻す")
+                    .clicked()
+                {
+                    self.adjust = ntsc::Adjust::default();
+                    *self.shared.adjust.lock().unwrap() = Some(self.adjust);
+                    self.mark_settings_dirty();
+                }
+                if self.adjust != ntsc::Adjust::default() {
+                    ui.colored_label(theme::AMBER, "信号どおりではない");
+                }
+            });
             {
-                self.adjust = ntsc::Adjust::default();
-                *self.shared.adjust.lock().unwrap() = Some(self.adjust);
-                self.mark_settings_dirty();
+                let mut a = self.adjust;
+                let mut ch = false;
+                theme::align_sliders(ui);
+                let mut row = |ui: &mut egui::Ui, label: &str, v: &mut f32,
+                               lo: f32, hi: f32, dec: usize, tip: &str, ch: &mut bool| {
+                    ui.horizontal(|ui| {
+                        theme::label_col(ui, label);
+                        *ch |= ui.add(egui::Slider::new(v, lo..=hi).fixed_decimals(dec))
+                            .on_hover_text(tip)
+                            .changed();
+                    });
+                };
+                row(ui, "彩度", &mut a.saturation, 0.0, 2.0, 2,
+                    "色の濃さ。1.00 = バースト(40 IRE p-p)基準の信号どおり", &mut ch);
+                row(ui, "明るさ", &mut a.brightness, -20.0, 20.0, 1,
+                    "黒レベルを上下する[IRE]。0 = 信号どおり", &mut ch);
+                row(ui, "コントラスト", &mut a.contrast, 0.5, 1.5, 2,
+                    "1.00 = 信号どおり。色差にも掛かるので色が薄くならない", &mut ch);
+                row(ui, "色相", &mut a.hue_deg, -30.0, 30.0, 0,
+                    "NTSCのtint。復調の位相基準をずらす[度]。0 = バーストどおり", &mut ch);
+                row(ui, "ガンマ", &mut a.gamma, 0.6, 3.0, 2,
+                    "1.00 = 信号どおり。**これが正しい。**\n\
+                     信号は既にガンマ符号化済みで、それはブラウン管のガンマを見越した\n\
+                     ものなので、受け側で補正するものではない。sRGB液晶も同じ復号を\n\
+                     するので、そのまま出せばブラウン管と同じ絵になる。\n\
+                     \n\
+                     上げると中間調が持ち上がる(端点は動かない)。明るい部屋で暗部が\n\
+                     潰れて見えるときの対処。1.2〜1.6 あたりが実用的。\n\
+                     2.20 は同じ画面のYouTube版と分位9点が平均誤差1.8コードで一致する値\n\
+                     (あちらは符号化済みの値を二重符号化した絵。正しいわけではない)",
+                    &mut ch);
+                if ch {
+                    self.adjust = a;
+                    *self.shared.adjust.lock().unwrap() = Some(a);
+                    self.mark_settings_dirty();
+                }
             }
-            if self.adjust != ntsc::Adjust::default() {
-                ui.colored_label(egui::Color32::from_rgb(220, 170, 60), "信号どおりではない");
+            });
+        // ★**通常時に出すのは「映像ソースの選択」と「画調」まで。**
+        //   ここから下は、値の意味が分かっている人が問題を追うときの道具:
+        //   生Yの直視、フィールドの織り込み、帯域と引き換えの調整(全ライン送信/
+        //   間引き/帯域制限/位相)、基板ごとの細ゲイン校正、同期の切り方、
+        //   ボードからの読み戻し、フルスキャン、send all。
+        //   簡易スキャンはパネル最上部にあるので、ここが畳まれていても困らない。
+        if self.show_advanced {
+            // 復調前の生Yをそのまま見る。**artefactの出所を分ける道具。**
+            //
+            // 「線が二重に見える」「縞が出る」が復調由来なのか、それより前(信号そのもの、
+            // 送出側のフィルタ、アナログ経路)なのかは、絵を見比べれば一発で分かる。
+            // 生では副搬送波が8サンプル周期の細かい市松模様として見えるのが正常。
+            // 設定には保存しない(次に開いたとき灰色で驚くので)。
+            {
+                let mut v = self.raw_view;
+                if ui.checkbox(&mut v, "復調しない(生のYを見る)")
+                    .on_hover_text(
+                        "NTSC復調を止めて、緑ch(CVBSそのもの)をグレースケールで出す。\n\
+                         色は出ないが、二重像や縞が復調より前にあるかを目で分けられる。\n\
+                         細かい市松模様は副搬送波(8サンプル周期)で、これは正常")
+                    .changed()
+                {
+                    self.raw_view = v;
+                    *self.shared.raw_view.lock().unwrap() = Some(v);
+                }
             }
-        });
-        {
-            let mut a = self.adjust;
-            let mut ch = false;
-            let mut row = |ui: &mut egui::Ui, label: &str, v: &mut f32,
-                           lo: f32, hi: f32, dec: usize, tip: &str, ch: &mut bool| {
-                ui.horizontal(|ui| {
-                    ui.monospace(format!("{label:<6}"));
-                    *ch |= ui.add(egui::Slider::new(v, lo..=hi).fixed_decimals(dec))
-                        .on_hover_text(tip)
-                        .changed();
-                });
+            // 片方のフィールドだけ見る。**織り込みの影響を外すための道具。**
+            // 縦線が二重に見えるとき、2枚のフィールドがずれているのか、1枚の中で
+            // 既に二重なのかを分けられる。選んだ側を隣のスロットへ複製して全高で出す
+            // (黒で間引くとスキャンラインが乗って、かえって見分けにくい)。
+            ui.horizontal(|ui| {
+                ui.monospace("フィールド");
+                let mut v = self.field_view;
+                let mut ch = false;
+                // ★片フィールド表示は**ラインダブラ**。横線が2行ぶんの太さになるのは
+                //   仕様。これを知らないと「横線が二重になった」と読めてしまうので、
+                //   ホバーで明示する(実機で実際に紛らわしかった)。
+                let tip = "偶数/奇数は片方のフィールドだけを見る切り分け用。\n\
+                           ★選んだ側の行を隣へ複製するので、**横線は2行ぶんの太さになる**\n\
+                           (縦線の二重化を見るための道具。横方向の判断は「織り込み」で)";
+                ch |= ui.selectable_value(&mut v, 0u8, "織り込み")
+                    .on_hover_text(tip).changed();
+                ch |= ui.selectable_value(&mut v, 1u8, "偶数のみ")
+                    .on_hover_text(tip).changed();
+                ch |= ui.selectable_value(&mut v, 2u8, "奇数のみ")
+                    .on_hover_text(tip).changed();
+                if ch {
+                    self.field_view = v;
+                    *self.shared.field_view.lock().unwrap() = Some(v);
+                }
+            });
+            // 選んだプロファイル(空なら全部試す)での答え
+            let pick = if self.source_profile.is_empty() {
+                profiles::best_over_all(fh_hz).map(|(p, c)| (p.label, c))
+            } else {
+                profiles::by_key(&self.source_profile)
+                    .and_then(|p| profiles::best(p, fh_hz).map(|c| (p.label, c)))
             };
-            row(ui, "彩度", &mut a.saturation, 0.0, 2.0, 2,
-                "色の濃さ。1.00 = バースト(40 IRE p-p)基準の信号どおり", &mut ch);
-            row(ui, "明るさ", &mut a.brightness, -20.0, 20.0, 1,
-                "黒レベルを上下する[IRE]。0 = 信号どおり", &mut ch);
-            row(ui, "コントラスト", &mut a.contrast, 0.5, 1.5, 2,
-                "1.00 = 信号どおり。色差にも掛かるので色が薄くならない", &mut ch);
-            row(ui, "色相", &mut a.hue_deg, -30.0, 30.0, 0,
-                "NTSCのtint。復調の位相基準をずらす[度]。0 = バーストどおり", &mut ch);
-            row(ui, "ガンマ", &mut a.gamma, 0.6, 3.0, 2,
-                "1.00 = 信号どおり。**これが正しい。**\n\
-                 信号は既にガンマ符号化済みで、それはブラウン管のガンマを見越した\n\
-                 ものなので、受け側で補正するものではない。sRGB液晶も同じ復号を\n\
-                 するので、そのまま出せばブラウン管と同じ絵になる。\n\
-                 \n\
-                 上げると中間調が持ち上がる(端点は動かない)。明るい部屋で暗部が\n\
-                 潰れて見えるときの対処。1.2〜1.6 あたりが実用的。\n\
-                 2.20 は同じ画面のYouTube版と分位9点が平均誤差1.8コードで一致する値\n\
-                 (あちらは符号化済みの値を二重符号化した絵。正しいわけではない)",
-                &mut ch);
-            if ch {
-                self.adjust = a;
-                *self.shared.adjust.lock().unwrap() = Some(a);
-                self.mark_settings_dirty();
-            }
-        }
-        // 復調前の生Yをそのまま見る。**artefactの出所を分ける道具。**
-        //
-        // 「線が二重に見える」「縞が出る」が復調由来なのか、それより前(信号そのもの、
-        // 送出側のフィルタ、アナログ経路)なのかは、絵を見比べれば一発で分かる。
-        // 生では副搬送波が8サンプル周期の細かい市松模様として見えるのが正常。
-        // 設定には保存しない(次に開いたとき灰色で驚くので)。
-        {
-            let mut v = self.raw_view;
-            if ui.checkbox(&mut v, "復調しない(生のYを見る)")
-                .on_hover_text(
-                    "NTSC復調を止めて、緑ch(CVBSそのもの)をグレースケールで出す。\n\
-                     色は出ないが、二重像や縞が復調より前にあるかを目で分けられる。\n\
-                     細かい市松模様は副搬送波(8サンプル周期)で、これは正常")
-                .changed()
-            {
-                self.raw_view = v;
-                *self.shared.raw_view.lock().unwrap() = Some(v);
-            }
-        }
-        // 片方のフィールドだけ見る。**織り込みの影響を外すための道具。**
-        // 縦線が二重に見えるとき、2枚のフィールドがずれているのか、1枚の中で
-        // 既に二重なのかを分けられる。選んだ側を隣のスロットへ複製して全高で出す
-        // (黒で間引くとスキャンラインが乗って、かえって見分けにくい)。
-        ui.horizontal(|ui| {
-            ui.monospace("フィールド");
-            let mut v = self.field_view;
-            let mut ch = false;
-            // ★片フィールド表示は**ラインダブラ**。横線が2行ぶんの太さになるのは
-            //   仕様。これを知らないと「横線が二重になった」と読めてしまうので、
-            //   ホバーで明示する(実機で実際に紛らわしかった)。
-            let tip = "偶数/奇数は片方のフィールドだけを見る切り分け用。\n\
-                       ★選んだ側の行を隣へ複製するので、**横線は2行ぶんの太さになる**\n\
-                       (縦線の二重化を見るための道具。横方向の判断は「織り込み」で)";
-            ch |= ui.selectable_value(&mut v, 0u8, "織り込み")
-                .on_hover_text(tip).changed();
-            ch |= ui.selectable_value(&mut v, 1u8, "偶数のみ")
-                .on_hover_text(tip).changed();
-            ch |= ui.selectable_value(&mut v, 2u8, "奇数のみ")
-                .on_hover_text(tip).changed();
-            if ch {
-                self.field_view = v;
-                *self.shared.field_view.lock().unwrap() = Some(v);
-            }
-        });
-        // 選んだプロファイル(空なら全部試す)での答え
-        let pick = if self.source_profile.is_empty() {
-            profiles::best_over_all(fh_hz).map(|(p, c)| (p.label, c))
-        } else {
-            profiles::by_key(&self.source_profile)
-                .and_then(|p| profiles::best(p, fh_hz).map(|c| (p.label, c)))
-        };
-        match pick {
-            Some((label, c)) => {
-                ui.horizontal(|ui| {
-                    let over = if c.oversample > 1 {
-                        format!(" ×{}", c.oversample)
-                    } else {
-                        String::new()
-                    };
-                    ui.monospace(format!(
-                        "→ {} ({:.4}MHz{})",
-                        c.pll_divide,
-                        c.f_dot / 1e6,
-                        over
-                    ));
-                    let same = c.pll_divide == self.tune_pll_divide;
-                    // YC8 では規格値が正なので、プロファイルの推定値で上書きしない
-                    let btn = ui.add_enabled(!same && !pll_locked,
-                                             egui::Button::new("適用"));
-                    if pll_locked {
-                        btn.clone().on_hover_text(
-                            "YC8(コンポジット/S端子)では pll_div は規格値なので\n\
-                             プロファイルからは変更しません");
-                    }
-                    if btn
-                        .on_hover_text(format!(
-                            "{label}: fH {:.3}kHz と {} から htotal {}\n\
-                             (整数からのずれ {:.3}カウント)",
-                            fh_hz / 1000.0,
-                            c.label,
-                            c.htotal,
-                            c.residual
-                        ))
-                        .clicked()
-                    {
-                        self.tune_pll_divide = c.pll_divide;
-                        send.push((
-                            protocol::CFG_KEY_PLL_DIVIDE,
-                            self.tune_pll_divide as u32,
+            match pick {
+                Some((label, c)) => {
+                    ui.horizontal(|ui| {
+                        let over = if c.oversample > 1 {
+                            format!(" ×{}", c.oversample)
+                        } else {
+                            String::new()
+                        };
+                        ui.monospace(format!(
+                            "→ {} ({:.4}MHz{})",
+                            c.pll_divide,
+                            c.f_dot / 1e6,
+                            over
                         ));
-                        self.mark_settings_dirty();
-                    }
-                    if same {
-                        ui.monospace("一致");
-                    }
-                });
+                        let same = c.pll_divide == self.tune_pll_divide;
+                        // YC8 では規格値が正なので、プロファイルの推定値で上書きしない
+                        let btn = ui.add_enabled(!same && !pll_locked,
+                                                 egui::Button::new("適用"));
+                        if pll_locked {
+                            btn.clone().on_hover_text(
+                                "YC8(コンポジット/S端子)では pll_div は規格値なので\n\
+                                 プロファイルからは変更しません");
+                        }
+                        if btn
+                            .on_hover_text(format!(
+                                "{label}: fH {:.3}kHz と {} から htotal {}\n\
+                                 (整数からのずれ {:.3}カウント)",
+                                fh_hz / 1000.0,
+                                c.label,
+                                c.htotal,
+                                c.residual
+                            ))
+                            .clicked()
+                        {
+                            self.tune_pll_divide = c.pll_divide;
+                            send.push((
+                                protocol::CFG_KEY_PLL_DIVIDE,
+                                self.tune_pll_divide as u32,
+                            ));
+                            self.mark_settings_dirty();
+                        }
+                        if same {
+                            ui.monospace("一致");
+                        }
+                    });
+                }
+                None if fh_hz > 0.0 => {
+                    ui.colored_label(
+                        theme::AMBER,
+                        "このプロファイルでは説明できない fH です",
+                    );
+                }
+                None => {
+                    ui.monospace("MODE 未受信");
+                }
             }
-            None if fh_hz > 0.0 => {
+            // 実測した有効映像の大きさ。pll_div が妥当かの目安として出す。
+            //
+            // ここには「目標の有効幅から pll_div を比例計算する」UI(target w / ×8 /
+            // → pll)があったが撤去した。比例計算は有効映像の実測が信用できないと
+            // 上限まで走り、実機で pll_div が 2304 に達して絵が崩れ、DATACLKが
+            // 100MHzを超えてボードごとハングした。いまは下のスキャンが絵の
+            // スペクトルから倍率を割り出すので、初期値がどれだけ外れていても収束する。
+            let st = self.shared.stats.lock().unwrap().clone();
+            // 縦はスロット単位で測っている。プログレッシブでは行が1つ飛びに並ぶので
+            // スロットの範囲は実際の行数の2倍になる(上の Mode 表示と同じ理由)。
+            // ここは表示だけ映像源の行数に直す。計算に使う st の値はそのまま。
+            let il_v = {
+                let m = self.shared.mode.lock().unwrap().clone();
+                m.map_or(false, |m| m.mflags & 0x0001 != 0) || st.interlace_measured
+            };
+            let (ah, ay) = if il_v {
+                (st.active_h, st.active_y)
+            } else {
+                (st.active_h / 2, st.active_y / 2)
+            };
+            ui.monospace(format!(
+                "active {}x{} at ({},{})",
+                st.active_w, ah, st.active_x, ay
+            ));
+            // 1ラインがバッファに入り切っていない状態。過剰サンプルの明確な兆候で、
+            // このとき外接矩形は有効映像の幅ではなくバッファ幅を表すので、そこから
+            // 計算した値は全部おかしくなる(管面の「絵に合わせる」も小さく出る)。
+            if st.span_w > 0 && st.span_w as u32 >= self.frame_size.0.max(1) {
                 ui.colored_label(
-                    egui::Color32::from_rgb(220, 170, 60),
-                    "このプロファイルでは説明できない fH です",
+                    theme::AMBER,
+                    "1ラインがバッファに入り切っていません(過剰サンプル)",
                 );
             }
-            None => {
-                ui.monospace("MODE 未受信");
-            }
-        }
-        // 実測した有効映像の大きさ。pll_div が妥当かの目安として出す。
-        //
-        // ここには「目標の有効幅から pll_div を比例計算する」UI(target w / ×8 /
-        // → pll)があったが撤去した。比例計算は有効映像の実測が信用できないと
-        // 上限まで走り、実機で pll_div が 2304 に達して絵が崩れ、DATACLKが
-        // 100MHzを超えてボードごとハングした。いまは下のスキャンが絵の
-        // スペクトルから倍率を割り出すので、初期値がどれだけ外れていても収束する。
-        let st = self.shared.stats.lock().unwrap().clone();
-        // 縦はスロット単位で測っている。プログレッシブでは行が1つ飛びに並ぶので
-        // スロットの範囲は実際の行数の2倍になる(上の Mode 表示と同じ理由)。
-        // ここは表示だけ映像源の行数に直す。計算に使う st の値はそのまま。
-        let il_v = {
-            let m = self.shared.mode.lock().unwrap().clone();
-            m.map_or(false, |m| m.mflags & 0x0001 != 0) || st.interlace_measured
-        };
-        let (ah, ay) = if il_v {
-            (st.active_h, st.active_y)
-        } else {
-            (st.active_h / 2, st.active_y / 2)
-        };
-        ui.monospace(format!(
-            "active {}x{} at ({},{})",
-            st.active_w, ah, st.active_x, ay
-        ));
-        // 1ラインがバッファに入り切っていない状態。過剰サンプルの明確な兆候で、
-        // このとき外接矩形は有効映像の幅ではなくバッファ幅を表すので、そこから
-        // 計算した値は全部おかしくなる(管面の「絵に合わせる」も小さく出る)。
-        if st.span_w > 0 && st.span_w as u32 >= self.frame_size.0.max(1) {
-            ui.colored_label(
-                egui::Color32::from_rgb(220, 170, 60),
-                "1ラインがバッファに入り切っていません(過剰サンプル)",
-            );
-        }
-        // インターレースの設定は撤去した。すべて測定から決まる:
-        //   TVPの検出ビット(38h bit5)      インターレースかどうか
-        //   生VSYNCの半ライン位相          どちらのフィールドが下か
-        //   TVP vtotal / 生ライン数の比    フィールド単位かフレーム単位か
-        // 以前は il(方式) / f2_row(折り返し点) / swap(偶奇) / field_src(極性の
-        // 取得元) / auto(内容から判定)を人手で設定していたが、どれも信号から
-        // 測れる量だった。手動の上書きを残すと誤った値で壊せる経路になる。
-        // 実機でX68000のモード0〜18すべてが無調整で表示されることを確認した。
-        // TVPのアナログ映像帯域。折り返しの元になる高周波を削る。
-        // 15(最小=約95MHz)で、エッジ後の残留エコーが消える(実測 +2.55→+0.01)。
-        // 立ち上がりは変わらず最細部が6%落ちるだけなので既定を15にしている。
-        // 1ラインまるごと送る。全黒行が続いた直後の数行で非黒範囲の判定が壊れ、
-        // 内容があるのに count_px=0 で送られて行が欠ける不具合がある。範囲を
-        // 使わなくなるので、これを入れると完全に消える。帯域は htotal 画素ぶんに
-        // 増える(31kHz 1104px で約555Mbps。GbEには収まる)。
-        if ui.checkbox(&mut self.tune_full_line, "全ライン送信(行欠けの回避)")
-            .on_hover_text(
-                "非黒範囲だけを送る最適化を切り、1ラインまるごと送ります。\n\
-                 全黒行の直後で行が欠ける不具合を回避できます。\n\
-                 帯域は増えます(31kHzで約555Mbps)。")
-            .changed()
-        {
-            send.push((protocol::CFG_KEY_FULL_LINE,
-                       if self.tune_full_line { 1 } else { 0 }));
-            self.mark_settings_dirty();
-        }
-        // フレーム間引き。受信が追いつかない機械での保険。
-        // 映像だけを間引き、音声は間引かないので、音の途切れが減る。
-        ui.horizontal(|ui| {
-            ui.monospace("間引き");
-            let mut n = self.tune_frame_skip as i32;
-            if ui.add(egui::DragValue::new(&mut n).range(0..=7))
-                .on_hover_text("映像を何フレームに1回にするか。0=毎フレーム、\n\
-                                1=2フレームに1回(帯域とfpsが半分)。\n\
-                                音声は間引かないので、映像を減らすと\n\
-                                音の途切れも減ります")
+            // インターレースの設定は撤去した。すべて測定から決まる:
+            //   TVPの検出ビット(38h bit5)      インターレースかどうか
+            //   生VSYNCの半ライン位相          どちらのフィールドが下か
+            //   TVP vtotal / 生ライン数の比    フィールド単位かフレーム単位か
+            // 以前は il(方式) / f2_row(折り返し点) / swap(偶奇) / field_src(極性の
+            // 取得元) / auto(内容から判定)を人手で設定していたが、どれも信号から
+            // 測れる量だった。手動の上書きを残すと誤った値で壊せる経路になる。
+            // 実機でX68000のモード0〜18すべてが無調整で表示されることを確認した。
+            // TVPのアナログ映像帯域。折り返しの元になる高周波を削る。
+            // 15(最小=約95MHz)で、エッジ後の残留エコーが消える(実測 +2.55→+0.01)。
+            // 立ち上がりは変わらず最細部が6%落ちるだけなので既定を15にしている。
+            // 1ラインまるごと送る。全黒行が続いた直後の数行で非黒範囲の判定が壊れ、
+            // 内容があるのに count_px=0 で送られて行が欠ける不具合がある。範囲を
+            // 使わなくなるので、これを入れると完全に消える。帯域は htotal 画素ぶんに
+            // 増える(31kHz 1104px で約555Mbps。GbEには収まる)。
+            if ui.checkbox(&mut self.tune_full_line, "全ライン送信(行欠けの回避)")
+                .on_hover_text(
+                    "非黒範囲だけを送る最適化を切り、1ラインまるごと送ります。\n\
+                     全黒行の直後で行が欠ける不具合を回避できます。\n\
+                     帯域は増えます(31kHzで約555Mbps)。")
                 .changed()
             {
-                self.tune_frame_skip = n as u8;
-                send.push((protocol::CFG_KEY_FRAME_SKIP, n as u32));
+                send.push((protocol::CFG_KEY_FULL_LINE,
+                           if self.tune_full_line { 1 } else { 0 }));
+                self.mark_settings_dirty();
             }
-            ui.monospace(if self.tune_frame_skip == 0 {
-                "毎フレーム".to_string()
-            } else {
-                format!("1/{} ({}fps相当)", self.tune_frame_skip + 1,
-                        55 / (self.tune_frame_skip as u32 + 1))
-            });
-        });
-        ui.horizontal(|ui| {
-            ui.monospace("帯域制限");
-            let mut bw = self.tune_video_bw as i32;
-            if ui.add(egui::DragValue::new(&mut bw).range(0..=15)).changed() {
-                self.tune_video_bw = bw as u8;
-                send.push((protocol::CFG_KEY_VIDEO_BW, bw as u32));
-            }
-            ui.monospace(if self.tune_video_bw == 0 { "最大" } else if self.tune_video_bw == 15 { "最小≈95MHz" } else { "" });
-        });
-        // サンプリング位相。1ドット周期の1/32刻みで、ADCがドットのどこを掴むか。
-        // 実測で鮮鋭度が位相だけで2.5倍変わった(最良22 / 既定16は-12% / 最悪4は-60%)。
-        // 最適値はモードごとに違うので、モード別設定として保存している。
-        ui.horizontal(|ui| {
-            ui.monospace("位相");
-            let mut ph = self.tune_phase as i32;
-            if ui.add(egui::DragValue::new(&mut ph).range(0..=31)).changed() {
-                self.tune_phase = ph as u8;
-                send.push((protocol::CFG_KEY_PHASE, ph as u32));
-            }
-            if ui.button("-").clicked() {
-                self.tune_phase = (self.tune_phase + 31) % 32;
-                send.push((protocol::CFG_KEY_PHASE, self.tune_phase as u32));
-            }
-            if ui.button("+").clicked() {
-                self.tune_phase = (self.tune_phase + 1) % 32;
-                send.push((protocol::CFG_KEY_PHASE, self.tune_phase as u32));
-            }
-            ui.monospace(format!("{:.0}度", self.tune_phase as f32 * 360.0 / 32.0));
-        });
-        // --- TVPの細ゲイン(白バランスと白レベル)---
-        //
-        // ★**基板ごとに違う。** アナログ3経路のばらつきを埋める値なので、
-        //   基板が変われば正解が変わる。v0.9.0 の校正値は R=43 / G=39 / B=35
-        //   (白ベタが3chとも RGB555 のコード28=231 に載る)。
-        //
-        //   合わせ方: 白いベタ塗りの**内側**(縁の立ち上がり途中を除く)を見て、
-        //   3chが同じコードに載るようにする。**コードが変わる境目ではなく、
-        //   同じコードに載る範囲の中央に置くこと。** 端に置くと温度ドリフトで
-        //   1コード揺れる。RGB555 の1コードは 3.6% あるので目に見える。
-        //
-        //   白を最上位コード(255)まで上げるとX68000の32階調が1:1で載るが、
-        //   最上位には上の境目が無いためドリフトに弱く、クリップも検出できない。
-        //   階調の並んだ映像源(カラーバー/グレースケールランプ)で
-        //   ゲインとオフセットを同時に合わせるまでは、余裕のある値にしておく。
-        ui.horizontal(|ui| {
-            ui.monospace("細ゲイン");
-            ui.monospace("ゲイン = 1 + N/256");
-        });
-        row(ui, "  gain_R", &mut self.tune_gain_r, 0, 255,
-            protocol::CFG_KEY_GAIN_R, &mut send);
-        row(ui, "  gain_G", &mut self.tune_gain_g, 0, 255,
-            protocol::CFG_KEY_GAIN_G, &mut send);
-        row(ui, "  gain_B", &mut self.tune_gain_b, 0, 255,
-            protocol::CFG_KEY_GAIN_B, &mut send);
-        ui.horizontal(|ui| {
-            ui.monospace(format!(
-                "  R×{:.3}  G×{:.3}  B×{:.3}",
-                1.0 + self.tune_gain_r as f32 / 256.0,
-                1.0 + self.tune_gain_g as f32 / 256.0,
-                1.0 + self.tune_gain_b as f32 / 256.0));
-        });
-        // --- 同期の切り方(SOGスライス閾値と VSOUT の作り方)---
-        //
-        // ★**この2つは絵を見ながら振って決めるたぐいの値で、合わせ方が確立している。**
-        //   失敗の出方が「絵は出ているのに上下に震える」なので、静止画では気づかない。
-        //
-        //   sog_th(レジスタ10h bit[7:3]): 同期をどの高さで切るか。低すぎると
-        //   **暗い映像を同期と誤認**して垂直検出が壊れ、フィールド極性が判定できず、
-        //   2枚のフィールドが同じスロットに交互に上書きされて絵が半ライン上下に震える。
-        //   S端子で実測(2026-08-15): 既定 0x0B は駄目で、16〜24 が正しい窓、
-        //   その中央の 20 を採った。**判定は下の lines/frame が 262/263 に
-        //   安定するかで見る**(絵の震えを目で追うより速くて確実)。
-        //
-        //   sync22h(レジスタ22h): bit0=VS Bypass / bit1=VS Select。既定 0x08 は
-        //   VSOUT をハーフライン積算器に作らせるが、**積算器は525ライン
-        //   インタレース前提**なので 262ライン progressive では2フレームに1回しか
-        //   Vを出さず、どちらが勝つかがロック毎に決まって双安定になる。0x09 に
-        //   すると同期セパレータ直結になって決定的になる(X68000 で実測:
-        //   織り込みのずれ 0x08 → 4.6〜5.0 / 0x09 → 1.39〜1.44)。
-        ui.horizontal(|ui| {
-            ui.monospace("同期の切り方").on_hover_text(
-                "同期スライス閾値と VSOUT の作り方。\n\
-                 「絵は出ているのに上下に震える」ときはここ。\n\
-                 下の lines/frame が 262/263 に安定する範囲を探し、その中央を採る");
-        });
-        row(ui, "  sog_th", &mut self.tune_sog_thresh, 0, 31,
-            protocol::CFG_KEY_SOG_THRESH, &mut send);
-        row(ui, "  sync22h", &mut self.tune_sync_ctl2, 0, 255,
-            protocol::CFG_KEY_SYNC_CTL2, &mut send);
-        // --- インターレースのフィールド極性 ---
-        //
-        // ★**「織り込まれない」は絵が出たまま起きるので気づきにくい。**
-        //   捕捉側の fld_pos(そのラインを偶数/奇数どちらのスロットへ置くか)は
-        //   材料を上から順に試す(retrocastx_capture.py の fld_pos):
-        //
-        //     il_det が 0            → fld_pos = 0(プログレッシブ扱い)
-        //     raw_ok(生TTL同期)      → ~ph_raw ^ field_inv
-        //     sog_ok(SOGOUTの位相)   → ~ph_sog ^ field_inv
-        //     どれも駄目             → in_f2 の**推測**(当たらないことがある)
-        //
-        //   コンポジット/S端子には生TTL同期が無いので SOG 経路に頼る。その sog_ok は
-        //     (200 < vcnt < 600) && (100 < lowmax < 0x8000)
-        //   で、**lowmax が飽和(65535)すると丸ごと落ちる**。落ちると最後の推測に
-        //   行き、そこも il_frame=0(TVPのvtotalが1フィールドぶんしか無い)なら
-        //   **fld_pos が常に 0 = 両フィールドが同じスロットに交互に上書きされる**。
-        //   絵は出るが1ライン分の位置がフィールドごとに入れ替わって震える。
-        //   S端子で「lines/frame 525 が正常なのに lowmax が 65535 に張り付く」状態を
-        //   実測している(2026-08-15、videoin.py の cmd_status 参照)。
-        //
-        //   sog_vth は垂直ブロードパルスを見つける閾値[pixクロック]。既定400は
-        //   MSX(DATACLK 21.48MHz)で決めた値で、NTSC 8fsc(28.6356MHz)なら
-        //   水平同期 ≈135 / ブロードパルス ≈776 の間に入っていればよい。
-        row(ui, "  sog_vth", &mut self.tune_sog_vth, 0, 4095,
-            protocol::CFG_KEY_SOG_VTH, &mut send);
-        ui.horizontal(|ui| {
-            ui.monospace("  fld_inv");
-            let mut fi = self.tune_field_invert != 0;
-            if ui.checkbox(&mut fi, "フィールド極性を反転").changed() {
-                self.tune_field_invert = fi as i32;
-                send.push((protocol::CFG_KEY_FIELD_INVERT, fi as u32));
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.monospace("  no_raw ");
-            let mut nr = self.tune_no_raw_phase != 0;
-            if ui.checkbox(&mut nr, "生同期の位相を使わない").changed() {
-                self.tune_no_raw_phase = nr as i32;
-                send.push((protocol::CFG_KEY_NO_RAW_PHASE, nr as u32));
-            }
-        })
-        .response
-        .on_hover_text(
-            "生同期(TTL)を繋がない方式ではONにする。\n\
-             未接続のシュミットバッファ入力は浮いて自己発振し、上の rawok が\n\
-             誤って立つ。すると**存在しない同期の位相**でフィールド極性が決まり、\n\
-             両フィールドが同じスロットに交互に上書きされて絵が1ライン震える。\n\
-             ONにすると SOGOUT の位相(lowmax が正常なら健全)を使う");
-        // TVP自身が数えた lines/frame。**閾値掃引の合否はここで見る。**
-        // 変化する値なので tune 値と違って繰り返し取り直す。
-        {
-            let now = std::time::Instant::now();
-            if self.stat_get_at.map_or(true, |t| now >= t) {
-                self.stat_get_at = Some(now + std::time::Duration::from_millis(700));
-                self.shared.config_get_queue.lock().unwrap().extend([
-                    protocol::CFG_KEY_LINES_PER_FRAME,
-                    protocol::CFG_KEY_LPF_MSBS,
-                    protocol::CFG_KEY_STAT_IL,
-                    protocol::CFG_KEY_SOG_LOWMAX,
-                    protocol::CFG_KEY_SOG_HLEN,
-                ]);
-            }
-            let (lpf, msbs) = {
-                let st = self.shared.config_state.lock().unwrap();
-                (st.get(&protocol::CFG_KEY_LINES_PER_FRAME).copied(),
-                 st.get(&protocol::CFG_KEY_LPF_MSBS).copied())
-            };
+            // フレーム間引き。受信が追いつかない機械での保険。
+            // 映像だけを間引き、音声は間引かないので、音の途切れが減る。
             ui.horizontal(|ui| {
-                match lpf {
-                    Some(n) => {
-                        // 15.7kHz系の正解。262/263(240p)か 525前後(480i)。
-                        let sane = (250..=270).contains(&n) || (500..=540).contains(&n);
-                        let pi = match msbs {
-                            Some(m) if m & 0x20 != 0 => "プログレッシブ",
-                            Some(_) => "インターレース",
-                            None => "?",
-                        };
-                        let t = format!("  lines/frame {n}  ({pi})");
-                        if sane {
-                            ui.monospace(t);
-                        } else {
-                            ui.colored_label(egui::Color32::from_rgb(220, 170, 60), t);
-                        }
-                    }
-                    None => {
-                        ui.weak("  lines/frame ---");
-                    }
+                ui.monospace("間引き");
+                let mut n = self.tune_frame_skip as i32;
+                if ui.add(egui::DragValue::new(&mut n).range(0..=7))
+                    .on_hover_text("映像を何フレームに1回にするか。0=毎フレーム、\n\
+                                    1=2フレームに1回(帯域とfpsが半分)。\n\
+                                    音声は間引かないので、映像を減らすと\n\
+                                    音の途切れも減ります")
+                    .changed()
+                {
+                    self.tune_frame_skip = n as u8;
+                    send.push((protocol::CFG_KEY_FRAME_SKIP, n as u32));
+                }
+                ui.monospace(if self.tune_frame_skip == 0 {
+                    "毎フレーム".to_string()
+                } else {
+                    format!("1/{} ({}fps相当)", self.tune_frame_skip + 1,
+                            55 / (self.tune_frame_skip as u32 + 1))
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.monospace("帯域制限");
+                let mut bw = self.tune_video_bw as i32;
+                if ui.add(egui::DragValue::new(&mut bw).range(0..=15)).changed() {
+                    self.tune_video_bw = bw as u8;
+                    send.push((protocol::CFG_KEY_VIDEO_BW, bw as u32));
+                }
+                ui.monospace(if self.tune_video_bw == 0 { "最大" } else if self.tune_video_bw == 15 { "最小≈95MHz" } else { "" });
+            });
+            // サンプリング位相。1ドット周期の1/32刻みで、ADCがドットのどこを掴むか。
+            // 実測で鮮鋭度が位相だけで2.5倍変わった(最良22 / 既定16は-12% / 最悪4は-60%)。
+            // 最適値はモードごとに違うので、モード別設定として保存している。
+            ui.horizontal(|ui| {
+                ui.monospace("位相");
+                let mut ph = self.tune_phase as i32;
+                if ui.add(egui::DragValue::new(&mut ph).range(0..=31)).changed() {
+                    self.tune_phase = ph as u8;
+                    send.push((protocol::CFG_KEY_PHASE, ph as u32));
+                }
+                if ui.button("-").clicked() {
+                    self.tune_phase = (self.tune_phase + 31) % 32;
+                    send.push((protocol::CFG_KEY_PHASE, self.tune_phase as u32));
+                }
+                if ui.button("+").clicked() {
+                    self.tune_phase = (self.tune_phase + 1) % 32;
+                    send.push((protocol::CFG_KEY_PHASE, self.tune_phase as u32));
+                }
+                ui.monospace(format!("{:.0}度", self.tune_phase as f32 * 360.0 / 32.0));
+            });
+            // --- TVPの細ゲイン(白バランスと白レベル)---
+            //
+            // ★**基板ごとに違う。** アナログ3経路のばらつきを埋める値なので、
+            //   基板が変われば正解が変わる。v0.9.0 の校正値は R=43 / G=39 / B=35
+            //   (白ベタが3chとも RGB555 のコード28=231 に載る)。
+            //
+            //   合わせ方: 白いベタ塗りの**内側**(縁の立ち上がり途中を除く)を見て、
+            //   3chが同じコードに載るようにする。**コードが変わる境目ではなく、
+            //   同じコードに載る範囲の中央に置くこと。** 端に置くと温度ドリフトで
+            //   1コード揺れる。RGB555 の1コードは 3.6% あるので目に見える。
+            //
+            //   白を最上位コード(255)まで上げるとX68000の32階調が1:1で載るが、
+            //   最上位には上の境目が無いためドリフトに弱く、クリップも検出できない。
+            //   階調の並んだ映像源(カラーバー/グレースケールランプ)で
+            //   ゲインとオフセットを同時に合わせるまでは、余裕のある値にしておく。
+            ui.horizontal(|ui| {
+                ui.monospace("細ゲイン");
+                ui.monospace("ゲイン = 1 + N/256");
+            });
+            row(ui, "  gain_R", &mut self.tune_gain_r, 0, 255,
+                protocol::CFG_KEY_GAIN_R, &mut send);
+            row(ui, "  gain_G", &mut self.tune_gain_g, 0, 255,
+                protocol::CFG_KEY_GAIN_G, &mut send);
+            row(ui, "  gain_B", &mut self.tune_gain_b, 0, 255,
+                protocol::CFG_KEY_GAIN_B, &mut send);
+            ui.horizontal(|ui| {
+                ui.monospace(format!(
+                    "  R×{:.3}  G×{:.3}  B×{:.3}",
+                    1.0 + self.tune_gain_r as f32 / 256.0,
+                    1.0 + self.tune_gain_g as f32 / 256.0,
+                    1.0 + self.tune_gain_b as f32 / 256.0));
+            });
+            // --- 同期の切り方(SOGスライス閾値と VSOUT の作り方)---
+            //
+            // ★**この2つは絵を見ながら振って決めるたぐいの値で、合わせ方が確立している。**
+            //   失敗の出方が「絵は出ているのに上下に震える」なので、静止画では気づかない。
+            //
+            //   sog_th(レジスタ10h bit[7:3]): 同期をどの高さで切るか。低すぎると
+            //   **暗い映像を同期と誤認**して垂直検出が壊れ、フィールド極性が判定できず、
+            //   2枚のフィールドが同じスロットに交互に上書きされて絵が半ライン上下に震える。
+            //   S端子で実測(2026-08-15): 既定 0x0B は駄目で、16〜24 が正しい窓、
+            //   その中央の 20 を採った。**判定は下の lines/frame が 262/263 に
+            //   安定するかで見る**(絵の震えを目で追うより速くて確実)。
+            //
+            //   sync22h(レジスタ22h): bit0=VS Bypass / bit1=VS Select。既定 0x08 は
+            //   VSOUT をハーフライン積算器に作らせるが、**積算器は525ライン
+            //   インタレース前提**なので 262ライン progressive では2フレームに1回しか
+            //   Vを出さず、どちらが勝つかがロック毎に決まって双安定になる。0x09 に
+            //   すると同期セパレータ直結になって決定的になる(X68000 で実測:
+            //   織り込みのずれ 0x08 → 4.6〜5.0 / 0x09 → 1.39〜1.44)。
+            ui.horizontal(|ui| {
+                ui.monospace("同期の切り方").on_hover_text(
+                    "同期スライス閾値と VSOUT の作り方。\n\
+                     「絵は出ているのに上下に震える」ときはここ。\n\
+                     下の lines/frame が 262/263 に安定する範囲を探し、その中央を採る");
+            });
+            row(ui, "  sog_th", &mut self.tune_sog_thresh, 0, 31,
+                protocol::CFG_KEY_SOG_THRESH, &mut send);
+            row(ui, "  sync22h", &mut self.tune_sync_ctl2, 0, 255,
+                protocol::CFG_KEY_SYNC_CTL2, &mut send);
+            // --- インターレースのフィールド極性 ---
+            //
+            // ★**「織り込まれない」は絵が出たまま起きるので気づきにくい。**
+            //   捕捉側の fld_pos(そのラインを偶数/奇数どちらのスロットへ置くか)は
+            //   材料を上から順に試す(retrocastx_capture.py の fld_pos):
+            //
+            //     il_det が 0            → fld_pos = 0(プログレッシブ扱い)
+            //     raw_ok(生TTL同期)      → ~ph_raw ^ field_inv
+            //     sog_ok(SOGOUTの位相)   → ~ph_sog ^ field_inv
+            //     どれも駄目             → in_f2 の**推測**(当たらないことがある)
+            //
+            //   コンポジット/S端子には生TTL同期が無いので SOG 経路に頼る。その sog_ok は
+            //     (200 < vcnt < 600) && (100 < lowmax < 0x8000)
+            //   で、**lowmax が飽和(65535)すると丸ごと落ちる**。落ちると最後の推測に
+            //   行き、そこも il_frame=0(TVPのvtotalが1フィールドぶんしか無い)なら
+            //   **fld_pos が常に 0 = 両フィールドが同じスロットに交互に上書きされる**。
+            //   絵は出るが1ライン分の位置がフィールドごとに入れ替わって震える。
+            //   S端子で「lines/frame 525 が正常なのに lowmax が 65535 に張り付く」状態を
+            //   実測している(2026-08-15、videoin.py の cmd_status 参照)。
+            //
+            //   sog_vth は垂直ブロードパルスを見つける閾値[pixクロック]。既定400は
+            //   MSX(DATACLK 21.48MHz)で決めた値で、NTSC 8fsc(28.6356MHz)なら
+            //   水平同期 ≈135 / ブロードパルス ≈776 の間に入っていればよい。
+            row(ui, "  sog_vth", &mut self.tune_sog_vth, 0, 4095,
+                protocol::CFG_KEY_SOG_VTH, &mut send);
+            ui.horizontal(|ui| {
+                ui.monospace("  fld_inv");
+                let mut fi = self.tune_field_invert != 0;
+                if ui.checkbox(&mut fi, "フィールド極性を反転").changed() {
+                    self.tune_field_invert = fi as i32;
+                    send.push((protocol::CFG_KEY_FIELD_INVERT, fi as u32));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.monospace("  no_raw ");
+                let mut nr = self.tune_no_raw_phase != 0;
+                if ui.checkbox(&mut nr, "生同期の位相を使わない").changed() {
+                    self.tune_no_raw_phase = nr as i32;
+                    send.push((protocol::CFG_KEY_NO_RAW_PHASE, nr as u32));
                 }
             })
             .response
             .on_hover_text(
-                "TVPの同期セパレータが数えたライン数(レジスタ37h:38h)。\n\
-                 15.7kHz系なら 262/263(240p)か 525前後(480i)に**収束して動かない**\n\
-                 のが正しい。sog_th が低すぎて暗部を同期と誤認していると、\n\
-                 ここが暴れたり 1 になったりする");
-            // インターセレース判定の内訳。**どの材料が0で「織り込まれない」のかを出す。**
-            // これが無いと、絵は出ているのに震える状態で切り分けができない。
-            let (il, lowmax, hlen) = {
-                let st = self.shared.config_state.lock().unwrap();
-                (st.get(&protocol::CFG_KEY_STAT_IL).copied(),
-                 st.get(&protocol::CFG_KEY_SOG_LOWMAX).copied(),
-                 st.get(&protocol::CFG_KEY_SOG_HLEN).copied())
-            };
-            if let Some(il) = il {
-                let bit = |b: u32| if il & (1 << b) != 0 { "1" } else { "0" };
-                ui.horizontal(|ui| {
-                    ui.monospace(format!(
-                        "  il: raw{} rawok{} P/I{} frame{}",
-                        bit(0), bit(1), bit(2), bit(3)))
-                        .on_hover_text(
-                            "捕捉側がフィールド極性を決める材料(key 0x2D)。\n\
-                             raw   = 生VSYNCの半ライン位相が交互か\n\
-                             rawok = 生TTL同期が使えるか(コンポジット/S端子では0)\n\
-                             P/I   = TVPのP/I検出(1=インターレース)\n\
-                             frame = TVPのvtotalが2フィールドを覆っているか");
-                });
-            }
-            // sog_ok の材料。**飽和(65535)しているとSOG経路の極性判定が丸ごと落ちる。**
-            if let Some(lm) = lowmax {
-                let sat = lm >= 0x8000;
-                ui.horizontal(|ui| {
-                    let t = format!("  SOG lowmax {lm}  hlen {}",
-                                    hlen.map_or("---".into(), |v| v.to_string()));
-                    if sat {
-                        ui.colored_label(egui::Color32::from_rgb(220, 170, 60), t)
-                            .on_hover_text(
-                                "★最長Low期間が飽和している。捕捉側の sog_ok は\n\
-                                 (100 < lowmax < 0x8000) を要求するので、この状態では\n\
-                                 **SOGからフィールド極性を取る経路が落ちる**。\n\
-                                 両フィールドが同じスロットに書かれ、絵が1ライン揺れる");
-                    } else {
-                        ui.monospace(t).on_hover_text(
-                            "SOGOUTの最長Low期間と水平周期[pixクロック]。\n\
-                             lowmax は垂直ブロードパルス幅(NTSC 8fscなら約776)が\n\
-                             見えているのが正常。65535 は飽和で、極性判定が落ちる");
-                    }
-                });
-            }
-        }
-        ui.horizontal(|ui| {
-            if ui.button("読む").on_hover_text(
-                "ボードの現在値を取り込んで表示を合わせる").clicked()
+                "生同期(TTL)を繋がない方式ではONにする。\n\
+                 未接続のシュミットバッファ入力は浮いて自己発振し、上の rawok が\n\
+                 誤って立つ。すると**存在しない同期の位相**でフィールド極性が決まり、\n\
+                 両フィールドが同じスロットに交互に上書きされて絵が1ライン震える。\n\
+                 ONにすると SOGOUT の位相(lowmax が正常なら健全)を使う");
+            // TVP自身が数えた lines/frame。**閾値掃引の合否はここで見る。**
+            // 変化する値なので tune 値と違って繰り返し取り直す。
             {
-                self.tune_synced = false;
-                self.tune_get_at = None;
-                // 未確認の送信が残っていると読み戻しがその分だけ塞がれるので消す
-                self.tune_pending.clear();
-                self.shared.config_state.lock().unwrap().clear();
-            }
-        });
-        // pll_divide と位相の自動調整。
-        //
-        // 「→ pll」の比例計算は、有効映像の実測が信用できないと上限まで走る
-        // (実機で pll_div が 2304 まで行って絵が崩れた)。こちらは絵の
-        // スペクトルから倍率を割り出すので、いまの値がどれだけ外れていても
-        // 1回で正しい範囲に入る。
-        //
-        // ★**簡易とフルの2本立てにしてある。**
-        //   すぐ上の「適用」は fH と水晶だけで決める(絵を一切見ない)ので速いが、
-        //   同じ fH を作れるドットクロックが複数あると決め切れない。X68000の
-        //   31.5kHz がまさにそれで、768x512(1104)と512x512(736)と HRL付き(552)が
-        //   全部 fH 31.500kHz ちょうど。「適用」は安全側の最大値=1104 を返すので、
-        //   512x512 のときは 1.5倍オーバーサンプルのままになる。
-        //
-        //   簡易スキャンはその**候補(この例では htotal 4点 = 設定値3通り)だけ**を、
-        //   htotal の大きい方から位相を振って調べ、位相感度が立った最初の点を採る。
-        //   降りるには「位相を動かしても鮮鋭度が変わらない = 過剰サンプル」という
-        //   積極的な証拠を要求するので、迷ったときは大きい側(安全側)に留まる。
-        //   フルスキャンは候補という前提を置かずに数十点を舐めるので、桁違いに遅く、
-        //   絵に模様が無いと変な値へ着地することもある。
-        //   まず簡易、駄目ならフル、という順番で使う。
-        let quick_cands = self.scan_candidates();
-        ui.horizontal(|ui| {
-            if self.auto.is_some() {
-                if ui.button("中止").clicked() {
-                    self.auto = None;
-                    self.auto_done = Some("中止しました".into());
+                let now = std::time::Instant::now();
+                if self.stat_get_at.map_or(true, |t| now >= t) {
+                    self.stat_get_at = Some(now + std::time::Duration::from_millis(700));
+                    self.shared.config_get_queue.lock().unwrap().extend([
+                        protocol::CFG_KEY_LINES_PER_FRAME,
+                        protocol::CFG_KEY_LPF_MSBS,
+                        protocol::CFG_KEY_STAT_IL,
+                        protocol::CFG_KEY_SOG_LOWMAX,
+                        protocol::CFG_KEY_SOG_HLEN,
+                    ]);
                 }
-                if let Some(a) = self.auto.as_ref() {
-                    ui.monospace(a.note.clone());
-                }
-            } else {
-                let n = quick_cands.len();
-                let list = quick_cands
-                    .iter()
-                    .map(|c| {
-                        if c.oversample > 1 {
-                            format!("htotal {} → pll {} (×{})",
-                                    c.htotal, c.pll_divide, c.oversample)
-                        } else {
-                            format!("htotal {} → pll {}", c.htotal, c.pll_divide)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n         ");
-                let btn = ui.add_enabled(n > 0, egui::Button::new("簡易スキャン"));
-                let btn = if n > 0 {
-                    btn.on_hover_text(format!(
-                        "プロファイルの水晶/分周と fH から出る候補**全部**の位相感度を\n\
-                         測って、いちばん感度が強い点を採ります\n\
-                         (候補1つにつき8秒ほど。位相もそのまま最適値に合わせます)。\n\
-                         候補 {n}点:\n\
-                         {list}\n\
-                         **まずこちらを試す。**\n\
-                         どれも感度が立たなければ大きい側に留まります\n\
-                         (=過剰サンプル。眠いだけで壊れない)。\n\
-                         結果には候補ごとの位相感度が並ぶので、外したときに追えます"
-                    ))
-                } else {
-                    btn.on_hover_text(
-                        "この fH を説明できる候補がありません\n\
-                         (MODE未受信か、プロファイルに無いドットクロック)。\n\
-                         フルスキャンを使ってください",
-                    )
+                let (lpf, msbs) = {
+                    let st = self.shared.config_state.lock().unwrap();
+                    (st.get(&protocol::CFG_KEY_LINES_PER_FRAME).copied(),
+                     st.get(&protocol::CFG_KEY_LPF_MSBS).copied())
                 };
-                if btn.clicked() {
-                    self.auto_done = None;
-                    self.auto_start_quick();
+                ui.horizontal(|ui| {
+                    match lpf {
+                        Some(n) => {
+                            // 15.7kHz系の正解。262/263(240p)か 525前後(480i)。
+                            let sane = (250..=270).contains(&n) || (500..=540).contains(&n);
+                            let pi = match msbs {
+                                Some(m) if m & 0x20 != 0 => "プログレッシブ",
+                                Some(_) => "インターレース",
+                                None => "?",
+                            };
+                            let t = format!("  lines/frame {n}  ({pi})");
+                            if sane {
+                                ui.monospace(t);
+                            } else {
+                                ui.colored_label(theme::AMBER, t);
+                            }
+                        }
+                        None => {
+                            ui.weak("  lines/frame ---");
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "TVPの同期セパレータが数えたライン数(レジスタ37h:38h)。\n\
+                     15.7kHz系なら 262/263(240p)か 525前後(480i)に**収束して動かない**\n\
+                     のが正しい。sog_th が低すぎて暗部を同期と誤認していると、\n\
+                     ここが暴れたり 1 になったりする");
+                // インターセレース判定の内訳。**どの材料が0で「織り込まれない」のかを出す。**
+                // これが無いと、絵は出ているのに震える状態で切り分けができない。
+                let (il, lowmax, hlen) = {
+                    let st = self.shared.config_state.lock().unwrap();
+                    (st.get(&protocol::CFG_KEY_STAT_IL).copied(),
+                     st.get(&protocol::CFG_KEY_SOG_LOWMAX).copied(),
+                     st.get(&protocol::CFG_KEY_SOG_HLEN).copied())
+                };
+                if let Some(il) = il {
+                    let bit = |b: u32| if il & (1 << b) != 0 { "1" } else { "0" };
+                    ui.horizontal(|ui| {
+                        ui.monospace(format!(
+                            "  il: raw{} rawok{} P/I{} frame{}",
+                            bit(0), bit(1), bit(2), bit(3)))
+                            .on_hover_text(
+                                "捕捉側がフィールド極性を決める材料(key 0x2D)。\n\
+                                 raw   = 生VSYNCの半ライン位相が交互か\n\
+                                 rawok = 生TTL同期が使えるか(コンポジット/S端子では0)\n\
+                                 P/I   = TVPのP/I検出(1=インターレース)\n\
+                                 frame = TVPのvtotalが2フィールドを覆っているか");
+                    });
                 }
-                if ui.button("フルスキャン")
-                    .on_hover_text("候補を前提にせず pll_divide を総当たりで探し、\n\
-                                    そのあと位相(0〜31)も振って決めます(40秒ほど)。\n\
-                                    プロファイルに無いモードや未知の機種向け。\n\
-                                    文字など細かい模様が出ている画面で実行してください")
-                    .clicked()
+                // sog_ok の材料。**飽和(65535)しているとSOG経路の極性判定が丸ごと落ちる。**
+                if let Some(lm) = lowmax {
+                    let sat = lm >= 0x8000;
+                    ui.horizontal(|ui| {
+                        let t = format!("  SOG lowmax {lm}  hlen {}",
+                                        hlen.map_or("---".into(), |v| v.to_string()));
+                        if sat {
+                            ui.colored_label(theme::AMBER, t)
+                                .on_hover_text(
+                                    "★最長Low期間が飽和している。捕捉側の sog_ok は\n\
+                                     (100 < lowmax < 0x8000) を要求するので、この状態では\n\
+                                     **SOGからフィールド極性を取る経路が落ちる**。\n\
+                                     両フィールドが同じスロットに書かれ、絵が1ライン揺れる");
+                        } else {
+                            ui.monospace(t).on_hover_text(
+                                "SOGOUTの最長Low期間と水平周期[pixクロック]。\n\
+                                 lowmax は垂直ブロードパルス幅(NTSC 8fscなら約776)が\n\
+                                 見えているのが正常。65535 は飽和で、極性判定が落ちる");
+                        }
+                    });
+                }
+            }
+            ui.horizontal(|ui| {
+                if ui.button("読む").on_hover_text(
+                    "ボードの現在値を取り込んで表示を合わせる").clicked()
                 {
-                    self.auto_done = None;
-                    self.auto_start();
+                    self.tune_synced = false;
+                    self.tune_get_at = None;
+                    // 未確認の送信が残っていると読み戻しがその分だけ塞がれるので消す
+                    self.tune_pending.clear();
+                    self.shared.config_state.lock().unwrap().clear();
+                }
+            });
+            // pll_divide と位相の自動調整。
+            //
+            // 「→ pll」の比例計算は、有効映像の実測が信用できないと上限まで走る
+            // (実機で pll_div が 2304 まで行って絵が崩れた)。こちらは絵の
+            // スペクトルから倍率を割り出すので、いまの値がどれだけ外れていても
+            // 1回で正しい範囲に入る。
+            //
+            // ★**簡易とフルの2本立てにしてある。**
+            //   すぐ上の「適用」は fH と水晶だけで決める(絵を一切見ない)ので速いが、
+            //   同じ fH を作れるドットクロックが複数あると決め切れない。X68000の
+            //   31.5kHz がまさにそれで、768x512(1104)と512x512(736)と HRL付き(552)が
+            //   全部 fH 31.500kHz ちょうど。「適用」は安全側の最大値=1104 を返すので、
+            //   512x512 のときは 1.5倍オーバーサンプルのままになる。
+            //
+            //   簡易スキャンはその**候補(この例では htotal 4点 = 設定値3通り)だけ**を、
+            //   htotal の大きい方から位相を振って調べ、位相感度が立った最初の点を採る。
+            //   降りるには「位相を動かしても鮮鋭度が変わらない = 過剰サンプル」という
+            //   積極的な証拠を要求するので、迷ったときは大きい側(安全側)に留まる。
+            //   フルスキャンは候補という前提を置かずに数十点を舐めるので、桁違いに遅く、
+            //   絵に模様が無いと変な値へ着地することもある。
+            //   まず簡易、駄目ならフル、という順番で使う。
+            let quick_cands = self.scan_candidates();
+            ui.horizontal(|ui| {
+                if self.auto.is_some() {
+                    if ui.button("中止").clicked() {
+                        self.auto = None;
+                        self.auto_done = Some("中止しました".into());
+                    }
+                    if let Some(a) = self.auto.as_ref() {
+                        ui.monospace(a.note.clone());
+                    }
+                } else {
+                    let n = quick_cands.len();
+                    let list = quick_cands
+                        .iter()
+                        .map(|c| {
+                            if c.oversample > 1 {
+                                format!("htotal {} → pll {} (×{})",
+                                        c.htotal, c.pll_divide, c.oversample)
+                            } else {
+                                format!("htotal {} → pll {}", c.htotal, c.pll_divide)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n         ");
+                    let btn = ui.add_enabled(n > 0, egui::Button::new("簡易スキャン"));
+                    let btn = if n > 0 {
+                        btn.on_hover_text(format!(
+                            "プロファイルの水晶/分周と fH から出る候補**全部**の位相感度を\n\
+                             測って、いちばん感度が強い点を採ります\n\
+                             (候補1つにつき8秒ほど。位相もそのまま最適値に合わせます)。\n\
+                             候補 {n}点:\n\
+                             {list}\n\
+                             **まずこちらを試す。**\n\
+                             どれも感度が立たなければ大きい側に留まります\n\
+                             (=過剰サンプル。眠いだけで壊れない)。\n\
+                             結果には候補ごとの位相感度が並ぶので、外したときに追えます"
+                        ))
+                    } else {
+                        btn.on_hover_text(
+                            "この fH を説明できる候補がありません\n\
+                             (MODE未受信か、プロファイルに無いドットクロック)。\n\
+                             フルスキャンを使ってください",
+                        )
+                    };
+                    if btn.clicked() {
+                        self.auto_done = None;
+                        self.auto_start_quick();
+                    }
+                    if ui.button("フルスキャン")
+                        .on_hover_text("候補を前提にせず pll_divide を総当たりで探し、\n\
+                                        そのあと位相(0〜31)も振って決めます(40秒ほど)。\n\
+                                        プロファイルに無いモードや未知の機種向け。\n\
+                                        文字など細かい模様が出ている画面で実行してください")
+                        .clicked()
+                    {
+                        self.auto_done = None;
+                        self.auto_start();
+                    }
+                }
+            });
+            if self.auto.is_none() {
+                if let Some(d) = self.auto_done.clone() {
+                    ui.monospace(d);
                 }
             }
-        });
-        if self.auto.is_none() {
-            if let Some(d) = self.auto_done.clone() {
-                ui.monospace(d);
+            if ui.button("send all").clicked() {
+                send.push((protocol::CFG_KEY_VBP, self.tune_vbp as u32));
+                send.push((protocol::CFG_KEY_HS_OFFSET, self.tune_hs_offset as u32));
+                // YC8 では pll_divide は規格値。保存してある古い値で上書きしない
+                if !pll_locked {
+                    send.push((protocol::CFG_KEY_PLL_DIVIDE, self.tune_pll_divide as u32));
+                }
+                send.push((protocol::CFG_KEY_PHASE, self.tune_phase as u32));
+                send.push((protocol::CFG_KEY_FULL_LINE,
+                           if self.tune_full_line { 1 } else { 0 }));
+                send.push((protocol::CFG_KEY_FRAME_SKIP, self.tune_frame_skip as u32));
             }
         }
-        if ui.button("send all").clicked() {
-            send.push((protocol::CFG_KEY_VBP, self.tune_vbp as u32));
-            send.push((protocol::CFG_KEY_HS_OFFSET, self.tune_hs_offset as u32));
-            // YC8 では pll_divide は規格値。保存してある古い値で上書きしない
-            if !pll_locked {
-                send.push((protocol::CFG_KEY_PLL_DIVIDE, self.tune_pll_divide as u32));
-            }
-            send.push((protocol::CFG_KEY_PHASE, self.tune_phase as u32));
-            send.push((protocol::CFG_KEY_FULL_LINE,
-                       if self.tune_full_line { 1 } else { 0 }));
-            send.push((protocol::CFG_KEY_FRAME_SKIP, self.tune_frame_skip as u32));
-        }
-        if !send.is_empty() {
-            let now = std::time::Instant::now();
-            for (k, v) in &send {
-                self.tune_pending.insert(*k, (*v, now));
-            }
-            self.shared.config_queue.lock().unwrap().extend(send);
-            self.mark_settings_dirty();
-        }
+        self.queue_config(send);
     }
 }
 
@@ -3108,7 +3347,7 @@ impl ViewerApp {
             }
         }
 
-        let warn = egui::Color32::from_rgb(220, 170, 60);
+        let warn = theme::AMBER;
         let cfg = self.netcheck.clone().unwrap_or(netcheck::Buffers::Unknown);
         // 実測のロス率。少しだけ受けた段階では判断しない(起動直後の取りこぼしで
         // 毎回警告が出てしまう)
@@ -3375,7 +3614,7 @@ impl ViewerApp {
                 self.remote.held()
             ));
         } else {
-            ui.colored_label(egui::Color32::from_rgb(220, 170, 60), self.remote.status())
+            ui.colored_label(theme::AMBER, self.remote.status())
                 .on_hover_text(format!(
                     "CoreMIDI の宛先 \"{}\" を探しています。\n\
                      MimicX が起動すれば自動で繋がります",
@@ -3450,6 +3689,20 @@ impl eframe::App for ViewerApp {
             self.bezel_off = !self.bezel_off;
             self.mark_settings_dirty();
         }
+        // S で簡易スキャン。モードが変わるたびに走らせるものなので、パネルを
+        // 開かずに叩けるようにする。実行中は無視する(中止はボタンから)。
+        //
+        // ★**入力欄にフォーカスがあるときは拾わない。** 数値欄に "s" を打った
+        //   だけでスキャンが始まると事故になる(Tab/B は従来どおりの挙動)。
+        {
+            let typing = root.memory(|m| m.focused().is_some());
+            if !typing
+                && root.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::S))
+                && self.auto.is_none()
+            {
+                self.auto_start_quick();
+            }
+        }
         if self.show_panel {
         egui::Panel::right(egui::Id::new("info")).show(root, |ui| {
             // 項目が増えて下が操作できなくなるので縦スクロールにする。
@@ -3458,7 +3711,7 @@ impl eframe::App for ViewerApp {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                ui.heading("RetroCastX");
+                ui.heading(egui::RichText::new("RetroCastX").color(theme::ACCENT));
                 if let Some(err) = &self.rx_error {
                     ui.colored_label(egui::Color32::RED, err);
                 }
@@ -3490,11 +3743,29 @@ impl eframe::App for ViewerApp {
                 // ★**送れていないことを明示する。** 「何も映らない」だけだと
                 //   受信側の問題と区別できず、原因の切り分けに時間がかかる。
                 if let Some(err) = self.shared.net_error.lock().unwrap().clone() {
-                    ui.colored_label(egui::Color32::from_rgb(220, 170, 60), err);
+                    ui.colored_label(theme::AMBER, err);
                 }
                 ui.separator();
 
-                ui.strong("Mode");
+                // ★よく使う操作を最上部に置く。簡易スキャンはモードが変わるたびに
+                //   押すので、Tune の奥だけにあると毎回スクロールすることになる。
+                self.quick_scan_bar(ui);
+                ui.separator();
+
+                // ★**よく使う順に並べ替えてある。** 状態表示 → 入力の切り替え →
+                //   音量 → 配信出力、までがパネルを開いたまま触るもの。
+                //   Mode 以下は「見る」ための情報なのでその下に置く。
+                Self::section(ui, "入力");
+                self.source_ui(ui);
+                self.audio_src_ui(ui);
+                self.volume_ui(ui);
+                ui.separator();
+
+                Self::section(ui, "配信出力");
+                self.clean_out_ui(ui);
+                ui.separator();
+
+                Self::section(ui, "Mode");
                 // 周波数インジケータ(実機モニタのLEDに相当)。同期している帯域が点灯する
                 self.band_leds(ui);
                 if let Some(m) = self.shared.mode.lock().unwrap().clone() {
@@ -3515,23 +3786,27 @@ impl eframe::App for ViewerApp {
                         || self.shared.stats.lock().unwrap().interlace_measured;
                     let vsrc = if il { m.vactive } else { m.vactive / 2 };
                     ui.monospace(format!("{}x{} (id {})", m.hactive, vsrc, m.mode_id));
-                    if vsrc != m.vactive {
+                    if vsrc != m.vactive && self.show_advanced {
                         ui.weak(format!("スロット {}", m.vactive));
                     }
                     // 実際に届いている LINE の形式。UIの設定値ではなく**電線上の値**
                     ui.monospace(pixfmt_name(m.pixfmt));
                     // htotal×vtotal もボードの実測値。モード表を作る調査で必要なので出す
-                    ui.monospace(format!("total {}x{}", m.htotal, m.vtotal));
-                    ui.monospace(format!("dotclk {:.4} MHz", m.dotclk_hz as f64 / 1e6));
-                    ui.monospace(format!("h {:.3} kHz", m.hfreq_mhz_x1000 as f64 / 1e6));
-                    ui.monospace(format!("v {:.3} Hz", m.vfreq_mhz_x1000 as f64 / 1e3));
+                    if self.show_advanced {
+                        theme::kv(ui, "total", format!("{}x{}", m.htotal, m.vtotal));
+                        theme::kv(ui, "dotclk", format!("{:.4} MHz", m.dotclk_hz as f64 / 1e6));
+                    }
+                    theme::kv(ui, "h", format!("{:.3} kHz", m.hfreq_mhz_x1000 as f64 / 1e6));
+                    theme::kv(ui, "v", format!("{:.3} Hz", m.vfreq_mhz_x1000 as f64 / 1e3));
                 } else {
                     ui.weak("no mode yet");
                 }
                 ui.separator();
 
-                ui.strong("Stats");
-                ui.label(if self.no_vsync { "present: no-vsync" } else { "present: vsync (FIFO)" });
+                Self::section(ui, "Stats");
+                if self.show_advanced {
+                    ui.label(if self.no_vsync { "present: no-vsync" } else { "present: vsync (FIFO)" });
+                }
                 let s = self.shared.stats.lock().unwrap().clone();
                 if !self.pace.summary.is_empty() {
                     // ★**「53Hz」だけ出すと「12%描画できていない」と読める。**
@@ -3561,12 +3836,14 @@ impl eframe::App for ViewerApp {
                                  到着の揺らぎより細かく見に行くために多めに回す。");
                     }
                 }
-                ui.monospace(format!("{:.1} fps  {:.1} Mbps", s.fps, s.mbps));
-                ui.monospace(format!("frames {}", s.frames));
+                theme::kv(ui, "rate", format!("{:.1} fps  {:.1} Mbps", s.fps, s.mbps));
+                if self.show_advanced {
+                    theme::kv(ui, "frames", format!("{}", s.frames));
+                }
                 // lost はOSのUDPバッファ溢れ、qdrop は組立が追いつかず受信スレッドの
                 // キューが満杯で捨てた分。分けて出さないとどちらが詰まっているのか
                 // 判断できない
-                ui.monospace(format!("pkts {}  lost {}", s.packets, s.lost_packets));
+                theme::kv(ui, "pkts", format!("{}  lost {}", s.packets, s.lost_packets));
                 self.netcheck_ui(ui, &s);
                 if s.queue_drops > 0 {
                     ui.monospace(format!("queue drops {}", s.queue_drops))
@@ -3574,7 +3851,9 @@ impl eframe::App for ViewerApp {
                                         満杯で捨てた数。ここが増えるなら組立側が、\n\
                                         lost だけ増えるなら受信側が詰まっています");
                 }
-                ui.monospace(format!("orphan lines {}", s.orphan_lines));
+                if self.show_advanced {
+                    theme::kv(ui, "orphan", format!("{}", s.orphan_lines));
+                }
                 // 太らせても埋まらなかった行数。0でないと前フレームの残りが減衰して
                 // 薄い影として見える。プログレッシブでは0になるべき
                 // インタレースかどうかは mflags では決まらないので測定で判定している。
@@ -3584,13 +3863,13 @@ impl eframe::App for ViewerApp {
                     // **インタレースでは半分が未充填なのが正常**(残りは前フィールドの
                     // 内容 = 織り込み)。ここで警告色にすると毎回不具合に見える
                     ui.colored_label(
-                        egui::Color32::from_rgb(120, 200, 120),
+                        theme::OK,
                         format!("インタレース(測定): 1フィールドずつ / 太らせ停止・減衰なし\n\
                                  前フィールド保持 {}行(半分が正常)", s.unfilled_rows),
                     );
                 } else if s.unfilled_rows > 0 {
                     ui.colored_label(
-                        egui::Color32::from_rgb(220, 170, 60),
+                        theme::AMBER,
                         format!("未充填の行 {}", s.unfilled_rows),
                     );
                 }
@@ -3600,12 +3879,12 @@ impl eframe::App for ViewerApp {
                 if s.ntsc_comb_step > 0 {
                     if s.publish_wait_max_ms > 1.0 {
                         ui.colored_label(
-                            egui::Color32::from_rgb(220, 170, 60),
+                            theme::AMBER,
                             format!("フレーム差し替えのUI待ち 合計{:.0}ms 最大{:.0}ms",
                                     s.publish_wait_ms, s.publish_wait_max_ms));
                     }
                     ui.colored_label(
-                        egui::Color32::from_rgb(120, 200, 120),
+                        theme::OK,
                         if s.ntsc_svideo {
                             format!("NTSC復調 {}行 コム間隔{} 位相差{:.0}°\n\
                                      S端子(赤chのバースト検出) コム未使用",
@@ -3621,7 +3900,7 @@ impl eframe::App for ViewerApp {
                 } else if matches!(self.shared.mode.lock().unwrap().as_ref(),
                                    Some(m) if m.pixfmt == protocol::PIXFMT_YC8) {
                     ui.colored_label(
-                        egui::Color32::from_rgb(220, 170, 60),
+                        theme::AMBER,
                         "NTSC復調 未ロック(Yのグレースケール表示)",
                     );
                 }
@@ -3632,19 +3911,19 @@ impl eframe::App for ViewerApp {
                 ));
                 ui.separator();
 
-                ui.strong("Audio");
+                Self::section(ui, "Audio");
                 self.audio_ui(ui);
                 ui.separator();
 
-                ui.strong("Remote input");
+                Self::section(ui, "Remote input");
                 self.remote_ui(ui);
                 ui.separator();
 
-                ui.strong("Tune");
+                Self::section(ui, "Tune");
                 self.tune_ui(ui);
                 ui.separator();
 
-                ui.strong("Boards");
+                Self::section(ui, "Boards");
                 let boards = self.shared.boards.lock().unwrap();
                 if boards.is_empty() {
                     ui.weak("none discovered");
@@ -3699,8 +3978,9 @@ impl eframe::App for ViewerApp {
                     // H位置もモードごとに一度合わせる固定値であって、絵に追従はしない。
                     // 帯域ごとに保存されるので一度合わせれば以後は再現される。
                     let mut ch = false;
+                    theme::align_sliders(ui);
                     ui.horizontal(|ui| {
-                        ui.monospace("H幅");
+                        theme::label_col(ui, "H幅");
                         ch |= ui.add(egui::Slider::new(&mut self.mon[0], 0.2..=2.0)
                                      .fixed_decimals(3).show_value(true))
                             .on_hover_text("1HSYNC周期のうち管面に出る割合。\n\
@@ -3708,7 +3988,7 @@ impl eframe::App for ViewerApp {
                             .changed();
                     });
                     ui.horizontal(|ui| {
-                        ui.monospace("H位置");
+                        theme::label_col(ui, "H位置");
                         ch |= ui.add(egui::Slider::new(&mut self.mon[1], -0.5..=0.5)
                                      .fixed_decimals(3).show_value(true))
                             .on_hover_text("右へ動かすと絵が右へ動く。\n\
@@ -3717,14 +3997,14 @@ impl eframe::App for ViewerApp {
                             .changed();
                     });
                     ui.horizontal(|ui| {
-                        ui.monospace("V幅");
+                        theme::label_col(ui, "V幅");
                         ch |= ui.add(egui::Slider::new(&mut self.mon[2], 0.2..=2.0)
                                      .fixed_decimals(3).show_value(true))
                             .on_hover_text("1VSYNC周期のうち管面に出る割合")
                             .changed();
                     });
                     ui.horizontal(|ui| {
-                        ui.monospace("V位置");
+                        theme::label_col(ui, "V位置");
                         ch |= ui.add(egui::Slider::new(&mut self.mon[3], -0.5..=0.5)
                                      .fixed_decimals(3).show_value(true))
                             .on_hover_text("右へ動かすと絵が下へ動く")
@@ -3865,50 +4145,6 @@ impl eframe::App for ViewerApp {
                         self.bezel_off = !on;
                         self.mark_settings_dirty();
                     }
-                });
-                ui.horizontal(|ui| {
-                    // 配信用のクリーン出力。UIもベゼルも無い別ウィンドウを出す。
-                    ui.monospace("配信出力");
-                    let mut on = self.clean_open;
-                    if ui.checkbox(&mut on, "別窓")
-                        .on_hover_text(
-                            "映像だけを描く別ウィンドウを開きます。\n\
-                             OBS の「ウィンドウキャプチャ」でこれを掴むと、\n\
-                             調整UIやベゼルを写さずに配信ソースにできます。")
-                        .changed()
-                    {
-                        self.clean_open = on;
-                        self.mark_settings_dirty();
-                    }
-                    let mut nodec = self.clean_undecorated;
-                    if ui.checkbox(&mut nodec, "枠なし")
-                        .on_hover_text(
-                            "タイトルバーを消します。OBS のウィンドウキャプチャは\n\
-                             タイトルバーごと取り込むので、既定で消しています。\n\
-                             枠なしのときは映像のどこを掴んでもウィンドウを動かせます。")
-                        .changed()
-                    {
-                        self.clean_undecorated = nodec;
-                        self.mark_settings_dirty();
-                    }
-                    let sel = format!("{:.0}x{:.0}", self.clean_size[0], self.clean_size[1]);
-                    egui::ComboBox::from_id_salt("clean_size")
-                        .width(110.0)
-                        .selected_text(sel)
-                        .show_ui(ui, |ui| {
-                            for (label, size) in cleanout::PRESETS {
-                                let cur = self.clean_size == *size;
-                                if ui.selectable_label(cur, *label).clicked() && !cur {
-                                    self.clean_size = *size;
-                                    self.mark_settings_dirty();
-                                }
-                            }
-                        })
-                        .response
-                        .on_hover_text(
-                            "ウィンドウの内寸。**映像の解像度が変わっても変えません**。\n\
-                             変えると OBS 側のソースサイズが動いて配信が崩れるためです。\n\
-                             中の映像はアスペクトを保って収め、余りは黒で埋めます。");
                 });
                 ui.horizontal(|ui| {
                     // 拡大時の補間。sharp-bilinear は非整数倍でもドット幅が不揃いに
@@ -4154,6 +4390,7 @@ impl eframe::App for ViewerApp {
         }
 
         self.remote_badge(&ctx);
+        self.toasts.show(&ctx);
         self.netcheck_modal(&ctx);
         self.clean_output(&ctx);
 

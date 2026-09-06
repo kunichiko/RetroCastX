@@ -83,6 +83,16 @@ pub struct Profile {
     /// htotal の粒度。X68000のCRTCは水平トータルを8ドット単位で持つので、
     /// 正解は必ず8の倍数になる。この制約が候補をさらに絞る
     pub htotal_multiple: i32,
+    /// この映像入力と組になる音声入力(0=RGB端子 / 1=LINE / 2=S/PDIF)。
+    ///
+    /// ★**基板の音声入力は3系統しかなく、どれと組になるかは配線で決まっている。**
+    ///   RGB端子(J10)は X68000 式の2列DA-15 で、ピン10/11 に音声が来る。だから
+    ///   X68000 だけが 0 で、それ以外は音声が別配線になるので LINE 入力(1)。
+    ///   S/PDIF は「その機種はこれ」と言えるものではないので既定にはしない。
+    ///
+    ///   これは**既定であって固定ではない**。音声を「自動」にしているときだけ
+    ///   参照され、ユーザーが明示的に選べばそちらが優先される。
+    pub audio_src: Option<u8>,
     /// 実機で裏を取れているか。**自動選択の順位付けに使う。**
     ///
     /// 水晶が違っても fH ひとつからは同じくらいよく合う候補が出ることがある。
@@ -343,6 +353,7 @@ pub const PROFILES: &[Profile] = &[
             Clock { name: "50.3498MHz", hz: 50.349_8e6, dividers: &[2] },
         ],
         htotal_multiple: 8,
+        audio_src: Some(0),
         verified: true,
     },
     Profile {
@@ -372,6 +383,7 @@ pub const PROFILES: &[Profile] = &[
         // MSXのVDPは htotal 342 固定(512ドット系でもドットクロックが倍になるだけ)
         // なので粒度の概念が無い。制約は付けず、相対誤差だけで判定させる。
         htotal_multiple: 1,
+        audio_src: Some(1),
         verified: true,
     },
     Profile {
@@ -384,6 +396,7 @@ pub const PROFILES: &[Profile] = &[
             Clock { name: "28.322MHz", hz: 28.322e6, dividers: &[1, 2] },
         ],
         htotal_multiple: 1,
+        audio_src: Some(1),
         verified: false,
     },
     Profile {
@@ -396,6 +409,7 @@ pub const PROFILES: &[Profile] = &[
             Clock { name: "25.175MHz", hz: 25.175e6, dividers: &[1, 2] },
         ],
         htotal_multiple: 1,
+        audio_src: Some(1),
         verified: false,
     },
     // --- ここから下は「配線の方式」で決まる映像ソース。選ぶと入力設定を書く ---
@@ -415,6 +429,7 @@ pub const PROFILES: &[Profile] = &[
             dividers: &[1],
         }],
         htotal_multiple: 1,
+        audio_src: Some(1),
         verified: true,
     },
     Profile {
@@ -428,6 +443,7 @@ pub const PROFILES: &[Profile] = &[
             dividers: &[1],
         }],
         htotal_multiple: 1,
+        audio_src: Some(1),
         verified: false,
     },
 ];

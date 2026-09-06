@@ -141,6 +141,12 @@ pub struct Settings {
     /// クリーン出力ウィンドウの内寸。**モード切替では変えない**。
     /// 変えると OBS 側のソースサイズが動いて配信が破綻する。
     pub clean_size: [f32; 2],
+    /// 音声入力を映像ソースに追従させるか。
+    /// 既定は on(入力を切り替えたら音声も付いてくるのが自然なので)。
+    pub audio_auto: bool,
+    /// 詳細表示。調査用の数値と細かい設定を出すか。
+    /// 既定は off(常用時に見たいものだけにする)。
+    pub show_advanced: bool,
     /// クリーン出力ウィンドウのタイトルバーを消すか。
     /// OBS のウィンドウキャプチャはタイトルバーごと取り込むので既定で消す。
     pub clean_undecorated: bool,
@@ -186,6 +192,8 @@ impl Default for Settings {
             clean_open: false,
             clean_size: default_clean_size(),
             clean_undecorated: true,
+            show_advanced: false,
+            audio_auto: true,
             filter: 2,
             dot_a_milli: default_dot_a(),
             interlace_decay: 1.0,
@@ -312,6 +320,8 @@ impl Settings {
                 "bezel_off" => s.bezel_off = v == "true",
                 "clean_open" => s.clean_open = v == "true",
                 "clean_undecorated" => s.clean_undecorated = v == "true",
+                "show_advanced" => s.show_advanced = v == "true",
+                "audio_auto" => s.audio_auto = v != "false",
                 "clean_size" => {
                     let a: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                     // 極端な値で開くと画面外に出て閉じられなくなるので範囲を切る
@@ -392,7 +402,9 @@ impl Settings {
              window_h = {:.0}\n\
              clean_open = {}\n\
              clean_size = {:.0},{:.0}\n\
-             clean_undecorated = {}\n",
+             clean_undecorated = {}\n\
+             show_advanced = {}\n\
+             audio_auto = {}\n",
             self.volume,
             self.muted,
             self.audio_source.map(|v| v.to_string()).unwrap_or_else(|| "off".into()),
@@ -429,6 +441,8 @@ impl Settings {
             self.clean_open,
             self.clean_size[0], self.clean_size[1],
             self.clean_undecorated,
+            self.show_advanced,
+            self.audio_auto,
         );
         let mut body = body;
         for (khz, v) in &self.band_pll {
