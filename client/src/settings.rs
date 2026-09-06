@@ -136,6 +136,15 @@ pub struct Settings {
     /// 前回のウィンドウ内寸。次回起動時に復元する
     pub window_w: f32,
     pub window_h: f32,
+    /// 配信用クリーン出力ウィンドウを開くか(次回起動時に復元する)
+    pub clean_open: bool,
+    /// クリーン出力ウィンドウの内寸。**モード切替では変えない**。
+    /// 変えると OBS 側のソースサイズが動いて配信が破綻する。
+    pub clean_size: [f32; 2],
+}
+
+fn default_clean_size() -> [f32; 2] {
+    crate::cleanout::DEFAULT_SIZE
 }
 
 impl Default for Settings {
@@ -171,6 +180,8 @@ impl Default for Settings {
             netcheck_muted: false,
             bezel: String::new(),
             bezel_off: false,
+            clean_open: false,
+            clean_size: default_clean_size(),
             filter: 2,
             dot_a_milli: default_dot_a(),
             interlace_decay: 1.0,
@@ -295,6 +306,15 @@ impl Settings {
                 "show_panel" => s.show_panel = v != "false",
                 "netcheck_muted" => s.netcheck_muted = v == "true",
                 "bezel_off" => s.bezel_off = v == "true",
+                "clean_open" => s.clean_open = v == "true",
+                "clean_size" => {
+                    let a: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    // 極端な値で開くと画面外に出て閉じられなくなるので範囲を切る
+                    if a.len() == 2 && (160.0..=8192.0).contains(&a[0])
+                        && (120.0..=8192.0).contains(&a[1]) {
+                        s.clean_size = [a[0], a[1]];
+                    }
+                }
                 "filter" => { if let Ok(x) = v.parse::<u32>() { s.filter = x.min(2) } }
                 "dot_a_milli" => { if let Ok(x) = v.parse::<u32>() { s.dot_a_milli = x.min(900) } }
                 "interlace_decay" => {
@@ -364,7 +384,9 @@ impl Settings {
              crop_w = {}\n\
              crop_h = {}\n\
              window_w = {:.0}\n\
-             window_h = {:.0}\n",
+             window_h = {:.0}\n\
+             clean_open = {}\n\
+             clean_size = {:.0},{:.0}\n",
             self.volume,
             self.muted,
             self.audio_source.map(|v| v.to_string()).unwrap_or_else(|| "off".into()),
@@ -398,6 +420,8 @@ impl Settings {
             self.crop_h,
             self.window_w,
             self.window_h,
+            self.clean_open,
+            self.clean_size[0], self.clean_size[1],
         );
         let mut body = body;
         for (khz, v) in &self.band_pll {
