@@ -41,6 +41,7 @@ mod protocol;
 mod receiver;
 mod settings;
 mod theme;
+mod toast;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -746,7 +747,8 @@ struct ViewerApp {
     /// 平滑をリセットする判定用。モードが変わったら追従を待たずに飛ばす
     vtotal_mode_id: std::cell::Cell<u16>,
     /// 直近で入力設定を書き込んだソース(ラベル, 件数, 自動か)。パネルの確認表示用。
-    input_regs_sent: Option<(&'static str, usize, bool)>,
+    /// 一時通知(スナックバー)
+    toasts: toast::Toasts,
     /// 伝送形式が映像ソースと食い違ったので `input_regs` を自動で書いたか。
     /// **食い違いが解消したら false に戻す**ので、ボードの電源を入れ直すたびに
     /// 1回だけ書き直す。書いてから MODE が変わるまでの間に何度も書かないための掛け金。
@@ -940,7 +942,7 @@ impl ViewerApp {
             vtotal_smooth: std::cell::Cell::new(0.0),
             vtotal_last_t: std::cell::Cell::new(None),
             vtotal_mode_id: std::cell::Cell::new(u16::MAX),
-            input_regs_sent: None,
+            toasts: toast::Toasts::default(),
             input_regs_autowritten: false,
             source_profile: cfg.source_profile.clone(),
             tune_pending: Default::default(),
@@ -1284,7 +1286,7 @@ impl ViewerApp {
             let prof = profiles::by_key(&self.source_profile);
             let has_regs = prof.is_some_and(|p| !p.input_regs.is_empty());
             let write = ui
-                .add_enabled(has_regs, egui::Button::new("入力設定を書く"))
+                .add_enabled(has_regs, egui::Button::new("入力設定を書き込む"))
                 .on_hover_text(
                     "TVPの入力MUX・同期の取り方・クランプ・ゲイン・伝送形式を書く。\n\
                      ボードの電源を入れ直すと消えるので、そのときはここを押す\n\
@@ -1322,7 +1324,7 @@ impl ViewerApp {
                     for (k, v) in wrote {
                         self.set_tune_mirror(k, v);
                     }
-                    self.input_regs_sent = Some((p.label, n, false));
+                    self.toasts.info(format!("{} の入力設定をボードへ書き込みました ({n}件)", p.label));
                 }
             }
         });
@@ -1357,20 +1359,11 @@ impl ViewerApp {
                         theme::AMBER,
                         format!(
                             "ボードの伝送形式が {} で、このソース({})では絵になりません。\
-                             電源を入れ直して設定が消えた可能性 → 「入力設定を書く」",
+                             電源を入れ直して設定が消えた可能性 → 「入力設定を書き込む」",
                             pixfmt_name(have), pixfmt_name(want)
                         ),
                     );
                 }
-            }
-        }
-        if let Some((label, n, auto)) = self.input_regs_sent {
-            if auto {
-                ui.monospace(format!(
-                    "入力設定を自動で書いた: {label} ({n}件・伝送形式が食い違っていたため)"
-                ));
-            } else {
-                ui.monospace(format!("入力設定を書いた: {label} ({n}件)"));
             }
         }
         self.queue_config(send);
@@ -1885,7 +1878,7 @@ impl ViewerApp {
     ///
     /// 掛け金(`input_regs_autowritten`)は食い違いが解消したら外れるので、
     /// **ボードを入れ直すたびに1回だけ**書く。書いても直らない場合
-    /// (パケットが落ちた等)は自動では追わない — 既存の警告と「入力設定を書く」が残る。
+    /// (パケットが落ちた等)は自動では追わない — 既存の警告と「入力設定を書き込む」が残る。
     fn autowrite_input_regs(&mut self) {
         let Some(p) = profiles::by_key(&self.source_profile) else {
             return;
@@ -1924,7 +1917,11 @@ impl ViewerApp {
             self.send_cfg(*k, *v);
             self.set_tune_mirror(*k, *v);
         }
-        self.input_regs_sent = Some((p.label, p.input_regs.len(), true));
+        // ★頼まれていないのにボードのレジスタを書き換えた。黙ってやるのは
+        //   良くないので必ず伝える(ただし数秒で消す。状態ではなく出来事なので)
+        self.toasts.notice(format!(
+            "伝送形式が食い違っていたため、{} の入力設定を自動で書き込みました ({}件)",
+            p.label, p.input_regs.len()));
     }
 
     /// いまの有効映像が何µsか。管面の掃引時間を決める基準になる
@@ -4393,6 +4390,7 @@ impl eframe::App for ViewerApp {
         }
 
         self.remote_badge(&ctx);
+        self.toasts.show(&ctx);
         self.netcheck_modal(&ctx);
         self.clean_output(&ctx);
 
