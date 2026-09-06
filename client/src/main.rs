@@ -761,6 +761,24 @@ struct ViewerApp {
     /// TVPの細ゲイン(レジスタ08h/09h/0Ah)。ゲイン = 1 + N/256。
     /// **基板ごとに違う**ので手で詰められるようにする。値はボードから読み戻す。
     tune_gain_r: i32,
+    /// SOGスライス閾値(レジスタ10h bit[7:3]、5bit)。**同期をどの高さで切るか。**
+    /// 低すぎると暗い映像を同期と誤認して垂直検出が壊れる。映像源ごとに違うので
+    /// 絵を見ながら振れるようにする。値はボードから読み戻す。
+    tune_sog_thresh: i32,
+    /// 同期処理制御(レジスタ22h)。bit0=VS Bypass / bit1=VS Select。
+    /// 既定 0x08 は VSOUT をハーフライン積算器に作らせる(525ライン前提)。
+    tune_sync_ctl2: i32,
+    /// SOGOUTのLow期間を「垂直ブロードパルス」とみなす閾値[pixクロック]。
+    /// 捕捉側はこれで垂直区間を見つけ、その瞬間のライン内位相からフィールド極性を出す。
+    tune_sog_vth: i32,
+    /// フィールド極性の向き(0/1)。経路によって符号が変わる。
+    tune_field_invert: i32,
+    /// 生同期(TTL)の位相をフィールド極性に使わないか。0=使う / 1=使わない。
+    /// 生同期を繋がない方式では 1(浮いた同期入力の自己発振で raw_ok が誤って立つ)。
+    tune_no_raw_phase: i32,
+    /// lines/frame などの読み出し専用ステータスを次に問い合わせる時刻。
+    /// これらは**変化する値**なので、tune 値と違って繰り返し取り直す。
+    stat_get_at: Option<std::time::Instant>,
     /// 伝送形式(0x36)。0=RGB888 / 1=RGB555 / 3=YC8。
     /// ゲートウェアは実行時に切り替えるので、他の tune 値と同じ扱いにする
     tune_pixfmt: i32,
@@ -916,6 +934,13 @@ impl ViewerApp {
             // 初期値は REGS_X68000 と同じ(v0.9.0 で校正した値)。
             // 実際の値はボードから読み戻して上書きされる
             tune_gain_r: 64,
+            // 初期値はゲートウェアの既定。起動時にボードから読み戻して合わせる
+            tune_sog_thresh: 0x0B,
+            tune_sync_ctl2: 0x08,
+            tune_sog_vth: 400,
+            tune_field_invert: 0,
+            tune_no_raw_phase: 0,
+            stat_get_at: None,
             tune_pixfmt: protocol::PIXFMT_RGB555 as i32,
             tune_gain_g: 61,
             tune_gain_b: 57,
@@ -1278,7 +1303,7 @@ impl ViewerApp {
     }
 
     /// 実行時に調整できるキーの一覧。読み戻しと表示の同期に使う
-    const TUNE_KEYS: [u16; 11] = [
+    const TUNE_KEYS: [u16; 16] = [
         protocol::CFG_KEY_VBP,
         protocol::CFG_KEY_HS_OFFSET,
         protocol::CFG_KEY_PLL_DIVIDE,
@@ -1290,6 +1315,11 @@ impl ViewerApp {
         protocol::CFG_KEY_GAIN_G,
         protocol::CFG_KEY_GAIN_B,
         protocol::CFG_KEY_PIXFMT,
+        protocol::CFG_KEY_SOG_THRESH,
+        protocol::CFG_KEY_SYNC_CTL2,
+        protocol::CFG_KEY_SOG_VTH,
+        protocol::CFG_KEY_FIELD_INVERT,
+        protocol::CFG_KEY_NO_RAW_PHASE,
     ];
 
     /// ボードの現在値を表示へ反映する。
@@ -1363,6 +1393,27 @@ impl ViewerApp {
     ///
     /// 入力方式ごとの値は `retrocastx.videoin` が入れる。Viewer は触らない。
     fn pll_locked_by_format(&self) -> bool {
+        // ★**ボードが返す pixfmt だけで判定してはいけない。** 見た瞬間のボードは、
+        //   こちらが書いたばかりの形式をまだ反映していないことがある。
+        //
+        //   実機で踏んだ(2026-09-06、コンポジット)。電源投入直後のボードは
+        //   RGB555 を流していて、同じフレームの中で
+        //     1. autowrite_input_regs が pll_divide=1820 と pixfmt=YC8 を送る
+        //     2. follow_band が「15kHz帯の保存値」を復元する。**15kHz帯は MSX と
+        //        共有**なので 1368 が入る。MODE はまだ RGB555 なのでここが素通しで、
+        //        1820 を上書きしてしまう
+        //     3. MODE が YC8 になった頃には誰も 1820 に戻さない
+        //   結果、副搬送波が 8サンプル/周期にならず**復調が未ロックで白黒**になった。
+        //   「一度モードを切り替えて戻すと直る」のは、そのときは既に YC8 だから。
+        //
+        //   なので**選んでいる映像ソースが YC8 を要求するか**も見る。こちらは
+        //   ボードの応答を待たずに決まるので、書き込みと復元の順序に依存しない。
+        if profiles::by_key(&self.source_profile)
+            .and_then(|p| p.pixfmt())
+            .is_some_and(|f| f == protocol::PIXFMT_YC8)
+        {
+            return true;
+        }
         matches!(self.shared.mode.lock().unwrap().as_ref(),
                  Some(m) if m.pixfmt == protocol::PIXFMT_YC8)
     }
@@ -1414,6 +1465,11 @@ impl ViewerApp {
             protocol::CFG_KEY_GAIN_R => self.tune_gain_r = val as i32,
             protocol::CFG_KEY_GAIN_G => self.tune_gain_g = val as i32,
             protocol::CFG_KEY_GAIN_B => self.tune_gain_b = val as i32,
+            protocol::CFG_KEY_SOG_THRESH => self.tune_sog_thresh = (val as i32).min(31),
+            protocol::CFG_KEY_SYNC_CTL2 => self.tune_sync_ctl2 = (val as i32).min(255),
+            protocol::CFG_KEY_SOG_VTH => self.tune_sog_vth = (val as i32).min(65535),
+            protocol::CFG_KEY_FIELD_INVERT => self.tune_field_invert = (val != 0) as i32,
+            protocol::CFG_KEY_NO_RAW_PHASE => self.tune_no_raw_phase = (val != 0) as i32,
             _ => {}
         }
     }
@@ -2680,6 +2736,173 @@ impl ViewerApp {
                 1.0 + self.tune_gain_g as f32 / 256.0,
                 1.0 + self.tune_gain_b as f32 / 256.0));
         });
+        // --- 同期の切り方(SOGスライス閾値と VSOUT の作り方)---
+        //
+        // ★**この2つは絵を見ながら振って決めるたぐいの値で、合わせ方が確立している。**
+        //   失敗の出方が「絵は出ているのに上下に震える」なので、静止画では気づかない。
+        //
+        //   sog_th(レジスタ10h bit[7:3]): 同期をどの高さで切るか。低すぎると
+        //   **暗い映像を同期と誤認**して垂直検出が壊れ、フィールド極性が判定できず、
+        //   2枚のフィールドが同じスロットに交互に上書きされて絵が半ライン上下に震える。
+        //   S端子で実測(2026-08-15): 既定 0x0B は駄目で、16〜24 が正しい窓、
+        //   その中央の 20 を採った。**判定は下の lines/frame が 262/263 に
+        //   安定するかで見る**(絵の震えを目で追うより速くて確実)。
+        //
+        //   sync22h(レジスタ22h): bit0=VS Bypass / bit1=VS Select。既定 0x08 は
+        //   VSOUT をハーフライン積算器に作らせるが、**積算器は525ライン
+        //   インタレース前提**なので 262ライン progressive では2フレームに1回しか
+        //   Vを出さず、どちらが勝つかがロック毎に決まって双安定になる。0x09 に
+        //   すると同期セパレータ直結になって決定的になる(X68000 で実測:
+        //   織り込みのずれ 0x08 → 4.6〜5.0 / 0x09 → 1.39〜1.44)。
+        ui.horizontal(|ui| {
+            ui.monospace("同期の切り方").on_hover_text(
+                "同期スライス閾値と VSOUT の作り方。\n\
+                 「絵は出ているのに上下に震える」ときはここ。\n\
+                 下の lines/frame が 262/263 に安定する範囲を探し、その中央を採る");
+        });
+        row(ui, "  sog_th", &mut self.tune_sog_thresh, 0, 31,
+            protocol::CFG_KEY_SOG_THRESH, &mut send);
+        row(ui, "  sync22h", &mut self.tune_sync_ctl2, 0, 255,
+            protocol::CFG_KEY_SYNC_CTL2, &mut send);
+        // --- インターレースのフィールド極性 ---
+        //
+        // ★**「織り込まれない」は絵が出たまま起きるので気づきにくい。**
+        //   捕捉側の fld_pos(そのラインを偶数/奇数どちらのスロットへ置くか)は
+        //   材料を上から順に試す(retrocastx_capture.py の fld_pos):
+        //
+        //     il_det が 0            → fld_pos = 0(プログレッシブ扱い)
+        //     raw_ok(生TTL同期)      → ~ph_raw ^ field_inv
+        //     sog_ok(SOGOUTの位相)   → ~ph_sog ^ field_inv
+        //     どれも駄目             → in_f2 の**推測**(当たらないことがある)
+        //
+        //   コンポジット/S端子には生TTL同期が無いので SOG 経路に頼る。その sog_ok は
+        //     (200 < vcnt < 600) && (100 < lowmax < 0x8000)
+        //   で、**lowmax が飽和(65535)すると丸ごと落ちる**。落ちると最後の推測に
+        //   行き、そこも il_frame=0(TVPのvtotalが1フィールドぶんしか無い)なら
+        //   **fld_pos が常に 0 = 両フィールドが同じスロットに交互に上書きされる**。
+        //   絵は出るが1ライン分の位置がフィールドごとに入れ替わって震える。
+        //   S端子で「lines/frame 525 が正常なのに lowmax が 65535 に張り付く」状態を
+        //   実測している(2026-08-15、videoin.py の cmd_status 参照)。
+        //
+        //   sog_vth は垂直ブロードパルスを見つける閾値[pixクロック]。既定400は
+        //   MSX(DATACLK 21.48MHz)で決めた値で、NTSC 8fsc(28.6356MHz)なら
+        //   水平同期 ≈135 / ブロードパルス ≈776 の間に入っていればよい。
+        row(ui, "  sog_vth", &mut self.tune_sog_vth, 0, 4095,
+            protocol::CFG_KEY_SOG_VTH, &mut send);
+        ui.horizontal(|ui| {
+            ui.monospace("  fld_inv");
+            let mut fi = self.tune_field_invert != 0;
+            if ui.checkbox(&mut fi, "フィールド極性を反転").changed() {
+                self.tune_field_invert = fi as i32;
+                send.push((protocol::CFG_KEY_FIELD_INVERT, fi as u32));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.monospace("  no_raw ");
+            let mut nr = self.tune_no_raw_phase != 0;
+            if ui.checkbox(&mut nr, "生同期の位相を使わない").changed() {
+                self.tune_no_raw_phase = nr as i32;
+                send.push((protocol::CFG_KEY_NO_RAW_PHASE, nr as u32));
+            }
+        })
+        .response
+        .on_hover_text(
+            "生同期(TTL)を繋がない方式ではONにする。\n\
+             未接続のシュミットバッファ入力は浮いて自己発振し、上の rawok が\n\
+             誤って立つ。すると**存在しない同期の位相**でフィールド極性が決まり、\n\
+             両フィールドが同じスロットに交互に上書きされて絵が1ライン震える。\n\
+             ONにすると SOGOUT の位相(lowmax が正常なら健全)を使う");
+        // TVP自身が数えた lines/frame。**閾値掃引の合否はここで見る。**
+        // 変化する値なので tune 値と違って繰り返し取り直す。
+        {
+            let now = std::time::Instant::now();
+            if self.stat_get_at.map_or(true, |t| now >= t) {
+                self.stat_get_at = Some(now + std::time::Duration::from_millis(700));
+                self.shared.config_get_queue.lock().unwrap().extend([
+                    protocol::CFG_KEY_LINES_PER_FRAME,
+                    protocol::CFG_KEY_LPF_MSBS,
+                    protocol::CFG_KEY_STAT_IL,
+                    protocol::CFG_KEY_SOG_LOWMAX,
+                    protocol::CFG_KEY_SOG_HLEN,
+                ]);
+            }
+            let (lpf, msbs) = {
+                let st = self.shared.config_state.lock().unwrap();
+                (st.get(&protocol::CFG_KEY_LINES_PER_FRAME).copied(),
+                 st.get(&protocol::CFG_KEY_LPF_MSBS).copied())
+            };
+            ui.horizontal(|ui| {
+                match lpf {
+                    Some(n) => {
+                        // 15.7kHz系の正解。262/263(240p)か 525前後(480i)。
+                        let sane = (250..=270).contains(&n) || (500..=540).contains(&n);
+                        let pi = match msbs {
+                            Some(m) if m & 0x20 != 0 => "プログレッシブ",
+                            Some(_) => "インターレース",
+                            None => "?",
+                        };
+                        let t = format!("  lines/frame {n}  ({pi})");
+                        if sane {
+                            ui.monospace(t);
+                        } else {
+                            ui.colored_label(egui::Color32::from_rgb(220, 170, 60), t);
+                        }
+                    }
+                    None => {
+                        ui.weak("  lines/frame ---");
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "TVPの同期セパレータが数えたライン数(レジスタ37h:38h)。\n\
+                 15.7kHz系なら 262/263(240p)か 525前後(480i)に**収束して動かない**\n\
+                 のが正しい。sog_th が低すぎて暗部を同期と誤認していると、\n\
+                 ここが暴れたり 1 になったりする");
+            // インターセレース判定の内訳。**どの材料が0で「織り込まれない」のかを出す。**
+            // これが無いと、絵は出ているのに震える状態で切り分けができない。
+            let (il, lowmax, hlen) = {
+                let st = self.shared.config_state.lock().unwrap();
+                (st.get(&protocol::CFG_KEY_STAT_IL).copied(),
+                 st.get(&protocol::CFG_KEY_SOG_LOWMAX).copied(),
+                 st.get(&protocol::CFG_KEY_SOG_HLEN).copied())
+            };
+            if let Some(il) = il {
+                let bit = |b: u32| if il & (1 << b) != 0 { "1" } else { "0" };
+                ui.horizontal(|ui| {
+                    ui.monospace(format!(
+                        "  il: raw{} rawok{} P/I{} frame{}",
+                        bit(0), bit(1), bit(2), bit(3)))
+                        .on_hover_text(
+                            "捕捉側がフィールド極性を決める材料(key 0x2D)。\n\
+                             raw   = 生VSYNCの半ライン位相が交互か\n\
+                             rawok = 生TTL同期が使えるか(コンポジット/S端子では0)\n\
+                             P/I   = TVPのP/I検出(1=インターレース)\n\
+                             frame = TVPのvtotalが2フィールドを覆っているか");
+                });
+            }
+            // sog_ok の材料。**飽和(65535)しているとSOG経路の極性判定が丸ごと落ちる。**
+            if let Some(lm) = lowmax {
+                let sat = lm >= 0x8000;
+                ui.horizontal(|ui| {
+                    let t = format!("  SOG lowmax {lm}  hlen {}",
+                                    hlen.map_or("---".into(), |v| v.to_string()));
+                    if sat {
+                        ui.colored_label(egui::Color32::from_rgb(220, 170, 60), t)
+                            .on_hover_text(
+                                "★最長Low期間が飽和している。捕捉側の sog_ok は\n\
+                                 (100 < lowmax < 0x8000) を要求するので、この状態では\n\
+                                 **SOGからフィールド極性を取る経路が落ちる**。\n\
+                                 両フィールドが同じスロットに書かれ、絵が1ライン揺れる");
+                    } else {
+                        ui.monospace(t).on_hover_text(
+                            "SOGOUTの最長Low期間と水平周期[pixクロック]。\n\
+                             lowmax は垂直ブロードパルス幅(NTSC 8fscなら約776)が\n\
+                             見えているのが正常。65535 は飽和で、極性判定が落ちる");
+                    }
+                });
+            }
+        }
         ui.horizontal(|ui| {
             if ui.button("読む").on_hover_text(
                 "ボードの現在値を取り込んで表示を合わせる").clicked()

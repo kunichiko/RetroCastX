@@ -181,6 +181,7 @@ const REGS_X68000: InputRegs = &[
     //   折り返し点は固定なのに実フィールド長は465/466で1行違うので、片方が必ずずれる。
     //   実測(24kHz 1024x848)の織り込みのずれ: 0x08 → 4.6〜5.0 / 0x09 → 1.39〜1.44
     (proto::CFG_KEY_SYNC_CTL2, 0x09, "★VSOUTを同期セパレータ直結(フィールドごと)"),
+    (proto::CFG_KEY_NO_RAW_PHASE, 0, "生同期(HSYNC_A/VSYNC_A)が実際に来るので使う"),
 ];
 
 /// MSX RGB: Rin2/Gin2/Bin2 + SOGin2 に CSYNC (aux 2x5ヘッダ)
@@ -190,11 +191,12 @@ const REGS_MSX: InputRegs = &[
     (proto::CFG_KEY_IN_MUX1, MUX_ALL2, "映像もCSYNCも2番系統(aux 2x5ヘッダ)"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOG(=CSYNC)から取る"),
     (proto::CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz + クランプLPF 0.5MHz"),
-    // ★v0.9.0 は CSYNC を 75Ω終端 + 1/2分圧してから SOGIN_2 へ入れる
-    //   (main.ato の r_cs_term / r_cs_top / r_cs_bot)。手組み機は直結だったので、
-    //   同じ 0x0B でスライスできるかは v0.9.0 実機で確かめること。振れ幅が半分に
-    //   なっているので、同期を拾えないときはここを下げる。
-    (proto::CFG_KEY_SOG_THRESH, 0x0B, "CSYNCのスライス位置(手組み機で成立していた既定)"),
+    // v0.9.0 は CSYNC を 75Ω終端 + 1/2分圧してから SOGIN_2 へ入れる
+    //   (main.ato の r_cs_term / r_cs_top / r_cs_bot)。手組み機は直結で、振れ幅が
+    //   半分になるぶん閾値を下げる必要があるかもしれないと見ていたが、
+    //   **2026-09-06 に v0.9.0 実機で 0x0B のまま同期に問題が無いことを確認した。**
+    //   MSXのCSYNCは1.8Vppで、1/2でも0.9Vpp = TVPの推奨0.5〜2Vppの中に十分入る。
+    (proto::CFG_KEY_SOG_THRESH, 0x0B, "CSYNCのスライス位置(v0.9.0実機で確認済み)"),
     (proto::CFG_KEY_PLL_DIVIDE, 1368, "起点=MSXのhtotal(この後で詰める)"),
     (proto::CFG_KEY_PLL_CTL, 0x10, "ICP = 40×75/1368 = 2.2 → 2"),
     (proto::CFG_KEY_CLAMP_SEL, 0b000, "R/G/B全てボトムレベルクランプ"),
@@ -210,6 +212,8 @@ const REGS_MSX: InputRegs = &[
     (proto::CFG_KEY_PIXFMT, proto::PIXFMT_RGB555 as u32, "伝送はRGB555"),
     (proto::CFG_KEY_FIELD_INVERT, 0, "フィールド極性は既定(MSXでは未実測)"),
     (proto::CFG_KEY_SYNC_CTL2, 0x08, "TVP既定のまま(MSXでは未実測)"),
+    (proto::CFG_KEY_NO_RAW_PHASE, 1,
+     "★CSYNCをSOGで受けるので生同期は繋がらない。浮いた同期入力の自己発振を使わない"),
 ];
 
 /// コンポジット NTSC: J5(2x4)の Y ピンに CVBS → Gin1、同期は SOGin1 へ分岐
@@ -235,6 +239,8 @@ const REGS_COMPOSITE: InputRegs = &[
     (proto::CFG_KEY_PIXFMT, proto::PIXFMT_YC8 as u32, "生8bit伝送(復調に必要)"),
     (proto::CFG_KEY_FIELD_INVERT, 0, "フィールド極性は既定(SOG経路は別の符号)"),
     (proto::CFG_KEY_SYNC_CTL2, 0x08, "TVP既定のまま(この方式では未実測)"),
+    (proto::CFG_KEY_NO_RAW_PHASE, 1,
+     "★生同期は繋がらない(J5にはY/Cしか無い)。浮いた同期入力の自己発振を使わない"),
 ];
 
 /// S端子: J5(2x4)の Gin1 = Y / Rin1 = C、SOGin1 へ Y から分岐
@@ -282,6 +288,8 @@ const REGS_SVIDEO: InputRegs = &[
     (proto::CFG_KEY_PIXFMT, proto::PIXFMT_YC8 as u32, "生8bit伝送(復調に必要)"),
     (proto::CFG_KEY_FIELD_INVERT, 0, "フィールド極性は既定(SOG経路は別の符号)"),
     (proto::CFG_KEY_SYNC_CTL2, 0x08, "TVP既定のまま(この方式では未実測)"),
+    (proto::CFG_KEY_NO_RAW_PHASE, 1,
+     "★生同期は繋がらない(J5にはY/Cしか無い)。浮いた同期入力の自己発振を使わない"),
 ];
 
 /// 実測で裏を取れているのは x68000 と msx。
