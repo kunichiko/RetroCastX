@@ -204,16 +204,22 @@ jobs:
           cargo --version
           rustup target add x86_64-apple-darwin
 
-      # ★**release プロファイル・同じ target で走らせる。** 既定の
-      #   `cargo test --locked` は **debug で487個の依存を丸ごともう一度**
-      #   ビルドする。debug の成果物は target/<triple>/release と別物なので
-      #   下の Build と一切共有されず、**純粋な二重作業**だった(実測1分24秒)。
-      #   ここを揃えると依存のコンパイルが Build と共有され、増分はこのクレートの
-      #   テストハーネスだけになる。
-      #   ランナーは arm64 なのでネイティブ実行。x86_64 側はコード生成先が違うだけで
-      #   中身は同じなので、テストは片方で足りる。
+      # ★**`--release` に揃える案は実測で否定した**(2026-09-06)。
+      #   狙いは「debug で487個の依存を丸ごともう一度ビルドする」重複を消すことで、
+      #   `cargo test --release --locked --target aarch64-apple-darwin` にすると
+      #   確かに依存は Build と共有される。ところが**合計は増えた**:
+      #
+      #       変更前  Test 1m24 + Build 5m35 = 6m59
+      #       変更後  Test 3m51 + Build 3m56 = 7m47
+      #
+      #   `--release` だと**このクレート自体を opt-level 3 でもう一度**コンパイルする。
+      #   従来は「テストハーネス=debug(安い) + 本体=release(高い)」で高い方が1回
+      #   だったのが、release に揃えると高い方が2回になる。依存の重複を削った分より
+      #   大きなクレートを2回最適化する分の方が高い。
+      #   依存の重複はキャッシュ(下の Cache cargo が効けば)で吸収されるので、
+      #   debug のままでよい。
       - name: Test
-        run: cargo test --release --locked --target aarch64-apple-darwin
+        run: cargo test --locked
 
       # Intel Mac も対象にするため universal binary にする。arm64ランナー上で
       # x86_64 をクロスビルドし lipo で束ねる(実行時アセットは無いので他に同梱物なし)
@@ -399,11 +405,9 @@ jobs:
           rustc --version
           cargo --version
 
-      # macOS 側と同じ理由で release に揃える(debug の二重ビルドを避ける)。
-      # Windows はクロスしないので target 指定は要らず、下の Build と同じ
-      # target/release を共有する。
+      # release に揃える案は macOS 側のコメントのとおり実測で否定した。
       - name: Test
-        run: cargo test --release --locked
+        run: cargo test --locked
 
       - name: Build
         run: cargo build --release --locked
