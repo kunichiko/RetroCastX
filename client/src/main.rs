@@ -1539,33 +1539,62 @@ impl ViewerApp {
     fn spdif_ui(&mut self, ui: &mut egui::Ui) {
         let astats = self.shared.audio.lock().unwrap().clone();
         let (on0, vol0) = (self.spdif_mix, self.spdif_volume);
+        // ★**主系統が既に S/PDIF なら混ぜる意味が無い。** 同じ音を自分自身に
+        //   重ねることになるし、受信側も主系統で取ってしまうので副系統には
+        //   1パケットも回らない。以前はそれを「パケットが来ていません」と
+        //   出していて、鳴っているのに壊れているように見えた。
+        let main_is_spdif = self.audio_source == Some(receiver::AUX_SOURCE);
         ui.horizontal(|ui| {
             theme::label_col(ui, "S/PDIF");
-            ui.checkbox(&mut self.spdif_mix, "混ぜる")
-                .on_hover_text(
-                    "光デジタル入力(TOSLINK)を、いま選んでいる音声に重ねて鳴らします。\n\
-                     入力の選択とは独立なので、映像ソースを切り替えても外れません");
-            ui.add_enabled_ui(self.spdif_mix, |ui| {
-                theme::align_sliders(ui);
-                ui.add(egui::Slider::new(&mut self.spdif_volume, 0.0..=1.5)
-                       .show_value(false))
-                    .on_hover_text("S/PDIF だけの音量(主系統とは別)");
-                ui.monospace(format!("{:3.0}%", self.spdif_volume * 100.0));
+            ui.add_enabled_ui(!main_is_spdif, |ui| {
+                // 主系統が S/PDIF のときは「混ぜない」状態として見せる。
+                // 設定そのものは保つので、入力を戻せば元どおりになる。
+                let mut on = self.spdif_mix && !main_is_spdif;
+                let r = ui.checkbox(&mut on, "混ぜる")
+                    .on_hover_text(
+                        "光デジタル入力(TOSLINK)を、いま選んでいる音声に重ねて鳴らします。\n\
+                         入力の選択とは独立なので、映像ソースを切り替えても外れません")
+                    .on_disabled_hover_text(
+                        "S/PDIF は音声の入力に選ばれています(自分自身には重ねません)");
+                if r.changed() {
+                    self.spdif_mix = on;
+                    self.mark_settings_dirty();
+                }
+                ui.add_enabled_ui(on, |ui| {
+                    theme::align_sliders(ui);
+                    ui.add(egui::Slider::new(&mut self.spdif_volume, 0.0..=1.5)
+                           .show_value(false))
+                        .on_hover_text("S/PDIF だけの音量(主系統とは別)");
+                    ui.monospace(format!("{:3.0}%", self.spdif_volume * 100.0));
+                });
             });
         });
-        if self.spdif_mix && self.show_advanced {
+        // ★**混ぜていなくても状態は見せる。** S/PDIF を主系統に選んでいるときも
+        //   「いま何Hzで来ていて、詰まっていないか」は同じだけ知りたい。
+        //   どちらの系統で鳴っているかで、見るべき統計が入れ替わるだけ。
+        if self.show_advanced && (self.spdif_mix || main_is_spdif) {
             if let Some(a) = &astats {
                 use std::sync::atomic::Ordering::Relaxed;
-                let rate = a.aux_rate.load(Relaxed);
+                let rate = if main_is_spdif {
+                    a.src_rate.load(Relaxed)
+                } else {
+                    a.aux_rate.load(Relaxed)
+                };
                 // ★**pkts を必ず出す。** 音が出ないときに「ボードが送っていない」
                 //   のか「こちらが鳴らせていない」のかを分ける唯一の手掛かり。
-                let pkts = a.aux_packets.load(Relaxed);
+                let (pkts, buffered, underruns) = if main_is_spdif {
+                    (a.packets.load(Relaxed), a.buffered.load(Relaxed),
+                     a.underruns.load(Relaxed))
+                } else {
+                    (a.aux_packets.load(Relaxed), a.aux_buffered.load(Relaxed),
+                     a.aux_underruns.load(Relaxed))
+                };
                 if rate > 0 {
                     theme::kv(ui, "", format!(
-                        "{rate} Hz  buffered {} ms  underruns {}  pkts {pkts}",
-                        a.aux_buffered.load(Relaxed) * 1000
-                            / a.device_rate.load(Relaxed).max(1),
-                        a.aux_underruns.load(Relaxed)));
+                        "{}  buffered {} ms  underruns {}  pkts {pkts}",
+                        audio::describe_rate(rate as u32),
+                        buffered * 1000 / a.device_rate.load(Relaxed).max(1),
+                        underruns));
                 } else if pkts > 0 {
                     theme::kv(ui, "", format!("レート未確定  pkts {pkts}"));
                 } else {

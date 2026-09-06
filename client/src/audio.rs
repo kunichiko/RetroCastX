@@ -56,6 +56,9 @@ pub struct AudioStats {
     pub packets: AtomicU64,
     /// デバイスの実サンプルレート
     pub device_rate: AtomicU64,
+    /// 主系統の**入力**レート。デバイス側とは別物。
+    /// ★S/PDIF を主系統に選んだときも状態を見たいので、副系統と同じように記録する。
+    pub src_rate: AtomicU64,
     /// 再生中か(プリバッファ完了)
     pub playing: AtomicBool,
     /// 音量。f32をビットパターンで持つ(コールバックからロックなしで読むため)。
@@ -78,6 +81,7 @@ impl Default for AudioStats {
             dropped: AtomicU64::new(0),
             packets: AtomicU64::new(0),
             device_rate: AtomicU64::new(0),
+            src_rate: AtomicU64::new(0),
             playing: AtomicBool::new(false),
             gain_bits: AtomicU32::new(1.0f32.to_bits()),
             aux_buffered: AtomicU64::new(0),
@@ -393,6 +397,7 @@ impl AudioPlayer {
 
     /// AUDIOパケットのペイロード(s16le L/R interleaved)を積む。
     pub fn push(&self, samples: &[u8], rate_hz: u32) {
+        self.stats.src_rate.store(rate_hz as u64, Ordering::Relaxed);
         let mut r = self.ring.lock().unwrap();
         r.set_source_rate(rate_hz, self.stats.device_rate.load(Ordering::Relaxed) as u32);
         for c in samples.chunks_exact(2) {
@@ -562,5 +567,70 @@ mod rate_tests {
         let mut r = ring();
         r.set_source_rate(0, 48_000);
         assert_eq!(r.base_ratio, 1.0);
+    }
+}
+
+/// 実測レートを「標準レート + ずれ[ppm]」として言い表す。
+///
+/// ★**丸めない。** 44101 を 44100 と表示してしまうと、本当に非標準のレート
+///   (壊れた復号や未対応の機器)が来たときに気づけなくなる。実際 S/PDIF の
+///   復号が壊れていたとき 24645 という値が出ていて、それが異常だと一目で
+///   分かることに価値があった。
+///
+///   一方で 1Hz の差は 44.1kHz では 23ppm でしかなく、水晶の公差(±20〜100ppm)
+///   の範囲内。**送出側とボードの水晶がずれているという事実**であって異常では
+///   ないので、そう読めるように出す。
+pub fn describe_rate(hz: u32) -> String {
+    const STD: [u32; 6] = [32_000, 44_100, 48_000, 88_200, 96_000, 192_000];
+    // 公差の広い水晶でも 200ppm 程度。それを超えるものは標準レートと呼べない
+    const TOL_PPM: i64 = 500;
+    for std in STD {
+        let ppm = (hz as i64 - std as i64) * 1_000_000 / std as i64;
+        if ppm.abs() <= TOL_PPM {
+            let name = if std % 1000 == 0 {
+                format!("{}kHz", std / 1000)
+            } else {
+                format!("{:.1}kHz", std as f32 / 1000.0)
+            };
+            return if ppm == 0 {
+                name
+            } else {
+                format!("{name} ({ppm:+}ppm)")
+            };
+        }
+    }
+    format!("{hz} Hz")
+}
+
+#[cfg(test)]
+mod rate_name_tests {
+    use super::describe_rate;
+
+    /// ちょうどなら素直に出す
+    #[test]
+    fn exact_rates_are_plain() {
+        assert_eq!(describe_rate(48_000), "48kHz");
+        assert_eq!(describe_rate(44_100), "44.1kHz");
+    }
+
+    /// 水晶差はずれとして出す(丸めて隠さない)
+    #[test]
+    fn small_offsets_are_shown_as_ppm() {
+        assert_eq!(describe_rate(44_101), "44.1kHz (+22ppm)");
+        assert_eq!(describe_rate(47_998), "48kHz (-41ppm)");
+    }
+
+    /// ★**標準外はそのまま出す。** 復号が壊れているときの 24645 のような値が
+    ///   「44.1kHz」に化けると、異常を見逃す。
+    #[test]
+    fn non_standard_rates_stay_raw() {
+        assert_eq!(describe_rate(24_645), "24645 Hz");
+        assert_eq!(describe_rate(25_314), "25314 Hz");
+    }
+
+    /// 公差を超えたものは標準レート扱いしない
+    #[test]
+    fn far_offsets_are_not_snapped() {
+        assert_eq!(describe_rate(44_200), "44200 Hz");
     }
 }
