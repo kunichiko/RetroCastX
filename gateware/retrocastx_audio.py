@@ -89,26 +89,47 @@ class SpdifDecoder(LiteXModule):
         edge = sig[0] ^ sig[1]
 
         # パルス幅計測とUI追従
+        #
+        # ★**UI長は整数では表せない。** 45MHz での 1UI は 48kHz で 7.32、
+        #   44.1kHz で 7.97 サイクル。整数の EWMA だと切り捨てのせいで
+        #
+        #       ui=8, width=7 → (24+7)/4 = 7.75 → 7    一度落ちると
+        #       ui=7, width=8 → (21+8)/4 = 7.25 → 7    二度と 8 へ戻らない
+        #
+        #   となり、**7 が吸収状態**になる。44.1kHz を ui=7 で復号すると
+        #   2UI(15.9)と is_t の閾値(2.5*7=17.5)の余裕が 1.6 サイクルしか
+        #   なく、量子化で 2UI が 17 と測れるたびにプリアンブルと誤判定して
+        #   フレームを落とす。実機で 44.1kHz を入れたとき rate が 24645
+        #   (44100 の 56%)しか出ず、音が途切れた(2026-09-06)。
+        #
+        #   小数部4bitの固定小数点にして 7.97 を表現できるようにする。
+        #   48kHz の 7.32 も同様に正しく載る。
+        UI_FRAC = 4
         width = Signal(8)
-        ui = Signal(8, reset=8)                 # 1UIのサイクル数(EWMA)
+        ui_q = Signal(12, reset=8 << UI_FRAC)    # 1UIのサイクル数(小数部 UI_FRAC bit)
+        ui = Signal(8)                           # 整数部(診断表示用)
+        wq = Signal(12)                          # width を同じ尺度へ
         is_s = Signal()                          # 1UI
         is_d = Signal()                          # 2UI
         is_t = Signal()                          # 3UI以上
         self.comb += [
-            is_s.eq(width < (ui + ui[1:])),                  # < 1.5*ui
-            is_d.eq(~is_s & (width < ((ui << 1) + ui[1:]))), # < 2.5*ui
+            ui.eq(ui_q[UI_FRAC:]),
+            wq.eq(width << UI_FRAC),
+            is_s.eq(wq < (ui_q + ui_q[1:])),                   # < 1.5*ui
+            is_d.eq(~is_s & (wq < ((ui_q << 1) + ui_q[1:]))),  # < 2.5*ui
             is_t.eq(~is_s & ~is_d),
         ]
         self.sync += [
             If(edge,
                 width.eq(1),
                 If(is_s & (width >= 4),
-                    ui.eq((ui * 3 + width)[2:]),             # (3*ui+w)/4
+                    ui_q.eq((ui_q * 3 + wq)[2:]),              # (3*ui+w)/4
                 ),
             ).Elif(width != 0xFF,
                 width.eq(width + 1),
             ),
         ]
+        self.ui_now = ui_q               # 診断用(×16 の固定小数点)
 
         # プリアンブル判別: 3UIの後の3パルス(UI数)が M:1,1,3 / W:2,1,2 / B:3,1,1
         pre_idx = Signal(2)
@@ -122,7 +143,7 @@ class SpdifDecoder(LiteXModule):
         frames = Signal(16)                      # 1秒あたりのフレーム計数
         resync = Signal()                        # ウォッチドッグ発火(1サイクル)
         self.resyncs = Signal(16)                # 発火回数(診断用)
-        self.ui_now = ui                         # いまのUI長(診断用)
+        # self.ui_now は ui_q の定義後に代入する(診断用。小数部4bit)
 
         self.fsm = fsm = FSM(reset_state="HUNT")
         fsm.act("HUNT",
@@ -220,7 +241,7 @@ class SpdifDecoder(LiteXModule):
                 If(frames == 0, resync.eq(1)),
             ).Else(sec.eq(sec + 1)),
             If(resync,
-                ui.eq(8),                # reset 値へ戻す(ここが戻らないのが原因)
+                ui_q.eq(8 << UI_FRAC),   # reset 値へ戻す
                 cell_open.eq(0),
                 have_left.eq(0),
                 self.resyncs.eq(self.resyncs + 1),
