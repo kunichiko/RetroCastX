@@ -120,16 +120,20 @@ class SpdifDecoder(LiteXModule):
         left = Signal(16)
         have_left = Signal()
         frames = Signal(16)                      # 1秒あたりのフレーム計数
+        resync = Signal()                        # ウォッチドッグ発火(1サイクル)
+        self.resyncs = Signal(16)                # 発火回数(診断用)
+        self.ui_now = ui                         # いまのUI長(診断用)
 
         self.fsm = fsm = FSM(reset_state="HUNT")
         fsm.act("HUNT",
-            If(edge & is_t,
+            # ウォッチドッグはどの状態からも HUNT へ戻す
+            If(resync, NextState("HUNT")).Elif(edge & is_t,
                 NextValue(pre_idx, 0),
                 NextState("PREAMBLE"),
             ),
         )
         fsm.act("PREAMBLE",
-            If(edge,
+            If(resync, NextState("HUNT")).Elif(edge,
                 NextValue(pre_idx, pre_idx + 1),
                 # 2パルス目(idx=0)がUI数を決める: M=1, W=2, B=3
                 If(pre_idx == 0,
@@ -147,7 +151,7 @@ class SpdifDecoder(LiteXModule):
         )
         self.comb += self.source.data.eq(Cat(left, audio))
         fsm.act("DATA",
-            If(edge,
+            If(resync, NextState("HUNT")).Elif(edge,
                 If(is_t,
                     # 次のプリアンブル開始(スロット31完了直後なら正常)
                     NextValue(pre_idx, 0),
@@ -194,10 +198,32 @@ class SpdifDecoder(LiteXModule):
         sec = Signal(max=int(sys_clk_freq))
         self.sync += [
             If(self.source.valid, frames.eq(frames + 1)),
+            resync.eq(0),
             If(sec == int(sys_clk_freq) - 1,
                 sec.eq(0),
                 self.rate_hz.eq(frames),
                 frames.eq(0),
+                # ★**UI長の追従は一方通行の罠になっている。**
+                #   ui の更新条件 is_s (width < 1.5*ui) が ui 自身に依存するので、
+                #   短いグリッチで ui が縮むと「本物の1UIが is_s にならない」
+                #   状態に落ちて二度と戻れない。45MHz/48kHz なら 1UI≈7.3 サイクル
+                #   だが、幅4〜5のパルスが数発入るだけで ui=4 に固着する。
+                #   そうなると 2UI も 3UI も is_t と判定され、プリアンブルが
+                #   成立せず source.valid が出なくなる。
+                #
+                #   実機で発生した(2026-09-06): rate_hz=0 / fifo_level=43 のまま
+                #   凍結し、電源を入れ直す(= ui が reset 値 8 に戻る)まで直らなかった。
+                #
+                #   1秒間に1フレームも出ていなければ、信号が無いか、この罠に
+                #   落ちている。どちらであっても立て直して困らない(信号が無い
+                #   ときは HUNT で待つだけ)。
+                If(frames == 0, resync.eq(1)),
             ).Else(sec.eq(sec + 1)),
+            If(resync,
+                ui.eq(8),                # reset 値へ戻す(ここが戻らないのが原因)
+                cell_open.eq(0),
+                have_left.eq(0),
+                self.resyncs.eq(self.resyncs + 1),
+            ),
             self.locked.eq(fsm.ongoing("DATA") | fsm.ongoing("PREAMBLE")),
         ]
