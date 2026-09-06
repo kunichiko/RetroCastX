@@ -15,6 +15,7 @@ import struct
 import time
 import wave
 
+from . import netutil
 from . import protocol as proto
 
 SRC_NAMES = {0: "D-SUB15 audio (PCM1808 #1)",
@@ -24,7 +25,13 @@ SRC_NAMES = {0: "D-SUB15 audio (PCM1808 #1)",
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--board", default="192.168.10.50")
+    # ★他のホストツールと同じく NIC ごとのサブネット宛に出す。
+    #   VPN 接続中は 255.255.255.255 が EADDRNOTAVAIL で落ち、ボードのIPを
+    #   直接指定すると既定経路のトンネルへ吸われる。ここだけ素の sendto の
+    #   ままだったので、VPN 下では使えなかった。
+    ap.add_argument("--board", default=netutil.LIMITED)
+    ap.add_argument("--bind", default="0.0.0.0",
+                    help="送出に使うNICのIP(複数NICで1つに絞りたいとき)")
     ap.add_argument("--port", type=int, default=proto.DEFAULT_PORT)
     ap.add_argument("--seconds", type=float, default=5.0)
     ap.add_argument("--source", type=int, default=0, choices=(0, 1, 2))
@@ -35,10 +42,13 @@ def main():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 << 20)
+    netutil.prep_socket(s)
     s.bind(("0.0.0.0", args.port))
     s.settimeout(0.5)
     sub = proto.pack_subscribe(1, announce_only=False)
-    s.sendto(sub, (args.board, args.port))
+    dsts = netutil.targets_for(args.board, args.bind)
+    if netutil.send_all(s, dsts, args.port, sub) == 0:
+        raise SystemExit(netutil.explain_failure(dsts))
     last_sub = t0 = time.time()
 
     chunks = []          # (timestamp, samples bytes)
@@ -49,7 +59,7 @@ def main():
           f"{args.seconds}s 収録 ...")
     while time.time() - t0 < args.seconds:
         if time.time() - last_sub > 2.0:
-            s.sendto(sub, (args.board, args.port))
+            netutil.send_all(s, dsts, args.port, sub)
             last_sub = time.time()
         try:
             data, _ = s.recvfrom(2048)
