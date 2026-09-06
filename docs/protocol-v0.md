@@ -138,7 +138,7 @@ CONFIG(key 0x0001)で選択する。
 | 0 (board) | 0x0001 | audio_enable_mask: bit0=RGB端子音声, bit1=LINE, bit2=S/PDIF |
 | 0 (board) | 0x0002 | spdif_rate_hz: S/PDIFの実測サンプルレート[Hz]。**読み取り専用**。0 ならデコーダがサンプルを出していない |
 | 0 (board) | 0x0003 | spdif_fifo_level: S/PDIF送出FIFOの滞留サンプル数。**読み取り専用**。レートが出ているのにここが0なら詰まりは後段 |
-| 0 (board) | 0x0004 | spdif_ui: S/PDIFデコーダのUI長[サイクル]。**読み取り専用**。45MHz/48kHz なら7前後。縮んだまま戻らないと復号が成立しない |
+| 0 (board) | 0x0004 | spdif_ui: S/PDIFデコーダのUI長を16倍した固定小数点。**読み取り専用**。45MHz なら 48kHz≒117 / 44.1kHz≒128。整数では 7.32 と 7.97 を区別できず復号が成立しない |
 | 0 (board) | 0x0005 | spdif_resyncs: デコーダを立て直した回数。**読み取り専用**。増えていれば上記の状態に落ちて自動復帰している |
 | 1 (ArgusX) | 0x0001 | 映像入力選択(値の意味はArgusX側仕様で定義) |
 | 0 (board) | 0x0022 | sync_ctl (TVP reg 0Eh): 0x52=5線 / 0x53=4線TTL C-SYNC / 0x5B=SOG |

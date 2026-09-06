@@ -526,9 +526,10 @@ class RetroCastXStreamer(LiteXModule):
         #     key 0x02 = 実測レート[Hz]。0 ならデコーダがサンプルを出していない
         #     key 0x03 = 送出FIFOの滞留。レートが出ているのに0なら詰まりは後段
         self.stat_spdif_level = Signal(16)   # key 0x03
-        #     key 0x04 = UI長。**これが縮んだまま戻らないのが停止の機構**だった
+        #     key 0x04 = UI長 ×16。**縮んだまま戻らないのが停止の機構**だった。
+        #              45MHz なら 48kHz で約117、44.1kHz で約128
         #     key 0x05 = 立て直した回数。増えていれば罠に落ちて復帰している
-        self.stat_spdif_ui     = Signal(8)   # key 0x04
+        self.stat_spdif_ui     = Signal(12)  # key 0x04(×16 の固定小数点)
         self.stat_spdif_resync = Signal(16)  # key 0x05
         # ラインごとのHSYNC周期プローブ。key 0x27 で行を選び 0x28/0x29 で読む
         self.cfg_hs_probe_row = Signal(13)
