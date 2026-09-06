@@ -526,6 +526,10 @@ class RetroCastXStreamer(LiteXModule):
         #     key 0x02 = 実測レート[Hz]。0 ならデコーダがサンプルを出していない
         #     key 0x03 = 送出FIFOの滞留。レートが出ているのに0なら詰まりは後段
         self.stat_spdif_level = Signal(16)   # key 0x03
+        #     key 0x04 = UI長。**これが縮んだまま戻らないのが停止の機構**だった
+        #     key 0x05 = 立て直した回数。増えていれば罠に落ちて復帰している
+        self.stat_spdif_ui     = Signal(8)   # key 0x04
+        self.stat_spdif_resync = Signal(16)  # key 0x05
         # ラインごとのHSYNC周期プローブ。key 0x27 で行を選び 0x28/0x29 で読む
         self.cfg_hs_probe_row = Signal(13)
         self.stat_hs_raw    = Signal(16)
@@ -754,6 +758,8 @@ class RetroCastXStreamer(LiteXModule):
             if not isinstance(_spdif_rate, int):
                 reply_cases[0x02] = reply_mux.eq(_spdif_rate)
             reply_cases[0x03] = reply_mux.eq(self.stat_spdif_level)
+            reply_cases[0x04] = reply_mux.eq(self.stat_spdif_ui)
+            reply_cases[0x05] = reply_mux.eq(self.stat_spdif_resync)
         # 診断用の読み出し(書き込みは無視される読み取り専用)。
         # フィールド極性をどちらから取るべきか、ラインごとのHSYNC周期が揺れて
         # いないか等を実機で判断するための生データ。
@@ -1690,6 +1696,9 @@ class RetroCastXStream(SoCMini):
                 self.capture.cfg_sog_vth.eq(self.streamer.cfg_sog_vth),
                 self.capture.cfg_field_invert.eq(self.streamer.cfg_field_invert),
                 self.capture.cfg_no_raw_phase.eq(self.streamer.cfg_no_raw_phase),
+                # S/PDIF デコーダの内部状態(停止の切り分け用)
+                self.streamer.stat_spdif_ui.eq(self.spdif.ui_now),
+                self.streamer.stat_spdif_resync.eq(self.spdif.resyncs),
                 self.streamer.stat_lpf_hi.eq(self.status.lpf_hi),
                 self.streamer.stat_syncdet.eq(self.status.syncdet),
                 self.streamer.stat_lpf_msbs.eq(self.status.lpf_lo),
