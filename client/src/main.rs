@@ -96,6 +96,8 @@ fn main() -> eframe::Result {
     eprintln!("settings: {}", settings::Settings::path().display());
     let mut audio = receiver::AudioOpts::default();
     audio.source = cfg.audio_source;
+    // 起動時から設定のデバイスで開く(既定デバイスで鳴り始めるのを防ぐ)
+    audio.device = cfg.audio_device.clone();
     let mut bind = String::from("0.0.0.0");
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -1654,6 +1656,18 @@ impl ViewerApp {
                 if !now.device.is_empty() {
                     if self.show_advanced {
                         ui.monospace(format!("dev {}", now.device));
+                    }
+                    // ★**選んだデバイスと実際に開いたデバイスが違うことを黙らない。**
+                    //   見つからないと既定デバイスへ落ちる仕様なので、ユーザーからは
+                    //   「音が鳴らない」としか見えない。実機で起きた(2026-09-06)。
+                    //   2秒ごとに開き直しを試みているので、繋ぎ直せば自然に直る。
+                    if let Some(w) = now.wanted.as_ref() {
+                        if !w.is_empty() && *w != now.device {
+                            ui.colored_label(theme::AMBER, format!(
+                                "「{w}」を開けないので「{}」で鳴っています。\n\
+                                 接続を確認してください(開けるようになれば自動で切り替わります)",
+                                now.device));
+                        }
                     }
                 }
                 ui.monospace(format!(
