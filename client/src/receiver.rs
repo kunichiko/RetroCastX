@@ -523,6 +523,10 @@ pub struct Shared {
     pub stop: AtomicBool,
     /// 音声再生の統計(再生器が無い場合は既定値のまま)
     pub audio: Mutex<Option<Arc<crate::audio::AudioStats>>>,
+    /// 副系統(S/PDIF を混ぜる)の設定。
+    /// ★**再生器より長生きさせる。** 出力デバイスやソースを切り替えると
+    ///   AudioPlayer は作り直されるので、設定を向こうに置くと消える。
+    pub aux: Arc<crate::audio::AuxCtl>,
     /// UI→受信スレッドへの切替要求。cpalのStreamは生成スレッドから動かせないので、
     /// UIは要求を置くだけにして、受信スレッドが再生器を作り直す。
     pub audio_request: Mutex<Option<AudioRequest>>,
@@ -1028,7 +1032,16 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             if let Some(player) = &audio {
                 if let Ok(Packet::Audio(a)) = proto::parse(&buf[..n]) {
                     if a.source == player.source {
-                        player.push(a.samples);
+                        player.push(a.samples, a.rate_hz);
+                    } else if a.source == AUX_SOURCE
+                        && shared.aux.on.load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        // ★S/PDIF は**主系統を選び直さずに混ぜる**。ボードは
+                        //   audio_enable_mask の既定 0b111 で3系統とも送っていて、
+                        //   今までは Viewer が2系統を捨てていただけ。
+                        player.stats.aux_rate.store(
+                            a.rate_hz as u64, std::sync::atomic::Ordering::Relaxed);
+                        player.push_aux(a.samples, a.rate_hz);
                     }
                 }
             }
@@ -1097,6 +1110,9 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     }
 }
 
+/// 副系統として混ぜる音声ソース(S/PDIF)。
+pub const AUX_SOURCE: u8 = 2;
+
 /// 音声再生器を開き、Sharedの表示用状態を更新する。source=None なら再生しない。
 fn open_audio(
     cfg: &Config,
@@ -1105,7 +1121,8 @@ fn open_audio(
     device: Option<&str>,
 ) -> Option<AudioPlayer> {
     let player = source.and_then(|src| {
-        let p = AudioPlayer::new(src, cfg.audio.prebuffer_ms, cfg.audio.max_ms, device);
+        let p = AudioPlayer::new(src, cfg.audio.prebuffer_ms, cfg.audio.max_ms, device,
+                                 shared.aux.clone());
         if p.is_none() {
             eprintln!("audio: 出力デバイスを開けないため音声再生を無効化します");
         }
