@@ -1,0 +1,34 @@
+name: Checks
+
+# ★**検査を書いても回さなければ意味が無い。** このリポジトリには整合性検査が
+#   あったのに、どのワークフローからも呼ばれていなかった:
+#     - gateware/tools/check_gain_defaults.py  (既定値が4箇所で揃っているか)
+#     - tools/check_shell_portability.py       (macOS の bash 3.2 で動くか)
+#   実際 build_closed.sh の `$s。` は CI(bash 5)では再現しないので、
+#   誰も回さないまま「シードを見つけたのに ecppack せず終わる」状態が残っていた。
+#
+# ツールチェーンも依存も要らないので毎PRで回す(数秒)。
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: シェルスクリプトの可搬性(macOS の bash 3.2)
+        run: python3 tools/check_shell_portability.py
+
+      - name: 既定値が各所で揃っているか
+        run: python3 gateware/tools/check_gain_defaults.py
