@@ -50,6 +50,8 @@ pub struct Config {
     pub subscribe_to: Option<String>,
     /// 購読対象ボードのMAC。None ならワイルドカード(単一ボードLAN専用)。
     /// 複数ボード環境では discover で得たMACを指名する。
+    /// 起動時に指名するボードのMAC(`--mac`)。**初期値にすぎない** ─
+    /// 以後は `Shared::target_mac` を UI が書き換える。
     pub target_mac: Option<[u8; 6]>,
     /// 欠損ライン減衰率(1.0=前フレーム保持, 0.8=毎フレーム80%へ暗転)。
     pub decay: f32,
@@ -512,6 +514,9 @@ pub struct BoardInfo {
     pub name: String,
     pub mac: [u8; 6],
     pub fw_version: u16,
+    /// bit0 = MACを基板のEEPROMから読めた。**落ちている基板は出荷してはいけない**
+    /// (全基板共通のMACになるので、同じLANに2枚繋ぐと両方通信できなくなる)。
+    pub caps: u16,
     pub last_seen: Instant,
 }
 
@@ -526,6 +531,13 @@ pub struct Shared {
     pub mode: Mutex<Option<proto::Mode>>,
     pub stats: Mutex<StatsSnapshot>,
     pub boards: Mutex<HashMap<String, BoardInfo>>,
+    /// 指名しているボードのMAC。None ならワイルドカード(LAN上の全ボード)。
+    ///
+    /// ★**起動時の `--mac` ではなく実行時に変える。** LANに2枚あるとワイルドカードの
+    ///   購読は**両方が同時に映像を送ってくる**ので、どちらのラインも混ざって絵に
+    ///   ならない。UIから選び直せないと、繋ぎ替えのたびに Viewer を起動し直すことに
+    ///   なる。受信スレッドが毎周これを読む。
+    pub target_mac: Mutex<Option<[u8; 6]>>,
     pub stop: AtomicBool,
     /// 音声再生の統計(再生器が無い場合は既定値のまま)
     pub audio: Mutex<Option<Arc<crate::audio::AudioStats>>>,
@@ -608,6 +620,10 @@ pub fn spawn(
     shared: Arc<Shared>,
     repaint: impl Fn() + Send + 'static,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
+    // `--mac` は**初期値**。以後は UI が shared 側を書き換える
+    if cfg.target_mac.is_some() {
+        *shared.target_mac.lock().unwrap() = cfg.target_mac;
+    }
     // 500Mbps級のバーストに耐えるよう受信バッファを拡大(OSデフォルトは
     // 数十KBで、フレームクローン等で受信スレッドが一瞬停まるだけで溢れる)
     let raw = socket2::Socket::new(
@@ -642,8 +658,26 @@ pub fn spawn(
         std::io::Error::new(std::io::ErrorKind::InvalidInput,
                             format!("--bind {} を解釈できません ({e})", cfg.bind))
     })?;
-    raw.bind(&std::net::SocketAddr::from((bind_ip, cfg.port)).into())?;
+    // ★**塞がっていたら空きポートへ落ちる。** ボードは ANNOUNCE も CONFIG応答も
+    //   映像も**受け取ったパケットの送信元ポートへ返す**(2026-09-08 に実測)ので、
+    //   34600 を掴んでいる必要は無い。ここで諦めていたため
+    //   **Viewer を2つ起動できず、LAN上の2台を同時に見られなかった**。
+    //   1つ目は 34600 のままにしておく(ホスト側のCLIはそこを bind する)。
+    match raw.bind(&std::net::SocketAddr::from((bind_ip, cfg.port)).into()) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            raw.bind(&std::net::SocketAddr::from((bind_ip, 0)).into())?;
+            eprintln!(
+                "UDP {} は使用中なので空きポートで待ち受けます\n                 (ボードは送信元ポートへ返すので動作に支障はありません。\n                 　2台目のボードを見るときは「ボード」欄で1枚を指名してください)",
+                cfg.port
+            );
+        }
+        Err(e) => return Err(e),
+    }
     let sock: UdpSocket = raw.into();
+    if let Ok(a) = sock.local_addr() {
+        eprintln!("待ち受け: {a}");
+    }
     sock.set_read_timeout(Some(Duration::from_millis(200)))?;
     if cfg.subscribe_to.is_some() {
         sock.set_broadcast(true)?;
@@ -879,7 +913,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         if !targets.is_empty() {
             let due = last_subscribe.map_or(true, |t| t.elapsed() >= Duration::from_secs(2));
             if due {
-                let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
+                let mac = shared.target_mac.lock().unwrap().unwrap_or(proto::WILDCARD_MAC);
                 let pkt = proto::pack_subscribe(sub_seq, false, &mac);
                 // ★**送信失敗を黙って捨てない。** 以前は `let _ =` で捨てていたので、
                 //   VPNで送れないときの症状が「何も映らない」だけになり、原因を
@@ -906,7 +940,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 if targets.is_empty() {
                     q.clear();
                 } else {
-                    let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
+                    let mac = shared.target_mac.lock().unwrap().unwrap_or(proto::WILDCARD_MAC);
                     for (key, value) in q.drain(..) {
                         let pkt = proto::pack_config(sub_seq, 0, 0, key, value, &mac);
                         send_all(&send_sock, cfg.port, &targets, &pkt);
@@ -941,7 +975,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 if targets.is_empty() {
                     q.clear();
                 } else {
-                    let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
+                    let mac = shared.target_mac.lock().unwrap().unwrap_or(proto::WILDCARD_MAC);
                     for key in q.drain(..) {
                         let pkt = proto::pack_config(sub_seq, 0, 1, key, 0, &mac);
                         send_all(&send_sock, cfg.port, &targets, &pkt);
@@ -1092,6 +1126,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                     name: a.name.clone(),
                     mac: a.mac,
                     fw_version: a.fw_version,
+                    caps: a.caps,
                     last_seen: Instant::now(),
                 },
             );

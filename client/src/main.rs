@@ -764,6 +764,20 @@ struct ViewerApp {
     tune_pending: std::collections::HashMap<u16, (u32, std::time::Instant)>,
     /// 次に現在値を問い合わせる時刻。全キーが揃うまで繰り返す
     tune_get_at: Option<std::time::Instant>,
+    /// 「ボード」欄の編集中テキスト。**ボードの値を直接いじらない** ─
+    /// 1文字打つたびにCONFIGが飛ぶと、打ちかけの名前が基板に載る。
+    /// None は「まだ編集を始めていない(ボードの値をそのまま出す)」。
+    ident_name_edit: Option<String>,
+    ident_ip_edit: Option<String>,
+    /// 個体設定を最後に問い合わせた時刻。ボードを選び直したら取り直す
+    ident_get_at: Option<std::time::Instant>,
+    /// いま個体設定を読み込んであるボードのMAC。切り替えを検知する
+    ident_for: Option<[u8; 6]>,
+    /// 最後に見たボード側の値。**これが変わったら編集欄を捨てる。**
+    /// SETの応答が返るとボードの値が変わるので、編集欄に古いテキストが
+    /// 残っていると「適用/戻す」が出たままになり、押すと古い名前が飛ぶ。
+    ident_name_seen: Option<String>,
+    ident_ip_seen: Option<u32>,
     /// ボードの現在値を取り込み済みか。起動時に1回だけ合わせる
     tune_synced: bool,
     /// TVPの細ゲイン(レジスタ08h/09h/0Ah)。ゲイン = 1 + N/256。
@@ -953,6 +967,12 @@ impl ViewerApp {
             source_profile: cfg.source_profile.clone(),
             tune_pending: Default::default(),
             tune_get_at: None,
+            ident_name_edit: None,
+            ident_ip_edit: None,
+            ident_get_at: None,
+            ident_for: None,
+            ident_name_seen: None,
+            ident_ip_seen: None,
             tune_synced: false,
             // 初期値は REGS_X68000 と同じ(v0.9.0 で校正した値)。
             // 実際の値はボードから読み戻して上書きされる
@@ -3418,6 +3438,363 @@ impl ViewerApp {
     /// 名指しできるが、`*ReceiveBuffers` を公開しないドライバでは空振りする。
     /// 実測のロスはどんなNICでも「いま実際に落ちている」ことを言えるが、
     /// 起きてからしか分からない。どちらかが引っかかれば取りこぼさない。
+    /// ボード名を16バイトNUL詰めの4語にする。長すぎるなら None。
+    fn name_to_words(name: &str) -> Option<[u32; 4]> {
+        let b = name.as_bytes();
+        if b.len() > 16 {
+            return None;
+        }
+        let mut buf = [0u8; 16];
+        buf[..b.len()].copy_from_slice(b);
+        let mut out = [0u32; 4];
+        for i in 0..4 {
+            out[i] = u32::from_le_bytes(buf[i * 4..i * 4 + 4].try_into().unwrap());
+        }
+        Some(out)
+    }
+
+    fn words_to_name(w: [u32; 4]) -> String {
+        let mut buf = [0u8; 16];
+        for i in 0..4 {
+            buf[i * 4..i * 4 + 4].copy_from_slice(&w[i].to_le_bytes());
+        }
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(16);
+        String::from_utf8_lossy(&buf[..end]).into_owned()
+    }
+
+    /// 「ボード」欄。**LANに複数あるときの指名と、個体設定の書き換え。**
+    ///
+    /// ★**指名しないと2枚目が繋がった瞬間に絵が壊れる。** ワイルドカードの購読は
+    ///   全ボードが同時に映像を送ってくるので、両方のラインが同じ組立器に流れ込む。
+    ///   1枚しか無いうちは気付かないので、見つかった枚数を必ず出す。
+    ///
+    /// ★**名前とIPはEEPROMに焼くまで揮発する。** 試してから決められるようにして
+    ///   あるので、UIでも「焼く」を別のボタンにする。
+    fn boards_ui(&mut self, ui: &mut egui::Ui) {
+        let mut list: Vec<receiver::BoardInfo> =
+            self.shared.boards.lock().unwrap().values().cloned().collect();
+        // 見つかった順ではなくMAC順。並びが毎回変わると選び間違える
+        list.sort_by_key(|b| b.mac);
+
+        if list.is_empty() {
+            ui.weak("見つかっていません");
+            return;
+        }
+
+        let sel = *self.shared.target_mac.lock().unwrap();
+        // ★**1枚のときは指名の必要が無い。** 選択肢を出すと「選ばないと動かない」
+        //   ように見えるので、複数見つかったときだけ選ばせる。
+        if list.len() > 1 {
+            ui.label(
+                egui::RichText::new(format!("{} 枚見つかりました", list.len()))
+                    .size(11.0)
+                    .color(theme::AMBER),
+            );
+            if sel.is_none() {
+                ui.label(
+                    egui::RichText::new("★指名していないので全ボードが同時に映像を送ります。1枚選んでください")
+                        .size(11.0)
+                        .color(theme::AMBER),
+                );
+            }
+        }
+
+        let mut want: Option<Option<[u8; 6]>> = None;
+        for b in &list {
+            let mac = b.mac.map(|x| format!("{x:02x}")).join(":");
+            let picked = sel == Some(b.mac);
+            let label = format!("{}  {}", b.name, b.addr);
+            if list.len() > 1 {
+                if ui.selectable_label(picked, label).clicked() && !picked {
+                    want = Some(Some(b.mac));
+                }
+            } else {
+                ui.monospace(label);
+            }
+            ui.weak(
+                egui::RichText::new(format!(
+                    "  {mac}  fw {}.{}.{}",
+                    (b.fw_version >> 12) & 0xF,
+                    (b.fw_version >> 6) & 0x3F,
+                    b.fw_version & 0x3F
+                ))
+                .size(10.0),
+            );
+            // ★**MACがEEPROM由来でない基板は出荷できない。** 全基板共通の値に
+            //   なるので、同じLANに2枚繋ぐと両方通信できなくなる。
+            if b.caps & 0x0001 == 0 {
+                ui.label(
+                    egui::RichText::new("  ★MACをEEPROMから読めていません(出荷不可)")
+                        .size(10.0)
+                        .color(theme::AMBER),
+                );
+            }
+        }
+        if let Some(m) = want {
+            *self.shared.target_mac.lock().unwrap() = m;
+            // 選び直したら個体設定を取り直す
+            self.ident_for = None;
+            self.ident_name_edit = None;
+            self.ident_ip_edit = None;
+            self.ident_name_seen = None;
+            self.ident_ip_seen = None;
+            self.toasts.info(format!(
+                "ボードを切り替えました: {}",
+                list.iter().find(|b| Some(b.mac) == m).map_or("?", |b| b.name.as_str())
+            ));
+        }
+
+        // 設定の対象は「指名しているボード」。指名が無く1枚だけならそれ。
+        let target = sel.or_else(|| (list.len() == 1).then(|| list[0].mac));
+        let Some(target) = target else {
+            return;
+        };
+
+        // --- 個体設定の読み込み(ボードが変わったら取り直す)---
+        let keys = [
+            protocol::CFG_KEY_NAME0,
+            protocol::CFG_KEY_NAME1,
+            protocol::CFG_KEY_NAME2,
+            protocol::CFG_KEY_NAME3,
+            protocol::CFG_KEY_NET_MODE,
+            protocol::CFG_KEY_STATIC_IP,
+            protocol::CFG_KEY_IDENT_SAVE,
+            protocol::CFG_KEY_IDENT_EE,
+        ];
+        if self.ident_for != Some(target) {
+            let due = self.ident_get_at.map_or(true, |t| t.elapsed() >= std::time::Duration::from_secs(1));
+            if due {
+                self.ident_get_at = Some(std::time::Instant::now());
+                self.shared.config_get_queue.lock().unwrap().extend(keys);
+            }
+            let st = self.shared.config_state.lock().unwrap();
+            if keys.iter().all(|k| st.contains_key(k)) {
+                drop(st);
+                self.ident_for = Some(target);
+            }
+        }
+
+        let st = self.shared.config_state.lock().unwrap();
+        let got = |k: u16| st.get(&k).copied();
+        let words = [
+            got(protocol::CFG_KEY_NAME0),
+            got(protocol::CFG_KEY_NAME1),
+            got(protocol::CFG_KEY_NAME2),
+            got(protocol::CFG_KEY_NAME3),
+        ];
+        let board_name = if words.iter().all(|w| w.is_some()) {
+            Some(Self::words_to_name([
+                words[0].unwrap(),
+                words[1].unwrap(),
+                words[2].unwrap(),
+                words[3].unwrap(),
+            ]))
+        } else {
+            None
+        };
+        let net_mode = got(protocol::CFG_KEY_NET_MODE);
+        let static_ip = got(protocol::CFG_KEY_STATIC_IP);
+        let save_state = got(protocol::CFG_KEY_IDENT_SAVE);
+        let ee = got(protocol::CFG_KEY_IDENT_EE);
+        drop(st);
+
+        if board_name.is_none() {
+            ui.add_space(4.0);
+            ui.weak("設定を読み込んでいます…");
+            return;
+        }
+        let board_name = board_name.unwrap();
+
+        // ボード側の値が動いたら編集欄を捨てる(自分のSETが着地した場合を含む)
+        if self.ident_name_seen.as_deref() != Some(board_name.as_str()) {
+            self.ident_name_seen = Some(board_name.clone());
+            self.ident_name_edit = None;
+        }
+        if self.ident_ip_seen != static_ip {
+            self.ident_ip_seen = static_ip;
+            self.ident_ip_edit = None;
+        }
+
+        ui.add_space(6.0);
+        // --- 名前 ---
+        let mut send_name: Option<[u32; 4]> = None;
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "名前");
+            let buf = self.ident_name_edit.get_or_insert_with(|| board_name.clone());
+            let resp = ui.add(
+                egui::TextEdit::singleline(buf)
+                    .desired_width(theme::SLIDER_W + 40.0)
+                    .hint_text("16バイトまで"),
+            );
+            let bytes = buf.as_bytes().len();
+            let ok = bytes <= 16;
+            if (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) && ok {
+                send_name = Self::name_to_words(buf);
+            }
+            if !ok {
+                ui.label(
+                    egui::RichText::new(format!("{bytes}B"))
+                        .size(10.0)
+                        .color(theme::AMBER),
+                )
+                .on_hover_text("ANNOUNCE の name は16バイト固定です。日本語は1文字3バイト");
+            }
+        });
+        if self.ident_name_edit.as_deref() != Some(board_name.as_str()) {
+            ui.horizontal(|ui| {
+                theme::label_col(ui, "");
+                let ok = self
+                    .ident_name_edit
+                    .as_deref()
+                    .map_or(false, |b| b.as_bytes().len() <= 16);
+                if ui
+                    .add_enabled(ok, egui::Button::new("適用"))
+                    .on_hover_text("ボードに送る。焼くまでは電源で消えます")
+                    .clicked()
+                {
+                    send_name = Self::name_to_words(self.ident_name_edit.as_deref().unwrap_or(""));
+                }
+                if ui.button("戻す").clicked() {
+                    self.ident_name_edit = None;
+                }
+            });
+        }
+        if let Some(w) = send_name {
+            for (k, v) in [
+                (protocol::CFG_KEY_NAME0, w[0]),
+                (protocol::CFG_KEY_NAME1, w[1]),
+                (protocol::CFG_KEY_NAME2, w[2]),
+                (protocol::CFG_KEY_NAME3, w[3]),
+            ] {
+                self.send_cfg(k, v);
+            }
+            self.ident_name_edit = None;
+            self.toasts.info("ボード名を送りました(焼くまでは電源で消えます)");
+        }
+
+        // --- IP ---
+        ui.add_space(4.0);
+        let is_static = net_mode.unwrap_or(0) & 1 != 0;
+        let mut set_static: Option<bool> = None;
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "IP");
+            let mut v = is_static;
+            if ui
+                .selectable_label(!v, "自動")
+                .on_hover_text("MAC由来のリンクローカル 169.254.x.y。基板ごとに違うので衝突しない")
+                .clicked()
+            {
+                v = false;
+            }
+            if ui
+                .selectable_label(v, "固定")
+                .on_hover_text("ルータ越しなど、ブロードキャストが届かない構成向け")
+                .clicked()
+            {
+                v = true;
+            }
+            if v != is_static {
+                set_static = Some(v);
+            }
+        });
+        if is_static || set_static == Some(true) {
+            let cur = static_ip.unwrap_or(0);
+            let cur_txt = format!(
+                "{}.{}.{}.{}",
+                (cur >> 24) & 0xFF,
+                (cur >> 16) & 0xFF,
+                (cur >> 8) & 0xFF,
+                cur & 0xFF
+            );
+            let mut send_ip: Option<u32> = None;
+            ui.horizontal(|ui| {
+                theme::label_col(ui, "");
+                let buf = self.ident_ip_edit.get_or_insert_with(|| cur_txt.clone());
+                ui.add(
+                    egui::TextEdit::singleline(buf)
+                        .desired_width(theme::SLIDER_W + 10.0)
+                        .hint_text("192.168.10.50"),
+                );
+                let parsed = buf.parse::<std::net::Ipv4Addr>().ok().map(u32::from);
+                // ★**0.0.0.0 は受け付けない。** ゲートウェアは 0 を静的扱いしない
+                //   ので「固定にしたのにリンクローカルのまま」という説明の付かない
+                //   状態になる。ここで止める方が分かりやすい
+                let ok = parsed.map_or(false, |v| v != 0);
+                if ui
+                    .add_enabled(ok && *buf != cur_txt, egui::Button::new("適用"))
+                    .clicked()
+                {
+                    send_ip = parsed;
+                }
+                if !buf.is_empty() && !ok {
+                    ui.label(egui::RichText::new("?").size(11.0).color(theme::AMBER))
+                        .on_hover_text("A.B.C.D の形で、0.0.0.0 以外");
+                }
+            });
+            if let Some(v) = send_ip {
+                // IPを先、モードを後。逆にすると新しいIPが入る前に静的へ切り替わり、
+                // 一瞬だけ古い値(あるいは 0.0.0.0)で名乗る
+                self.send_cfg(protocol::CFG_KEY_STATIC_IP, v);
+                set_static = Some(true);
+                self.ident_ip_edit = None;
+            }
+        }
+        if let Some(v) = set_static {
+            self.send_cfg(protocol::CFG_KEY_NET_MODE, v as u32);
+            if v {
+                self.toasts.notice("固定IPにしました。設定を間違えても、ブロードキャストで見つかるので戻せます");
+            } else {
+                self.ident_ip_edit = None;
+            }
+        }
+
+        // --- EEPROMへ焼く ---
+        ui.add_space(4.0);
+        let ee_txt = match ee.map(|v| ((v >> 1) & 3, v & 1)) {
+            Some((0, 1)) => "設定ページ有効",
+            Some((1, _)) => "未設定(既定で動作中)",
+            Some((2, _)) => "★設定ページが壊れています(既定で動作中)",
+            Some((3, _)) => "★EEPROMが応答しません",
+            _ => "?",
+        };
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "EEPROM");
+            ui.weak(egui::RichText::new(ee_txt).size(11.0));
+        });
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "");
+            let busy = save_state == Some(1);
+            if ui
+                .add_enabled(!busy, egui::Button::new("EEPROMへ焼く"))
+                .on_hover_text("次の電源投入からこの名前・IPで上がります")
+                .clicked()
+            {
+                self.send_cfg(protocol::CFG_KEY_IDENT_SAVE, 1);
+                self.toasts.info("EEPROMへ焼いています…");
+            }
+            match save_state {
+                Some(1) => {
+                    ui.weak("実行中");
+                }
+                Some(2) => {
+                    ui.label(egui::RichText::new("成功").size(11.0).color(theme::OK));
+                }
+                Some(3) => {
+                    ui.label(egui::RichText::new("失敗").size(11.0).color(theme::AMBER));
+                }
+                _ => {}
+            }
+        });
+        // 焼いている間・焼いた直後は状態を追いかける
+        if matches!(save_state, Some(1)) || self.ident_for != Some(target) {
+            self.shared
+                .config_get_queue
+                .lock()
+                .unwrap()
+                .push(protocol::CFG_KEY_IDENT_SAVE);
+        }
+    }
+
     fn netcheck_ui(&mut self, ui: &mut egui::Ui, s: &receiver::StatsSnapshot) {
         // ボードのアドレスが分かってから1回だけ調べる。経路から NIC を決めるので、
         // 相手のIPが要る(Wi-Fiと有線が両方生きている機械で誤判定しないため)
@@ -4029,17 +4406,8 @@ impl eframe::App for ViewerApp {
                 self.tune_ui(ui);
                 ui.separator();
 
-                Self::section(ui, "Boards");
-                let boards = self.shared.boards.lock().unwrap();
-                if boards.is_empty() {
-                    ui.weak("none discovered");
-                }
-                for b in boards.values() {
-                    let mac = b.mac.map(|x| format!("{x:02x}")).join(":");
-                    ui.monospace(format!("{} {}", b.addr, b.name));
-                    ui.weak(format!("  {mac} fw {:04x}", b.fw_version));
-                }
-                drop(boards);
+                Self::section(ui, "ボード");
+                self.boards_ui(ui);
                 ui.separator();
 
                 // 管面(ブラウン管の物理的な表示領域)。
@@ -4541,6 +4909,32 @@ impl Drop for ViewerApp {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// ★**ANNOUNCE の name は16バイト固定。** 日本語は1文字3バイトなので、
+    ///   「5文字までしか入らない」ことに UI 側で気付ける必要がある。
+    #[test]
+    fn board_name_roundtrips_and_bounds() {
+        for n in ["", "a", "retrocastx-i5", "0123456789abcdef", "エックス"] {
+            let w = ViewerApp::name_to_words(n).expect("16バイト以内なのに拒否された");
+            assert_eq!(ViewerApp::words_to_name(w), n, "往復で変わった: {n:?}");
+        }
+        // 17バイトは入らない
+        assert!(ViewerApp::name_to_words("0123456789abcdefg").is_none());
+        // UTF-8 は文字数ではなくバイト数で効く(6文字=18バイト)
+        assert!(ViewerApp::name_to_words("あいうえおか").is_none());
+        assert!(ViewerApp::name_to_words("あいうえお").is_some());
+    }
+
+    /// 語の並びが**電線上のバイト順**と一致していること。ここがずれると
+    /// 名前が4バイトごとに入れ替わって出る。
+    #[test]
+    fn name_words_match_wire_order() {
+        let w = ViewerApp::name_to_words("ABCDEFGH").unwrap();
+        assert_eq!(w[0], u32::from_le_bytes(*b"ABCD"));
+        assert_eq!(w[1], u32::from_le_bytes(*b"EFGH"));
+        assert_eq!(w[2], 0);
+    }
     use super::{quick_pick, PHASE_SENSITIVE};
 
     /// ★**実機で測った値をそのまま固定する。**
