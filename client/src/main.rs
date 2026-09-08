@@ -3595,6 +3595,29 @@ impl ViewerApp {
         String::from_utf8_lossy(&buf[..end]).into_owned()
     }
 
+    /// いま実際に SUBSCRIBE を送っている宛先。
+    ///
+    /// ★**「ボード」節の中に置く。** これは発見の状況そのもので、どのボードが
+    ///   見えているかと一緒に読むもの。タイトルの直下にあったが、アプリの
+    ///   見出しの下に技術的な宛先が来ると何の情報か分からない。
+    /// ★**指定値ではなく実際の宛先を出す。** ユニキャスト指定で応答が無いと
+    ///   ブロードキャストへ落ちるので、ここは走行中に変わる。
+    fn sub_dest_ui(&mut self, ui: &mut egui::Ui) {
+        let dest = self.shared.sub_dest.lock().unwrap().clone();
+        if dest.is_empty() {
+            ui.weak(egui::RichText::new("探索: 停止(受信のみ)").size(11.0));
+        } else if dest == "255.255.255.255" {
+            ui.weak(egui::RichText::new("探索 → ブロードキャスト").size(11.0))
+                .on_hover_text(
+                    "宛先を指定せずに探しています。ボードは SUBSCRIBE の\n                     送信元へ映像を返すので、サブネットが違っても\n                     同じL2セグメントにいれば届きます。\n                     ブロードキャストになるのはこの2秒ごとの要求だけで、\n                     映像はユニキャストです");
+        } else {
+            // NICごとのサブネット宛。複数NICがあれば空白区切りで並ぶ
+            ui.weak(egui::RichText::new(format!("探索 → {dest}")).size(11.0))
+                .on_hover_text(
+                    "各NICのサブネット宛ブロードキャストへ2秒ごとに送っています。\n                     限定ブロードキャスト(255.255.255.255)は使いません。\n                     あれは既定経路に載るので、VPN接続中は送信自体が\n                     失敗します(receiver.rs の broadcast_targets 参照)。\n                     サブネットが違っても同じL2セグメントにいれば届きます");
+        }
+    }
+
     /// 「ボード」欄。**LANに複数あるときの指名と、個体設定の書き換え。**
     ///
     /// ★**指名しないと2枚目が繋がった瞬間に絵が壊れる。** ワイルドカードの購読は
@@ -3611,6 +3634,7 @@ impl ViewerApp {
 
         if list.is_empty() {
             ui.weak("見つかっていません");
+            self.sub_dest_ui(ui);
             return;
         }
         // 掴めていない理由を出す。黙って映らないのが一番分かりにくい
@@ -3719,6 +3743,8 @@ impl ViewerApp {
         if let Some(m) = want {
             self.set_board_sel(settings::BoardSel::Mac(m));
         }
+
+        self.sub_dest_ui(ui);
 
         // 設定を触れるのは掴んでいるボードだけ
         let Some(target) = own else {
@@ -4419,31 +4445,11 @@ impl eframe::App for ViewerApp {
                 if let Some(err) = &self.rx_error {
                     ui.colored_label(egui::Color32::RED, err);
                 }
-                // 指定値ではなく「実際に送っている宛先」を出す。ユニキャスト指定で
-                // 応答が無いとブロードキャストへ落ちるので、ここが変わることがある。
-                {
-                    let dest = self.shared.sub_dest.lock().unwrap().clone();
-                    if dest.is_empty() {
-                        ui.label("subscribe: off (listen only)");
-                    } else if dest == "255.255.255.255" {
-                        ui.label("SUBSCRIBE → ブロードキャスト")
-                            .on_hover_text(
-                                "宛先を指定せずに探しています。ボードは SUBSCRIBE の\n\
-                                 送信元へ映像を返すので、サブネットが違っても\n\
-                                 同じL2セグメントにいれば届きます。\n\
-                                 ブロードキャストになるのはこの2秒ごとの要求だけで、\n\
-                                 映像はユニキャストです");
-                    } else {
-                        // NICごとのサブネット宛。複数NICがあれば空白区切りで並ぶ
-                        ui.label(format!("SUBSCRIBE → {dest}"))
-                            .on_hover_text(
-                                "各NICのサブネット宛ブロードキャストへ2秒ごとに送っています。\n\
-                                 限定ブロードキャスト(255.255.255.255)は使いません。\n\
-                                 あれは既定経路に載るので、VPN接続中は送信自体が\n\
-                                 失敗します(receiver.rs の broadcast_targets 参照)。\n\
-                                 サブネットが違っても同じL2セグメントにいれば届きます");
-                    }
-                }
+                // ★**タイトルの直下に置く。** 簡易スキャンはモードが変わるたびに
+                //   押すもので、詳細トグルはパネル全体の見せ方を変えるもの。
+                //   どちらも「どの節にも属さない道具」なので、節の間に挟まって
+                //   いると迷子に見える。
+                self.quick_scan_bar(ui);
                 // ★**送れていないことを明示する。** 「何も映らない」だけだと
                 //   受信側の問題と区別できず、原因の切り分けに時間がかかる。
                 if let Some(err) = self.shared.net_error.lock().unwrap().clone() {
@@ -4457,11 +4463,6 @@ impl eframe::App for ViewerApp {
                 //   窓を3つ並べて3台に繋ぐ使い方では、ここが最初に確認する場所。
                 Self::section(ui, "ボード");
                 self.boards_ui(ui);
-                ui.separator();
-
-                // ★よく使う操作を上部に置く。簡易スキャンはモードが変わるたびに
-                //   押すので、Tune の奥だけにあると毎回スクロールすることになる。
-                self.quick_scan_bar(ui);
                 ui.separator();
 
                 // ★**よく使う順に並べ替えてある。** 状態表示 → 入力の切り替え →
