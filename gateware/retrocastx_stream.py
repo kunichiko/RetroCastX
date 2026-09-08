@@ -21,6 +21,7 @@ Simulation (no hardware):
     .venv/bin/python sim_stream.py
 """
 import argparse
+import os
 import struct
 
 from migen import *
@@ -53,13 +54,63 @@ def convert_ip(ip_str):
     return ip
 
 
+def _git(*args, default=""):
+    """リポジトリから情報を取る。git が無い/リポジトリ外でもビルドは通す。"""
+    import subprocess
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        return subprocess.check_output(["git", "-C", here, *args],
+                                       stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        return default
+
+
+def firmware_version() -> int:
+    """ANNOUNCE に載せる版(u16)。`gw-vX.Y.Z` タグから作る。
+
+    ★**手で上げる定数にしない。** 焼いたつもりの版と実機の版が食い違っても
+      気づけない、というのが version を持つ動機なので、その version 自体が
+      手作業でずれたら意味がない。
+
+    符号化: bit15:12=major(0〜15) bit11:6=minor(0〜63) bit5:0=patch(0〜63)。
+
+    ★**16進の桁に揃えるより範囲を優先する。** 4/4/8 なら 0.9.2 が 0x0902 と
+      そのまま読めるが、パッチが 15 で頭打ちになる。実際 gw-v0.9.0〜0.9.2 を
+      2日で3つ出しており、活発な時期には溢れる。表示側(discover / Viewer)が
+      復号して "0.9.2" と出すので、人が16進のまま読む場面は無い。
+
+    タグが無い/範囲外なら 0x0000。
+    """
+    import re
+    d = _git("describe", "--tags", "--match", "gw-v*", "--abbrev=0")
+    m = re.match(r"gw-v(\d+)\.(\d+)\.(\d+)$", d)
+    if not m:
+        return 0x0000
+    major, minor, patch = (int(x) for x in m.groups())
+    if major > 0xF or minor > 0x3F or patch > 0x3F:
+        return 0x0000
+    return (major << 12) | (minor << 6) | patch
+
+
+def build_id() -> int:
+    """ビルド元コミットの短縮SHA(u32)。**タグが無いビルドでも一意に指せる。**
+    タグは同じでも中身が違うビットストリームを区別するために要る。"""
+    h = _git("rev-parse", "--short=8", "HEAD")
+    try:
+        return int(h, 16) & 0xFFFFFFFF
+    except ValueError:
+        return 0
+
+
 def make_announce_payload() -> bytes:
     """host/python/retrocastx/protocol.py の Announce と同一フォーマット(40B)。
     共通ヘッダの seq はゲートウェアが動的に差し替える。"""
     common = struct.pack("<BBBBHH", 0x52, 0x00, 3, 0, 0, 0)  # magic,ver,INFO,flags,frame,seq
     mac = bytes([0x02, 0x52, 0x43, 0x58, 0x00, 0x01])
     ip = bytes(int(x) for x in FPGA_IP.split("."))
-    info = struct.pack("<6s4sHHH16s", mac, ip, UDP_PORT, 0x0001, 0x0000, b"retrocastx-i5")
+    # fw は git のタグ由来、caps の bit0(EEPROMからMACを読めた)は実行時に差し替える
+    info = struct.pack("<6s4sHHH16s", mac, ip, UDP_PORT,
+                       firmware_version(), 0x0000, b"retrocastx-i5")
     return common + info
 
 
@@ -126,6 +177,7 @@ class RetroCastXStreamer(LiteXModule):
     def __init__(self, udp_port, sys_clk_freq, width=512, height=512, fps=30.0,
                  announce_period=1.0, mode_period=1.0, sub_timeout=10.0,
                  announce_ip=HOST_IP, udp_port_nr=UDP_PORT, my_ip=None,
+                 caps=None,
                  mtu_payload=1472, interlace=False,
                  audio_sources=None, audio_nsamples=240,
                  mac_address=MAC_ADDRESS, capture=None,
@@ -148,6 +200,11 @@ class RetroCastXStreamer(LiteXModule):
         # ANNOUNCE に載せる自IP。None ならビルド時定数(従来どおり)
         if my_ip is None:
             my_ip = C(convert_ip(FPGA_IP), 32)
+        # caps: bit0 = MACを基板のEEPROMから読めた。
+        # ★**出荷検査で「EEPROMが読めない基板」を弾くための旗。** CONFIG を
+        #   往復させなくても発見の時点で分かるようにしておく。
+        if caps is None:
+            caps = C(0, 16)
         if isinstance(mac_address, int):
             mac_bytes = mac_address.to_bytes(6, "big")
             my_mac_lo = int.from_bytes(mac_bytes[0:4], "little")
@@ -554,6 +611,8 @@ class RetroCastXStreamer(LiteXModule):
         self.stat_mac_info = Signal(8)   # key 0x06
         self.stat_mac_lo   = Signal(32)  # key 0x07
         self.stat_mac_hi   = Signal(16)  # key 0x08
+        #     key 0x09 = ビルド元コミットの短縮SHA。タグが同じでも中身が違う
+        #                ビットストリームを区別できるようにする
         # ラインごとのHSYNC周期プローブ。key 0x27 で行を選び 0x28/0x29 で読む
         self.cfg_hs_probe_row = Signal(13)
         self.stat_hs_raw    = Signal(16)
@@ -787,6 +846,7 @@ class RetroCastXStreamer(LiteXModule):
         reply_cases[0x06] = reply_mux.eq(self.stat_mac_info)
         reply_cases[0x07] = reply_mux.eq(self.stat_mac_lo)
         reply_cases[0x08] = reply_mux.eq(self.stat_mac_hi)
+        reply_cases[0x09] = reply_mux.eq(C(build_id(), 32))
         # 診断用の読み出し(書き込みは無視される読み取り専用)。
         # フィールド極性をどちらから取るべきか、ラインごとのHSYNC周期が揺れて
         # いないか等を実機で判断するための生データ。
@@ -1018,13 +1078,15 @@ class RetroCastXStreamer(LiteXModule):
             #   ワード3の上位16bitは IP の先頭2バイトなので定数のまま残す。
             _T_ANN: Case(word_idx, dict(
                 [(i, hdr.eq(ann_words[i]))
-                 for i in range(n_ann_words) if i not in (1, 2, 3, 4)]
+                 for i in range(n_ann_words) if i not in (1, 2, 3, 4, 5)]
                 + [(2, hdr.eq(my_mac_lo)),
                    # ワード3 = mac[4],mac[5],ip[0],ip[1]
                    (3, hdr.eq(Cat(my_mac_hi, my_ip[24:32], my_ip[16:24]))),
                    # ワード4 = ip[2],ip[3],port(下位16bitは定数のまま)
                    (4, hdr.eq(Cat(my_ip[8:16], my_ip[0:8],
-                                  C(ann_words[4] >> 16, 16))))]
+                                  C(ann_words[4] >> 16, 16)))),
+                   # ワード5 = fw(定数) + caps(実行時)
+                   (5, hdr.eq(Cat(C(ann_words[5] & 0xFFFF, 16), caps)))]
             )),
             _T_MODE: Case(word_idx, {
                 0: hdr.eq(0x52 | (1 << 16)),                       # type=MODE
@@ -1703,6 +1765,7 @@ class RetroCastXStream(SoCMini):
             # ★Ethernet コアと同じ MAC を渡すこと。食い違うと SUBSCRIBE/CONFIG の
             #   宛先照合(自MACと一致するか)が通らなくなる。
             mac_address=my_mac, my_ip=my_ip,
+            caps=Cat(self.status.mac_valid, C(0, 15)),
             audio_sources=[(self.i2s.sources[0], 48000),
                            (self.i2s.sources[1], 48000),
                            (self.spdif.source, self.spdif.rate_hz)],

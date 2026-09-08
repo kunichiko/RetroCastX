@@ -78,8 +78,20 @@ def main():
             key = (addr[0], pkt.mac)
             if key not in seen:
                 mac = ":".join("%02x" % b for b in pkt.mac)
-                print("FOUND %-15s  mac=%s  name=%r  port=%d  fw=0x%04x  caps=0x%04x"
-                      % (addr[0], mac, pkt.name, pkt.udp_port, pkt.fw_version, pkt.caps))
+                # fw_version は gw-vX.Y.Z タグ由来。bit15:12=major 11:6=minor 5:0=patch
+                fw = pkt.fw_version
+                fwtxt = ("不明" if fw == 0 else
+                         "%d.%d.%d" % ((fw >> 12) & 0xF, (fw >> 6) & 0x3F, fw & 0x3F))
+                print("FOUND %-15s  mac=%s  name=%r  port=%d  fw=%s (0x%04x)  caps=0x%04x"
+                      % (addr[0], mac, pkt.name, pkt.udp_port, fwtxt, fw, pkt.caps))
+                # ★**MACがフォールバックのままの基板は出荷してはいけない。**
+                #   全基板共通のアドレスなので、同じLANに2枚繋ぐとスイッチの
+                #   学習テーブルが壊れて両方通信できなくなる。
+                if not (pkt.caps & 0x0001):
+                    print("  ★警告: MACをEEPROMから読めていません"
+                          "(全基板共通のフォールバック値で動作中)。")
+                    print("    原因は CONFIG key 0x06 (mac_info) で切り分けられます:")
+                    print("      python3 -m retrocastx.cfg get 0x0006")
                 if args.subscribe:
                     # 発見したボードのMACを指名して購読(複数ボードLANでも安全)
                     sock.sendto(proto.pack_subscribe(seq, mac=pkt.mac),
