@@ -52,6 +52,14 @@ KNOWN = [
     (0x0007, "mac_lo", "使用中のMAC 下位32bit(RO)"),
     (0x0008, "mac_hi", "使用中のMAC 上位16bit(RO)"),
     (0x0009, "build_id", "ビルド元コミットの短縮SHA。タグが同じでも中身を区別できる(RO)"),
+    (0x0046, "net_mode", "bit0=静的IPを使う(0=MAC由来のリンクローカル)"),
+    (0x0047, "static_ip", "静的IP(ネットワークバイト順の整数。retrocastx.identity が便利)"),
+    (0x0048, "name0", "ボード名 バイト0..3(UTF-8, NUL詰め16B)"),
+    (0x0049, "name1", "ボード名 バイト4..7"),
+    (0x004A, "name2", "ボード名 バイト8..11"),
+    (0x004B, "name3", "ボード名 バイト12..15"),
+    (0x004C, "ident_save", "SET 1=EEPROMへ焼く / GET 0=未実行 1=実行中 2=成功 3=失敗"),
+    (0x004D, "ident_ee", "bit0=設定ページ有効 bit2:1=1未設定/2破損/3EEPROM無応答(RO)"),
     (0x0010, "vbp",               "キャプチャ窓の先頭をVSYNCの何行後にするか"),
     (0x0011, "hs_offset",         "水平バックポーチ[DATACLK]"),
     (0x0012, "pll_divide",        "H-PLL帰還分周比=1ライン当たりDATACLK数"),
@@ -107,7 +115,7 @@ def _num(s: str) -> int:
 
 class Cfg:
     def __init__(self, ip: str, port: int, timeout: float = 0.3,
-                 bind: str = "0.0.0.0"):
+                 bind: str = "0.0.0.0", mac: bytes = proto.WILDCARD_MAC):
         # ★宛先が限定ブロードキャストのときは**NICごとのサブネット宛**に展開する。
         #   限定ブロードキャストは既定経路に載るので、VPN接続中は sendto そのものが
         #   EADDRNOTAVAIL で落ちる。詳細と実測値は netutil の冒頭コメント。
@@ -116,6 +124,10 @@ class Cfg:
         else:
             self.dsts = [ip]
         self.port = port
+        # 宛先ボードのMAC。**ボードを1枚に指名できるようにしておく。**
+        # ブロードキャストで送ると同じLANの全ボードが反応するので、名前や
+        # 静的IPのような個体設定を撃つと全台が同じ設定になってしまう。
+        self.mac = mac
         self.seq = 1
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -141,7 +153,8 @@ class Cfg:
     def _xfer(self, op: int, key: int, value: int = 0, retries: int = 4):
         """SET/GET を送って REPLY の value を返す。来なければ None。"""
         for _ in range(retries):
-            pkt = proto.pack_config(self.seq, proto.CFG_TARGET_BOARD, op, key, value)
+            pkt = proto.pack_config(self.seq, proto.CFG_TARGET_BOARD, op, key, value,
+                                    mac=self.mac)
             if netutil.send_all(self.sock, self.dsts, self.port, pkt) == 0:
                 raise SystemExit(netutil.explain_failure(self.dsts))
             self.seq = (self.seq + 1) & 0xFFFF
@@ -159,6 +172,9 @@ class Cfg:
                 #   同じポートにループバックしてくるので、flags を見ないと「要求の
                 #   value をそのまま読んだ」ことになり、SETが常に成功に見える。
                 if kind != proto.TYPE_CONFIG or not pkt.is_reply:
+                    continue
+                # 指名したなら、そのボードからの応答だけを採る
+                if self.mac != proto.WILDCARD_MAC and pkt.mac != self.mac:
                     continue
                 if pkt.key == key:
                     return pkt.value

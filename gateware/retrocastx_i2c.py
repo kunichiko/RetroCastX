@@ -21,6 +21,40 @@ except ImportError:
 
 OP_START, OP_WRITE, OP_READ, OP_STOP = 0, 1, 2, 3
 
+# EEPROM に設定ページが無い基板が名乗る名前。ANNOUNCE の name は16バイト固定。
+DEFAULT_BOARD_NAME = "retrocastx-i5"
+
+# 個体設定ページ(EEPROM 0x00..0x1F)のレイアウト。
+#
+# ★**MAC と同じ EEPROM に置く。** 別の不揮発を足すと、基板を差し替えたときに
+#   「MACはこっち、名前はあっち」とちぐはぐになる。24AA025E48 は 0x00..0xF7 が
+#   ユーザ領域で、保護されているのは EUI-48 の 0xF8 以降だけ。WP はGND(基板側で
+#   書込み許可済み ─ hardware/adc-frontend/main.ato)。
+#
+#   off  len  内容
+#   0x00   2  magic 'R','X'
+#   0x02   1  ver = 1
+#   0x03   1  flags  bit0 = 静的IPを使う
+#   0x04   4  静的IP(o1..o4 = 電線上の順)
+#   0x08   1  chk   32バイトの総和が0になる値
+#   0x09   7  予約(0)
+#   0x10  16  name(UTF-8, NUL詰め)
+#
+# ★**チェックサムは必須。** 書込み中に電源が落ちると magic だけ残った半端な
+#   ページができる。静的IPが化けた基板は「そのIPでは繋がらない」状態になるので、
+#   壊れたページは読まずに既定へ落とす方が安全。
+# ★**書く順はページ1(name)→ページ0(ヘッダ)。** magic と chk を最後に載せる
+#   ことで、途中で電源が落ちたページは「無効」として捨てられる(commit-last)。
+CFG_PAGE_MAGIC = (0x52, 0x58)   # 'R','X'
+CFG_PAGE_VER   = 1
+CFG_PAGE_LEN   = 32
+CFG_FLAG_STATIC_IP = 0x01
+# ★**書込みは8バイト単位。** 2Kbit品(24AA01/02系)のページ書込みバッファは
+#   8バイトで、それを超えると**ページ内で折り返して先頭を上書きする**
+#   (エラーにならず静かに壊れるので気付きにくい)。16バイト品でも8バイトで
+#   書けば正しいので、小さい方に合わせる。
+CFG_WR_PAGE = 8
+
 
 class I2CByteMaster(Module):
     def __init__(self, sys_clk_freq=45e6, i2c_freq=400e3):
@@ -190,6 +224,25 @@ class StatusDisplay(Module):
         self.mac_err   = Signal(2)
         # 使ったEEPROM。0=0x50(ETH0側) 1=0x51(ETH1側)
         self.mac_alt   = Signal()
+
+        # --- 個体設定(ボード名 / 静的IP)---
+        # 起動時に EEPROM の設定ページから読み込み、CONFIG で上書きできる。
+        # ★**上書きは即座に効き、保存しなければ電源で消える。** 「試してから
+        #   決める」ができるし、静的IPを設定し損ねても電源を入れ直せば戻る。
+        self.cfg_name  = Signal(128, reset=int.from_bytes(
+            DEFAULT_BOARD_NAME.encode()[:16].ljust(16, b"\0"), "little"))
+        self.cfg_ip    = Signal(32)      # o1が最上位バイト(my_ip と同じ並び)
+        self.cfg_flags = Signal(8)
+        self.cfg_valid = Signal()        # EEPROM に妥当な設定ページがあった
+        # 0=OK 1=magic/ver不一致(未設定) 2=チェックサム不一致(壊れている) 3=読めない
+        self.cfg_err   = Signal(2, reset=1)
+        # 書き換え要求。set_stb で1枠ずつ更新し、save_stb で EEPROM へ焼く
+        self.set_stb   = Signal()
+        self.set_sel   = Signal(3)       # 0..3=name語 4=静的IP 5=flags
+        self.set_val   = Signal(32)
+        self.save_stb  = Signal()
+        # 0=未実行 1=実行中 2=成功 3=失敗
+        self.save_state = Signal(2)
         # 観測用
         self.tvp_ack = Signal()
         self.syncdet = Signal(8)  # reg0x14 Sync Detect Status
@@ -666,6 +719,73 @@ class StatusDisplay(Module):
             ee_w.eq(Mux(self.mac_alt, EE_A1, EE_A0)),
             ee_r.eq(Mux(self.mac_alt, EE_A1 | 1, EE_A0 | 1)),
         ]
+        # --- 個体設定ページの作業用 ---
+        cp_buf  = Signal(8 * CFG_PAGE_LEN)   # 読み出した32バイト(先頭バイトが下位)
+        cp_sum  = Signal(8)                  # 総和(読出時は検査、書込時は算出)
+        cp_i    = Signal(6)                  # 0..31
+        cp_chk  = Signal(8)
+        cp_page = Signal(2)                  # 書込み中のページ 0..3(0がヘッダ)
+        cp_poll = Signal(11)                 # 書込み完了待ちのポーリング回数
+        cp_load = Signal()                   # 読み出せた1パルス
+        cp_ok   = Signal()
+        save_pending = Signal()
+        save_clr = Signal()
+        save_res = Signal(2)
+
+        # 書き込むページの中身。読み出しと同じレイアウトを1か所で組む。
+        def _cfg_byte(j):
+            if j == 0:  return C(CFG_PAGE_MAGIC[0], 8)
+            if j == 1:  return C(CFG_PAGE_MAGIC[1], 8)
+            if j == 2:  return C(CFG_PAGE_VER, 8)
+            if j == 3:  return self.cfg_flags
+            if 4 <= j <= 7:  return self.cfg_ip[8 * (7 - j):8 * (7 - j) + 8]
+            if j == 8:  return cp_chk
+            if j <= 15: return C(0, 8)
+            return self.cfg_name[8 * (j - 16):8 * (j - 16) + 8]
+        cfg_bytes = Array([_cfg_byte(j) for j in range(CFG_PAGE_LEN)])
+        # チェックサム算出中は自分自身を0として数える(でないと自己参照になる)
+        cp_src = Signal(8)
+        self.comb += cp_src.eq(cfg_bytes[cp_i])
+
+        cp_magic = Signal()
+        self.comb += [
+            cp_magic.eq(
+                (cp_buf[0:8] == CFG_PAGE_MAGIC[0]) &
+                (cp_buf[8:16] == CFG_PAGE_MAGIC[1]) &
+                (cp_buf[16:24] == CFG_PAGE_VER)),
+            # ★**総和が0** になるように chk を入れてある。空(全0xFF)は magic で
+            #   弾けるが、書込み途中で落ちた半端なページは magic が通ってしまう。
+            cp_ok.eq(cp_magic & (cp_sum == 0)),
+        ]
+
+        # ★**FSM と外からの書き換えで同じレジスタを叩かない。** Migen は
+        #   同じ信号を複数のモジュール(FSMは submodule)から駆動できないので、
+        #   FSM は cp_load のパルスだけを出し、値の更新はここに集約する。
+        self.sync += [
+            If(cp_load & cp_ok,
+                self.cfg_flags.eq(cp_buf[24:32]),
+                # 0x04..0x07 が o1..o4。my_ip は o1 が最上位バイトなので詰め替える
+                self.cfg_ip.eq(Cat(cp_buf[56:64], cp_buf[48:56],
+                                   cp_buf[40:48], cp_buf[32:40])),
+                self.cfg_name.eq(cp_buf[128:256]),
+            ),
+            # 外からの上書きは EEPROM の読み込みより後(起動直後に両方来ることは
+            # 無いが、来たらホストの指示を勝たせる)
+            If(self.set_stb,
+                Case(self.set_sel, {
+                    0: self.cfg_name[0:32].eq(self.set_val),
+                    1: self.cfg_name[32:64].eq(self.set_val),
+                    2: self.cfg_name[64:96].eq(self.set_val),
+                    3: self.cfg_name[96:128].eq(self.set_val),
+                    4: self.cfg_ip.eq(self.set_val),
+                    5: self.cfg_flags.eq(self.set_val[:8]),
+                }),
+            ),
+            If(self.save_stb, save_pending.eq(1)),
+            If(save_clr, save_pending.eq(0)),
+        ]
+        self.comb += self.save_state.eq(Mux(save_pending, 1, save_res))
+
         def hexch(nib):
             return Mux(nib < 10, ord('0') + nib, ord('A') - 10 + nib)
 
@@ -705,7 +825,7 @@ class StatusDisplay(Module):
         fsm.act("EE_RETRY", self.resetb.eq(1), *issue(OP_STOP),
             If(m.done,
                 If(self.mac_alt,
-                    NextState("OI_START"),
+                    NextState("CP_START"),
                 ).Else(NextValue(self.mac_alt, 1), NextState("EE_START"))))
         fsm.act("EE_REG", self.resetb.eq(1), *issue(OP_WRITE, EE_EUI_REG),
             If(m.done,
@@ -730,6 +850,52 @@ class StatusDisplay(Module):
                     NextState("EE_STOP"),
                 ).Else(NextValue(ee_idx, ee_idx + 1))))
         fsm.act("EE_STOP", self.resetb.eq(1), *issue(OP_STOP),
+            If(m.done, NextState("CP_START")))
+
+        # 1.6) 個体設定ページを読む: S,0xA0,0x00,Sr,0xA1,READ×32,P
+        #
+        # ★**ここで失敗しても起動は止めない。** 設定ページが無い基板(出荷前・
+        #   旧基板)が普通にあり得る。既定名とリンクローカルで上がればよい。
+        fsm.act("CP_START", self.resetb.eq(1), *issue(OP_START),
+            If(m.done, NextState("CP_ADDRW")))
+        fsm.act("CP_ADDRW", self.resetb.eq(1), *issue(OP_WRITE, ee_w),
+            If(m.done,
+                If(m.ackr,
+                    NextValue(self.cfg_err, 3), NextState("CP_ABORT"),
+                ).Else(NextState("CP_REG"))))
+        fsm.act("CP_REG", self.resetb.eq(1), *issue(OP_WRITE, 0x00),
+            If(m.done,
+                If(m.ackr,
+                    NextValue(self.cfg_err, 3), NextState("CP_ABORT"),
+                ).Else(NextState("CP_RSTART"))))
+        fsm.act("CP_RSTART", self.resetb.eq(1), *issue(OP_START),
+            If(m.done, NextState("CP_ADDRR")))
+        fsm.act("CP_ADDRR", self.resetb.eq(1), *issue(OP_WRITE, ee_r),
+            If(m.done,
+                If(m.ackr,
+                    NextValue(self.cfg_err, 3), NextState("CP_ABORT"),
+                ).Else(NextValue(cp_i, 0), NextValue(cp_sum, 0),
+                       NextState("CP_READ"))))
+        # 先頭バイトが下位に来るように上から詰める
+        fsm.act("CP_READ", self.resetb.eq(1),
+            *issue(OP_READ, nack=(cp_i == CFG_PAGE_LEN - 1)),
+            If(m.done,
+                NextValue(cp_buf, Cat(cp_buf[8:], m.rdata)),
+                NextValue(cp_sum, cp_sum + m.rdata),
+                If(cp_i == CFG_PAGE_LEN - 1,
+                    NextState("CP_STOP"),
+                ).Else(NextValue(cp_i, cp_i + 1))))
+        fsm.act("CP_STOP", self.resetb.eq(1), *issue(OP_STOP),
+            If(m.done,
+                cp_load.eq(1),
+                If(cp_ok,
+                    NextValue(self.cfg_valid, 1), NextValue(self.cfg_err, 0),
+                ).Else(
+                    # magic が通ってチェックサムだけ落ちたなら「壊れている」
+                    NextValue(self.cfg_err, Mux(cp_magic, 2, 1)),
+                ),
+                NextState("OI_START")))
+        fsm.act("CP_ABORT", self.resetb.eq(1), *issue(OP_STOP),
             If(m.done, NextState("OI_START")))
 
         # 2) OLED 初期化フレーム: START,0x78,0x00,<INIT>,STOP
@@ -833,10 +999,80 @@ class StatusDisplay(Module):
         fsm.act("OD_STOP", self.resetb.eq(1), *issue(OP_STOP),
             If(m.done, NextValue(rst_cnt,0), NextState("DWELL")))
         # 6) 次周まで少し待つ(~30fps)
+        #
+        # ★**EEPROMへの書込みはここに割り込ませる。** I2Cバスは TVP と OLED と
+        #   共有なので、表示ループの合間でしか触れない。1周(~33ms)以内に始まる。
         dwell = Signal(24)
         fsm.act("DWELL", self.resetb.eq(1),
             NextValue(dwell, dwell+1),
-            If(dwell == int(sys_clk_freq/30), NextValue(dwell,0), NextState("TP_START")))
+            If(dwell == int(sys_clk_freq/30), NextValue(dwell,0),
+                If(save_pending,
+                    NextValue(cp_i, 0), NextValue(cp_sum, 0),
+                    NextState("CW_SUM"),
+                ).Else(NextState("TP_START"))))
+
+        # 7) 個体設定ページを EEPROM へ書く。
+        #
+        # ★**後ろのページから書き、ヘッダ(magic のあるページ0)を最後にする。**
+        #   途中で電源が落ちても magic が古いままなので、半端なページは
+        #   「未設定」として捨てられる(commit-last)。逆順だと name が古いまま
+        #   magic だけ新しいページができて、嘘の設定で上がってしまう。
+        # ★**ACKポーリングで書込み完了を待つ。** 24AA02 は STOP のあと最大5msは
+        #   一切応答しない。固定待ちだと遅いか足りないかのどちらかになる。
+        CW_POLL_MAX = 500        # 100kHz で1回~100us → 約50ms で見切る
+
+        # チェックサムを先に1周して算出する。自分のバイト(0x08)は0として数える。
+        fsm.act("CW_SUM", self.resetb.eq(1),
+            NextValue(cp_sum, cp_sum + Mux(cp_i == 8, 0, cp_src)),
+            If(cp_i == CFG_PAGE_LEN - 1,
+                NextValue(cp_chk, -(cp_sum + Mux(cp_i == 8, 0, cp_src))),
+                NextValue(cp_page, CFG_PAGE_LEN // CFG_WR_PAGE - 1),
+                NextValue(cp_i, CFG_PAGE_LEN - CFG_WR_PAGE),
+                NextState("CW_START"),
+            ).Else(NextValue(cp_i, cp_i + 1)))
+
+        fsm.act("CW_START", self.resetb.eq(1), *issue(OP_START),
+            If(m.done, NextState("CW_ADDRW")))
+        fsm.act("CW_ADDRW", self.resetb.eq(1), *issue(OP_WRITE, ee_w),
+            If(m.done, If(m.ackr, NextState("CW_FAIL")).Else(NextState("CW_REG"))))
+        fsm.act("CW_REG", self.resetb.eq(1),
+            *issue(OP_WRITE, Cat(C(0, 3), cp_page)),
+            If(m.done, If(m.ackr, NextState("CW_FAIL")).Else(NextState("CW_DATA"))))
+        fsm.act("CW_DATA", self.resetb.eq(1), *issue(OP_WRITE, cp_src),
+            If(m.done,
+                If(m.ackr,
+                    NextState("CW_FAIL"),
+                ).Elif(cp_i[0:3] == CFG_WR_PAGE - 1,
+                    NextState("CW_PSTOP"),
+                ).Else(NextValue(cp_i, cp_i + 1))))
+        fsm.act("CW_PSTOP", self.resetb.eq(1), *issue(OP_STOP),
+            If(m.done, NextValue(cp_poll, 0), NextState("CW_POLLS")))
+        fsm.act("CW_POLLS", self.resetb.eq(1), *issue(OP_START),
+            If(m.done, NextState("CW_POLLA")))
+        fsm.act("CW_POLLA", self.resetb.eq(1), *issue(OP_WRITE, ee_w),
+            If(m.done, If(m.ackr, NextState("CW_POLLP")).Else(NextState("CW_PGEND"))))
+        fsm.act("CW_POLLP", self.resetb.eq(1), *issue(OP_STOP),
+            If(m.done,
+                If(cp_poll == CW_POLL_MAX,
+                    NextState("CW_FAIL"),
+                ).Else(NextValue(cp_poll, cp_poll + 1), NextState("CW_POLLS"))))
+        fsm.act("CW_PGEND", self.resetb.eq(1), *issue(OP_STOP),
+            If(m.done,
+                If(cp_page != 0,
+                    NextValue(cp_page, cp_page - 1),
+                    # 直前ページの末尾(8p+7)から次ページ先頭(8p-8)へ
+                    NextValue(cp_i, cp_i - 2 * CFG_WR_PAGE + 1),
+                    NextState("CW_START"),
+                ).Else(NextState("CW_DONE"))))
+        fsm.act("CW_DONE", self.resetb.eq(1),
+            save_clr.eq(1), NextValue(save_res, 2),
+            # 焼けた内容がいま動いている値なので、読み直さずに valid を立てる
+            NextValue(self.cfg_valid, 1), NextValue(self.cfg_err, 0),
+            NextState("TP_START"))
+        fsm.act("CW_FAIL", self.resetb.eq(1), *issue(OP_STOP),
+            If(m.done,
+                save_clr.eq(1), NextValue(save_res, 3),
+                NextState("TP_START")))
 
         # --- 実機pad(open-drain SDA/SCL + push-pull RESETB) ---
         if pads is not None:

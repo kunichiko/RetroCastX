@@ -8,6 +8,21 @@ export PATH="$HOME/opt/oss-cad-suite/bin:$PATH"
 .venv/bin/python retrocastx_stream.py --build   # -> build/colorlight_i5/gateware/colorlight_i5.bit
 .venv/bin/python sim_stream.py                  # 実機不要のプロトコル検証(Migenシミュレーション)
 .venv/bin/python sim_arp.py                     # 受信からのARP学習(retrocastx_net.py)の検証
+.venv/bin/python sim_status.py                  # 共有I2C(TVP7002 + OLED)の検証
+.venv/bin/python sim_eeprom_cfg.py              # 個体設定ページ(EEPROM)の読み書き検証
+```
+
+`retrocastx_i2c.py` は起動時に基板の EUI-48 EEPROM(24AA025E48)から
+**MACと個体設定(ボード名 / 静的IP)** を読む。`sim_eeprom_cfg.py` は EEPROM を
+**書込みまで含めて**模擬する ─ 8バイトページの折り返し、書込み中の無応答
+(ACKポーリングが要る)、EUI-48 の書込み保護。手を抜いた実装がここで落ちる。
+
+個体設定の変更は CONFIG 0x0046〜0x004D で、ホスト側は:
+
+```sh
+python3 -m retrocastx.identity                        # いまの設定を見る
+python3 -m retrocastx.identity --name x68k-desk --save
+python3 -m retrocastx.identity --ip auto --save       # リンクローカルに戻す
 ```
 
 `retrocastx_net.py` は UDP/IPコアに「受信パケットから相手のMACを学習する層」を足した

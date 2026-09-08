@@ -32,6 +32,11 @@ from litex.soc.cores.clock import ECP5PLL
 from litex.soc.integration.soc_core import SoCMini
 from litex.soc.integration.builder import Builder
 
+# 既定のボード名は EEPROM を握っている側(retrocastx_i2c)を正とする。
+# ★**2か所に書かない。** ANNOUNCE の初期値とEEPROM未設定時のフォールバックが
+#   食い違うと、「名前を変えていないのに一覧と実機で違う」が起きる。
+from retrocastx_i2c import DEFAULT_BOARD_NAME
+
 # --- ネットワーク設定(暫定; 将来はSPIフラッシュの設定ページから読む) ---
 MAC_ADDRESS = 0x025243580001          # ローカル管理アドレス "RCX"
 FPGA_IP     = "192.168.10.50"
@@ -110,7 +115,8 @@ def make_announce_payload() -> bytes:
     ip = bytes(int(x) for x in FPGA_IP.split("."))
     # fw は git のタグ由来、caps の bit0(EEPROMからMACを読めた)は実行時に差し替える
     info = struct.pack("<6s4sHHH16s", mac, ip, UDP_PORT,
-                       firmware_version(), 0x0000, b"retrocastx-i5")
+                       firmware_version(), 0x0000,
+                       DEFAULT_BOARD_NAME.encode()[:16])
     return common + info
 
 
@@ -449,6 +455,40 @@ class RetroCastXStreamer(LiteXModule):
         sub_hit = sub_hit_any & ~rx_flags[0]     # flags bit0 = ANNOUNCE_ONLY
         cfg_done = (rx.valid & rx.last & in_pkt & (rx_type == 5) &
                     (rx_widx == 5) & cfg_mac_ok)
+
+        # --- 個体設定(ボード名 / 静的IP)---
+        #
+        # ★**値はここでは持たない。** ボード名と静的IPは EEPROM が正で、その
+        #   読み書きは I2C を握っている StatusDisplay 側にある。ここで持つと
+        #   「起動時にEEPROMから読んだ値」をどう初期値にするかで詰まる
+        #   (Migen のリセット値は定数でなければならない)。ストリーマは
+        #   CONFIG を「1枠ぶんの書き換え要求」に翻訳するだけにする。
+        self.ident_set_stb  = Signal()
+        self.ident_set_sel  = Signal(3)     # 0..3=name語 4=静的IP 5=flags
+        self.ident_set_val  = Signal(32)
+        self.ident_save_stb = Signal()
+        # StatusDisplay からの読み返し(GET応答と ANNOUNCE の name に使う)
+        # 繋がなければ既定名のまま(sim はここを配線しない)
+        self.stat_name       = Signal(128, reset=int.from_bytes(
+            DEFAULT_BOARD_NAME.encode()[:16].ljust(16, b"\0"), "little"))
+        self.stat_static_ip  = Signal(32)
+        self.stat_net_flags  = Signal(8)
+        self.stat_save_state = Signal(2)
+        self.stat_ee_status  = Signal(8)
+
+        # CONFIG のキー → 書き換える枠。**フラットな If の並びにする**
+        # (優先順位マルチプレクサになる Elif 連鎖は sys のクリティカルパスを
+        #  伸ばす。同じ理由で応答側も Case にしてある)。
+        _IDENT_KEYS = {0x46: 5, 0x47: 4, 0x48: 0, 0x49: 1, 0x4A: 2, 0x4B: 3}
+        self.comb += [
+            self.ident_set_val.eq(rx.data),
+            If(cfg_done & (cfg_op == 0) & (cfg_target == 0),
+                *[If(cfg_key == k,
+                     self.ident_set_stb.eq(1), self.ident_set_sel.eq(sel))
+                  for k, sel in _IDENT_KEYS.items()],
+                If(cfg_key == 0x4C, self.ident_save_stb.eq(rx.data[0])),
+            ),
+        ]
 
         # --- CONFIG(target=0)で実行時に変えられる画枠パラメータ ---
         # モードごとに最適値が違い、ビルドし直していては追い込めないため、
@@ -812,6 +852,14 @@ class RetroCastXStreamer(LiteXModule):
             0x1D: reply_mux.eq(self.cfg_gain_g),
             0x1E: reply_mux.eq(self.cfg_gain_r),
             0x1F: reply_mux.eq(self.cfg_phase),
+            0x46: reply_mux.eq(self.stat_net_flags),
+            0x47: reply_mux.eq(self.stat_static_ip),
+            0x48: reply_mux.eq(self.stat_name[0:32]),
+            0x49: reply_mux.eq(self.stat_name[32:64]),
+            0x4A: reply_mux.eq(self.stat_name[64:96]),
+            0x4B: reply_mux.eq(self.stat_name[96:128]),
+            0x4C: reply_mux.eq(self.stat_save_state),
+            0x4D: reply_mux.eq(self.stat_ee_status),
             0x22: reply_mux.eq(self.cfg_sync_ctl),
             0x50: reply_mux.eq(self.cfg_sog_thresh),
             0x51: reply_mux.eq(self.cfg_sep_thresh),
@@ -1076,9 +1124,14 @@ class RetroCastXStreamer(LiteXModule):
             #   読んだ個体MACで通信しているのに ANNOUNCE だけ旧値を名乗り、
             #   ホスト側の一覧と実際のMACが食い違う(実機でそうなった)。
             #   ワード3の上位16bitは IP の先頭2バイトなので定数のまま残す。
+            #   ★**name(ワード6..9 = バイト24..39)も実行時の値を出す。**
+            #     EEPROM の設定ページで基板ごとに変えられるので、ビルド時定数の
+            #     ままだと複数台を一覧で見分けられない。
             _T_ANN: Case(word_idx, dict(
                 [(i, hdr.eq(ann_words[i]))
-                 for i in range(n_ann_words) if i not in (1, 2, 3, 4, 5)]
+                 for i in range(n_ann_words) if i not in (1, 2, 3, 4, 5, 6, 7, 8, 9)]
+                + [(6 + i, hdr.eq(self.stat_name[32 * i:32 * i + 32]))
+                   for i in range(4)]
                 + [(2, hdr.eq(my_mac_lo)),
                    # ワード3 = mac[4],mac[5],ip[0],ip[1]
                    (3, hdr.eq(Cat(my_mac_hi, my_ip[24:32], my_ip[16:24]))),
@@ -1612,8 +1665,23 @@ class RetroCastXStream(SoCMini):
             .Elif(my_mac[8:16] == 0xFF, ll_o3.eq(254))
             .Else(ll_o3.eq(my_mac[8:16])),
         ]
+        ll_ip = Signal(32)
+        self.comb += ll_ip.eq(Cat(my_mac[0:8], ll_o3, C(254, 8), C(169, 8)))
+
+        # 静的IPを設定してあればそちらを使う。**中身は StatusDisplay(EEPROM を
+        # 握っている側)が持つので、生成後に繋ぐ**(下の「EEPROM から読めたら
+        # …」と同じ理由。ここで self.status を参照すると定義順で壊れる)。
+        #
+        # ★**0 は静的扱いしない。** flags だけ立って IP が入っていない設定ページ
+        #   (書きかけ・打ち間違い)で 0.0.0.0 を名乗ると、リンクローカルにも
+        #   落ちずに完全に無反応な基板ができる。
+        # ★**間違えても詰まない。** 受信は宛先IPを見ずに通し(with_broadcast)、
+        #   応答は受信パケットから学習した MAC へ返すので、サブネットが食い違う
+        #   PC に直結してもブロードキャストで発見でき、設定し直せる。
+        static_ip  = Signal(32)
+        use_static = Signal()
         my_ip = Signal(32)
-        self.comb += my_ip.eq(Cat(my_mac[0:8], ll_o3, C(254, 8), C(169, 8)))
+        self.comb += my_ip.eq(Mux(use_static & (static_ip != 0), static_ip, ll_ip))
 
         # LiteEthUDPIPCore ではなく自前のコア。中身は同じ構成(MAC + ARP + IP +
         # ICMP + UDP)で、受信パケットから相手のMACを学習する層を挟んである。
@@ -1696,6 +1764,10 @@ class RetroCastXStream(SoCMini):
 
         # EEPROM から読めたらそちらを使う(StatusDisplay の生成後に繋ぐ)
         self.comb += If(self.status.mac_valid, my_mac.eq(self.status.mac))
+        self.comb += [
+            static_ip.eq(self.status.cfg_ip),
+            use_static.eq(self.status.cfg_flags[0]),
+        ]
 
         # --- TVP7002 映像キャプチャ(cd_pix=DATACLK)---
         capture_obj = None
@@ -1847,6 +1919,18 @@ class RetroCastXStream(SoCMini):
                                                    self.status.mac_alt,
                                                    C(0, 1),
                                                    self.status.mac_err)),
+                # 個体設定(ボード名 / 静的IP)。値は StatusDisplay が持ち、
+                # ストリーマは CONFIG を書き換え要求に翻訳して渡すだけ
+                self.status.set_stb.eq(self.streamer.ident_set_stb),
+                self.status.set_sel.eq(self.streamer.ident_set_sel),
+                self.status.set_val.eq(self.streamer.ident_set_val),
+                self.status.save_stb.eq(self.streamer.ident_save_stb),
+                self.streamer.stat_name.eq(self.status.cfg_name),
+                self.streamer.stat_static_ip.eq(self.status.cfg_ip),
+                self.streamer.stat_net_flags.eq(self.status.cfg_flags),
+                self.streamer.stat_save_state.eq(self.status.save_state),
+                self.streamer.stat_ee_status.eq(
+                    Cat(self.status.cfg_valid, self.status.cfg_err, C(0, 5))),
                 self.streamer.stat_mac_lo.eq(my_mac[:32]),
                 self.streamer.stat_mac_hi.eq(my_mac[32:]),
                 self.streamer.stat_spdif_ui.eq(self.spdif.ui_now),

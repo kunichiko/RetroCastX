@@ -10,9 +10,77 @@ send a SUBSCRIBE back with --subscribe to direct the video stream to this host.
 import argparse
 import socket
 import time
+from dataclasses import dataclass
 
 from . import netutil
 from . import protocol as proto
+
+
+@dataclass
+class Found:
+    """発見したボード1枚。ip は**データグラムの送信元**(ペイロードのipは参考値)。"""
+    mac: bytes
+    ip: str
+    name: str
+    fw: int
+    caps: int
+    port: int
+
+
+def describe_fw(fw: int) -> str:
+    """fw_version(gw-vX.Y.Z 由来)を人が読む形にする。
+    bit15:12=major 11:6=minor 5:0=patch。0 はタグの無いビルド。"""
+    if fw == 0:
+        return "不明"
+    return "%d.%d.%d" % ((fw >> 12) & 0xF, (fw >> 6) & 0x3F, fw & 0x3F)
+
+
+def probe(port=proto.DEFAULT_PORT, bind="0.0.0.0", timeout=2.0, sock=None):
+    """ボードを探して一覧を返す(他のツールから使う用)。
+
+    ★**呼び側の socket を受け取れるようにしてある。** ボードは応答を固定ポート
+      (既定34600)へ返すので、探す側と設定する側が別々に bind すると片方が
+      ポートを掴めない。同じ socket を渡せば1つで済む。
+    """
+    own = sock is None
+    if own:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.bind((bind, port))
+    old_to = sock.gettimeout()
+    sock.settimeout(0.3)
+    targets = netutil.broadcast_targets(bind)
+    found = {}
+    try:
+        seq = 0
+        end = time.monotonic() + timeout
+        last = 0.0
+        while time.monotonic() < end:
+            now = time.monotonic()
+            if now - last >= 0.5:
+                netutil.send_all(sock, targets, port,
+                                 proto.pack_subscribe(seq, announce_only=True))
+                seq += 1
+                last = now
+            try:
+                datagram, addr = sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            try:
+                ptype, pkt = proto.parse(datagram)
+            except ValueError:
+                continue
+            if ptype != proto.TYPE_INFO:
+                continue
+            found[pkt.mac] = Found(mac=pkt.mac, ip=addr[0], name=pkt.name,
+                                   fw=pkt.fw_version, caps=pkt.caps,
+                                   port=pkt.udp_port)
+    finally:
+        sock.settimeout(old_to)
+        if own:
+            sock.close()
+    return list(found.values())
 
 
 def main():
@@ -80,8 +148,7 @@ def main():
                 mac = ":".join("%02x" % b for b in pkt.mac)
                 # fw_version は gw-vX.Y.Z タグ由来。bit15:12=major 11:6=minor 5:0=patch
                 fw = pkt.fw_version
-                fwtxt = ("不明" if fw == 0 else
-                         "%d.%d.%d" % ((fw >> 12) & 0xF, (fw >> 6) & 0x3F, fw & 0x3F))
+                fwtxt = describe_fw(fw)
                 print("FOUND %-15s  mac=%s  name=%r  port=%d  fw=%s (0x%04x)  caps=0x%04x"
                       % (addr[0], mac, pkt.name, pkt.udp_port, fwtxt, fw, pkt.caps))
                 # ★**MACがフォールバックのままの基板は出荷してはいけない。**
