@@ -50,6 +50,8 @@ pub struct Config {
     pub subscribe_to: Option<String>,
     /// 購読対象ボードのMAC。None ならワイルドカード(単一ボードLAN専用)。
     /// 複数ボード環境では discover で得たMACを指名する。
+    /// 起動時に指名するボードのMAC(`--mac`)。**初期値にすぎない** ─
+    /// 以後は `Shared::target_mac` を UI が書き換える。
     pub target_mac: Option<[u8; 6]>,
     /// 欠損ライン減衰率(1.0=前フレーム保持, 0.8=毎フレーム80%へ暗転)。
     pub decay: f32,
@@ -512,7 +514,35 @@ pub struct BoardInfo {
     pub name: String,
     pub mac: [u8; 6],
     pub fw_version: u16,
+    /// bit0 = MACを基板のEEPROMから読めた。**落ちている基板は出荷してはいけない**
+    /// (全基板共通のMACになるので、同じLANに2枚繋ぐと両方通信できなくなる)。
+    pub caps: u16,
     pub last_seen: Instant,
+}
+
+/// ANNOUNCE を一覧へ反映する。
+///
+/// ★**キーはMAC。IPで索ってはいけない。** 以前は送信元アドレスをキーにしていた
+///   ので、固定IPに切り替えた瞬間に**1枚の基板が2枚に見えた**(古いアドレスの
+///   エントリが残り、期限も無かった)。実機で踏んでいる(2026-09-08)。
+///   IPはボードの属性であって同一性ではない。
+pub fn upsert_board(
+    boards: &mut HashMap<[u8; 6], BoardInfo>,
+    src_ip: &str,
+    a: &proto::Announce,
+    now: Instant,
+) {
+    boards.insert(
+        a.mac,
+        BoardInfo {
+            addr: src_ip.to_string(),
+            name: a.name.clone(),
+            mac: a.mac,
+            fw_version: a.fw_version,
+            caps: a.caps,
+            last_seen: now,
+        },
+    );
 }
 
 #[derive(Default)]
@@ -525,7 +555,27 @@ pub struct Shared {
     pub frame_gen: AtomicU64,
     pub mode: Mutex<Option<proto::Mode>>,
     pub stats: Mutex<StatsSnapshot>,
-    pub boards: Mutex<HashMap<String, BoardInfo>>,
+    /// 見つかっているボード。**キーはMAC。**
+    ///
+    /// ★**IPで索いてはいけない。** 以前は送信元アドレスをキーにしていたので、
+    ///   固定IPに切り替えた瞬間に**同じ基板が2枚に見えた**(古いアドレスの
+    ///   エントリが残る)。IPはボードの属性であって同一性ではない。
+    ///   MAC は EUI-48 なので基板ごとに必ず違う。
+    pub boards: Mutex<HashMap<[u8; 6], BoardInfo>>,
+    /// どのボードに繋ぐか。**UIから実行時に変えられる。**
+    ///
+    /// ★**「自動」と「特定の基板」を分ける。** 1枚しか持っていない人には勝手に
+    ///   繋がるのが正しいが、3画面で使う人は「この窓はこの基板」が固定されて
+    ///   いないと並びが毎回入れ替わる。
+    pub board_sel: Mutex<crate::settings::BoardSel>,
+    /// 実際に掴めたボード。**購読を出しているのはこれだけ。**
+    ///
+    /// ★**判定は受信スレッドに置く。** UI に置いたら `--headless` と
+    ///   `--fullscreen` が素通りして、取り合いがそのまま起きた(実測)。
+    ///   購読を出している側が掴む、が唯一ずれない置き場所。
+    pub claimed: Mutex<Option<[u8; 6]>>,
+    /// 他のウィンドウが使用中のボード。UI の表示用。
+    pub busy_boards: Mutex<std::collections::HashSet<[u8; 6]>>,
     pub stop: AtomicBool,
     /// 音声再生の統計(再生器が無い場合は既定値のまま)
     pub audio: Mutex<Option<Arc<crate::audio::AudioStats>>>,
@@ -608,6 +658,10 @@ pub fn spawn(
     shared: Arc<Shared>,
     repaint: impl Fn() + Send + 'static,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
+    // `--mac` は**初期値**。以後は UI が shared 側を書き換える
+    if let Some(m) = cfg.target_mac {
+        *shared.board_sel.lock().unwrap() = crate::settings::BoardSel::Mac(m);
+    }
     // 500Mbps級のバーストに耐えるよう受信バッファを拡大(OSデフォルトは
     // 数十KBで、フレームクローン等で受信スレッドが一瞬停まるだけで溢れる)
     let raw = socket2::Socket::new(
@@ -642,8 +696,26 @@ pub fn spawn(
         std::io::Error::new(std::io::ErrorKind::InvalidInput,
                             format!("--bind {} を解釈できません ({e})", cfg.bind))
     })?;
-    raw.bind(&std::net::SocketAddr::from((bind_ip, cfg.port)).into())?;
+    // ★**塞がっていたら空きポートへ落ちる。** ボードは ANNOUNCE も CONFIG応答も
+    //   映像も**受け取ったパケットの送信元ポートへ返す**(2026-09-08 に実測)ので、
+    //   34600 を掴んでいる必要は無い。ここで諦めていたため
+    //   **Viewer を2つ起動できず、LAN上の2台を同時に見られなかった**。
+    //   1つ目は 34600 のままにしておく(ホスト側のCLIはそこを bind する)。
+    match raw.bind(&std::net::SocketAddr::from((bind_ip, cfg.port)).into()) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            raw.bind(&std::net::SocketAddr::from((bind_ip, 0)).into())?;
+            eprintln!(
+                "UDP {} は使用中なので空きポートで待ち受けます\n                 (ボードは送信元ポートへ返すので動作に支障はありません。\n                 　2台目のボードを見るときは「ボード」欄で1枚を指名してください)",
+                cfg.port
+            );
+        }
+        Err(e) => return Err(e),
+    }
     let sock: UdpSocket = raw.into();
+    if let Ok(a) = sock.local_addr() {
+        eprintln!("待ち受け: {a}");
+    }
     sock.set_read_timeout(Some(Duration::from_millis(200)))?;
     if cfg.subscribe_to.is_some() {
         sock.set_broadcast(true)?;
@@ -811,6 +883,13 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     asm.set_interlace_decay(cfg.interlace_decay);
     let mut sub_seq: u16 = 0;
     let mut last_subscribe: Option<Instant> = None;
+    // 発見用の問いかけ(ワイルドカード+ANNOUNCE_ONLY)
+    let mut last_probe: Option<Instant> = None;
+    // 掴んでいるボード。**落とすとロックが外れる**ので持ち続ける
+    let mut claim: Option<crate::claim::Claim> = None;
+    let mut last_claim: Option<Instant> = None;
+    // 「使用中で待っている」を一度だけ言うための旗
+    let mut waiting = false;
     let mut last_geom: Option<Instant> = None;
     let mut last_report = Instant::now();
     let mut bytes_since = 0u64;
@@ -877,9 +956,14 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             last_subscribe = None;   // すぐ送り直す
         }
         if !targets.is_empty() {
-            let due = last_subscribe.map_or(true, |t| t.elapsed() >= Duration::from_secs(2));
+            // ★**掴めたボードにだけ購読を出す。** 以前はワイルドカードで購読して
+            //   いたので、**LANに2枚あると両方が同時に映像を送ってきて**どちらも
+            //   組み立てられず、2つ目のウィンドウを開くと1枚を奪い合った。
+            //   発見は下の ANNOUNCE_ONLY が担うので、ここは指名だけでよい。
+            let due = last_subscribe.map_or(true, |t| t.elapsed() >= Duration::from_secs(2))
+                && claim.is_some();
             if due {
-                let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
+                let mac = claim.as_ref().map(|c| c.mac).unwrap_or(proto::WILDCARD_MAC);
                 let pkt = proto::pack_subscribe(sub_seq, false, &mac);
                 // ★**送信失敗を黙って捨てない。** 以前は `let _ =` で捨てていたので、
                 //   VPNで送れないときの症状が「何も映らない」だけになり、原因を
@@ -897,6 +981,107 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 sub_seq = sub_seq.wrapping_add(1);
                 last_subscribe = Some(Instant::now());
             }
+
+            // ★**指名すると他のボードが見えなくなる。** 指名した SUBSCRIBE は
+            //   MACの一致しないボードが**完全に無視する**(応答もしない)ので、
+            //   一覧から消えて選び直せなくなる。発見だけは全ボードへ問いかける。
+            //   ANNOUNCE_ONLY なので映像の送り先は変わらない。
+            // ★**常に出す。** 指名した購読には他のボードが応答しないので、
+            //   これが唯一の発見手段になる。ANNOUNCE_ONLY なので送り先は動かない。
+            if last_probe.map_or(true, |t: Instant| t.elapsed() >= Duration::from_secs(3)) {
+                last_probe = Some(Instant::now());
+                let pkt = proto::pack_subscribe(sub_seq, true, &proto::WILDCARD_MAC);
+                send_all(&send_sock, cfg.port, &targets, &pkt);
+                sub_seq = sub_seq.wrapping_add(1);
+            }
+
+            // ★**居なくなったボードは消す。** 抜いた基板が一覧に残ると、
+            //   選べてしまうのに映像が来ない状態になる。問いかけへの応答は
+            //   2〜3秒ごとに来るので、10秒来なければ居ない。
+            {
+                let mut boards = shared.boards.lock().unwrap();
+                boards.retain(|_, b| b.last_seen.elapsed() < Duration::from_secs(10));
+            }
+
+            // --- どのボードを掴むか ---
+            //
+            // ロックの確認はファイルを open するので、毎周は回さない。
+            // ただし**まだ1枚も掴めていないなら急ぐ**(起動直後に映像が出るまでの
+            // 待ちがそのまま延びる)。
+            let hurry = claim.is_none();
+            if hurry || last_claim.map_or(true, |t: Instant| t.elapsed() >= Duration::from_secs(1))
+            {
+                last_claim = Some(Instant::now());
+                let mut macs: Vec<[u8; 6]> =
+                    shared.boards.lock().unwrap().keys().copied().collect();
+                macs.sort();
+                // 居なくなったボードは手放す。持ったままだと、戻ってくるまで
+                // 他のウィンドウも掴めない
+                if claim.as_ref().map_or(false, |c| !macs.contains(&c.mac)) {
+                    claim = None;
+                }
+                let sel = *shared.board_sel.lock().unwrap();
+                // 指定が変わったら掴み直す
+                let keep = match (sel, claim.as_ref()) {
+                    (crate::settings::BoardSel::None, _) => false,
+                    (crate::settings::BoardSel::Mac(w), Some(c)) => c.mac == w,
+                    (_, Some(_)) => true,
+                    (_, None) => false,
+                };
+                if !keep {
+                    claim = None;
+                }
+                if claim.is_none() {
+                    // ★**「特定の基板」は他へ流れない。** 3画面で使うときに、
+                    //   指定した基板が見つからないからといって隣の基板を掴んだら
+                    //   並びが入れ替わる。見つかるまで未選択で待つ。
+                    let candidates: Vec<[u8; 6]> = match sel {
+                        crate::settings::BoardSel::None => Vec::new(),
+                        crate::settings::BoardSel::Mac(m) => vec![m],
+                        crate::settings::BoardSel::Auto => macs.clone(),
+                    };
+                    for m in candidates {
+                        if !macs.contains(&m) {
+                            continue;
+                        }
+                        if let Some(c) = crate::claim::Claim::try_take(m) {
+                            claim = Some(c);
+                            break;
+                        }
+                    }
+                    // 掴めたら次の購読をすぐ出す
+                    if claim.is_some() {
+                        last_subscribe = None;
+                        waiting = false;
+                    } else if !macs.is_empty()
+                        && sel != crate::settings::BoardSel::None
+                        && !waiting
+                    {
+                        // ★**理由を言う。** フルスクリーンにはUIが無く、
+                        //   headless も「no mode 0.0 fps」が並ぶだけなので、
+                        //   黙っていると壊れているようにしか見えない。
+                        waiting = true;
+                        let names: Vec<String> = shared
+                            .boards
+                            .lock()
+                            .unwrap()
+                            .values()
+                            .map(|b| b.name.clone())
+                            .collect();
+                        eprintln!(
+                            "見つかったボード({})はすべて別のウィンドウが使用中です。\n\
+                             空くまで待ちます(1枚のボードは同時に1つのウィンドウでしか見られません)",
+                            names.join(", ")
+                        );
+                    }
+                }
+                let own = claim.as_ref().map(|c| c.mac);
+                *shared.claimed.lock().unwrap() = own;
+                *shared.busy_boards.lock().unwrap() = macs
+                    .into_iter()
+                    .filter(|m| crate::claim::taken_by_other(m, own))
+                    .collect();
+            }
         }
 
         // UIからのCONFIG要求をボードへ送る(画枠パラメータの実行時調整)
@@ -906,7 +1091,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 if targets.is_empty() {
                     q.clear();
                 } else {
-                    let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
+                    let mac = claim.as_ref().map(|c| c.mac).unwrap_or(proto::WILDCARD_MAC);
                     for (key, value) in q.drain(..) {
                         let pkt = proto::pack_config(sub_seq, 0, 0, key, value, &mac);
                         send_all(&send_sock, cfg.port, &targets, &pkt);
@@ -941,7 +1126,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 if targets.is_empty() {
                     q.clear();
                 } else {
-                    let mac = cfg.target_mac.unwrap_or(proto::WILDCARD_MAC);
+                    let mac = claim.as_ref().map(|c| c.mac).unwrap_or(proto::WILDCARD_MAC);
                     for key in q.drain(..) {
                         let pkt = proto::pack_config(sub_seq, 0, 1, key, 0, &mac);
                         send_all(&send_sock, cfg.port, &targets, &pkt);
@@ -1085,16 +1270,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         // 発見情報はアセンブラと別に集計(送信元アドレスが正)
         if let Ok(Packet::Announce(a)) = proto::parse(&buf[..n]) {
             let mut boards = shared.boards.lock().unwrap();
-            boards.insert(
-                src_ip.to_string(),
-                BoardInfo {
-                    addr: src_ip.to_string(),
-                    name: a.name.clone(),
-                    mac: a.mac,
-                    fw_version: a.fw_version,
-                    last_seen: Instant::now(),
-                },
-            );
+            upsert_board(&mut boards, &src_ip.to_string(), &a, Instant::now());
         }
 
         // UIから残光が変わっていたら取り込む(フレーム完成時だけで十分)
@@ -1236,6 +1412,55 @@ fn tick_stats(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn ann(mac: [u8; 6], name: &str) -> proto::Announce {
+        proto::Announce {
+            mac,
+            udp_port: 34600,
+            fw_version: 0x0243,
+            caps: 1,
+            name: name.to_string(),
+            seq: 0,
+        }
+    }
+
+    /// ★**同じ基板がIPを変えても1枚のまま。** 固定IPに切り替えた瞬間に
+    ///   「2枚見つかりました」と出て、指名を促す警告まで表示された
+    ///   (2026-09-08 に実機で踏んだ)。IPをキーにしていたのが原因。
+    #[test]
+    fn changing_ip_does_not_duplicate_a_board() {
+        let mac = [0x74, 0xc9, 0x0f, 0x7c, 0x84, 0x29];
+        let mut boards = HashMap::new();
+        let now = Instant::now();
+        upsert_board(&mut boards, "169.254.132.41", &ann(mac, "retrocastx-i5"), now);
+        upsert_board(&mut boards, "10.0.0.42", &ann(mac, "retrocastx-i5"), now);
+        assert_eq!(boards.len(), 1, "IPを変えただけで2枚に見えている");
+        assert_eq!(boards[&mac].addr, "10.0.0.42", "新しいアドレスになっていない");
+    }
+
+    /// MACが違えば別の基板。ここまで潰してしまうと本当の複数台が見えなくなる。
+    #[test]
+    fn different_macs_stay_separate() {
+        let mut boards = HashMap::new();
+        let now = Instant::now();
+        upsert_board(&mut boards, "169.254.132.41", &ann([1, 2, 3, 4, 5, 6], "a"), now);
+        upsert_board(&mut boards, "169.254.9.9", &ann([1, 2, 3, 4, 5, 7], "b"), now);
+        assert_eq!(boards.len(), 2);
+    }
+
+    /// ★**居なくなったら消える。** 抜いた基板が残ると、選べるのに映像が
+    ///   来ないボードが一覧に居座る。
+    #[test]
+    fn stale_boards_expire() {
+        let mut boards = HashMap::new();
+        let old = Instant::now() - Duration::from_secs(30);
+        upsert_board(&mut boards, "169.254.1.1", &ann([1; 6], "gone"), old);
+        upsert_board(&mut boards, "169.254.1.2", &ann([2; 6], "here"), Instant::now());
+        boards.retain(|_, b| b.last_seen.elapsed() < Duration::from_secs(10));
+        assert_eq!(boards.len(), 1);
+        assert_eq!(boards[&[2u8; 6]].name, "here");
+    }
     use super::pick_targets;
     use std::net::Ipv4Addr;
 

@@ -29,6 +29,7 @@ mod appicon;
 mod assembler;
 mod audio;
 mod bezel;
+mod claim;
 mod cleanout;
 mod fullscreen;
 mod keytap;
@@ -39,6 +40,7 @@ mod remote_input;
 mod render;
 mod protocol;
 mod receiver;
+mod session;
 mod settings;
 mod theme;
 mod toast;
@@ -91,9 +93,38 @@ fn main() -> eframe::Result {
     // 減衰をそのまま掛けると面全体がフィールドレートでちらつく。CRTの残光を模すなら
     // 少し減衰させたい人もいるので設定にしてある。
     let mut interlace_decay = 1.0f32;
+    // ★**ウィンドウ番号を最初に決める。** 設定ファイルの置き場所がこれで
+    //   決まるので、読んだ後では遅い。番号は「空いているうち最小」で、
+    //   0,1,2 を開いて1を閉じ、また開いたら1が返る ─ ウィンドウごとの設定
+    //   (画枠・音量・接続先)がその番号に紐づいている。
+    let slot = {
+        let a: Vec<String> = std::env::args().skip(1).collect();
+        let want = a
+            .iter()
+            .position(|x| x == "--slot")
+            .and_then(|i| a.get(i + 1))
+            .and_then(|v| v.parse::<u32>().ok());
+        let got = match want {
+            Some(id) => claim::Slot::take(id),
+            None => claim::Slot::take_lowest_free(),
+        };
+        match got {
+            Some(s) => s,
+            None => {
+                eprintln!(
+                    "ウィンドウはすでに {} 個開いています(上限)。\n                     どれかを閉じてから開いてください。",
+                    claim::MAX_SLOTS
+                );
+                std::process::exit(1);
+            }
+        }
+    };
+    settings::Settings::use_slot(slot.id);
+    eprintln!("ウィンドウ番号: {}", slot.id);
+
     // 保存済み設定を読み、CLI引数があればそれで上書きする(その回だけ有効)
     let mut cfg = settings::Settings::load();
-    eprintln!("settings: {}", settings::Settings::path().display());
+    eprintln!("settings: {}", settings::Settings::active_path().display());
     let mut audio = receiver::AudioOpts::default();
     audio.source = cfg.audio_source;
     // 起動時から設定のデバイスで開く(既定デバイスで鳴り始めるのを防ぐ)
@@ -233,13 +264,45 @@ fn main() -> eframe::Result {
         wgpu_options.surface.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
         wgpu_options.surface.desired_maximum_frame_latency = Some(1); // 低遅延優先
     }
+
+    // ★**GUIのときだけ復元する。** ここより上に置くと `--headless` や
+    //   `--fullscreen` でも走り、診断のために headless を叩いただけで
+    //   GUIウィンドウが勝手に開く。
+    // ★**前回いっしょに開いていたウィンドウを復元する。** 3画面筐体では
+    //   「3つ並べて3台に繋いだ配置」そのものが設定なので、毎回手で開き直すのは
+    //   使い物にならない。
+    // ★**番号を指定して起動した子は復元しない。** そうしないと復元の連鎖で
+    //   ウィンドウが増殖する。復元するのは「自分で最小の番号を取った親」だけ。
+    if !std::env::args().any(|a| a == "--slot") && !std::env::args().any(|a| a == "--no-restore") {
+        for id in settings::Settings::slots_to_restore(slot.id, claim::MAX_SLOTS) {
+            if claim::slot_in_use(id) {
+                continue;
+            }
+            match session::spawn_new(None, Some(id)) {
+                Ok(()) => eprintln!("ウィンドウ #{id} を復元します"),
+                Err(e) => eprintln!("ウィンドウ #{id} を復元できません: {e}"),
+            }
+        }
+    }
+
     let options = eframe::NativeOptions {
         viewport: {
             // アイコンは実行時に設定しないとタスクバー/タイトルバーに出ない
             // (exeへの埋め込みはExplorerのファイル用。appicon.rs 参照)
             let mut vp = egui::ViewportBuilder::default()
                 .with_inner_size([cfg.window_w, cfg.window_h])
-                .with_title("RetroCast X");
+                .with_title(if slot.id == 0 {
+                    "RetroCast X".to_string()
+                } else {
+                    // ★**番号を出す。** 3つ並べたときに、どのウィンドウの設定を
+                    //   触っているのか分からなくなる
+                    format!("RetroCast X #{}", slot.id)
+                });
+            // ★**位置も戻す。** 大きさだけでは並びが戻らない(3画面筐体では
+            //   横に並べた配置そのものが設定)。
+            if let (Some(x), Some(y)) = (cfg.window_x, cfg.window_y) {
+                vp = vp.with_position([x, y]);
+            }
             if let Some(icon) = appicon::egui_icon() {
                 vp = vp.with_icon(icon);
             }
@@ -254,7 +317,7 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             // アイコン由来の配色を先に当てる(ウィジェットが作られる前)
             theme::apply(&cc.egui_ctx);
-            Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, bind.clone(), no_vsync, decay, interlace_decay,
+            Ok(Box::new(ViewerApp::new(slot, cc, port, subscribe_to, target_mac, bind.clone(), no_vsync, decay, interlace_decay,
                                        audio, cfg.clone())))
         }),
     )
@@ -764,6 +827,20 @@ struct ViewerApp {
     tune_pending: std::collections::HashMap<u16, (u32, std::time::Instant)>,
     /// 次に現在値を問い合わせる時刻。全キーが揃うまで繰り返す
     tune_get_at: Option<std::time::Instant>,
+    /// 「ボード」欄の編集中テキスト。**ボードの値を直接いじらない** ─
+    /// 1文字打つたびにCONFIGが飛ぶと、打ちかけの名前が基板に載る。
+    /// None は「まだ編集を始めていない(ボードの値をそのまま出す)」。
+    ident_name_edit: Option<String>,
+    ident_ip_edit: Option<String>,
+    /// 個体設定を最後に問い合わせた時刻。ボードを選び直したら取り直す
+    ident_get_at: Option<std::time::Instant>,
+    /// いま個体設定を読み込んであるボードのMAC。切り替えを検知する
+    ident_for: Option<[u8; 6]>,
+    /// 最後に見たボード側の値。**これが変わったら編集欄を捨てる。**
+    /// SETの応答が返るとボードの値が変わるので、編集欄に古いテキストが
+    /// 残っていると「適用/戻す」が出たままになり、押すと古い名前が飛ぶ。
+    ident_name_seen: Option<String>,
+    ident_ip_seen: Option<u32>,
     /// ボードの現在値を取り込み済みか。起動時に1回だけ合わせる
     tune_synced: bool,
     /// TVPの細ゲイン(レジスタ08h/09h/0Ah)。ゲイン = 1 + N/256。
@@ -794,6 +871,18 @@ struct ViewerApp {
     tune_gain_b: i32,
     /// 現在のウィンドウ内寸(保存用)
     window_size: egui::Vec2,
+    /// ウィンドウ位置(復元用)。並びを戻すのに要る
+    window_pos: Option<egui::Pos2>,
+    /// 最後に心拍(=設定の保存)を打った時刻
+    settings_beat: Option<std::time::Instant>,
+    /// このウィンドウの番号。
+    ///
+    /// ★**読まないが持ち続ける。** 落とすとロックが外れて、別のウィンドウが
+    ///   同じ番号(=同じ設定ファイル)を取れてしまう。
+    #[allow(dead_code)]
+    slot: claim::Slot,
+    /// 接続先の指定(自動 / 特定の基板 / つながない)
+    board_sel: settings::BoardSel,
     /// 中央の描画領域と画のサイズ。ウィンドウを等倍に合わせるのに使う
     last_avail: egui::Vec2,
     last_tex: egui::Vec2,
@@ -885,6 +974,7 @@ struct ViewerApp {
 
 impl ViewerApp {
     fn new(
+        slot: claim::Slot,
         cc: &eframe::CreationContext<'_>,
         port: u16,
         subscribe_to: Option<String>,
@@ -953,6 +1043,12 @@ impl ViewerApp {
             source_profile: cfg.source_profile.clone(),
             tune_pending: Default::default(),
             tune_get_at: None,
+            ident_name_edit: None,
+            ident_ip_edit: None,
+            ident_get_at: None,
+            ident_for: None,
+            ident_name_seen: None,
+            ident_ip_seen: None,
             tune_synced: false,
             // 初期値は REGS_X68000 と同じ(v0.9.0 で校正した値)。
             // 実際の値はボードから読み戻して上書きされる
@@ -968,6 +1064,10 @@ impl ViewerApp {
             tune_gain_g: 61,
             tune_gain_b: 57,
             window_size: egui::vec2(cfg.window_w, cfg.window_h),
+            window_pos: cfg.window_x.zip(cfg.window_y).map(|(x, y)| egui::pos2(x, y)),
+            settings_beat: None,
+            slot,
+            board_sel: cfg.board_sel,
             last_avail: egui::Vec2::ZERO,
             last_tex: egui::Vec2::ZERO,
             did_autofit: false,
@@ -1238,6 +1338,11 @@ impl ViewerApp {
             crop_y: self.crop[1],
             crop_w: self.crop[2],
             crop_h: self.crop[3],
+            board_sel: self.board_sel,
+            // 生きている間は心拍を打つ。落ちても最後の時刻が残るので復元できる
+            last_used: settings::Settings::now_unix(),
+            window_x: self.window_pos.map(|p| p.x),
+            window_y: self.window_pos.map(|p| p.y),
             window_w: self.window_size.x,
             window_h: self.window_size.y,
             tune_vbp: self.tune_vbp,
@@ -3418,6 +3523,502 @@ impl ViewerApp {
     /// 名指しできるが、`*ReceiveBuffers` を公開しないドライバでは空振りする。
     /// 実測のロスはどんなNICでも「いま実際に落ちている」ことを言えるが、
     /// 起きてからしか分からない。どちらかが引っかかれば取りこぼさない。
+    /// いま掴んでいるボード(受信スレッドが決める)。
+    fn claimed(&self) -> Option<[u8; 6]> {
+        *self.shared.claimed.lock().unwrap()
+    }
+
+    /// 接続先の指定を変える。**保存もする**(次の起動で並びが戻るように)。
+    fn set_board_sel(&mut self, sel: settings::BoardSel) {
+        if self.board_sel == sel {
+            return;
+        }
+        self.board_sel = sel;
+        *self.shared.board_sel.lock().unwrap() = sel;
+        // 選び直したら個体設定を取り直す
+        self.ident_for = None;
+        self.ident_name_edit = None;
+        self.ident_ip_edit = None;
+        self.ident_name_seen = None;
+        self.ident_ip_seen = None;
+        self.mark_settings_dirty();
+    }
+
+    /// 空いているボードが1枚でもあるか(新しいウィンドウを開く意味があるか)。
+    fn has_free_board(&self) -> bool {
+        let own = self.claimed();
+        let busy = self.shared.busy_boards.lock().unwrap();
+        self.shared
+            .boards
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|m| own != Some(*m) && !busy.contains(m))
+    }
+
+    /// 新しい Viewer を別ウィンドウ(別プロセス)で開く。
+    ///
+    /// ★**1枚のボードを2つの Viewer で見ることはできない。** ボードの映像送り先は
+    ///   プロトコル上1つしか無いので、指名せずに2つ開くと同じボードを取り合う。
+    ///   だから「別のボードを開く」を主な入口にしてある。
+    fn open_new_session(&mut self, mac: Option<[u8; 6]>) {
+        match session::spawn_new(mac, None) {
+            Ok(()) => self.toasts.info(match &mac {
+                Some(m) => format!("別ウィンドウで開きます: {}", session::mac_to_string(m)),
+                None => "新しいウィンドウを開きます".to_string(),
+            }),
+            Err(e) => self.toasts.notice(format!("新しいウィンドウを開けません: {e}")),
+        }
+    }
+
+    /// ボード名を16バイトNUL詰めの4語にする。長すぎるなら None。
+    fn name_to_words(name: &str) -> Option<[u32; 4]> {
+        let b = name.as_bytes();
+        if b.len() > 16 {
+            return None;
+        }
+        let mut buf = [0u8; 16];
+        buf[..b.len()].copy_from_slice(b);
+        let mut out = [0u32; 4];
+        for i in 0..4 {
+            out[i] = u32::from_le_bytes(buf[i * 4..i * 4 + 4].try_into().unwrap());
+        }
+        Some(out)
+    }
+
+    fn words_to_name(w: [u32; 4]) -> String {
+        let mut buf = [0u8; 16];
+        for i in 0..4 {
+            buf[i * 4..i * 4 + 4].copy_from_slice(&w[i].to_le_bytes());
+        }
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(16);
+        String::from_utf8_lossy(&buf[..end]).into_owned()
+    }
+
+    /// いま実際に SUBSCRIBE を送っている宛先。
+    ///
+    /// ★**「ボード」節の中に置く。** これは発見の状況そのもので、どのボードが
+    ///   見えているかと一緒に読むもの。タイトルの直下にあったが、アプリの
+    ///   見出しの下に技術的な宛先が来ると何の情報か分からない。
+    /// ★**指定値ではなく実際の宛先を出す。** ユニキャスト指定で応答が無いと
+    ///   ブロードキャストへ落ちるので、ここは走行中に変わる。
+    fn sub_dest_ui(&mut self, ui: &mut egui::Ui) {
+        let dest = self.shared.sub_dest.lock().unwrap().clone();
+        if dest.is_empty() {
+            ui.weak(egui::RichText::new("探索: 停止(受信のみ)").size(11.0));
+        } else if dest == "255.255.255.255" {
+            ui.weak(egui::RichText::new("探索 → ブロードキャスト").size(11.0))
+                .on_hover_text(
+                    "宛先を指定せずに探しています。ボードは SUBSCRIBE の\n                     送信元へ映像を返すので、サブネットが違っても\n                     同じL2セグメントにいれば届きます。\n                     ブロードキャストになるのはこの2秒ごとの要求だけで、\n                     映像はユニキャストです");
+        } else {
+            // NICごとのサブネット宛。複数NICがあれば空白区切りで並ぶ
+            ui.weak(egui::RichText::new(format!("探索 → {dest}")).size(11.0))
+                .on_hover_text(
+                    "各NICのサブネット宛ブロードキャストへ2秒ごとに送っています。\n                     限定ブロードキャスト(255.255.255.255)は使いません。\n                     あれは既定経路に載るので、VPN接続中は送信自体が\n                     失敗します(receiver.rs の broadcast_targets 参照)。\n                     サブネットが違っても同じL2セグメントにいれば届きます");
+        }
+    }
+
+    /// 「ボード」欄。**LANに複数あるときの指名と、個体設定の書き換え。**
+    ///
+    /// ★**指名しないと2枚目が繋がった瞬間に絵が壊れる。** ワイルドカードの購読は
+    ///   全ボードが同時に映像を送ってくるので、両方のラインが同じ組立器に流れ込む。
+    ///   1枚しか無いうちは気付かないので、見つかった枚数を必ず出す。
+    ///
+    /// ★**名前とIPはEEPROMに焼くまで揮発する。** 試してから決められるようにして
+    ///   あるので、UIでも「焼く」を別のボタンにする。
+    fn boards_ui(&mut self, ui: &mut egui::Ui) {
+        let mut list: Vec<receiver::BoardInfo> =
+            self.shared.boards.lock().unwrap().values().cloned().collect();
+        // 見つかった順ではなくMAC順。並びが毎回変わると選び間違える
+        list.sort_by_key(|b| b.mac);
+
+        if list.is_empty() {
+            ui.weak("見つかっていません");
+            self.sub_dest_ui(ui);
+            return;
+        }
+        // 掴めていない理由を出す。黙って映らないのが一番分かりにくい
+        if self.claimed().is_none() {
+            let why = match self.board_sel {
+                settings::BoardSel::None => "未選択です(上の「自動」か下の一覧から選んでください)",
+                settings::BoardSel::Auto => "★空いているボードがありません(他のウィンドウが使用中)",
+                settings::BoardSel::Mac(_) => "★指定したボードが見つからないか使用中です",
+            };
+            ui.label(egui::RichText::new(why).size(11.0).color(theme::AMBER))
+                .on_hover_text(
+                    "ボードの映像送り先はプロトコル上1つだけです。\n                     1枚のボードを2つのウィンドウでは見られません",
+                );
+        }
+
+        let own = self.claimed();
+        let busy_set = self.shared.busy_boards.lock().unwrap().clone();
+
+        // ★**「自動」を既定にしておく。** ボードを1枚しか持っていない人が大半で、
+        //   その人は何も選ばなくても繋がるべき。3画面で使う人だけが基板を指名する。
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "接続");
+            let mut next = self.board_sel;
+            if ui
+                .selectable_label(self.board_sel == settings::BoardSel::Auto, "自動")
+                .on_hover_text("空いているボードを見つけ次第つなぐ")
+                .clicked()
+            {
+                next = settings::BoardSel::Auto;
+            }
+            if ui
+                .selectable_label(self.board_sel == settings::BoardSel::None, "未選択")
+                .on_hover_text("つながない")
+                .clicked()
+            {
+                next = settings::BoardSel::None;
+            }
+            if let settings::BoardSel::Mac(m) = self.board_sel {
+                ui.label(
+                    egui::RichText::new("指定").size(11.0).color(theme::ACCENT),
+                )
+                .on_hover_text(format!(
+                    "{} だけにつなぐ(見つからなければ未選択のまま待つ)",
+                    session::mac_to_string(&m)
+                ));
+            }
+            self.set_board_sel(next);
+        });
+
+        let sel = match self.board_sel {
+            settings::BoardSel::Mac(m) => Some(m),
+            _ => own,
+        };
+
+        let mut want: Option<[u8; 6]> = None;
+        let mut open_new: Option<[u8; 6]> = None;
+        for b in &list {
+            let mac = b.mac.map(|x| format!("{x:02x}")).join(":");
+            let picked = sel == Some(b.mac);
+            let busy = busy_set.contains(&b.mac);
+            let label = format!("{}  {}", b.name, b.addr);
+            ui.horizontal(|ui| {
+                // ★**使用中でも選べる。** 選んでおけば、相手のウィンドウが閉じた
+                //   瞬間に繋がる。押せないと「先に相手を閉じてから選び直す」しか
+                //   なくなって面倒。
+                let resp = ui.add(
+                    egui::Button::selectable(picked, label).wrap_mode(egui::TextWrapMode::Extend),
+                );
+                if resp.clicked() && !picked {
+                    want = Some(b.mac);
+                }
+                if busy {
+                    ui.label(egui::RichText::new("使用中").size(10.0).color(theme::AMBER))
+                        .on_hover_text("他のウィンドウが使っています(選んでおけば空き次第つながります)");
+                } else if !picked
+                    && ui
+                        .small_button("別窓")
+                        .on_hover_text("このボードを新しいウィンドウで開く")
+                        .clicked()
+                {
+                    open_new = Some(b.mac);
+                }
+            });
+            ui.weak(
+                egui::RichText::new(format!(
+                    "  {mac}  fw {}.{}.{}",
+                    (b.fw_version >> 12) & 0xF,
+                    (b.fw_version >> 6) & 0x3F,
+                    b.fw_version & 0x3F
+                ))
+                .size(10.0),
+            );
+            // ★**MACがEEPROM由来でない基板は出荷できない。** 全基板共通の値に
+            //   なるので、同じLANに2枚繋ぐと両方通信できなくなる。
+            if b.caps & 0x0001 == 0 {
+                ui.label(
+                    egui::RichText::new("  ★MACをEEPROMから読めていません(出荷不可)")
+                        .size(10.0)
+                        .color(theme::AMBER),
+                );
+            }
+        }
+        if let Some(m) = open_new {
+            self.open_new_session(Some(m));
+        }
+        if let Some(m) = want {
+            self.set_board_sel(settings::BoardSel::Mac(m));
+        }
+
+        self.sub_dest_ui(ui);
+
+        // 設定を触れるのは掴んでいるボードだけ
+        let Some(target) = own else {
+            return;
+        };
+
+        // --- 個体設定の読み込み(ボードが変わったら取り直す)---
+        let keys = [
+            protocol::CFG_KEY_NAME0,
+            protocol::CFG_KEY_NAME1,
+            protocol::CFG_KEY_NAME2,
+            protocol::CFG_KEY_NAME3,
+            protocol::CFG_KEY_NET_MODE,
+            protocol::CFG_KEY_STATIC_IP,
+            protocol::CFG_KEY_IDENT_SAVE,
+            protocol::CFG_KEY_IDENT_EE,
+        ];
+        if self.ident_for != Some(target) {
+            let due = self.ident_get_at.map_or(true, |t| t.elapsed() >= std::time::Duration::from_secs(1));
+            if due {
+                self.ident_get_at = Some(std::time::Instant::now());
+                self.shared.config_get_queue.lock().unwrap().extend(keys);
+            }
+            let st = self.shared.config_state.lock().unwrap();
+            if keys.iter().all(|k| st.contains_key(k)) {
+                drop(st);
+                self.ident_for = Some(target);
+            }
+        }
+
+        let st = self.shared.config_state.lock().unwrap();
+        let got = |k: u16| st.get(&k).copied();
+        let words = [
+            got(protocol::CFG_KEY_NAME0),
+            got(protocol::CFG_KEY_NAME1),
+            got(protocol::CFG_KEY_NAME2),
+            got(protocol::CFG_KEY_NAME3),
+        ];
+        let board_name = if words.iter().all(|w| w.is_some()) {
+            Some(Self::words_to_name([
+                words[0].unwrap(),
+                words[1].unwrap(),
+                words[2].unwrap(),
+                words[3].unwrap(),
+            ]))
+        } else {
+            None
+        };
+        let net_mode = got(protocol::CFG_KEY_NET_MODE);
+        let static_ip = got(protocol::CFG_KEY_STATIC_IP);
+        let save_state = got(protocol::CFG_KEY_IDENT_SAVE);
+        let ee = got(protocol::CFG_KEY_IDENT_EE);
+        drop(st);
+
+        // ★**個体設定は畳む。** 一度決めたら触らないものなので、繋ぎ先の
+        //   確認より前に出てくると邪魔になる。ボードが1枚だけの人には、
+        //   上の1行(名前とアドレス)だけ見えていれば十分。
+        // ★**読み込み中でも見出しは出す。** 値が届いた瞬間に節が生えると、
+        //   その下の項目がまとめて動いて押し間違える。
+        egui::CollapsingHeader::new("個体設定(名前 / IP)")
+            .id_salt("board_ident")
+            .default_open(false)
+            .show(ui, |ui| match board_name {
+                None => {
+                    ui.weak("読み込んでいます…");
+                }
+                Some(name) => {
+                    self.ident_body(ui, target, name, net_mode, static_ip, save_state, ee)
+                }
+            });
+    }
+
+    /// 個体設定の中身(名前 / 固定IP / EEPROMへ焼く)。
+    #[allow(clippy::too_many_arguments)]
+    fn ident_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        target: [u8; 6],
+        board_name: String,
+        net_mode: Option<u32>,
+        static_ip: Option<u32>,
+        save_state: Option<u32>,
+        ee: Option<u32>,
+    ) {
+        // ボード側の値が動いたら編集欄を捨てる(自分のSETが着地した場合を含む)
+        if self.ident_name_seen.as_deref() != Some(board_name.as_str()) {
+            self.ident_name_seen = Some(board_name.clone());
+            self.ident_name_edit = None;
+        }
+        if self.ident_ip_seen != static_ip {
+            self.ident_ip_seen = static_ip;
+            self.ident_ip_edit = None;
+        }
+
+        ui.add_space(6.0);
+        // --- 名前 ---
+        let mut send_name: Option<[u32; 4]> = None;
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "名前");
+            let buf = self.ident_name_edit.get_or_insert_with(|| board_name.clone());
+            let resp = ui.add(
+                egui::TextEdit::singleline(buf)
+                    .desired_width(theme::SLIDER_W + 40.0)
+                    .hint_text("16バイトまで"),
+            );
+            let bytes = buf.as_bytes().len();
+            let ok = bytes <= 16;
+            if (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) && ok {
+                send_name = Self::name_to_words(buf);
+            }
+            if !ok {
+                ui.label(
+                    egui::RichText::new(format!("{bytes}B"))
+                        .size(10.0)
+                        .color(theme::AMBER),
+                )
+                .on_hover_text("ANNOUNCE の name は16バイト固定です。日本語は1文字3バイト");
+            }
+        });
+        if self.ident_name_edit.as_deref() != Some(board_name.as_str()) {
+            ui.horizontal(|ui| {
+                theme::label_col(ui, "");
+                let ok = self
+                    .ident_name_edit
+                    .as_deref()
+                    .map_or(false, |b| b.as_bytes().len() <= 16);
+                if ui
+                    .add_enabled(ok, egui::Button::new("適用"))
+                    .on_hover_text("ボードに送る。焼くまでは電源で消えます")
+                    .clicked()
+                {
+                    send_name = Self::name_to_words(self.ident_name_edit.as_deref().unwrap_or(""));
+                }
+                if ui.button("戻す").clicked() {
+                    self.ident_name_edit = None;
+                }
+            });
+        }
+        if let Some(w) = send_name {
+            for (k, v) in [
+                (protocol::CFG_KEY_NAME0, w[0]),
+                (protocol::CFG_KEY_NAME1, w[1]),
+                (protocol::CFG_KEY_NAME2, w[2]),
+                (protocol::CFG_KEY_NAME3, w[3]),
+            ] {
+                self.send_cfg(k, v);
+            }
+            self.ident_name_edit = None;
+            self.toasts.info("ボード名を送りました(焼くまでは電源で消えます)");
+        }
+
+        // --- IP ---
+        ui.add_space(4.0);
+        let is_static = net_mode.unwrap_or(0) & 1 != 0;
+        let mut set_static: Option<bool> = None;
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "IP");
+            let mut v = is_static;
+            if ui
+                .selectable_label(!v, "自動")
+                .on_hover_text("MAC由来のリンクローカル 169.254.x.y。基板ごとに違うので衝突しない")
+                .clicked()
+            {
+                v = false;
+            }
+            if ui
+                .selectable_label(v, "固定")
+                .on_hover_text("ルータ越しなど、ブロードキャストが届かない構成向け")
+                .clicked()
+            {
+                v = true;
+            }
+            if v != is_static {
+                set_static = Some(v);
+            }
+        });
+        if is_static || set_static == Some(true) {
+            let cur = static_ip.unwrap_or(0);
+            let cur_txt = format!(
+                "{}.{}.{}.{}",
+                (cur >> 24) & 0xFF,
+                (cur >> 16) & 0xFF,
+                (cur >> 8) & 0xFF,
+                cur & 0xFF
+            );
+            let mut send_ip: Option<u32> = None;
+            ui.horizontal(|ui| {
+                theme::label_col(ui, "");
+                let buf = self.ident_ip_edit.get_or_insert_with(|| cur_txt.clone());
+                ui.add(
+                    egui::TextEdit::singleline(buf)
+                        .desired_width(theme::SLIDER_W + 10.0)
+                        .hint_text("192.168.10.50"),
+                );
+                let parsed = buf.parse::<std::net::Ipv4Addr>().ok().map(u32::from);
+                // ★**0.0.0.0 は受け付けない。** ゲートウェアは 0 を静的扱いしない
+                //   ので「固定にしたのにリンクローカルのまま」という説明の付かない
+                //   状態になる。ここで止める方が分かりやすい
+                let ok = parsed.map_or(false, |v| v != 0);
+                if ui
+                    .add_enabled(ok && *buf != cur_txt, egui::Button::new("適用"))
+                    .clicked()
+                {
+                    send_ip = parsed;
+                }
+                if !buf.is_empty() && !ok {
+                    ui.label(egui::RichText::new("?").size(11.0).color(theme::AMBER))
+                        .on_hover_text("A.B.C.D の形で、0.0.0.0 以外");
+                }
+            });
+            if let Some(v) = send_ip {
+                // IPを先、モードを後。逆にすると新しいIPが入る前に静的へ切り替わり、
+                // 一瞬だけ古い値(あるいは 0.0.0.0)で名乗る
+                self.send_cfg(protocol::CFG_KEY_STATIC_IP, v);
+                set_static = Some(true);
+                self.ident_ip_edit = None;
+            }
+        }
+        if let Some(v) = set_static {
+            self.send_cfg(protocol::CFG_KEY_NET_MODE, v as u32);
+            if v {
+                self.toasts.notice("固定IPにしました。設定を間違えても、ブロードキャストで見つかるので戻せます");
+            } else {
+                self.ident_ip_edit = None;
+            }
+        }
+
+        // --- EEPROMへ焼く ---
+        ui.add_space(4.0);
+        let ee_txt = match ee.map(|v| ((v >> 1) & 3, v & 1)) {
+            Some((0, 1)) => "設定ページ有効",
+            Some((1, _)) => "未設定(既定で動作中)",
+            Some((2, _)) => "★設定ページが壊れています(既定で動作中)",
+            Some((3, _)) => "★EEPROMが応答しません",
+            _ => "?",
+        };
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "EEPROM");
+            ui.weak(egui::RichText::new(ee_txt).size(11.0));
+        });
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "");
+            let busy = save_state == Some(1);
+            if ui
+                .add_enabled(!busy, egui::Button::new("EEPROMへ焼く"))
+                .on_hover_text("次の電源投入からこの名前・IPで上がります")
+                .clicked()
+            {
+                self.send_cfg(protocol::CFG_KEY_IDENT_SAVE, 1);
+                self.toasts.info("EEPROMへ焼いています…");
+            }
+            match save_state {
+                Some(1) => {
+                    ui.weak("実行中");
+                }
+                Some(2) => {
+                    ui.label(egui::RichText::new("成功").size(11.0).color(theme::OK));
+                }
+                Some(3) => {
+                    ui.label(egui::RichText::new("失敗").size(11.0).color(theme::AMBER));
+                }
+                _ => {}
+            }
+        });
+        // 焼いている間・焼いた直後は状態を追いかける
+        if matches!(save_state, Some(1)) || self.ident_for != Some(target) {
+            self.shared
+                .config_get_queue
+                .lock()
+                .unwrap()
+                .push(protocol::CFG_KEY_IDENT_SAVE);
+        }
+    }
+
     fn netcheck_ui(&mut self, ui: &mut egui::Ui, s: &receiver::StatsSnapshot) {
         // ボードのアドレスが分かってから1回だけ調べる。経路から NIC を決めるので、
         // 相手のIPが要る(Wi-Fiと有線が両方生きている機械で誤判定しないため)
@@ -3767,6 +4368,20 @@ impl eframe::App for ViewerApp {
                 self.window_size = sz;
                 self.mark_settings_dirty();
             }
+            // ★**位置も覚える。** 3画面で横に並べた配置そのものが設定になる。
+            if self.window_pos.map_or(true, |p| (r.min - p).length() > 1.0) {
+                self.window_pos = Some(r.min);
+                self.mark_settings_dirty();
+            }
+        }
+        // ★**何も触っていなくても定期的に保存する。** 保存されるのは「最後に
+        //   使っていた時刻」で、これが復元の判断材料になる。変更時だけ書いて
+        //   いると、開いたまま放置したウィンドウが復元されなくなる。
+        if self.settings_beat.map_or(true, |t: std::time::Instant| {
+            t.elapsed() >= std::time::Duration::from_secs(20)
+        }) {
+            self.settings_beat = Some(std::time::Instant::now());
+            self.mark_settings_dirty();
         }
         // 変更があれば少し待って1回だけ保存する(スライダー操作中の連続書込を避ける)
         self.flush_settings();
@@ -3784,6 +4399,16 @@ impl eframe::App for ViewerApp {
         // MimicX への転送中はここへ来ない。raw_input_hook が先にイベントを
         // 取り除いているので、Tab も B も X68000 のキーとして送られる
         // (⌘+Shift+ESC で転送を切れば元に戻る)。
+        // ⌘N(Windows/Linux は Ctrl+N)で新しいセッションを開く。
+        //
+        // ★**macOS の .app は二重起動できない。** Finder や Dock から2つ目を
+        //   開こうとしても既存のウィンドウが前面に来るだけなので、アプリの中に
+        //   入口が要る(`open -n` を使う。session.rs 参照)。
+        if root.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
+            // ★**いつでも開ける。** 空いているボードが無ければ「未選択」の窓が
+            //   開くだけ。開けない方が不便だし、あとで空けば繋がる。
+            self.open_new_session(None);
+        }
         if root.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
             self.show_panel = !self.show_panel;
             self.mark_settings_dirty();
@@ -3820,31 +4445,11 @@ impl eframe::App for ViewerApp {
                 if let Some(err) = &self.rx_error {
                     ui.colored_label(egui::Color32::RED, err);
                 }
-                // 指定値ではなく「実際に送っている宛先」を出す。ユニキャスト指定で
-                // 応答が無いとブロードキャストへ落ちるので、ここが変わることがある。
-                {
-                    let dest = self.shared.sub_dest.lock().unwrap().clone();
-                    if dest.is_empty() {
-                        ui.label("subscribe: off (listen only)");
-                    } else if dest == "255.255.255.255" {
-                        ui.label("SUBSCRIBE → ブロードキャスト")
-                            .on_hover_text(
-                                "宛先を指定せずに探しています。ボードは SUBSCRIBE の\n\
-                                 送信元へ映像を返すので、サブネットが違っても\n\
-                                 同じL2セグメントにいれば届きます。\n\
-                                 ブロードキャストになるのはこの2秒ごとの要求だけで、\n\
-                                 映像はユニキャストです");
-                    } else {
-                        // NICごとのサブネット宛。複数NICがあれば空白区切りで並ぶ
-                        ui.label(format!("SUBSCRIBE → {dest}"))
-                            .on_hover_text(
-                                "各NICのサブネット宛ブロードキャストへ2秒ごとに送っています。\n\
-                                 限定ブロードキャスト(255.255.255.255)は使いません。\n\
-                                 あれは既定経路に載るので、VPN接続中は送信自体が\n\
-                                 失敗します(receiver.rs の broadcast_targets 参照)。\n\
-                                 サブネットが違っても同じL2セグメントにいれば届きます");
-                    }
-                }
+                // ★**タイトルの直下に置く。** 簡易スキャンはモードが変わるたびに
+                //   押すもので、詳細トグルはパネル全体の見せ方を変えるもの。
+                //   どちらも「どの節にも属さない道具」なので、節の間に挟まって
+                //   いると迷子に見える。
+                self.quick_scan_bar(ui);
                 // ★**送れていないことを明示する。** 「何も映らない」だけだと
                 //   受信側の問題と区別できず、原因の切り分けに時間がかかる。
                 if let Some(err) = self.shared.net_error.lock().unwrap().clone() {
@@ -3852,9 +4457,12 @@ impl eframe::App for ViewerApp {
                 }
                 ui.separator();
 
-                // ★よく使う操作を最上部に置く。簡易スキャンはモードが変わるたびに
-                //   押すので、Tune の奥だけにあると毎回スクロールすることになる。
-                self.quick_scan_bar(ui);
+                // ★**接続先はいちばん上。** これより下は全部「いま繋がっている
+                //   ボード」の話(Mode / Stats / Tune / 個体設定)なので、
+                //   どれに繋がっているかが先に見えていないと意味が読めない。
+                //   窓を3つ並べて3台に繋ぐ使い方では、ここが最初に確認する場所。
+                Self::section(ui, "ボード");
+                self.boards_ui(ui);
                 ui.separator();
 
                 // ★**よく使う順に並べ替えてある。** 状態表示 → 入力の切り替え →
@@ -4027,19 +4635,6 @@ impl eframe::App for ViewerApp {
 
                 Self::section(ui, "Tune");
                 self.tune_ui(ui);
-                ui.separator();
-
-                Self::section(ui, "Boards");
-                let boards = self.shared.boards.lock().unwrap();
-                if boards.is_empty() {
-                    ui.weak("none discovered");
-                }
-                for b in boards.values() {
-                    let mac = b.mac.map(|x| format!("{x:02x}")).join(":");
-                    ui.monospace(format!("{} {}", b.addr, b.name));
-                    ui.weak(format!("  {mac} fw {:04x}", b.fw_version));
-                }
-                drop(boards);
                 ui.separator();
 
                 // 管面(ブラウン管の物理的な表示領域)。
@@ -4541,6 +5136,32 @@ impl Drop for ViewerApp {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// ★**ANNOUNCE の name は16バイト固定。** 日本語は1文字3バイトなので、
+    ///   「5文字までしか入らない」ことに UI 側で気付ける必要がある。
+    #[test]
+    fn board_name_roundtrips_and_bounds() {
+        for n in ["", "a", "retrocastx-i5", "0123456789abcdef", "エックス"] {
+            let w = ViewerApp::name_to_words(n).expect("16バイト以内なのに拒否された");
+            assert_eq!(ViewerApp::words_to_name(w), n, "往復で変わった: {n:?}");
+        }
+        // 17バイトは入らない
+        assert!(ViewerApp::name_to_words("0123456789abcdefg").is_none());
+        // UTF-8 は文字数ではなくバイト数で効く(6文字=18バイト)
+        assert!(ViewerApp::name_to_words("あいうえおか").is_none());
+        assert!(ViewerApp::name_to_words("あいうえお").is_some());
+    }
+
+    /// 語の並びが**電線上のバイト順**と一致していること。ここがずれると
+    /// 名前が4バイトごとに入れ替わって出る。
+    #[test]
+    fn name_words_match_wire_order() {
+        let w = ViewerApp::name_to_words("ABCDEFGH").unwrap();
+        assert_eq!(w[0], u32::from_le_bytes(*b"ABCD"));
+        assert_eq!(w[1], u32::from_le_bytes(*b"EFGH"));
+        assert_eq!(w[2], 0);
+    }
     use super::{quick_pick, PHASE_SENSITIVE};
 
     /// ★**実機で測った値をそのまま固定する。**

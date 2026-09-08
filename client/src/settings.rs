@@ -19,6 +19,50 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+/// 実際に使う設定ファイル。`use_profile` で起動時に決める。
+static ACTIVE: OnceLock<PathBuf> = OnceLock::new();
+
+/// ウィンドウがどのボードに繋がるか。
+///
+/// ★**「自動」と「未選択」を分ける。** ボードを1枚しか持っていない人には
+///   「勝手に繋がる」のが正しいが、3画面で使う人には「この窓はこの基板」が
+///   固定されていないと並びが毎回入れ替わる。同じ設定で両方を満たせない。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BoardSel {
+    #[default]
+    /// 空いているボードを見つけ次第つなぐ(既定)
+    Auto,
+    /// この基板だけ。居なければ未選択のまま待つ
+    Mac([u8; 6]),
+    /// つながない
+    None,
+}
+
+impl BoardSel {
+    pub fn parse(v: &str) -> Option<BoardSel> {
+        match v.trim() {
+            "auto" => Some(BoardSel::Auto),
+            "none" | "" => Some(BoardSel::None),
+            hex => {
+                let b: Vec<u8> = hex
+                    .split(|c| c == ':' || c == '-')
+                    .filter_map(|p| u8::from_str_radix(p, 16).ok())
+                    .collect();
+                (b.len() == 6).then(|| BoardSel::Mac(b.try_into().unwrap()))
+            }
+        }
+    }
+
+    pub fn to_text(self) -> String {
+        match self {
+            BoardSel::Auto => "auto".into(),
+            BoardSel::None => "none".into(),
+            BoardSel::Mac(m) => m.map(|x| format!("{x:02x}")).join(":"),
+        }
+    }
+}
 
 /// ドット復元の係数 a の既定値 ×1000。
 ///
@@ -134,6 +178,22 @@ pub struct Settings {
     /// (古い設定ファイルは phase を持たないので、その場合は既定16を入れる)
     pub modes: BTreeMap<String, [u32; 6]>,
     /// 前回のウィンドウ内寸。次回起動時に復元する
+    /// 接続先。番号ごとに覚える(3画面の並びが再起動で入れ替わらないように)
+    pub board_sel: BoardSel,
+    /// このウィンドウを最後に使っていた時刻(UNIX秒)。**復元の判断に使う。**
+    ///
+    /// ★**「閉じたら false」では駄目だった。** ウィンドウは別プロセスなので、
+    ///   3つ開いて順に閉じると、最後の1つ以外が「個別に閉じられた」ことになり、
+    ///   次の起動で1つしか戻らない。閉じた**順序**で結果が変わってしまう。
+    /// ★**時刻なら順序に依らない。** 起動時に「最後に使われた時刻」から一定
+    ///   時間内に生きていたウィンドウを戻す。3つまとめて終了すれば3つ戻り、
+    ///   1つを閉じてしばらく使い続けてから終了すれば、その1つは戻らない。
+    ///   クラッシュしても最後の心拍が残るので、そのまま復元できる。
+    pub last_used: u64,
+    /// ウィンドウ位置。**大きさだけでは並びが戻らない。**
+    /// 未知(初回)は None にして OS に任せる
+    pub window_x: Option<f32>,
+    pub window_y: Option<f32>,
     pub window_w: f32,
     pub window_h: f32,
     /// 配信用クリーン出力ウィンドウを開くか(次回起動時に復元する)
@@ -207,13 +267,81 @@ impl Default for Settings {
             crop_y: 0,
             crop_w: 0,
             crop_h: 0,
+            // 既定は「自動」。ボードを1枚しか持っていない人が大半なので、
+            // 何も設定しなくても繋がるのが正しい
+            board_sel: BoardSel::Auto,
+            last_used: 0,
+            window_x: None,
+            window_y: None,
             window_w: 1160.0,
             window_h: 820.0,
         }
     }
 }
 
+/// これだけ離れていたら「別のとき」。1つ閉じてしばらく使い続けたなら、その
+/// ウィンドウは前回のセッションに含まれない ─ という線引き。
+const RESTORE_GRACE: u64 = 120;
+
+/// 心拍の時刻から「前回いっしょに使われていたウィンドウ」を選ぶ。
+///
+/// ★**閉じた順序に依らないこと。** 「閉じたら開いていない印を付ける」方式だと、
+///   3つ開いて順に閉じたときに最後の1つ以外が個別に閉じられた扱いになり、
+///   次の起動で1つしか戻らない。時刻を見れば、まとめて終了したのか、1つだけ
+///   閉じてから使い続けたのかを区別できる。
+pub fn restore_from_stamps(self_id: u32, stamps: &[(u32, u64)]) -> Vec<u32> {
+    let newest = stamps.iter().map(|(_, t)| *t).max().unwrap_or(0);
+    if newest == 0 {
+        return Vec::new();
+    }
+    stamps
+        .iter()
+        .filter(|(id, t)| *id != self_id && *t > 0 && t + RESTORE_GRACE >= newest)
+        .map(|(id, _)| *id)
+        .collect()
+}
+
 impl Settings {
+    /// ウィンドウ番号ごとの設定ファイル。
+    ///
+    /// ★**番号0は従来どおり `viewer.conf`。** ボードを1枚しか持っていない人は
+    ///   ずっと0番を使うので、ファイル名が変わって設定が消えたように見えるのは
+    ///   避ける。
+    /// ★**2つ同時に開くと同じファイルを取り合う。** 後から保存した方が勝つので、
+    ///   片方のウィンドウで詰めた画枠パラメータがもう片方に消される。
+    /// ★**そもそも画枠パラメータは接続先ごとの値。** 別の機械が繋がっている
+    ///   のだから pll_divide も位相もゲインも違って当たり前。
+    pub fn path_for_slot(id: u32) -> PathBuf {
+        let p = Self::path();
+        if id == 0 {
+            p
+        } else {
+            p.with_file_name(format!("viewer-{id}.conf"))
+        }
+    }
+
+    /// 番号 `id` の設定を読む(いま使っている設定とは別に覗く。復元の判断用)。
+    pub fn peek_slot(id: u32) -> Self {
+        Self::parse(&std::fs::read_to_string(Self::path_for_slot(id)).unwrap_or_default())
+    }
+
+    pub fn now_unix() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// 前回いっしょに使われていたウィンドウ番号(自分は除く)。
+    ///
+    /// 「最後に使われた時刻」から `GRACE` 秒以内に生きていたものを、同じ
+    /// セッションだったとみなす。
+    pub fn slots_to_restore(self_id: u32, max: u32) -> Vec<u32> {
+        let stamps: Vec<(u32, u64)> =
+            (0..max).map(|id| (id, Self::peek_slot(id).last_used)).collect();
+        restore_from_stamps(self_id, &stamps)
+    }
+
     pub fn path() -> PathBuf {
         // Windows では XDG_CONFIG_HOME も HOME も無いことが多い。そのまま
         // フォールバックすると「.」= カレントディレクトリに作ってしまい、
@@ -231,9 +359,23 @@ impl Settings {
         base.join("retrocastx").join("viewer.conf")
     }
 
+    /// 実際に読み書きする場所。`use_profile` を呼んでいなければ `path()`。
+    pub fn active_path() -> PathBuf {
+        ACTIVE.get().cloned().unwrap_or_else(Self::path)
+    }
+
+    /// 起動時に1回だけ、自分のウィンドウ番号の設定ファイルを選ぶ。
+    pub fn use_slot(id: u32) {
+        let _ = ACTIVE.set(Self::path_for_slot(id));
+    }
+
     pub fn load() -> Self {
+        Self::parse(&std::fs::read_to_string(Self::active_path()).unwrap_or_default())
+    }
+
+    fn parse(text: &str) -> Self {
         let mut s = Self::default();
-        let Ok(text) = std::fs::read_to_string(Self::path()) else { return s };
+        let text = text.to_string();
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -349,6 +491,12 @@ impl Settings {
                 "crop_y" => { if let Ok(x) = v.parse() { s.crop_y = x } }
                 "crop_w" => { if let Ok(x) = v.parse() { s.crop_w = x } }
                 "crop_h" => { if let Ok(x) = v.parse() { s.crop_h = x } }
+                "board_sel" => {
+                    if let Some(x) = BoardSel::parse(v) { s.board_sel = x }
+                }
+                "last_used" => { if let Ok(x) = v.parse() { s.last_used = x } }
+                "window_x" => { s.window_x = v.parse::<f32>().ok() }
+                "window_y" => { s.window_y = v.parse::<f32>().ok() }
                 "window_w" => {
                     if let Ok(x) = v.parse::<f32>() {
                         s.window_w = x.clamp(480.0, 8192.0);
@@ -372,7 +520,7 @@ impl Settings {
     }
 
     pub fn save(&self) {
-        let path = Self::path();
+        let path = Self::active_path();
         if let Some(dir) = path.parent() {
             if std::fs::create_dir_all(dir).is_err() {
                 return;
@@ -408,6 +556,10 @@ impl Settings {
              crop_y = {}\n\
              crop_w = {}\n\
              crop_h = {}\n\
+             board_sel = {}\n\
+             last_used = {}\n\
+             window_x = {}\n\
+             window_y = {}\n\
              window_w = {:.0}\n\
              window_h = {:.0}\n\
              clean_open = {}\n\
@@ -448,6 +600,10 @@ impl Settings {
             self.crop_y,
             self.crop_w,
             self.crop_h,
+            self.board_sel.to_text(),
+            self.last_used,
+            self.window_x.map(|v| format!("{v:.0}")).unwrap_or_default(),
+            self.window_y.map(|v| format!("{v:.0}")).unwrap_or_default(),
             self.window_w,
             self.window_h,
             self.clean_open,
@@ -475,5 +631,64 @@ impl Settings {
         if let Ok(mut f) = std::fs::File::create(&path) {
             let _ = f.write_all(body.as_bytes());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ★**まとめて終了したら全部戻る。** 3画面筐体では並びそのものが設定で、
+    ///   毎回開き直すのでは使い物にならない。
+    #[test]
+    fn restores_windows_closed_together() {
+        let t = 1_800_000_000u64;
+        // 3つを数秒差で閉じた
+        let stamps = [(0, t), (1, t - 3), (2, t - 7)];
+        assert_eq!(restore_from_stamps(0, &stamps), vec![1, 2]);
+        // ★**閉じた順序で結果が変わらないこと。** どれが最後でも同じ3つ。
+        let stamps = [(0, t - 7), (1, t), (2, t - 3)];
+        assert_eq!(restore_from_stamps(0, &stamps), vec![1, 2]);
+    }
+
+    /// 1つ閉じてしばらく使い続けたなら、その1つは戻らない。
+    #[test]
+    fn does_not_restore_a_window_closed_long_ago() {
+        let t = 1_800_000_000u64;
+        let stamps = [(0, t), (1, t - RESTORE_GRACE - 1), (2, t - 10)];
+        assert_eq!(restore_from_stamps(0, &stamps), vec![2]);
+    }
+
+    /// 使ったことのない番号(心拍0)は戻さない。
+    #[test]
+    fn ignores_never_used_slots() {
+        let t = 1_800_000_000u64;
+        let stamps = [(0, t), (1, 0), (2, 0)];
+        assert!(restore_from_stamps(0, &stamps).is_empty());
+        assert!(restore_from_stamps(0, &[(0, 0), (1, 0)]).is_empty());
+    }
+
+    #[test]
+    fn board_sel_roundtrips() {
+        for v in [
+            BoardSel::Auto,
+            BoardSel::None,
+            BoardSel::Mac([0x74, 0xc9, 0x0f, 0x7c, 0x84, 0x29]),
+        ] {
+            assert_eq!(BoardSel::parse(&v.to_text()), Some(v), "{v:?}");
+        }
+        // 読めない値は既定へ落とさず None を返す(呼び側が既定を保つ)
+        assert_eq!(BoardSel::parse("zzz"), None);
+    }
+
+    /// ★**番号0は従来どおり `viewer.conf`。** ボードを1枚しか持っていない人は
+    ///   ずっと0番なので、ファイル名が変わって設定が消えたように見えるのを防ぐ。
+    #[test]
+    fn slot_zero_keeps_the_original_filename() {
+        assert_eq!(Settings::path_for_slot(0), Settings::path());
+        assert_eq!(
+            Settings::path_for_slot(2).file_name().unwrap(),
+            "viewer-2.conf"
+        );
     }
 }

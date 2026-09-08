@@ -254,6 +254,20 @@ pub const CFG_KEY_PHASE: u16 = 0x001F;
 /// 診断用に入れたが、実用上の回避策にもなっている。全黒行が続いた直後の数行の
 /// 範囲判定が壊れて行が欠ける不具合があり、これを1にすると範囲を使わないので
 /// 完全に消える。帯域は 1ライン=htotal画素ぶんに増える(31kHzで約555Mbps)。
+/// 個体設定(ボード名 / 静的IP)。実体は基板のEUI-48 EEPROMの空き領域。
+/// **SETは即座に効き、`IDENT_SAVE` で焼くまでは電源で消える**(試してから決められる)。
+pub const CFG_KEY_NET_MODE: u16 = 0x0046;   // bit0=静的IPを使う(0=リンクローカル)
+pub const CFG_KEY_STATIC_IP: u16 = 0x0047;  // ネットワークバイト順の整数
+/// ボード名16バイトを4語に分けたもの(UTF-8, NUL詰め, 各語リトルエンディアン)。
+pub const CFG_KEY_NAME0: u16 = 0x0048;
+pub const CFG_KEY_NAME1: u16 = 0x0049;
+pub const CFG_KEY_NAME2: u16 = 0x004A;
+pub const CFG_KEY_NAME3: u16 = 0x004B;
+/// SET 1=EEPROMへ焼く / GET 0=未実行 1=実行中 2=成功 3=失敗
+pub const CFG_KEY_IDENT_SAVE: u16 = 0x004C;
+/// bit0=妥当な設定ページがあった bit2:1=1未設定/2破損/3EEPROM無応答(読専)
+pub const CFG_KEY_IDENT_EE: u16 = 0x004D;
+
 pub const CFG_KEY_FULL_LINE: u16 = 0x0030;
 /// フレーム間引き。0=毎フレーム / 1=2フレームに1回 / 2=3回に1回…
 ///
