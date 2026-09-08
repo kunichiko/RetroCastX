@@ -105,7 +105,11 @@ for s in $REST; do
     ( cd "$GW" && eval "$cmd" ) > /tmp/build_closed_seed$s.log 2>&1 || true
     report /tmp/build_closed_seed$s.log
     if timing_ok /tmp/build_closed_seed$s.log; then
-        echo "=== タイミング成立: seed $s。ecppack します ==="
+        # ★**波括弧が要る。** macOS の bash は 3.2 で、`$s` の直後に全角文字が
+        #   来ると1バイト目まで変数名として読み、`s\xe3: unbound variable` で
+        #   落ちる(set -u のため)。CI の bash 5 では通るので気付きにくい:
+        #   実際、シードを見つけたのに ecppack を実行できずに終わった。
+        echo "=== タイミング成立: seed ${s}。ecppack します ==="
         ( cd "$GW" && eval "$ECPPACK_CMD" )
         echo
         echo "採用シード: $s"

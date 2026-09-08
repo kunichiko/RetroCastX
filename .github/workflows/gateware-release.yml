@@ -95,6 +95,19 @@ jobs:
           cd gateware/litex-src
           python ../litex_setup.py --dev --init --install --config=standard
 
+      - name: 論理をシミュレーションで確認
+        run: |
+          set -euo pipefail
+          # ★**焼く前に回す。** ここで見ているのは配線でもタイミングでもなく
+          #   「論理が仕様どおりか」で、実機に載せてからでは切り分けが高くつく。
+          #   特に EEPROM の設定ページは、壊れた書き方をしても**エラーにならず
+          #   静かに壊れる**(ページ内で折り返す)ので、模擬で潰しておく。
+          cd gateware
+          for f in sim_stream.py sim_arp.py sim_status.py sim_eeprom_cfg.py; do
+            echo "=== $f ==="
+            python "$f"
+          done
+
       - name: ビットストリームをビルド(タイミングが閉じるまでシードを振る)
         run: |
           set -euo pipefail

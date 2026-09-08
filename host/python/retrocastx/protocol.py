@@ -127,6 +127,17 @@ CFG_KEY_ARP_MISSES = 0x0042       # 本物のARPへ委譲した回数
 CFG_KEY_ARP_LAST_IP = 0x0043      # 最後に学習した相手のIP(ネットワークバイト順の整数)
 CFG_KEY_ARP_LAST_MAC_LO = 0x0044  # 同 MACの下位4バイト
 CFG_KEY_ARP_LAST_MAC_HI = 0x0045  # 同 MACの上位2バイト
+# 個体設定(ボード名 / 静的IP)。実体は基板のEUI-48 EEPROMの空き領域(0x00..0x1F)。
+# SETは即座に効き、0x004C で焼くまでは電源で消える(試してから決められる)。
+CFG_KEY_NET_MODE = 0x0046         # bit0=静的IPを使う(0=MAC由来のリンクローカル)
+CFG_KEY_STATIC_IP = 0x0047        # 静的IP(ネットワークバイト順の整数)
+CFG_KEY_NAME0 = 0x0048            # ボード名 バイト0..3(UTF-8, NUL詰め16B)
+CFG_KEY_NAME1 = 0x0049            # 同 4..7
+CFG_KEY_NAME2 = 0x004A            # 同 8..11
+CFG_KEY_NAME3 = 0x004B            # 同 12..15
+CFG_KEY_IDENT_SAVE = 0x004C       # SET 1=EEPROMへ焼く / GET 0=未実行 1=実行中 2=成功 3=失敗
+CFG_KEY_IDENT_EE = 0x004D         # bit0=妥当な設定ページがあった bit2:1=読出結果(RO)
+                                  #   1=未設定 2=壊れている 3=EEPROMが応答しない
 # 生同期(TVPを通らない経路)の実測値。pll_divide に依存しない絶対値
 CFG_KEY_FH_RAW = 0x002A         # 生HSYNC周波数 [Hz]
 CFG_KEY_FV_RAW = 0x002B         # 生VSYNC周波数 [mHz]
