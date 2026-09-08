@@ -140,6 +140,9 @@ CONFIG(key 0x0001)で選択する。
 | 0 (board) | 0x0003 | spdif_fifo_level: S/PDIF送出FIFOの滞留サンプル数。**読み取り専用**。レートが出ているのにここが0なら詰まりは後段 |
 | 0 (board) | 0x0004 | spdif_ui: S/PDIFデコーダのUI長を16倍した固定小数点。**読み取り専用**。45MHz なら 48kHz≒117 / 44.1kHz≒128。整数では 7.32 と 7.97 を区別できず復号が成立しない |
 | 0 (board) | 0x0005 | spdif_resyncs: デコーダを立て直した回数。**読み取り専用**。増えていれば上記の状態に落ちて自動復帰している |
+| 0 (board) | 0x0006 | mac_info: bit0=EEPROMから読めた / bit1=0x51側を使った / bit3:2=失敗箇所(1=アドレスNACK 2=レジスタNACK 3=読出アドレスNACK)。**読み取り専用** |
+| 0 (board) | 0x0007 | mac_lo: 使用中のMAC 下位32bit。**読み取り専用** |
+| 0 (board) | 0x0008 | mac_hi: 使用中のMAC 上位16bit。**読み取り専用** |
 | 1 (ArgusX) | 0x0001 | 映像入力選択(値の意味はArgusX側仕様で定義) |
 | 0 (board) | 0x0022 | sync_ctl (TVP reg 0Eh): 0x52=5線 / 0x53=4線TTL C-SYNC / 0x5B=SOG |
 | 0 (board) | 0x0050 | sog_thresh (TVP reg 10h): SOGスライス閾値 |

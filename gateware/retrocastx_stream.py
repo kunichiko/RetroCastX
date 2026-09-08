@@ -125,7 +125,7 @@ class RetroCastXStreamer(LiteXModule):
     """
     def __init__(self, udp_port, sys_clk_freq, width=512, height=512, fps=30.0,
                  announce_period=1.0, mode_period=1.0, sub_timeout=10.0,
-                 announce_ip=HOST_IP, udp_port_nr=UDP_PORT,
+                 announce_ip=HOST_IP, udp_port_nr=UDP_PORT, my_ip=None,
                  mtu_payload=1472, interlace=False,
                  audio_sources=None, audio_nsamples=240,
                  mac_address=MAC_ADDRESS, capture=None,
@@ -141,9 +141,26 @@ class RetroCastXStreamer(LiteXModule):
         cap_mode = capture is not None
         # 自MAC(SUBSCRIBE/CONFIGの宛先照合とCONFIG応答に使用)。
         # リトルエンディアンのワード表現(伝送バイト順=MAC表記順)
-        mac_bytes = mac_address.to_bytes(6, "big")
-        my_mac_lo = int.from_bytes(mac_bytes[0:4], "little")
-        my_mac_hi = int.from_bytes(mac_bytes[4:6], "little")
+        #
+        # ★**実行時に決まる値も受ける。** EUI-48 は起動時に EEPROM から読むので、
+        #   ビルド時定数とは限らない(int なら従来どおり、Signal(48) なら
+        #   そのまま配線する)。48bit値の MSB 側が電線上の先頭バイト。
+        # ANNOUNCE に載せる自IP。None ならビルド時定数(従来どおり)
+        if my_ip is None:
+            my_ip = C(convert_ip(FPGA_IP), 32)
+        if isinstance(mac_address, int):
+            mac_bytes = mac_address.to_bytes(6, "big")
+            my_mac_lo = int.from_bytes(mac_bytes[0:4], "little")
+            my_mac_hi = int.from_bytes(mac_bytes[4:6], "little")
+        else:
+            # b0..b5 = mac[40:48], mac[32:40], ... , mac[0:8]
+            b = [mac_address[40 - 8 * i: 48 - 8 * i] for i in range(6)]
+            my_mac_lo = Signal(32)
+            my_mac_hi = Signal(16)
+            self.comb += [
+                my_mac_lo.eq(Cat(b[0], b[1], b[2], b[3])),
+                my_mac_hi.eq(Cat(b[4], b[5])),
+            ]
         # audio_sources: [(stream.Endpoint(AUDIO_LAYOUT/sysドメイン), rate_hz), ...]
         #   インデックスがプロトコルのsource値(0=RGB端子音声,1=LINE,2=S/PDIF)。
         #   rate_hz は int 定数(水晶由来)または Signal(32)(S/PDIF実測)
@@ -531,6 +548,12 @@ class RetroCastXStreamer(LiteXModule):
         #     key 0x05 = 立て直した回数。増えていれば罠に落ちて復帰している
         self.stat_spdif_ui     = Signal(12)  # key 0x04(×16 の固定小数点)
         self.stat_spdif_resync = Signal(16)  # key 0x05
+        # EUI-48 EEPROM の読み出し結果(製品化で必須の個体MAC)。
+        #     key 0x06 = bit0 有効 / bit1 使ったEEPROM(0=0x50,1=0x51) / bit3:2 失敗箇所
+        #     key 0x07 = MAC 下位32bit  /  key 0x08 = MAC 上位16bit
+        self.stat_mac_info = Signal(8)   # key 0x06
+        self.stat_mac_lo   = Signal(32)  # key 0x07
+        self.stat_mac_hi   = Signal(16)  # key 0x08
         # ラインごとのHSYNC周期プローブ。key 0x27 で行を選び 0x28/0x29 で読む
         self.cfg_hs_probe_row = Signal(13)
         self.stat_hs_raw    = Signal(16)
@@ -761,6 +784,9 @@ class RetroCastXStreamer(LiteXModule):
             reply_cases[0x03] = reply_mux.eq(self.stat_spdif_level)
             reply_cases[0x04] = reply_mux.eq(self.stat_spdif_ui)
             reply_cases[0x05] = reply_mux.eq(self.stat_spdif_resync)
+        reply_cases[0x06] = reply_mux.eq(self.stat_mac_info)
+        reply_cases[0x07] = reply_mux.eq(self.stat_mac_lo)
+        reply_cases[0x08] = reply_mux.eq(self.stat_mac_hi)
         # 診断用の読み出し(書き込みは無視される読み取り専用)。
         # フィールド極性をどちらから取るべきか、ラインごとのHSYNC周期が揺れて
         # いないか等を実機で判断するための生データ。
@@ -984,8 +1010,22 @@ class RetroCastXStreamer(LiteXModule):
         line_flags = Signal(8)
         ts_frag = Signal(32)               # 断片先頭ピクセル時点のドットクロック
         cases = {
-            _T_ANN: Case(word_idx, {i: hdr.eq(ann_words[i])
-                                    for i in range(n_ann_words) if i != 1}),
+            # ★**MAC はビルド時定数ではなく実行時の値を出す。** ペイロードの
+            #   バイト8..13 が MAC で、ワード2(mac[0:4])とワード3の下位16bit
+            #   (mac[4:6])に当たる。ここを定数のままにすると、EEPROM から
+            #   読んだ個体MACで通信しているのに ANNOUNCE だけ旧値を名乗り、
+            #   ホスト側の一覧と実際のMACが食い違う(実機でそうなった)。
+            #   ワード3の上位16bitは IP の先頭2バイトなので定数のまま残す。
+            _T_ANN: Case(word_idx, dict(
+                [(i, hdr.eq(ann_words[i]))
+                 for i in range(n_ann_words) if i not in (1, 2, 3, 4)]
+                + [(2, hdr.eq(my_mac_lo)),
+                   # ワード3 = mac[4],mac[5],ip[0],ip[1]
+                   (3, hdr.eq(Cat(my_mac_hi, my_ip[24:32], my_ip[16:24]))),
+                   # ワード4 = ip[2],ip[3],port(下位16bitは定数のまま)
+                   (4, hdr.eq(Cat(my_ip[8:16], my_ip[0:8],
+                                  C(ann_words[4] >> 16, 16))))]
+            )),
             _T_MODE: Case(word_idx, {
                 0: hdr.eq(0x52 | (1 << 16)),                       # type=MODE
                 2: hdr.eq(Cat(C(mode_id, 8), pixfmt, mflags)),
@@ -1477,14 +1517,50 @@ class RetroCastXStream(SoCMini):
             clock_pads = platform.request("eth_clocks", eth_phy),
             pads       = platform.request("eth", eth_phy),
             tx_delay   = 0e-9)
+        # --- 自MAC: 基板の EUI-48 を使う ---
+        #
+        # ★**全基板で同じ MAC は製品として出せない。** 同じ LAN に2枚繋ぐと
+        #   スイッチの学習テーブルが壊れて両方通信できなくなる。IPを変えても
+        #   直らないので、MAC の方が IP より先に問題になる。
+        #
+        #   24AA025E48(0x50)には個体ごとに世界で一意な EUI-48 が工場書込み
+        #   されている。基板にこれを載せたのはまさにこのため。
+        #
+        # ★**読めなければ従来のローカル管理アドレスへ落ちる。** EEPROM 未実装や
+        #   I2C が死んでいる基板でも、1枚だけなら従来どおり動く方がよい。
+        #   起動から約1ms で確定するので、最初のパケットより前に決まる。
+        my_mac = Signal(48, reset=MAC_ADDRESS)
+
+        # --- 自IP: MAC から導いたリンクローカル(169.254.x.y)---
+        #
+        # ★**出荷時に他人のサブネットの住所を名乗らない。** 従来の既定
+        #   192.168.10.50 は、利用者が同じ範囲を使っていれば衝突するし、
+        #   基板を2枚繋げば基板同士でも衝突する。169.254.0.0/16 は
+        #   リンクローカル専用でDHCPが配らないので、原理的に衝突しない。
+        #
+        # ★**この構成では IP はほとんど使われていない。** ホスト→ボードは
+        #   NICごとのサブネット宛ブロードキャスト、ボード→ホストは SUBSCRIBE の
+        #   送信元を学習して返す。IP に求められるのは「衝突しないこと」だけ。
+        #
+        #   RFC 3927 は 169.254.1.0〜169.254.254.255 を使う。MACの下位2バイトを
+        #   当てて、第3オクテットだけ 1..254 に丸める。
+        ll_o3 = Signal(8)
+        self.comb += [
+            If(my_mac[8:16] == 0, ll_o3.eq(1))
+            .Elif(my_mac[8:16] == 0xFF, ll_o3.eq(254))
+            .Else(ll_o3.eq(my_mac[8:16])),
+        ]
+        my_ip = Signal(32)
+        self.comb += my_ip.eq(Cat(my_mac[0:8], ll_o3, C(254, 8), C(169, 8)))
+
         # LiteEthUDPIPCore ではなく自前のコア。中身は同じ構成(MAC + ARP + IP +
         # ICMP + UDP)で、受信パケットから相手のMACを学習する層を挟んである。
         # ARPに応答しない相手(別サブネットのWindows)へ返せるようにするため。
         # 理由と挟む位置は retrocastx_net.py の冒頭を参照。
         self.ethcore = RetroCastXUDPIPCore(
             phy         = self.ethphy,
-            mac_address = MAC_ADDRESS,
-            ip_address  = FPGA_IP,
+            mac_address = my_mac,
+            ip_address  = my_ip,
             clk_freq    = sys_clk_freq,
             udp_port_nr = UDP_PORT,
             dw          = 32,
@@ -1556,6 +1632,9 @@ class RetroCastXStream(SoCMini):
                                     red_input=red_input, blue_input=blue_input,
                                     pll_divide=pll_divide)
 
+        # EEPROM から読めたらそちらを使う(StatusDisplay の生成後に繋ぐ)
+        self.comb += If(self.status.mac_valid, my_mac.eq(self.status.mac))
+
         # --- TVP7002 映像キャプチャ(cd_pix=DATACLK)---
         capture_obj = None
         if capture:
@@ -1621,6 +1700,9 @@ class RetroCastXStream(SoCMini):
         learner = self.ethcore.arp_learner
         self.streamer = RetroCastXStreamer(
             udp_port, sys_clk_freq, width=2048, height=2048, fps=60.0,
+            # ★Ethernet コアと同じ MAC を渡すこと。食い違うと SUBSCRIBE/CONFIG の
+            #   宛先照合(自MACと一致するか)が通らなくなる。
+            mac_address=my_mac, my_ip=my_ip,
             audio_sources=[(self.i2s.sources[0], 48000),
                            (self.i2s.sources[1], 48000),
                            (self.spdif.source, self.spdif.rate_hz)],
@@ -1698,6 +1780,12 @@ class RetroCastXStream(SoCMini):
                 self.capture.cfg_field_invert.eq(self.streamer.cfg_field_invert),
                 self.capture.cfg_no_raw_phase.eq(self.streamer.cfg_no_raw_phase),
                 # S/PDIF デコーダの内部状態(停止の切り分け用)
+                self.streamer.stat_mac_info.eq(Cat(self.status.mac_valid,
+                                                   self.status.mac_alt,
+                                                   C(0, 1),
+                                                   self.status.mac_err)),
+                self.streamer.stat_mac_lo.eq(my_mac[:32]),
+                self.streamer.stat_mac_hi.eq(my_mac[32:]),
                 self.streamer.stat_spdif_ui.eq(self.spdif.ui_now),
                 self.streamer.stat_spdif_resync.eq(self.spdif.resyncs),
                 self.streamer.stat_lpf_hi.eq(self.status.lpf_hi),
