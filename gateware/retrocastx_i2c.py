@@ -159,7 +159,7 @@ def _banner():
 class StatusDisplay(Module):
     """共有I2C(SDA/SCL) + RESETB を使い、TVP7002の応答/レジスタを読み OLEDに表示。"""
     def __init__(self, pads=None, sys_clk_freq=45e6, i2c_freq=400e3,
-                 tvp_addr=0x5C, oled_addr=0x3C,
+                 tvp_addr=0x5C, oled_addr=0x3C, eeprom_addr=0x50,
                  green_input=3, red_input=3, blue_input=3, pll_divide=0):
         # pll_divide: H-PLL帰還分周比(=1ライン当たりのDATACLK数)。0なら書かない
         #   (TVP既定1650)。入力の実水平トータル[ドット]に合わせると1サンプル=1ドットに
@@ -177,6 +177,19 @@ class StatusDisplay(Module):
         self.scl_low = m.scl_low
         self.sda_low = m.sda_low
         self.resetb  = Signal(reset=0)      # TVP RESETB (0=reset, 1=解除)
+        # 基板の EUI-48。**全基板で同じ MAC は製品として出せない**(同じ LAN に
+        # 2枚繋ぐとスイッチの学習テーブルが壊れて両方通信できなくなる。IPを変えても
+        # 直らない)。24AA025E48 には個体ごとに世界で一意な値が工場書込みされている
+        # ので、起動時に読んで使う。読めなければ mac_valid=0 のままで、呼び側は
+        # ローカル管理アドレスへフォールバックする。
+        self.mac       = Signal(48)
+        self.mac_valid = Signal()
+        # どこで諦めたかの記録。0=成功 1=アドレスNACK 2=レジスタNACK 3=読出アドレスNACK
+        # ★**「読めなかった」だけでは何も分からない。** 未実装なのか、別アドレスなのか、
+        #   バスが死んでいるのかで対処が全く違う。
+        self.mac_err   = Signal(2)
+        # 使ったEEPROM。0=0x50(ETH0側) 1=0x51(ETH1側)
+        self.mac_alt   = Signal()
         # 観測用
         self.tvp_ack = Signal()
         self.syncdet = Signal(8)  # reg0x14 Sync Detect Status
@@ -454,6 +467,11 @@ class StatusDisplay(Module):
         TVP_W = (tvp_addr << 1) & 0xFE       # 0xB8
         TVP_R = TVP_W | 1                    # 0xB9
         OLED_W = (oled_addr << 1) & 0xFE     # 0x78
+        # EUI-48 EEPROM(24AA025E48)。EUI-48 は 0xFA..0xFF に工場書込みされていて
+        # ハードウェア保護されている。基板には ETH0=0x50 / ETH1=0x51 の2個。
+        EE_A0 = (eeprom_addr << 1) & 0xFE            # 0xA0 (0x50)
+        EE_A1 = ((eeprom_addr + 1) << 1) & 0xFE      # 0xA2 (0x51)
+        EE_EUI_REG = 0xFA
 
         # ROM/RAM
         self.specials.font = Memory(8, 1024, init=FONT8)
@@ -639,6 +657,15 @@ class StatusDisplay(Module):
 
         # FORMAT
         fi = Signal(5)   # 0..20 (NFMT=21)
+        ee_idx = Signal(3)   # EUI-48 の読み出し位置 0..5
+        # ★**2個とも試す。** 基板には ETH0=0x50 / ETH1=0x51 の2個あり、
+        #   どちらの EUI-48 でも一意性は保たれる。片方しか実装していない基板でも
+        #   拾えるようにする。
+        ee_w = Signal(8); ee_r = Signal(8)
+        self.comb += [
+            ee_w.eq(Mux(self.mac_alt, EE_A1, EE_A0)),
+            ee_r.eq(Mux(self.mac_alt, EE_A1 | 1, EE_A0 | 1)),
+        ]
         def hexch(nib):
             return Mux(nib < 10, ord('0') + nib, ord('A') - 10 + nib)
 
@@ -653,8 +680,57 @@ class StatusDisplay(Module):
         fsm.act("POR1",
             self.resetb.eq(1),
             NextValue(rst_cnt, rst_cnt+1),
-            If(rst_cnt == int(sys_clk_freq//100), NextState("OI_START")),
+            If(rst_cnt == int(sys_clk_freq//100), NextState("EE_START")),
         )
+
+        # 1.5) EUI-48 を読む: S,0xA0,0xFA,Sr,0xA1,READ×6(最後だけNACK),P
+        #
+        # ★**OLED や TVP より先に読む。** MAC は Ethernet が最初のパケットを
+        #   出すより前に確定していないと、途中で MAC が変わってスイッチの学習が
+        #   おかしくなる。ここは電源投入から約1ms で終わる。
+        #
+        # ★**ACK が返らなければ諦める。** EEPROM 未実装の基板や、I2C が
+        #   死んでいる基板でも起動は続ける(mac_valid=0 のままにして、
+        #   呼び側がローカル管理アドレスへ落ちる)。ここで止めると
+        #   「映像も出ない」になって原因が分からなくなる。
+        fsm.act("EE_START", self.resetb.eq(1), *issue(OP_START),
+            If(m.done, NextState("EE_ADDRW")))
+        fsm.act("EE_ADDRW", self.resetb.eq(1), *issue(OP_WRITE, ee_w),
+            If(m.done,
+                If(m.ackr,
+                    NextValue(self.mac_err, 1),
+                    NextState("EE_RETRY"),
+                ).Else(NextState("EE_REG"))))
+        # 0x50 が居なければ 0x51 を試す。両方だめなら諦める
+        fsm.act("EE_RETRY", self.resetb.eq(1), *issue(OP_STOP),
+            If(m.done,
+                If(self.mac_alt,
+                    NextState("OI_START"),
+                ).Else(NextValue(self.mac_alt, 1), NextState("EE_START"))))
+        fsm.act("EE_REG", self.resetb.eq(1), *issue(OP_WRITE, EE_EUI_REG),
+            If(m.done,
+                If(m.ackr,
+                    NextValue(self.mac_err, 2), NextState("EE_STOP"),
+                ).Else(NextState("EE_RSTART"))))
+        fsm.act("EE_RSTART", self.resetb.eq(1), *issue(OP_START),
+            If(m.done, NextState("EE_ADDRR")))
+        fsm.act("EE_ADDRR", self.resetb.eq(1), *issue(OP_WRITE, ee_r),
+            If(m.done,
+                If(m.ackr,
+                    NextValue(self.mac_err, 3), NextState("EE_STOP"),
+                ).Else(NextValue(ee_idx, 0), NextState("EE_READ"))))
+        # 6バイトを MSB から詰める(0xFA が OUI の先頭 = 電線上の最初のバイト)
+        fsm.act("EE_READ", self.resetb.eq(1),
+            *issue(OP_READ, nack=(ee_idx == 5)),
+            If(m.done,
+                NextValue(self.mac, Cat(m.rdata, self.mac[:40])),
+                If(ee_idx == 5,
+                    NextValue(self.mac_valid, 1),
+                    NextValue(self.mac_err, 0),
+                    NextState("EE_STOP"),
+                ).Else(NextValue(ee_idx, ee_idx + 1))))
+        fsm.act("EE_STOP", self.resetb.eq(1), *issue(OP_STOP),
+            If(m.done, NextState("OI_START")))
 
         # 2) OLED 初期化フレーム: START,0x78,0x00,<INIT>,STOP
         fsm.act("OI_START", self.resetb.eq(1), *issue(OP_START),
