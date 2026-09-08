@@ -569,6 +569,14 @@ pub struct Shared {
     ///   ならない。UIから選び直せないと、繋ぎ替えのたびに Viewer を起動し直すことに
     ///   なる。受信スレッドが毎周これを読む。
     pub target_mac: Mutex<Option<[u8; 6]>>,
+    /// 実際に掴めたボード。**購読を出しているのはこれだけ。**
+    ///
+    /// ★**判定は受信スレッドに置く。** UI に置いたら `--headless` と
+    ///   `--fullscreen` が素通りして、取り合いがそのまま起きた(実測)。
+    ///   購読を出している側が掴む、が唯一ずれない置き場所。
+    pub claimed: Mutex<Option<[u8; 6]>>,
+    /// 他のウィンドウが使用中のボード。UI の表示用。
+    pub busy_boards: Mutex<std::collections::HashSet<[u8; 6]>>,
     pub stop: AtomicBool,
     /// 音声再生の統計(再生器が無い場合は既定値のまま)
     pub audio: Mutex<Option<Arc<crate::audio::AudioStats>>>,
@@ -876,8 +884,13 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     asm.set_interlace_decay(cfg.interlace_decay);
     let mut sub_seq: u16 = 0;
     let mut last_subscribe: Option<Instant> = None;
-    // 発見用の問いかけ(ワイルドカード+ANNOUNCE_ONLY)。指名中に使う
+    // 発見用の問いかけ(ワイルドカード+ANNOUNCE_ONLY)
     let mut last_probe: Option<Instant> = None;
+    // 掴んでいるボード。**落とすとロックが外れる**ので持ち続ける
+    let mut claim: Option<crate::claim::Claim> = None;
+    let mut last_claim: Option<Instant> = None;
+    // 「使用中で待っている」を一度だけ言うための旗
+    let mut waiting = false;
     let mut last_geom: Option<Instant> = None;
     let mut last_report = Instant::now();
     let mut bytes_since = 0u64;
@@ -944,9 +957,14 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             last_subscribe = None;   // すぐ送り直す
         }
         if !targets.is_empty() {
-            let due = last_subscribe.map_or(true, |t| t.elapsed() >= Duration::from_secs(2));
+            // ★**掴めたボードにだけ購読を出す。** 以前はワイルドカードで購読して
+            //   いたので、**LANに2枚あると両方が同時に映像を送ってきて**どちらも
+            //   組み立てられず、2つ目のウィンドウを開くと1枚を奪い合った。
+            //   発見は下の ANNOUNCE_ONLY が担うので、ここは指名だけでよい。
+            let due = last_subscribe.map_or(true, |t| t.elapsed() >= Duration::from_secs(2))
+                && claim.is_some();
             if due {
-                let mac = shared.target_mac.lock().unwrap().unwrap_or(proto::WILDCARD_MAC);
+                let mac = claim.as_ref().map(|c| c.mac).unwrap_or(proto::WILDCARD_MAC);
                 let pkt = proto::pack_subscribe(sub_seq, false, &mac);
                 // ★**送信失敗を黙って捨てない。** 以前は `let _ =` で捨てていたので、
                 //   VPNで送れないときの症状が「何も映らない」だけになり、原因を
@@ -969,9 +987,9 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             //   MACの一致しないボードが**完全に無視する**(応答もしない)ので、
             //   一覧から消えて選び直せなくなる。発見だけは全ボードへ問いかける。
             //   ANNOUNCE_ONLY なので映像の送り先は変わらない。
-            if shared.target_mac.lock().unwrap().is_some()
-                && last_probe.map_or(true, |t: Instant| t.elapsed() >= Duration::from_secs(3))
-            {
+            // ★**常に出す。** 指名した購読には他のボードが応答しないので、
+            //   これが唯一の発見手段になる。ANNOUNCE_ONLY なので送り先は動かない。
+            if last_probe.map_or(true, |t: Instant| t.elapsed() >= Duration::from_secs(3)) {
                 last_probe = Some(Instant::now());
                 let pkt = proto::pack_subscribe(sub_seq, true, &proto::WILDCARD_MAC);
                 send_all(&send_sock, cfg.port, &targets, &pkt);
@@ -984,6 +1002,76 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             {
                 let mut boards = shared.boards.lock().unwrap();
                 boards.retain(|_, b| b.last_seen.elapsed() < Duration::from_secs(10));
+            }
+
+            // --- どのボードを掴むか ---
+            //
+            // ロックの確認はファイルを open するので、毎周は回さない。
+            // ただし**まだ1枚も掴めていないなら急ぐ**(起動直後に映像が出るまでの
+            // 待ちがそのまま延びる)。
+            let hurry = claim.is_none();
+            if hurry || last_claim.map_or(true, |t: Instant| t.elapsed() >= Duration::from_secs(1))
+            {
+                last_claim = Some(Instant::now());
+                let mut macs: Vec<[u8; 6]> =
+                    shared.boards.lock().unwrap().keys().copied().collect();
+                macs.sort();
+                // 居なくなったボードは手放す。持ったままだと、戻ってくるまで
+                // 他のウィンドウも掴めない
+                if claim.as_ref().map_or(false, |c| !macs.contains(&c.mac)) {
+                    claim = None;
+                }
+                let want = *shared.target_mac.lock().unwrap();
+                // 指名が変わったら掴み直す
+                if let (Some(w), Some(c)) = (want, claim.as_ref()) {
+                    if c.mac != w {
+                        claim = None;
+                    }
+                }
+                if claim.is_none() {
+                    // ★**名指しを先に試す。** 「別窓」から開いたウィンドウが別の
+                    //   基板を掴むと、押したのと違うものが出てくる。
+                    let order = want
+                        .into_iter()
+                        .chain(macs.iter().copied().filter(|m| Some(*m) != want));
+                    for m in order {
+                        if !macs.contains(&m) {
+                            continue;
+                        }
+                        if let Some(c) = crate::claim::Claim::try_take(m) {
+                            claim = Some(c);
+                            break;
+                        }
+                    }
+                    // 掴めたら次の購読をすぐ出す
+                    if claim.is_some() {
+                        last_subscribe = None;
+                        waiting = false;
+                    } else if !macs.is_empty() && !waiting {
+                        // ★**理由を言う。** フルスクリーンにはUIが無く、
+                        //   headless も「no mode 0.0 fps」が並ぶだけなので、
+                        //   黙っていると壊れているようにしか見えない。
+                        waiting = true;
+                        let names: Vec<String> = shared
+                            .boards
+                            .lock()
+                            .unwrap()
+                            .values()
+                            .map(|b| b.name.clone())
+                            .collect();
+                        eprintln!(
+                            "見つかったボード({})はすべて別のウィンドウが使用中です。\n\
+                             空くまで待ちます(1枚のボードは同時に1つのウィンドウでしか見られません)",
+                            names.join(", ")
+                        );
+                    }
+                }
+                let own = claim.as_ref().map(|c| c.mac);
+                *shared.claimed.lock().unwrap() = own;
+                *shared.busy_boards.lock().unwrap() = macs
+                    .into_iter()
+                    .filter(|m| crate::claim::taken_by_other(m, own))
+                    .collect();
             }
         }
 

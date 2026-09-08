@@ -29,6 +29,7 @@ mod appicon;
 mod assembler;
 mod audio;
 mod bezel;
+mod claim;
 mod cleanout;
 mod fullscreen;
 mod keytap;
@@ -3446,6 +3447,23 @@ impl ViewerApp {
     /// 名指しできるが、`*ReceiveBuffers` を公開しないドライバでは空振りする。
     /// 実測のロスはどんなNICでも「いま実際に落ちている」ことを言えるが、
     /// 起きてからしか分からない。どちらかが引っかかれば取りこぼさない。
+    /// いま掴んでいるボード(受信スレッドが決める)。
+    fn claimed(&self) -> Option<[u8; 6]> {
+        *self.shared.claimed.lock().unwrap()
+    }
+
+    /// 空いているボードが1枚でもあるか(新しいウィンドウを開く意味があるか)。
+    fn has_free_board(&self) -> bool {
+        let own = self.claimed();
+        let busy = self.shared.busy_boards.lock().unwrap();
+        self.shared
+            .boards
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|m| own != Some(*m) && !busy.contains(m))
+    }
+
     /// 新しい Viewer を別ウィンドウ(別プロセス)で開く。
     ///
     /// ★**1枚のボードを2つの Viewer で見ることはできない。** ボードの映像送り先は
@@ -3504,34 +3522,41 @@ impl ViewerApp {
             return;
         }
 
-        let sel = *self.shared.target_mac.lock().unwrap();
-        // ★**1枚のときは指名の必要が無い。** 選択肢を出すと「選ばないと動かない」
-        //   ように見えるので、複数見つかったときだけ選ばせる。
-        if list.len() > 1 {
+        let own = self.claimed();
+        let sel = own;
+        let busy_set = self.shared.busy_boards.lock().unwrap().clone();
+        // 掴めていないのにボードが居る = どれも他のウィンドウが使用中
+        if own.is_none() && !list.is_empty() {
             ui.label(
-                egui::RichText::new(format!("{} 枚見つかりました", list.len()))
+                egui::RichText::new("★どのボードも他のウィンドウが使用中です")
                     .size(11.0)
                     .color(theme::AMBER),
+            )
+            .on_hover_text(
+                "ボードの映像送り先はプロトコル上1つだけです。\n1枚のボードを2つのウィンドウでは見られません",
             );
-            if sel.is_none() {
-                ui.label(
-                    egui::RichText::new("★指名していないので全ボードが同時に映像を送ります。1枚選んでください")
-                        .size(11.0)
-                        .color(theme::AMBER),
-                );
-            }
         }
 
-        let mut want: Option<Option<[u8; 6]>> = None;
+        let mut want: Option<[u8; 6]> = None;
         let mut open_new: Option<[u8; 6]> = None;
         for b in &list {
             let mac = b.mac.map(|x| format!("{x:02x}")).join(":");
             let picked = sel == Some(b.mac);
+            let busy = busy_set.contains(&b.mac);
             let label = format!("{}  {}", b.name, b.addr);
-            if list.len() > 1 {
-                ui.horizontal(|ui| {
-                    if ui.selectable_label(picked, label).clicked() && !picked {
-                        want = Some(Some(b.mac));
+            ui.horizontal(|ui| {
+                // ★**使用中は選べない。** 押せてしまうと、掴めずに黙って映像が
+                //   止まる(何が起きたのか分からない)。
+                let resp = ui.add_enabled(
+                    !busy,
+                    egui::Button::selectable(picked, label).wrap_mode(egui::TextWrapMode::Extend),
+                );
+                if busy {
+                    resp.on_hover_text("他のウィンドウが使用中です");
+                    ui.label(egui::RichText::new("使用中").size(10.0).color(theme::AMBER));
+                } else {
+                    if resp.clicked() && !picked {
+                        want = Some(b.mac);
                     }
                     // ★**2枚同時に見るなら別ウィンドウ。** 1つの Viewer は
                     //   1つのストリームしか組み立てられない
@@ -3543,10 +3568,8 @@ impl ViewerApp {
                     {
                         open_new = Some(b.mac);
                     }
-                });
-            } else {
-                ui.monospace(label);
-            }
+                }
+            });
             ui.weak(
                 egui::RichText::new(format!(
                     "  {mac}  fw {}.{}.{}",
@@ -3570,22 +3593,18 @@ impl ViewerApp {
             self.open_new_session(Some(m));
         }
         if let Some(m) = want {
-            *self.shared.target_mac.lock().unwrap() = m;
+            // 掴み直すのは受信スレッド。ここは希望を置くだけ
+            *self.shared.target_mac.lock().unwrap() = Some(m);
             // 選び直したら個体設定を取り直す
             self.ident_for = None;
             self.ident_name_edit = None;
             self.ident_ip_edit = None;
             self.ident_name_seen = None;
             self.ident_ip_seen = None;
-            self.toasts.info(format!(
-                "ボードを切り替えました: {}",
-                list.iter().find(|b| Some(b.mac) == m).map_or("?", |b| b.name.as_str())
-            ));
         }
 
-        // 設定の対象は「指名しているボード」。指名が無く1枚だけならそれ。
-        let target = sel.or_else(|| (list.len() == 1).then(|| list[0].mac));
-        let Some(target) = target else {
+        // 設定を触れるのは掴んでいるボードだけ
+        let Some(target) = own else {
             return;
         };
 
@@ -4206,7 +4225,15 @@ impl eframe::App for ViewerApp {
         //   開こうとしても既存のウィンドウが前面に来るだけなので、アプリの中に
         //   入口が要る(`open -n` を使う。session.rs 参照)。
         if root.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
-            self.open_new_session(None);
+            // ★**空きが無いなら開かない。** ボードの映像送り先は1つしか無いので、
+            //   開いても取り合いになるだけ。開く前に断る方が親切。
+            if self.has_free_board() {
+                self.open_new_session(None);
+            } else {
+                self.toasts.notice(
+                    "空いているボードがありません(1枚のボードを2つのウィンドウでは見られません)",
+                );
+            }
         }
         if root.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
             self.show_panel = !self.show_panel;
