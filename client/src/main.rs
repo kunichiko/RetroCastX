@@ -39,6 +39,7 @@ mod remote_input;
 mod render;
 mod protocol;
 mod receiver;
+mod session;
 mod settings;
 mod theme;
 mod toast;
@@ -91,9 +92,16 @@ fn main() -> eframe::Result {
     // 減衰をそのまま掛けると面全体がフィールドレートでちらつく。CRTの残光を模すなら
     // 少し減衰させたい人もいるので設定にしてある。
     let mut interlace_decay = 1.0f32;
+    // ★**--mac は他の引数より先に見る。** 設定ファイルの置き場所を決めるので、
+    //   読んだ後では遅い(2つ同時に開いたときに同じファイルを取り合う)。
+    {
+        let a: Vec<String> = std::env::args().skip(1).collect();
+        let mac_arg = a.iter().position(|x| x == "--mac").and_then(|i| a.get(i + 1)).cloned();
+        settings::Settings::use_profile(mac_arg.as_deref());
+    }
     // 保存済み設定を読み、CLI引数があればそれで上書きする(その回だけ有効)
     let mut cfg = settings::Settings::load();
-    eprintln!("settings: {}", settings::Settings::path().display());
+    eprintln!("settings: {}", settings::Settings::active_path().display());
     let mut audio = receiver::AudioOpts::default();
     audio.source = cfg.audio_source;
     // 起動時から設定のデバイスで開く(既定デバイスで鳴り始めるのを防ぐ)
@@ -3438,6 +3446,21 @@ impl ViewerApp {
     /// 名指しできるが、`*ReceiveBuffers` を公開しないドライバでは空振りする。
     /// 実測のロスはどんなNICでも「いま実際に落ちている」ことを言えるが、
     /// 起きてからしか分からない。どちらかが引っかかれば取りこぼさない。
+    /// 新しい Viewer を別ウィンドウ(別プロセス)で開く。
+    ///
+    /// ★**1枚のボードを2つの Viewer で見ることはできない。** ボードの映像送り先は
+    ///   プロトコル上1つしか無いので、指名せずに2つ開くと同じボードを取り合う。
+    ///   だから「別のボードを開く」を主な入口にしてある。
+    fn open_new_session(&mut self, mac: Option<[u8; 6]>) {
+        match session::spawn_new(mac) {
+            Ok(()) => self.toasts.info(match &mac {
+                Some(m) => format!("別ウィンドウで開きます: {}", session::mac_to_string(m)),
+                None => "新しいウィンドウを開きます".to_string(),
+            }),
+            Err(e) => self.toasts.notice(format!("新しいウィンドウを開けません: {e}")),
+        }
+    }
+
     /// ボード名を16バイトNUL詰めの4語にする。長すぎるなら None。
     fn name_to_words(name: &str) -> Option<[u32; 4]> {
         let b = name.as_bytes();
@@ -3500,14 +3523,27 @@ impl ViewerApp {
         }
 
         let mut want: Option<Option<[u8; 6]>> = None;
+        let mut open_new: Option<[u8; 6]> = None;
         for b in &list {
             let mac = b.mac.map(|x| format!("{x:02x}")).join(":");
             let picked = sel == Some(b.mac);
             let label = format!("{}  {}", b.name, b.addr);
             if list.len() > 1 {
-                if ui.selectable_label(picked, label).clicked() && !picked {
-                    want = Some(Some(b.mac));
-                }
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(picked, label).clicked() && !picked {
+                        want = Some(Some(b.mac));
+                    }
+                    // ★**2枚同時に見るなら別ウィンドウ。** 1つの Viewer は
+                    //   1つのストリームしか組み立てられない
+                    if !picked
+                        && ui
+                            .small_button("別窓")
+                            .on_hover_text("このボードを新しいウィンドウで開く")
+                            .clicked()
+                    {
+                        open_new = Some(b.mac);
+                    }
+                });
             } else {
                 ui.monospace(label);
             }
@@ -3529,6 +3565,9 @@ impl ViewerApp {
                         .color(theme::AMBER),
                 );
             }
+        }
+        if let Some(m) = open_new {
+            self.open_new_session(Some(m));
         }
         if let Some(m) = want {
             *self.shared.target_mac.lock().unwrap() = m;
@@ -4161,6 +4200,14 @@ impl eframe::App for ViewerApp {
         // MimicX への転送中はここへ来ない。raw_input_hook が先にイベントを
         // 取り除いているので、Tab も B も X68000 のキーとして送られる
         // (⌘+Shift+ESC で転送を切れば元に戻る)。
+        // ⌘N(Windows/Linux は Ctrl+N)で新しいセッションを開く。
+        //
+        // ★**macOS の .app は二重起動できない。** Finder や Dock から2つ目を
+        //   開こうとしても既存のウィンドウが前面に来るだけなので、アプリの中に
+        //   入口が要る(`open -n` を使う。session.rs 参照)。
+        if root.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
+            self.open_new_session(None);
+        }
         if root.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
             self.show_panel = !self.show_panel;
             self.mark_settings_dirty();

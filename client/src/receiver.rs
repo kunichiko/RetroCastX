@@ -520,6 +520,31 @@ pub struct BoardInfo {
     pub last_seen: Instant,
 }
 
+/// ANNOUNCE を一覧へ反映する。
+///
+/// ★**キーはMAC。IPで索ってはいけない。** 以前は送信元アドレスをキーにしていた
+///   ので、固定IPに切り替えた瞬間に**1枚の基板が2枚に見えた**(古いアドレスの
+///   エントリが残り、期限も無かった)。実機で踏んでいる(2026-09-08)。
+///   IPはボードの属性であって同一性ではない。
+pub fn upsert_board(
+    boards: &mut HashMap<[u8; 6], BoardInfo>,
+    src_ip: &str,
+    a: &proto::Announce,
+    now: Instant,
+) {
+    boards.insert(
+        a.mac,
+        BoardInfo {
+            addr: src_ip.to_string(),
+            name: a.name.clone(),
+            mac: a.mac,
+            fw_version: a.fw_version,
+            caps: a.caps,
+            last_seen: now,
+        },
+    );
+}
+
 #[derive(Default)]
 pub struct Shared {
     /// ドット復元(1タップ逆フィルタ)の係数 a ×1000。0 = 無効。
@@ -530,7 +555,13 @@ pub struct Shared {
     pub frame_gen: AtomicU64,
     pub mode: Mutex<Option<proto::Mode>>,
     pub stats: Mutex<StatsSnapshot>,
-    pub boards: Mutex<HashMap<String, BoardInfo>>,
+    /// 見つかっているボード。**キーはMAC。**
+    ///
+    /// ★**IPで索いてはいけない。** 以前は送信元アドレスをキーにしていたので、
+    ///   固定IPに切り替えた瞬間に**同じ基板が2枚に見えた**(古いアドレスの
+    ///   エントリが残る)。IPはボードの属性であって同一性ではない。
+    ///   MAC は EUI-48 なので基板ごとに必ず違う。
+    pub boards: Mutex<HashMap<[u8; 6], BoardInfo>>,
     /// 指名しているボードのMAC。None ならワイルドカード(LAN上の全ボード)。
     ///
     /// ★**起動時の `--mac` ではなく実行時に変える。** LANに2枚あるとワイルドカードの
@@ -845,6 +876,8 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     asm.set_interlace_decay(cfg.interlace_decay);
     let mut sub_seq: u16 = 0;
     let mut last_subscribe: Option<Instant> = None;
+    // 発見用の問いかけ(ワイルドカード+ANNOUNCE_ONLY)。指名中に使う
+    let mut last_probe: Option<Instant> = None;
     let mut last_geom: Option<Instant> = None;
     let mut last_report = Instant::now();
     let mut bytes_since = 0u64;
@@ -930,6 +963,27 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 };
                 sub_seq = sub_seq.wrapping_add(1);
                 last_subscribe = Some(Instant::now());
+            }
+
+            // ★**指名すると他のボードが見えなくなる。** 指名した SUBSCRIBE は
+            //   MACの一致しないボードが**完全に無視する**(応答もしない)ので、
+            //   一覧から消えて選び直せなくなる。発見だけは全ボードへ問いかける。
+            //   ANNOUNCE_ONLY なので映像の送り先は変わらない。
+            if shared.target_mac.lock().unwrap().is_some()
+                && last_probe.map_or(true, |t: Instant| t.elapsed() >= Duration::from_secs(3))
+            {
+                last_probe = Some(Instant::now());
+                let pkt = proto::pack_subscribe(sub_seq, true, &proto::WILDCARD_MAC);
+                send_all(&send_sock, cfg.port, &targets, &pkt);
+                sub_seq = sub_seq.wrapping_add(1);
+            }
+
+            // ★**居なくなったボードは消す。** 抜いた基板が一覧に残ると、
+            //   選べてしまうのに映像が来ない状態になる。問いかけへの応答は
+            //   2〜3秒ごとに来るので、10秒来なければ居ない。
+            {
+                let mut boards = shared.boards.lock().unwrap();
+                boards.retain(|_, b| b.last_seen.elapsed() < Duration::from_secs(10));
             }
         }
 
@@ -1119,17 +1173,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         // 発見情報はアセンブラと別に集計(送信元アドレスが正)
         if let Ok(Packet::Announce(a)) = proto::parse(&buf[..n]) {
             let mut boards = shared.boards.lock().unwrap();
-            boards.insert(
-                src_ip.to_string(),
-                BoardInfo {
-                    addr: src_ip.to_string(),
-                    name: a.name.clone(),
-                    mac: a.mac,
-                    fw_version: a.fw_version,
-                    caps: a.caps,
-                    last_seen: Instant::now(),
-                },
-            );
+            upsert_board(&mut boards, &src_ip.to_string(), &a, Instant::now());
         }
 
         // UIから残光が変わっていたら取り込む(フレーム完成時だけで十分)
@@ -1271,6 +1315,55 @@ fn tick_stats(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn ann(mac: [u8; 6], name: &str) -> proto::Announce {
+        proto::Announce {
+            mac,
+            udp_port: 34600,
+            fw_version: 0x0243,
+            caps: 1,
+            name: name.to_string(),
+            seq: 0,
+        }
+    }
+
+    /// ★**同じ基板がIPを変えても1枚のまま。** 固定IPに切り替えた瞬間に
+    ///   「2枚見つかりました」と出て、指名を促す警告まで表示された
+    ///   (2026-09-08 に実機で踏んだ)。IPをキーにしていたのが原因。
+    #[test]
+    fn changing_ip_does_not_duplicate_a_board() {
+        let mac = [0x74, 0xc9, 0x0f, 0x7c, 0x84, 0x29];
+        let mut boards = HashMap::new();
+        let now = Instant::now();
+        upsert_board(&mut boards, "169.254.132.41", &ann(mac, "retrocastx-i5"), now);
+        upsert_board(&mut boards, "10.0.0.42", &ann(mac, "retrocastx-i5"), now);
+        assert_eq!(boards.len(), 1, "IPを変えただけで2枚に見えている");
+        assert_eq!(boards[&mac].addr, "10.0.0.42", "新しいアドレスになっていない");
+    }
+
+    /// MACが違えば別の基板。ここまで潰してしまうと本当の複数台が見えなくなる。
+    #[test]
+    fn different_macs_stay_separate() {
+        let mut boards = HashMap::new();
+        let now = Instant::now();
+        upsert_board(&mut boards, "169.254.132.41", &ann([1, 2, 3, 4, 5, 6], "a"), now);
+        upsert_board(&mut boards, "169.254.9.9", &ann([1, 2, 3, 4, 5, 7], "b"), now);
+        assert_eq!(boards.len(), 2);
+    }
+
+    /// ★**居なくなったら消える。** 抜いた基板が残ると、選べるのに映像が
+    ///   来ないボードが一覧に居座る。
+    #[test]
+    fn stale_boards_expire() {
+        let mut boards = HashMap::new();
+        let old = Instant::now() - Duration::from_secs(30);
+        upsert_board(&mut boards, "169.254.1.1", &ann([1; 6], "gone"), old);
+        upsert_board(&mut boards, "169.254.1.2", &ann([2; 6], "here"), Instant::now());
+        boards.retain(|_, b| b.last_seen.elapsed() < Duration::from_secs(10));
+        assert_eq!(boards.len(), 1);
+        assert_eq!(boards[&[2u8; 6]].name, "here");
+    }
     use super::pick_targets;
     use std::net::Ipv4Addr;
 

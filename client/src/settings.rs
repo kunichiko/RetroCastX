@@ -19,6 +19,10 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+/// 実際に使う設定ファイル。`use_profile` で起動時に決める。
+static ACTIVE: OnceLock<PathBuf> = OnceLock::new();
 
 /// ドット復元の係数 a の既定値 ×1000。
 ///
@@ -214,6 +218,25 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// 設定ファイル。`--mac` で指名して起動したときはボードごとに分ける。
+    ///
+    /// ★**2つ同時に開くと同じファイルを取り合う。** 後から保存した方が勝つので、
+    ///   片方のウィンドウで詰めた画枠パラメータがもう片方に消される。
+    /// ★**そもそも画枠パラメータはボードごとの値。** 別の機械が繋がっている
+    ///   のだから pll_divide も位相もゲインも違って当たり前で、分ける方が正しい。
+    /// ★**指名せずに起動したときは従来どおり `viewer.conf`。** UI から選び直した
+    ///   だけでファイルが変わると、設定が消えたように見える。
+    pub fn path_for(mac: Option<&str>) -> PathBuf {
+        let p = Self::path();
+        match mac {
+            None => p,
+            Some(m) => {
+                let tag: String = m.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+                p.with_file_name(format!("viewer-{}.conf", tag.to_ascii_lowercase()))
+            }
+        }
+    }
+
     pub fn path() -> PathBuf {
         // Windows では XDG_CONFIG_HOME も HOME も無いことが多い。そのまま
         // フォールバックすると「.」= カレントディレクトリに作ってしまい、
@@ -231,9 +254,19 @@ impl Settings {
         base.join("retrocastx").join("viewer.conf")
     }
 
+    /// 実際に読み書きする場所。`use_profile` を呼んでいなければ `path()`。
+    pub fn active_path() -> PathBuf {
+        ACTIVE.get().cloned().unwrap_or_else(Self::path)
+    }
+
+    /// 起動時に1回だけ、`--mac` に応じた設定ファイルを選ぶ。
+    pub fn use_profile(mac: Option<&str>) {
+        let _ = ACTIVE.set(Self::path_for(mac));
+    }
+
     pub fn load() -> Self {
         let mut s = Self::default();
-        let Ok(text) = std::fs::read_to_string(Self::path()) else { return s };
+        let Ok(text) = std::fs::read_to_string(Self::active_path()) else { return s };
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -372,7 +405,7 @@ impl Settings {
     }
 
     pub fn save(&self) {
-        let path = Self::path();
+        let path = Self::active_path();
         if let Some(dir) = path.parent() {
             if std::fs::create_dir_all(dir).is_err() {
                 return;
