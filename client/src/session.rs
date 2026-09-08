@@ -35,7 +35,7 @@ pub fn bundle_root(exe: &Path) -> Option<PathBuf> {
 ///
 /// ★**他の引数は引き継ぐ。** `--bind` を指定して VPN 環境で使っている人が、
 ///   新しいセッションだけ送信できなくなるのは分かりにくい。
-pub fn args_without_mac<I: IntoIterator<Item = String>>(args: I) -> Vec<String> {
+pub fn args_without<I: IntoIterator<Item = String>>(args: I, drop: &[&str]) -> Vec<String> {
     let mut out = Vec::new();
     let mut skip = false;
     for a in args {
@@ -43,7 +43,7 @@ pub fn args_without_mac<I: IntoIterator<Item = String>>(args: I) -> Vec<String> 
             skip = false;
             continue;
         }
-        if a == "--mac" {
+        if drop.contains(&a.as_str()) {
             skip = true;
             continue;
         }
@@ -56,13 +56,21 @@ pub fn mac_to_string(mac: &[u8; 6]) -> String {
     mac.map(|x| format!("{x:02x}")).join(":")
 }
 
-/// 新しい Viewer を開く。`mac` を渡すとそのボードを指名した状態で立ち上がる。
-pub fn spawn_new(mac: Option<[u8; 6]>) -> std::io::Result<()> {
+/// 新しい Viewer を開く。
+///
+/// - `mac`: そのボードを指名した状態で立ち上げる(「別窓」から)
+/// - `slot`: ウィンドウ番号を指定する(前回の並びを復元するとき)。
+///   省略すると子が**空いているうち最小**を取るので、通常は渡さない。
+pub fn spawn_new(mac: Option<[u8; 6]>, slot: Option<u32>) -> std::io::Result<()> {
     let exe = std::env::current_exe()?;
-    let mut extra = args_without_mac(std::env::args().skip(1));
+    let mut extra = args_without(std::env::args().skip(1), &["--mac", "--slot"]);
     if let Some(m) = &mac {
         extra.push("--mac".into());
         extra.push(mac_to_string(m));
+    }
+    if let Some(id) = slot {
+        extra.push("--slot".into());
+        extra.push(id.to_string());
     }
 
     if cfg!(target_os = "macos") {
@@ -111,16 +119,18 @@ mod tests {
     /// ★**--mac は1つだけになること。** 引き継ぎで2つ並ぶと、後勝ちか先勝ちかが
     ///   引数解析の実装依存になる。
     #[test]
-    fn replaces_the_mac_argument() {
-        let args = ["--bind", "192.168.11.24", "--mac", "aa:bb:cc:dd:ee:ff", "--no-vsync"]
-            .map(String::from);
-        let out = args_without_mac(args);
+    fn replaces_the_mac_and_slot_arguments() {
+        let args = [
+            "--bind", "192.168.11.24", "--mac", "aa:bb:cc:dd:ee:ff", "--slot", "3", "--no-vsync",
+        ]
+        .map(String::from);
+        let out = args_without(args, &["--mac", "--slot"]);
         assert_eq!(out, vec!["--bind", "192.168.11.24", "--no-vsync"]);
     }
 
     #[test]
-    fn keeps_other_args_when_no_mac() {
+    fn keeps_other_args() {
         let args = ["--board", "10.0.0.42"].map(String::from);
-        assert_eq!(args_without_mac(args), vec!["--board", "10.0.0.42"]);
+        assert_eq!(args_without(args, &["--mac", "--slot"]), vec!["--board", "10.0.0.42"]);
     }
 }

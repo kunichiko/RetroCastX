@@ -562,13 +562,12 @@ pub struct Shared {
     ///   エントリが残る)。IPはボードの属性であって同一性ではない。
     ///   MAC は EUI-48 なので基板ごとに必ず違う。
     pub boards: Mutex<HashMap<[u8; 6], BoardInfo>>,
-    /// 指名しているボードのMAC。None ならワイルドカード(LAN上の全ボード)。
+    /// どのボードに繋ぐか。**UIから実行時に変えられる。**
     ///
-    /// ★**起動時の `--mac` ではなく実行時に変える。** LANに2枚あるとワイルドカードの
-    ///   購読は**両方が同時に映像を送ってくる**ので、どちらのラインも混ざって絵に
-    ///   ならない。UIから選び直せないと、繋ぎ替えのたびに Viewer を起動し直すことに
-    ///   なる。受信スレッドが毎周これを読む。
-    pub target_mac: Mutex<Option<[u8; 6]>>,
+    /// ★**「自動」と「特定の基板」を分ける。** 1枚しか持っていない人には勝手に
+    ///   繋がるのが正しいが、3画面で使う人は「この窓はこの基板」が固定されて
+    ///   いないと並びが毎回入れ替わる。
+    pub board_sel: Mutex<crate::settings::BoardSel>,
     /// 実際に掴めたボード。**購読を出しているのはこれだけ。**
     ///
     /// ★**判定は受信スレッドに置く。** UI に置いたら `--headless` と
@@ -660,8 +659,8 @@ pub fn spawn(
     repaint: impl Fn() + Send + 'static,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     // `--mac` は**初期値**。以後は UI が shared 側を書き換える
-    if cfg.target_mac.is_some() {
-        *shared.target_mac.lock().unwrap() = cfg.target_mac;
+    if let Some(m) = cfg.target_mac {
+        *shared.board_sel.lock().unwrap() = crate::settings::BoardSel::Mac(m);
     }
     // 500Mbps級のバーストに耐えるよう受信バッファを拡大(OSデフォルトは
     // 数十KBで、フレームクローン等で受信スレッドが一瞬停まるだけで溢れる)
@@ -1021,20 +1020,27 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 if claim.as_ref().map_or(false, |c| !macs.contains(&c.mac)) {
                     claim = None;
                 }
-                let want = *shared.target_mac.lock().unwrap();
-                // 指名が変わったら掴み直す
-                if let (Some(w), Some(c)) = (want, claim.as_ref()) {
-                    if c.mac != w {
-                        claim = None;
-                    }
+                let sel = *shared.board_sel.lock().unwrap();
+                // 指定が変わったら掴み直す
+                let keep = match (sel, claim.as_ref()) {
+                    (crate::settings::BoardSel::None, _) => false,
+                    (crate::settings::BoardSel::Mac(w), Some(c)) => c.mac == w,
+                    (_, Some(_)) => true,
+                    (_, None) => false,
+                };
+                if !keep {
+                    claim = None;
                 }
                 if claim.is_none() {
-                    // ★**名指しを先に試す。** 「別窓」から開いたウィンドウが別の
-                    //   基板を掴むと、押したのと違うものが出てくる。
-                    let order = want
-                        .into_iter()
-                        .chain(macs.iter().copied().filter(|m| Some(*m) != want));
-                    for m in order {
+                    // ★**「特定の基板」は他へ流れない。** 3画面で使うときに、
+                    //   指定した基板が見つからないからといって隣の基板を掴んだら
+                    //   並びが入れ替わる。見つかるまで未選択で待つ。
+                    let candidates: Vec<[u8; 6]> = match sel {
+                        crate::settings::BoardSel::None => Vec::new(),
+                        crate::settings::BoardSel::Mac(m) => vec![m],
+                        crate::settings::BoardSel::Auto => macs.clone(),
+                    };
+                    for m in candidates {
                         if !macs.contains(&m) {
                             continue;
                         }
@@ -1047,7 +1053,10 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                     if claim.is_some() {
                         last_subscribe = None;
                         waiting = false;
-                    } else if !macs.is_empty() && !waiting {
+                    } else if !macs.is_empty()
+                        && sel != crate::settings::BoardSel::None
+                        && !waiting
+                    {
                         // ★**理由を言う。** フルスクリーンにはUIが無く、
                         //   headless も「no mode 0.0 fps」が並ぶだけなので、
                         //   黙っていると壊れているようにしか見えない。
@@ -1082,7 +1091,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 if targets.is_empty() {
                     q.clear();
                 } else {
-                    let mac = shared.target_mac.lock().unwrap().unwrap_or(proto::WILDCARD_MAC);
+                    let mac = claim.as_ref().map(|c| c.mac).unwrap_or(proto::WILDCARD_MAC);
                     for (key, value) in q.drain(..) {
                         let pkt = proto::pack_config(sub_seq, 0, 0, key, value, &mac);
                         send_all(&send_sock, cfg.port, &targets, &pkt);
@@ -1117,7 +1126,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 if targets.is_empty() {
                     q.clear();
                 } else {
-                    let mac = shared.target_mac.lock().unwrap().unwrap_or(proto::WILDCARD_MAC);
+                    let mac = claim.as_ref().map(|c| c.mac).unwrap_or(proto::WILDCARD_MAC);
                     for key in q.drain(..) {
                         let pkt = proto::pack_config(sub_seq, 0, 1, key, 0, &mac);
                         send_all(&send_sock, cfg.port, &targets, &pkt);

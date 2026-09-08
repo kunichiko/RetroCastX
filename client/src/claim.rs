@@ -27,6 +27,59 @@ pub fn lock_path(mac: &[u8; 6]) -> PathBuf {
     Settings::path().with_file_name(format!("claim-{}.lock", mac_tag(mac)))
 }
 
+/// ウィンドウの数の上限。
+///
+/// ★**無制限にしない。** 押し間違いや復元の暴走で何十個も開くと、1つあたり
+///   60Mbps を受けるので機械ごと沈む。3画面筐体(ダライアス等)に足りればよい。
+pub const MAX_SLOTS: u32 = 10;
+
+/// ウィンドウの通し番号。
+///
+/// ★**番号は「空いているうち最小」。** 0,1,2 を開いて1を閉じ、また開いたら
+///   1が返ってくる ─ ウィンドウごとの設定(画枠・音量・接続先)がその番号に
+///   紐づいているので、番号が飛ぶと前回の設定が拾えない。
+pub fn slot_path(id: u32) -> PathBuf {
+    Settings::path().with_file_name(format!("slot-{id}.lock"))
+}
+
+/// 掴んだウィンドウ番号。**落とすとロックが外れる。**
+pub struct Slot {
+    pub id: u32,
+    _file: File,
+}
+
+impl Slot {
+    /// 指定の番号を掴む。使われていれば None。
+    pub fn take(id: u32) -> Option<Slot> {
+        let file = open_lock(&slot_path(id))?;
+        file.try_lock().ok()?;
+        Some(Slot { id, _file: file })
+    }
+
+    /// 空いているうち**最小**の番号を掴む。全部埋まっていれば None。
+    pub fn take_lowest_free() -> Option<Slot> {
+        (0..MAX_SLOTS).find_map(Slot::take)
+    }
+}
+
+/// その番号のウィンドウがいま開いているか。
+pub fn slot_in_use(id: u32) -> bool {
+    let Some(file) = open_lock(&slot_path(id)) else { return false };
+    file.try_lock().is_err()
+}
+
+fn open_lock(path: &std::path::Path) -> Option<File> {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .ok()
+}
+
 /// 掴んでいるボード。**落とすとロックが外れる**ので、使っている間は持ち続ける。
 pub struct Claim {
     pub mac: [u8; 6],
@@ -36,16 +89,7 @@ pub struct Claim {
 impl Claim {
     /// 掴めたら Some。他のウィンドウが使っていれば None。
     pub fn try_take(mac: [u8; 6]) -> Option<Claim> {
-        let path = lock_path(&mac);
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(&path)
-            .ok()?;
+        let file = open_lock(&lock_path(&mac))?;
         // ★**try_lock。** 待ってはいけない ─ UIスレッドから呼ぶので、
         //   掴めないなら即座に「使用中」と答える必要がある。
         file.try_lock().ok()?;
@@ -62,11 +106,8 @@ pub fn taken_by_other(mac: &[u8; 6], own: Option<[u8; 6]>) -> bool {
     if own == Some(*mac) {
         return false;
     }
-    let path = lock_path(mac);
-    let Ok(file) = OpenOptions::new().create(true).write(true).truncate(false).open(&path) else {
-        // ロックファイルすら作れない環境では、掴めない前提にすると何も開けなくなる
-        return false;
-    };
+    // ロックファイルすら作れない環境では、掴めない前提にすると何も開けなくなる
+    let Some(file) = open_lock(&lock_path(mac)) else { return false };
     match file.try_lock() {
         Ok(()) => false, // 掴めた = 誰も使っていない(ここで落として解放)
         Err(_) => true,
@@ -76,6 +117,23 @@ pub fn taken_by_other(mac: &[u8; 6], own: Option<[u8; 6]>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★**空いているうち最小が返ること。** 0,1,2を開いて1を閉じたら、次に開く
+    ///   ウィンドウは1でなければならない(1の設定が復元される前提が崩れる)。
+    #[test]
+    fn takes_the_lowest_free_slot() {
+        // 他のテストと衝突しないよう、掴んだものは最後まで持っておく
+        let a = Slot::take_lowest_free().expect("0が取れない");
+        let b = Slot::take_lowest_free().expect("1が取れない");
+        let c = Slot::take_lowest_free().expect("2が取れない");
+        assert_eq!((a.id, b.id, c.id), (0, 1, 2));
+        assert!(slot_in_use(1));
+        drop(b);
+        assert!(!slot_in_use(1));
+        let again = Slot::take_lowest_free().expect("空いた1が取れない");
+        assert_eq!(again.id, 1, "空いた最小の番号ではなく {} を返した", again.id);
+        drop((a, c, again));
+    }
 
     #[test]
     fn tag_is_stable_and_lowercase() {

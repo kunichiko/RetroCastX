@@ -93,13 +93,35 @@ fn main() -> eframe::Result {
     // 減衰をそのまま掛けると面全体がフィールドレートでちらつく。CRTの残光を模すなら
     // 少し減衰させたい人もいるので設定にしてある。
     let mut interlace_decay = 1.0f32;
-    // ★**--mac は他の引数より先に見る。** 設定ファイルの置き場所を決めるので、
-    //   読んだ後では遅い(2つ同時に開いたときに同じファイルを取り合う)。
-    {
+    // ★**ウィンドウ番号を最初に決める。** 設定ファイルの置き場所がこれで
+    //   決まるので、読んだ後では遅い。番号は「空いているうち最小」で、
+    //   0,1,2 を開いて1を閉じ、また開いたら1が返る ─ ウィンドウごとの設定
+    //   (画枠・音量・接続先)がその番号に紐づいている。
+    let slot = {
         let a: Vec<String> = std::env::args().skip(1).collect();
-        let mac_arg = a.iter().position(|x| x == "--mac").and_then(|i| a.get(i + 1)).cloned();
-        settings::Settings::use_profile(mac_arg.as_deref());
-    }
+        let want = a
+            .iter()
+            .position(|x| x == "--slot")
+            .and_then(|i| a.get(i + 1))
+            .and_then(|v| v.parse::<u32>().ok());
+        let got = match want {
+            Some(id) => claim::Slot::take(id),
+            None => claim::Slot::take_lowest_free(),
+        };
+        match got {
+            Some(s) => s,
+            None => {
+                eprintln!(
+                    "ウィンドウはすでに {} 個開いています(上限)。\n                     どれかを閉じてから開いてください。",
+                    claim::MAX_SLOTS
+                );
+                std::process::exit(1);
+            }
+        }
+    };
+    settings::Settings::use_slot(slot.id);
+    eprintln!("ウィンドウ番号: {}", slot.id);
+
     // 保存済み設定を読み、CLI引数があればそれで上書きする(その回だけ有効)
     let mut cfg = settings::Settings::load();
     eprintln!("settings: {}", settings::Settings::active_path().display());
@@ -242,13 +264,45 @@ fn main() -> eframe::Result {
         wgpu_options.surface.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
         wgpu_options.surface.desired_maximum_frame_latency = Some(1); // 低遅延優先
     }
+
+    // ★**GUIのときだけ復元する。** ここより上に置くと `--headless` や
+    //   `--fullscreen` でも走り、診断のために headless を叩いただけで
+    //   GUIウィンドウが勝手に開く。
+    // ★**前回いっしょに開いていたウィンドウを復元する。** 3画面筐体では
+    //   「3つ並べて3台に繋いだ配置」そのものが設定なので、毎回手で開き直すのは
+    //   使い物にならない。
+    // ★**番号を指定して起動した子は復元しない。** そうしないと復元の連鎖で
+    //   ウィンドウが増殖する。復元するのは「自分で最小の番号を取った親」だけ。
+    if !std::env::args().any(|a| a == "--slot") && !std::env::args().any(|a| a == "--no-restore") {
+        for id in settings::Settings::slots_to_restore(slot.id, claim::MAX_SLOTS) {
+            if claim::slot_in_use(id) {
+                continue;
+            }
+            match session::spawn_new(None, Some(id)) {
+                Ok(()) => eprintln!("ウィンドウ #{id} を復元します"),
+                Err(e) => eprintln!("ウィンドウ #{id} を復元できません: {e}"),
+            }
+        }
+    }
+
     let options = eframe::NativeOptions {
         viewport: {
             // アイコンは実行時に設定しないとタスクバー/タイトルバーに出ない
             // (exeへの埋め込みはExplorerのファイル用。appicon.rs 参照)
             let mut vp = egui::ViewportBuilder::default()
                 .with_inner_size([cfg.window_w, cfg.window_h])
-                .with_title("RetroCast X");
+                .with_title(if slot.id == 0 {
+                    "RetroCast X".to_string()
+                } else {
+                    // ★**番号を出す。** 3つ並べたときに、どのウィンドウの設定を
+                    //   触っているのか分からなくなる
+                    format!("RetroCast X #{}", slot.id)
+                });
+            // ★**位置も戻す。** 大きさだけでは並びが戻らない(3画面筐体では
+            //   横に並べた配置そのものが設定)。
+            if let (Some(x), Some(y)) = (cfg.window_x, cfg.window_y) {
+                vp = vp.with_position([x, y]);
+            }
             if let Some(icon) = appicon::egui_icon() {
                 vp = vp.with_icon(icon);
             }
@@ -263,7 +317,7 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             // アイコン由来の配色を先に当てる(ウィジェットが作られる前)
             theme::apply(&cc.egui_ctx);
-            Ok(Box::new(ViewerApp::new(cc, port, subscribe_to, target_mac, bind.clone(), no_vsync, decay, interlace_decay,
+            Ok(Box::new(ViewerApp::new(slot, cc, port, subscribe_to, target_mac, bind.clone(), no_vsync, decay, interlace_decay,
                                        audio, cfg.clone())))
         }),
     )
@@ -817,6 +871,18 @@ struct ViewerApp {
     tune_gain_b: i32,
     /// 現在のウィンドウ内寸(保存用)
     window_size: egui::Vec2,
+    /// ウィンドウ位置(復元用)。並びを戻すのに要る
+    window_pos: Option<egui::Pos2>,
+    /// 最後に心拍(=設定の保存)を打った時刻
+    settings_beat: Option<std::time::Instant>,
+    /// このウィンドウの番号。
+    ///
+    /// ★**読まないが持ち続ける。** 落とすとロックが外れて、別のウィンドウが
+    ///   同じ番号(=同じ設定ファイル)を取れてしまう。
+    #[allow(dead_code)]
+    slot: claim::Slot,
+    /// 接続先の指定(自動 / 特定の基板 / つながない)
+    board_sel: settings::BoardSel,
     /// 中央の描画領域と画のサイズ。ウィンドウを等倍に合わせるのに使う
     last_avail: egui::Vec2,
     last_tex: egui::Vec2,
@@ -908,6 +974,7 @@ struct ViewerApp {
 
 impl ViewerApp {
     fn new(
+        slot: claim::Slot,
         cc: &eframe::CreationContext<'_>,
         port: u16,
         subscribe_to: Option<String>,
@@ -997,6 +1064,10 @@ impl ViewerApp {
             tune_gain_g: 61,
             tune_gain_b: 57,
             window_size: egui::vec2(cfg.window_w, cfg.window_h),
+            window_pos: cfg.window_x.zip(cfg.window_y).map(|(x, y)| egui::pos2(x, y)),
+            settings_beat: None,
+            slot,
+            board_sel: cfg.board_sel,
             last_avail: egui::Vec2::ZERO,
             last_tex: egui::Vec2::ZERO,
             did_autofit: false,
@@ -1267,6 +1338,11 @@ impl ViewerApp {
             crop_y: self.crop[1],
             crop_w: self.crop[2],
             crop_h: self.crop[3],
+            board_sel: self.board_sel,
+            // 生きている間は心拍を打つ。落ちても最後の時刻が残るので復元できる
+            last_used: settings::Settings::now_unix(),
+            window_x: self.window_pos.map(|p| p.x),
+            window_y: self.window_pos.map(|p| p.y),
             window_w: self.window_size.x,
             window_h: self.window_size.y,
             tune_vbp: self.tune_vbp,
@@ -3452,6 +3528,22 @@ impl ViewerApp {
         *self.shared.claimed.lock().unwrap()
     }
 
+    /// 接続先の指定を変える。**保存もする**(次の起動で並びが戻るように)。
+    fn set_board_sel(&mut self, sel: settings::BoardSel) {
+        if self.board_sel == sel {
+            return;
+        }
+        self.board_sel = sel;
+        *self.shared.board_sel.lock().unwrap() = sel;
+        // 選び直したら個体設定を取り直す
+        self.ident_for = None;
+        self.ident_name_edit = None;
+        self.ident_ip_edit = None;
+        self.ident_name_seen = None;
+        self.ident_ip_seen = None;
+        self.mark_settings_dirty();
+    }
+
     /// 空いているボードが1枚でもあるか(新しいウィンドウを開く意味があるか)。
     fn has_free_board(&self) -> bool {
         let own = self.claimed();
@@ -3470,7 +3562,7 @@ impl ViewerApp {
     ///   プロトコル上1つしか無いので、指名せずに2つ開くと同じボードを取り合う。
     ///   だから「別のボードを開く」を主な入口にしてある。
     fn open_new_session(&mut self, mac: Option<[u8; 6]>) {
-        match session::spawn_new(mac) {
+        match session::spawn_new(mac, None) {
             Ok(()) => self.toasts.info(match &mac {
                 Some(m) => format!("別ウィンドウで開きます: {}", session::mac_to_string(m)),
                 None => "新しいウィンドウを開きます".to_string(),
@@ -3521,21 +3613,57 @@ impl ViewerApp {
             ui.weak("見つかっていません");
             return;
         }
+        // 掴めていない理由を出す。黙って映らないのが一番分かりにくい
+        if self.claimed().is_none() {
+            let why = match self.board_sel {
+                settings::BoardSel::None => "未選択です(上の「自動」か下の一覧から選んでください)",
+                settings::BoardSel::Auto => "★空いているボードがありません(他のウィンドウが使用中)",
+                settings::BoardSel::Mac(_) => "★指定したボードが見つからないか使用中です",
+            };
+            ui.label(egui::RichText::new(why).size(11.0).color(theme::AMBER))
+                .on_hover_text(
+                    "ボードの映像送り先はプロトコル上1つだけです。\n                     1枚のボードを2つのウィンドウでは見られません",
+                );
+        }
 
         let own = self.claimed();
-        let sel = own;
         let busy_set = self.shared.busy_boards.lock().unwrap().clone();
-        // 掴めていないのにボードが居る = どれも他のウィンドウが使用中
-        if own.is_none() && !list.is_empty() {
-            ui.label(
-                egui::RichText::new("★どのボードも他のウィンドウが使用中です")
-                    .size(11.0)
-                    .color(theme::AMBER),
-            )
-            .on_hover_text(
-                "ボードの映像送り先はプロトコル上1つだけです。\n1枚のボードを2つのウィンドウでは見られません",
-            );
-        }
+
+        // ★**「自動」を既定にしておく。** ボードを1枚しか持っていない人が大半で、
+        //   その人は何も選ばなくても繋がるべき。3画面で使う人だけが基板を指名する。
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "接続");
+            let mut next = self.board_sel;
+            if ui
+                .selectable_label(self.board_sel == settings::BoardSel::Auto, "自動")
+                .on_hover_text("空いているボードを見つけ次第つなぐ")
+                .clicked()
+            {
+                next = settings::BoardSel::Auto;
+            }
+            if ui
+                .selectable_label(self.board_sel == settings::BoardSel::None, "未選択")
+                .on_hover_text("つながない")
+                .clicked()
+            {
+                next = settings::BoardSel::None;
+            }
+            if let settings::BoardSel::Mac(m) = self.board_sel {
+                ui.label(
+                    egui::RichText::new("指定").size(11.0).color(theme::ACCENT),
+                )
+                .on_hover_text(format!(
+                    "{} だけにつなぐ(見つからなければ未選択のまま待つ)",
+                    session::mac_to_string(&m)
+                ));
+            }
+            self.set_board_sel(next);
+        });
+
+        let sel = match self.board_sel {
+            settings::BoardSel::Mac(m) => Some(m),
+            _ => own,
+        };
 
         let mut want: Option<[u8; 6]> = None;
         let mut open_new: Option<[u8; 6]> = None;
@@ -3545,29 +3673,25 @@ impl ViewerApp {
             let busy = busy_set.contains(&b.mac);
             let label = format!("{}  {}", b.name, b.addr);
             ui.horizontal(|ui| {
-                // ★**使用中は選べない。** 押せてしまうと、掴めずに黙って映像が
-                //   止まる(何が起きたのか分からない)。
-                let resp = ui.add_enabled(
-                    !busy,
+                // ★**使用中でも選べる。** 選んでおけば、相手のウィンドウが閉じた
+                //   瞬間に繋がる。押せないと「先に相手を閉じてから選び直す」しか
+                //   なくなって面倒。
+                let resp = ui.add(
                     egui::Button::selectable(picked, label).wrap_mode(egui::TextWrapMode::Extend),
                 );
+                if resp.clicked() && !picked {
+                    want = Some(b.mac);
+                }
                 if busy {
-                    resp.on_hover_text("他のウィンドウが使用中です");
-                    ui.label(egui::RichText::new("使用中").size(10.0).color(theme::AMBER));
-                } else {
-                    if resp.clicked() && !picked {
-                        want = Some(b.mac);
-                    }
-                    // ★**2枚同時に見るなら別ウィンドウ。** 1つの Viewer は
-                    //   1つのストリームしか組み立てられない
-                    if !picked
-                        && ui
-                            .small_button("別窓")
-                            .on_hover_text("このボードを新しいウィンドウで開く")
-                            .clicked()
-                    {
-                        open_new = Some(b.mac);
-                    }
+                    ui.label(egui::RichText::new("使用中").size(10.0).color(theme::AMBER))
+                        .on_hover_text("他のウィンドウが使っています(選んでおけば空き次第つながります)");
+                } else if !picked
+                    && ui
+                        .small_button("別窓")
+                        .on_hover_text("このボードを新しいウィンドウで開く")
+                        .clicked()
+                {
+                    open_new = Some(b.mac);
                 }
             });
             ui.weak(
@@ -3593,14 +3717,7 @@ impl ViewerApp {
             self.open_new_session(Some(m));
         }
         if let Some(m) = want {
-            // 掴み直すのは受信スレッド。ここは希望を置くだけ
-            *self.shared.target_mac.lock().unwrap() = Some(m);
-            // 選び直したら個体設定を取り直す
-            self.ident_for = None;
-            self.ident_name_edit = None;
-            self.ident_ip_edit = None;
-            self.ident_name_seen = None;
-            self.ident_ip_seen = None;
+            self.set_board_sel(settings::BoardSel::Mac(m));
         }
 
         // 設定を触れるのは掴んでいるボードだけ
@@ -4202,6 +4319,20 @@ impl eframe::App for ViewerApp {
                 self.window_size = sz;
                 self.mark_settings_dirty();
             }
+            // ★**位置も覚える。** 3画面で横に並べた配置そのものが設定になる。
+            if self.window_pos.map_or(true, |p| (r.min - p).length() > 1.0) {
+                self.window_pos = Some(r.min);
+                self.mark_settings_dirty();
+            }
+        }
+        // ★**何も触っていなくても定期的に保存する。** 保存されるのは「最後に
+        //   使っていた時刻」で、これが復元の判断材料になる。変更時だけ書いて
+        //   いると、開いたまま放置したウィンドウが復元されなくなる。
+        if self.settings_beat.map_or(true, |t: std::time::Instant| {
+            t.elapsed() >= std::time::Duration::from_secs(20)
+        }) {
+            self.settings_beat = Some(std::time::Instant::now());
+            self.mark_settings_dirty();
         }
         // 変更があれば少し待って1回だけ保存する(スライダー操作中の連続書込を避ける)
         self.flush_settings();
@@ -4225,15 +4356,9 @@ impl eframe::App for ViewerApp {
         //   開こうとしても既存のウィンドウが前面に来るだけなので、アプリの中に
         //   入口が要る(`open -n` を使う。session.rs 参照)。
         if root.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
-            // ★**空きが無いなら開かない。** ボードの映像送り先は1つしか無いので、
-            //   開いても取り合いになるだけ。開く前に断る方が親切。
-            if self.has_free_board() {
-                self.open_new_session(None);
-            } else {
-                self.toasts.notice(
-                    "空いているボードがありません(1枚のボードを2つのウィンドウでは見られません)",
-                );
-            }
+            // ★**いつでも開ける。** 空いているボードが無ければ「未選択」の窓が
+            //   開くだけ。開けない方が不便だし、あとで空けば繋がる。
+            self.open_new_session(None);
         }
         if root.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
             self.show_panel = !self.show_panel;
