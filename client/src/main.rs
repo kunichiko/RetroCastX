@@ -3773,13 +3773,36 @@ impl ViewerApp {
         let ee = got(protocol::CFG_KEY_IDENT_EE);
         drop(st);
 
-        if board_name.is_none() {
-            ui.add_space(4.0);
-            ui.weak("設定を読み込んでいます…");
-            return;
-        }
-        let board_name = board_name.unwrap();
+        // ★**個体設定は畳む。** 一度決めたら触らないものなので、繋ぎ先の
+        //   確認より前に出てくると邪魔になる。ボードが1枚だけの人には、
+        //   上の1行(名前とアドレス)だけ見えていれば十分。
+        // ★**読み込み中でも見出しは出す。** 値が届いた瞬間に節が生えると、
+        //   その下の項目がまとめて動いて押し間違える。
+        egui::CollapsingHeader::new("個体設定(名前 / IP)")
+            .id_salt("board_ident")
+            .default_open(false)
+            .show(ui, |ui| match board_name {
+                None => {
+                    ui.weak("読み込んでいます…");
+                }
+                Some(name) => {
+                    self.ident_body(ui, target, name, net_mode, static_ip, save_state, ee)
+                }
+            });
+    }
 
+    /// 個体設定の中身(名前 / 固定IP / EEPROMへ焼く)。
+    #[allow(clippy::too_many_arguments)]
+    fn ident_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        target: [u8; 6],
+        board_name: String,
+        net_mode: Option<u32>,
+        static_ip: Option<u32>,
+        save_state: Option<u32>,
+        ee: Option<u32>,
+    ) {
         // ボード側の値が動いたら編集欄を捨てる(自分のSETが着地した場合を含む)
         if self.ident_name_seen.as_deref() != Some(board_name.as_str()) {
             self.ident_name_seen = Some(board_name.clone());
@@ -4428,7 +4451,15 @@ impl eframe::App for ViewerApp {
                 }
                 ui.separator();
 
-                // ★よく使う操作を最上部に置く。簡易スキャンはモードが変わるたびに
+                // ★**接続先はいちばん上。** これより下は全部「いま繋がっている
+                //   ボード」の話(Mode / Stats / Tune / 個体設定)なので、
+                //   どれに繋がっているかが先に見えていないと意味が読めない。
+                //   窓を3つ並べて3台に繋ぐ使い方では、ここが最初に確認する場所。
+                Self::section(ui, "ボード");
+                self.boards_ui(ui);
+                ui.separator();
+
+                // ★よく使う操作を上部に置く。簡易スキャンはモードが変わるたびに
                 //   押すので、Tune の奥だけにあると毎回スクロールすることになる。
                 self.quick_scan_bar(ui);
                 ui.separator();
@@ -4603,10 +4634,6 @@ impl eframe::App for ViewerApp {
 
                 Self::section(ui, "Tune");
                 self.tune_ui(ui);
-                ui.separator();
-
-                Self::section(ui, "ボード");
-                self.boards_ui(ui);
                 ui.separator();
 
                 // 管面(ブラウン管の物理的な表示領域)。
