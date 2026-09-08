@@ -51,6 +51,7 @@ KNOWN = [
     (0x0006, "mac_info", "bit0=EEPROM読めた bit1=0x51側 bit3:2=失敗箇所(1=addr 2=reg 3=rd)(RO)"),
     (0x0007, "mac_lo", "使用中のMAC 下位32bit(RO)"),
     (0x0008, "mac_hi", "使用中のMAC 上位16bit(RO)"),
+    (0x0009, "build_id", "ビルド元コミットの短縮SHA。タグが同じでも中身を区別できる(RO)"),
     (0x0010, "vbp",               "キャプチャ窓の先頭をVSYNCの何行後にするか"),
     (0x0011, "hs_offset",         "水平バックポーチ[DATACLK]"),
     (0x0012, "pll_divide",        "H-PLL帰還分周比=1ライン当たりDATACLK数"),
