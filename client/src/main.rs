@@ -852,6 +852,13 @@ struct Session {
     window_size: egui::Vec2,
     /// ウィンドウ位置(復元用)。並びを戻すのに要る
     window_pos: Option<egui::Pos2>,
+    /// このセッションのビューポートを一度でも出したか。
+    ///
+    /// ★**位置と大きさは最初の1回しか指定しない。** 毎フレーム
+    ///   `ViewportBuilder` に載せると、eframe が差分を見て毎回
+    ///   「ここへ動かせ」を送る。ユーザがドラッグしても次のフレームで
+    ///   引き戻され、**掴んでも動かせないウィンドウ**になる。
+    viewport_shown: bool,
     /// 最後に心拍(=設定の保存)を打った時刻
     settings_beat: Option<std::time::Instant>,
     /// アプリへの要求: 新しいウィンドウを開きたい(次のフレームで App が拾う)。
@@ -1037,6 +1044,7 @@ impl Session {
             tune_gain_b: 57,
             window_size: egui::vec2(cfg.window_w, cfg.window_h),
             window_pos: cfg.window_x.zip(cfg.window_y).map(|(x, y)| egui::pos2(x, y)),
+            viewport_shown: false,
             settings_beat: None,
             want_new_window: None,
             slot_id,
@@ -4422,11 +4430,15 @@ impl eframe::App for App {
         let mut closed: Vec<u32> = Vec::new();
         for s in self.sessions.iter_mut().skip(1) {
             let id = egui::ViewportId::from_hash_of(("retrocastx-session", s.slot_id));
-            let mut builder = egui::ViewportBuilder::default()
-                .with_title(format!("RetroCast X #{}", s.slot_id))
-                .with_inner_size(s.window_size);
-            if let Some(p) = s.window_pos {
-                builder = builder.with_position(p);
+            let mut builder =
+                egui::ViewportBuilder::default().with_title(format!("RetroCast X #{}", s.slot_id));
+            if !s.viewport_shown {
+                // 初回だけ前回の位置と大きさを指定する。以後は触らない
+                builder = builder.with_inner_size(s.window_size);
+                if let Some(p) = s.window_pos {
+                    builder = builder.with_position(p);
+                }
+                s.viewport_shown = true;
             }
             ctx.show_viewport_immediate(id, builder, |ui, _class| {
                 if ui.ctx().input(|i| i.viewport().close_requested()) {
@@ -4496,13 +4508,18 @@ impl Session {
         self.refresh_texture(&ctx);
         self.pace.note_upload(t_tex.elapsed());
         // ウィンドウ内寸を覚えておき、次回起動時に復元する
-        if let Some(r) = ctx.input(|i| i.viewport().inner_rect) {
+        let (inner, outer) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().outer_rect));
+        if let Some(r) = inner {
             let sz = r.size();
             if (sz - self.window_size).length() > 1.0 {
                 self.window_size = sz;
                 self.mark_settings_dirty();
             }
-            // ★**位置も覚える。** 3画面で横に並べた配置そのものが設定になる。
+        }
+        // ★**位置は外枠(`outer_rect`)で覚える。** `with_position` が指すのは
+        //   外枠なので、内枠(`inner_rect`)を渡すと**毎回タイトルバーの高さだけ
+        //   下へずれる**。ウィンドウが画面の下へ歩いていって張り付いた。
+        if let Some(r) = outer.or(inner) {
             if self.window_pos.map_or(true, |p| (r.min - p).length() > 1.0) {
                 self.window_pos = Some(r.min);
                 self.mark_settings_dirty();
