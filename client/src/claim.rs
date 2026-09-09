@@ -99,7 +99,18 @@ pub fn now_nanos() -> u128 {
 ///   出すだけなので、**「全部閉じてから起動し直す」ができない** ─ 前回の並びを
 ///   復元する動きが一生始まらない。
 pub fn request_quit_all() {
-    let _ = std::fs::write(quit_path(), now_nanos().to_string());
+    let path = quit_path();
+    // ★**置き場所を先に作る。** 設定を一度も保存していない機械では
+    //   ディレクトリがまだ無く、書込みが黙って失敗する ─ ⌘Q が伝わらず、
+    //   「初回起動のときだけ全部閉じられない」という再現しにくい形になる
+    //   (CI がまさにその状態で、試験が落ちて気付いた)。
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = std::fs::write(&path, now_nanos().to_string()) {
+        // 黙って失敗させない。他のウィンドウが閉じない理由が分からなくなる
+        eprintln!("終了要求を書けません ({}): {e}", path.display());
+    }
 }
 
 /// 自分が起動したあとに終了要求が出ていたか。
