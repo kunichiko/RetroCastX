@@ -234,6 +234,16 @@ fn main() -> eframe::Result {
                     args.next().expect("--audio-buffer needs ms").parse().unwrap();
                 audio.max_ms = audio.prebuffer_ms * 3;
             }
+            // 起動の最初に事前走査で読んである(設定ファイルの置き場所と
+            // 復元の可否がこれで決まるため)。ここでは読み飛ばすだけ。
+            // ★**知らないと即死する。** 復元で起こした子に `--slot` を渡して
+            //   いたのに、ここが知らずに `unknown arg` で exit(2) していた。
+            //   症状は「起動しても1つしか開かない」で、原因から遠い。
+            f if session::PRESCAN_FLAGS.contains(&f) => {
+                if session::PRESCAN_WITH_VALUE.contains(&f) {
+                    args.next();
+                }
+            }
             other => {
                 eprintln!("unknown arg: {other}");
                 std::process::exit(2);
@@ -875,6 +885,19 @@ struct ViewerApp {
     window_pos: Option<egui::Pos2>,
     /// 最後に心拍(=設定の保存)を打った時刻
     settings_beat: Option<std::time::Instant>,
+    /// このプロセスが起動した時刻(ナノ秒)。**古い終了要求で死なないため。**
+    started_nanos: u128,
+    /// このウィンドウは「閉じられた」のか。
+    ///
+    /// ★**「ウィンドウを閉じる」と「アプリを終了する」を区別する。** ウィンドウは
+    ///   別プロセスなので、区別しないと ⌘Q が1つしか閉じない(macOSのアプリとして
+    ///   変)か、窓を1つ閉じただけで全部消える(もっと変)かのどちらかになる。
+    ///   × ボタンと ⌘W は `close_requested` として見えるが、⌘Q は見えない。
+    window_closed: bool,
+    /// 終了要求を最後に見に行った時刻(毎フレームファイルを読まない)
+    quit_check_at: Option<std::time::Instant>,
+    /// 他にもウィンドウが開いているか(「すべて終了」を出すかの判断)
+    other_windows: bool,
     /// このウィンドウの番号。
     ///
     /// ★**読まないが持ち続ける。** 落とすとロックが外れて、別のウィンドウが
@@ -1066,6 +1089,10 @@ impl ViewerApp {
             window_size: egui::vec2(cfg.window_w, cfg.window_h),
             window_pos: cfg.window_x.zip(cfg.window_y).map(|(x, y)| egui::pos2(x, y)),
             settings_beat: None,
+            started_nanos: claim::now_nanos(),
+            window_closed: false,
+            quit_check_at: None,
+            other_windows: false,
             slot,
             board_sel: cfg.board_sel,
             last_avail: egui::Vec2::ZERO,
@@ -3523,6 +3550,66 @@ impl ViewerApp {
     /// 名指しできるが、`*ReceiveBuffers` を公開しないドライバでは空振りする。
     /// 実測のロスはどんなNICでも「いま実際に落ちている」ことを言えるが、
     /// 起きてからしか分からない。どちらかが引っかかれば取りこぼさない。
+    /// ウィンドウの操作(新規 / すべて終了)。
+    ///
+    /// ★**「すべて終了」を目に見える場所に置く。** ウィンドウごとに別プロセス
+    ///   なので、⌘Q が全部を閉じるかどうかは OS とツールキットの都合に乗って
+    ///   いる。押せば必ず全部終わる口を1つ用意しておく。
+    /// ★**1つしか開いていないときは出さない。** そのときは ⌘Q で足りる。
+    fn window_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if ui
+                .small_button("新規ウィンドウ")
+                .on_hover_text("⌘N。別のボードを見るときに使います")
+                .clicked()
+            {
+                self.open_new_session(None);
+            }
+            if self.other_windows {
+                if ui
+                    .small_button("すべて終了")
+                    .on_hover_text(
+                        "開いている全ウィンドウを閉じます。\n                         次に起動すると、この並びがそのまま戻ります",
+                    )
+                    .clicked()
+                {
+                    claim::request_quit_all();
+                    self.window_closed = true;
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                ui.weak(egui::RichText::new(format!("#{}", self.slot.id)).size(10.0))
+                    .on_hover_text("このウィンドウの番号。設定はこの番号ごとに保存されます");
+            }
+        });
+    }
+
+    /// 終了まわりの見張り。**毎フレーム呼ぶ。**
+    ///
+    /// - × ボタン / ⌘W で閉じられたなら、伝播しない印を付ける
+    /// - 他のウィンドウが ⌘Q されていたら、自分も閉じる
+    fn watch_exit(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().close_requested()) {
+            self.window_closed = true;
+            return;
+        }
+        // ファイルを毎フレーム読まない
+        let due = self
+            .quit_check_at
+            .map_or(true, |t: std::time::Instant| t.elapsed() >= std::time::Duration::from_secs(1));
+        if !due {
+            return;
+        }
+        self.quit_check_at = Some(std::time::Instant::now());
+        let me = self.slot.id;
+        self.other_windows =
+            (0..claim::MAX_SLOTS).any(|i| i != me && claim::slot_in_use(i));
+        if claim::quit_all_requested(self.started_nanos) {
+            // 印は既に出ているので、自分は伝播しない
+            self.window_closed = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
     /// いま掴んでいるボード(受信スレッドが決める)。
     fn claimed(&self) -> Option<[u8; 6]> {
         *self.shared.claimed.lock().unwrap()
@@ -4342,6 +4429,15 @@ impl eframe::App for ViewerApp {
 
     /// 終了時にも保存する(遅延書込の待ち時間中に閉じても取りこぼさない)
     fn on_exit(&mut self) {
+        // ★**⌘Q なら全ウィンドウを終わらせる。** ウィンドウごとに別プロセスなので、
+        //   そのままだと ⌘Q が1つしか閉じず、**アプリ全体を終了できない**。
+        //   macOS は .app が1つでも生きていれば Dock から起動しても既存インスタンスを
+        //   前面に出すだけなので、「全部閉じて起動し直す」ができず、前回の並びを
+        //   復元する動きが一生始まらない。
+        //   × ボタンや ⌘W(= `close_requested`)は**このウィンドウだけ**閉じる。
+        if !self.window_closed {
+            claim::request_quit_all();
+        }
         // 押しっぱなしのキーを実機に残さない。ここで送らないと操作不能になる
         self.remote.set_enabled(false);
         // 遅延を無視して即座に書く
@@ -4399,6 +4495,8 @@ impl eframe::App for ViewerApp {
         // MimicX への転送中はここへ来ない。raw_input_hook が先にイベントを
         // 取り除いているので、Tab も B も X68000 のキーとして送られる
         // (⌘+Shift+ESC で転送を切れば元に戻る)。
+        self.watch_exit(&ctx);
+
         // ⌘N(Windows/Linux は Ctrl+N)で新しいセッションを開く。
         //
         // ★**macOS の .app は二重起動できない。** Finder や Dock から2つ目を
@@ -4450,6 +4548,7 @@ impl eframe::App for ViewerApp {
                 //   どちらも「どの節にも属さない道具」なので、節の間に挟まって
                 //   いると迷子に見える。
                 self.quick_scan_bar(ui);
+                self.window_bar(ui);
                 // ★**送れていないことを明示する。** 「何も映らない」だけだと
                 //   受信側の問題と区別できず、原因の切り分けに時間がかかる。
                 if let Some(err) = self.shared.net_error.lock().unwrap().clone() {
