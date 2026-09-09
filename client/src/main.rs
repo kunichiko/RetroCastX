@@ -40,7 +40,6 @@ mod remote_input;
 mod render;
 mod protocol;
 mod receiver;
-mod session;
 mod settings;
 mod theme;
 mod toast;
@@ -93,38 +92,13 @@ fn main() -> eframe::Result {
     // 減衰をそのまま掛けると面全体がフィールドレートでちらつく。CRTの残光を模すなら
     // 少し減衰させたい人もいるので設定にしてある。
     let mut interlace_decay = 1.0f32;
-    // ★**ウィンドウ番号を最初に決める。** 設定ファイルの置き場所がこれで
-    //   決まるので、読んだ後では遅い。番号は「空いているうち最小」で、
-    //   0,1,2 を開いて1を閉じ、また開いたら1が返る ─ ウィンドウごとの設定
-    //   (画枠・音量・接続先)がその番号に紐づいている。
-    let slot = {
-        let a: Vec<String> = std::env::args().skip(1).collect();
-        let want = a
-            .iter()
-            .position(|x| x == "--slot")
-            .and_then(|i| a.get(i + 1))
-            .and_then(|v| v.parse::<u32>().ok());
-        let got = match want {
-            Some(id) => claim::Slot::take(id),
-            None => claim::Slot::take_lowest_free(),
-        };
-        match got {
-            Some(s) => s,
-            None => {
-                eprintln!(
-                    "ウィンドウはすでに {} 個開いています(上限)。\n                     どれかを閉じてから開いてください。",
-                    claim::MAX_SLOTS
-                );
-                std::process::exit(1);
-            }
-        }
-    };
-    settings::Settings::use_slot(slot.id);
-    eprintln!("ウィンドウ番号: {}", slot.id);
+    // ★**ウィンドウ番号はアプリが配る。** 1プロセスで複数のウィンドウを開く
+    //   ので、プロセスごとにロックを取る必要はもう無い。0番が主ウィンドウ。
+    let slot_id: u32 = 0;
 
     // 保存済み設定を読み、CLI引数があればそれで上書きする(その回だけ有効)
-    let mut cfg = settings::Settings::load();
-    eprintln!("settings: {}", settings::Settings::active_path().display());
+    let mut cfg = settings::Settings::load_slot(slot_id);
+    eprintln!("settings: {}", settings::Settings::path_for_slot(slot_id).display());
     let mut audio = receiver::AudioOpts::default();
     audio.source = cfg.audio_source;
     // 起動時から設定のデバイスで開く(既定デバイスで鳴り始めるのを防ぐ)
@@ -234,16 +208,6 @@ fn main() -> eframe::Result {
                     args.next().expect("--audio-buffer needs ms").parse().unwrap();
                 audio.max_ms = audio.prebuffer_ms * 3;
             }
-            // 起動の最初に事前走査で読んである(設定ファイルの置き場所と
-            // 復元の可否がこれで決まるため)。ここでは読み飛ばすだけ。
-            // ★**知らないと即死する。** 復元で起こした子に `--slot` を渡して
-            //   いたのに、ここが知らずに `unknown arg` で exit(2) していた。
-            //   症状は「起動しても1つしか開かない」で、原因から遠い。
-            f if session::PRESCAN_FLAGS.contains(&f) => {
-                if session::PRESCAN_WITH_VALUE.contains(&f) {
-                    args.next();
-                }
-            }
             other => {
                 eprintln!("unknown arg: {other}");
                 std::process::exit(2);
@@ -275,38 +239,18 @@ fn main() -> eframe::Result {
         wgpu_options.surface.desired_maximum_frame_latency = Some(1); // 低遅延優先
     }
 
-    // ★**GUIのときだけ復元する。** ここより上に置くと `--headless` や
-    //   `--fullscreen` でも走り、診断のために headless を叩いただけで
-    //   GUIウィンドウが勝手に開く。
-    // ★**前回いっしょに開いていたウィンドウを復元する。** 3画面筐体では
-    //   「3つ並べて3台に繋いだ配置」そのものが設定なので、毎回手で開き直すのは
-    //   使い物にならない。
-    // ★**番号を指定して起動した子は復元しない。** そうしないと復元の連鎖で
-    //   ウィンドウが増殖する。復元するのは「自分で最小の番号を取った親」だけ。
-    if !std::env::args().any(|a| a == "--slot") && !std::env::args().any(|a| a == "--no-restore") {
-        for id in settings::Settings::slots_to_restore(slot.id, claim::MAX_SLOTS) {
-            if claim::slot_in_use(id) {
-                continue;
-            }
-            match session::spawn_new(None, Some(id)) {
-                Ok(()) => eprintln!("ウィンドウ #{id} を復元します"),
-                Err(e) => eprintln!("ウィンドウ #{id} を復元できません: {e}"),
-            }
-        }
-    }
-
     let options = eframe::NativeOptions {
         viewport: {
             // アイコンは実行時に設定しないとタスクバー/タイトルバーに出ない
             // (exeへの埋め込みはExplorerのファイル用。appicon.rs 参照)
             let mut vp = egui::ViewportBuilder::default()
                 .with_inner_size([cfg.window_w, cfg.window_h])
-                .with_title(if slot.id == 0 {
+                .with_title(if slot_id == 0 {
                     "RetroCast X".to_string()
                 } else {
                     // ★**番号を出す。** 3つ並べたときに、どのウィンドウの設定を
                     //   触っているのか分からなくなる
-                    format!("RetroCast X #{}", slot.id)
+                    format!("RetroCast X #{}", slot_id)
                 });
             // ★**位置も戻す。** 大きさだけでは並びが戻らない(3画面筐体では
             //   横に並べた配置そのものが設定)。
@@ -327,8 +271,33 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             // アイコン由来の配色を先に当てる(ウィジェットが作られる前)
             theme::apply(&cc.egui_ctx);
-            Ok(Box::new(ViewerApp::new(slot, cc, port, subscribe_to, target_mac, bind.clone(), no_vsync, decay, interlace_decay,
-                                       audio, cfg.clone())))
+            install_cjk_font(&cc.egui_ctx);
+            // ★**映像テクスチャの置き場はアプリに1つ。** セッションごとに
+            //   insert すると型で索く辞書なので上書きになり、**先に開いた
+            //   ウィンドウの映像が消える**。中身はウィンドウ番号で分ける。
+            if let Some(rs) = cc.wgpu_render_state.as_ref() {
+                // 描画先の色空間を出す。映像テクスチャはこれに合わせて選ぶ
+                // (render::video_tex_format が sRGB 性を揃える)。
+                eprintln!("render target format: {:?}", rs.target_format);
+                rs.renderer
+                    .write()
+                    .callback_resources
+                    .insert(render::Blits::default());
+            }
+            let mut app = App {
+                sessions: vec![Session::new(
+                    slot_id, &cc.egui_ctx, cc.wgpu_render_state.clone(), port,
+                    subscribe_to, target_mac, bind.clone(), no_vsync,
+                    decay, interlace_decay, audio, cfg.clone(),
+                )],
+                port,
+                bind: bind.clone(),
+                no_vsync,
+                decay,
+                interlace_decay,
+            };
+            app.restore_windows(&cc.egui_ctx, cc.wgpu_render_state.clone());
+            Ok(Box::new(app))
         }),
     )
 }
@@ -774,7 +743,7 @@ fn quick_pick(probes: &[(u8, f32, f32)]) -> (usize, f32) {
 const AUTO_PLL_MIN: u32 = 200;
 const AUTO_PLL_MAX: u32 = 2304;
 
-struct ViewerApp {
+struct Session {
     shared: Arc<receiver::Shared>,
     /// 再生中の音声source(UI表示用)
     audio_source: Option<u8>,
@@ -885,25 +854,15 @@ struct ViewerApp {
     window_pos: Option<egui::Pos2>,
     /// 最後に心拍(=設定の保存)を打った時刻
     settings_beat: Option<std::time::Instant>,
-    /// このプロセスが起動した時刻(ナノ秒)。**古い終了要求で死なないため。**
-    started_nanos: u128,
-    /// このウィンドウは「閉じられた」のか。
+    /// アプリへの要求: 新しいウィンドウを開きたい(次のフレームで App が拾う)。
+    /// 指定があればそのボードを選んだ状態で開く。
+    want_new_window: Option<Option<[u8; 6]>>,
+    /// このウィンドウの番号。設定ファイル・GPUテクスチャ・ビューポートIDの鍵。
     ///
-    /// ★**「ウィンドウを閉じる」と「アプリを終了する」を区別する。** ウィンドウは
-    ///   別プロセスなので、区別しないと ⌘Q が1つしか閉じない(macOSのアプリとして
-    ///   変)か、窓を1つ閉じただけで全部消える(もっと変)かのどちらかになる。
-    ///   × ボタンと ⌘W は `close_requested` として見えるが、⌘Q は見えない。
-    window_closed: bool,
-    /// 終了要求を最後に見に行った時刻(毎フレームファイルを読まない)
-    quit_check_at: Option<std::time::Instant>,
-    /// 他にもウィンドウが開いているか(「すべて終了」を出すかの判断)
-    other_windows: bool,
-    /// このウィンドウの番号。
-    ///
-    /// ★**読まないが持ち続ける。** 落とすとロックが外れて、別のウィンドウが
-    ///   同じ番号(=同じ設定ファイル)を取れてしまう。
-    #[allow(dead_code)]
-    slot: claim::Slot,
+    /// ★**空いているうち最小を割り当てる。** 0,1,2 を開いて1を閉じ、また開けば
+    ///   1が返るので、そのウィンドウの設定(画枠・音量・接続先・位置)が
+    ///   そのまま復元される。
+    slot_id: u32,
     /// 接続先の指定(自動 / 特定の基板 / つながない)
     board_sel: settings::BoardSel,
     /// 中央の描画領域と画のサイズ。ウィンドウを等倍に合わせるのに使う
@@ -984,7 +943,7 @@ struct ViewerApp {
     remote_toggle: remote_input::ToggleDetect,
     /// 物理キーの取り出し口。egui の Key では JIS の ¥/_/かな が落ちるので、
     /// AppKit のイベントを直接見る(keytap.rs)
-    keytap: keytap::KeyTap,
+    keytap: Option<keytap::KeyTap>,
     /// NIC受信バッファーの確認結果。ボードが見つかってから1回だけ調べる
     /// (レジストリを読むだけなので同期でよい)
     netcheck: Option<netcheck::Buffers>,
@@ -995,10 +954,15 @@ struct ViewerApp {
     netcheck_muted: bool,
 }
 
-impl ViewerApp {
+impl Session {
+    /// ★**`CreationContext` を受け取らない。** 起動時にしか手に入らないので、
+    ///   受け取っていると**実行中にウィンドウを増やせない**。必要なのは
+    ///   `egui::Context` と wgpu の描画状態だけで、どちらも後からでも取れる。
+    #[allow(clippy::too_many_arguments)]
     fn new(
-        slot: claim::Slot,
-        cc: &eframe::CreationContext<'_>,
+        slot_id: u32,
+        egui_ctx: &egui::Context,
+        render_state: Option<eframe::egui_wgpu::RenderState>,
         port: u16,
         subscribe_to: Option<String>,
         target_mac: Option<[u8; 6]>,
@@ -1010,23 +974,8 @@ impl ViewerApp {
         cfg: settings::Settings,
     ) -> Self {
         let audio_source = audio.source;
-        install_cjk_font(&cc.egui_ctx);
-        // 通常モードもフルスクリーンと同じシェーダで描く。見え方が食い違わないように。
-        if let Some(rs) = cc.wgpu_render_state.as_ref() {
-            // 描画先の色空間を出す。映像テクスチャはこれに合わせて選ぶ
-            // (render::video_tex_format が sRGB 性を揃える)。
-            //
-            // ★このコメントは以前「ここが sRGB でないと中間調が暗くなる」と
-            //   **機構を正しく書いていたのに、診断の出力を足しただけで直して
-            //   いなかった**。2026-09-03 まで暗部が潰れたまま残り、その間
-            //   ガンマを上げて相殺していた(ntsc.rs の Adjust::gamma 参照)。
-            //   原因が分かっているなら、その場で直すか issue にすること。
-            eprintln!("render target format: {:?}", rs.target_format);
-            let blit = render::EguiBlit::new(&rs.device, rs.target_format);
-            rs.renderer.write().callback_resources.insert(blit);
-        }
         let shared = Arc::new(receiver::Shared::default());
-        let ctx = cc.egui_ctx.clone();
+        let ctx = egui_ctx.clone();
         let rx_error = receiver::spawn(
             receiver::Config { port, bind: bind.clone(), subscribe_to: subscribe_to.clone(), target_mac, decay, interlace_decay, audio },
             shared.clone(),
@@ -1089,18 +1038,15 @@ impl ViewerApp {
             window_size: egui::vec2(cfg.window_w, cfg.window_h),
             window_pos: cfg.window_x.zip(cfg.window_y).map(|(x, y)| egui::pos2(x, y)),
             settings_beat: None,
-            started_nanos: claim::now_nanos(),
-            window_closed: false,
-            quit_check_at: None,
-            other_windows: false,
-            slot,
+            want_new_window: None,
+            slot_id,
             board_sel: cfg.board_sel,
             last_avail: egui::Vec2::ZERO,
             last_tex: egui::Vec2::ZERO,
             did_autofit: false,
             want_fit: false,
             frame_size: (0, 0),
-            render_state: cc.wgpu_render_state.clone(),
+            render_state,
             seen_gen: 0,
             rotate: cfg.rotate,
             crop: [cfg.crop_x, cfg.crop_y, cfg.crop_w, cfg.crop_h],
@@ -1137,7 +1083,9 @@ impl ViewerApp {
             pace: PaceMeter::new(),
             remote: remote_input::RemoteInput::default(),
             remote_toggle: Default::default(),
-            keytap: keytap::KeyTap::install(&cc.egui_ctx),
+            // ★**キー横取りは1つだけ。** AppKit のイベント監視をウィンドウの数だけ
+            //   仕掛けると同じキーが何度も実機へ飛ぶ。転送するのは主ウィンドウだけ。
+            keytap: (slot_id == 0).then(|| keytap::KeyTap::install(egui_ctx)),
             netcheck: None,
             netcheck_modal: false,
             netcheck_muted: cfg.netcheck_muted,
@@ -1169,9 +1117,10 @@ impl ViewerApp {
             let guard = self.shared.frame.lock().unwrap();
             let Some(frame) = guard.as_ref() else { return };
             self.frame_size = (frame.width as u32, frame.height as u32);
-            if let Some(b) = w.callback_resources.get_mut::<render::EguiBlit>() {
-                b.upload(&rs.device, &rs.queue, &frame.rgba,
-                         frame.width as u32, frame.height as u32);
+            if let Some(m) = w.callback_resources.get_mut::<render::Blits>() {
+                m.entry(self.slot_id, &rs.device, rs.target_format).upload(
+                    &rs.device, &rs.queue, &frame.rgba,
+                    frame.width as u32, frame.height as u32);
             }
         } else {
             let guard = self.shared.frame.lock().unwrap();
@@ -1183,7 +1132,7 @@ impl ViewerApp {
     }
 }
 
-impl ViewerApp {
+impl Session {
     /// いま使う枠。bezel_off なら枠なしとして扱う(選択は保つ)。
     fn active_bezel(&self) -> Option<&'static bezel::Bezel> {
         if self.bezel_off {
@@ -1202,6 +1151,7 @@ impl ViewerApp {
         ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
             rect,
             render::Callback {
+                session: self.slot_id,
                 params: self.render_params(),
                 dst: (rect.width() * ppp, rect.height() * ppp),
             },
@@ -1287,6 +1237,7 @@ impl ViewerApp {
             return;
         }
         let opts = cleanout::Opts {
+            session: self.slot_id,
             size: self.clean_size,
             resize: self.clean_size != self.clean_size_applied,
             undecorated: self.clean_undecorated,
@@ -1381,7 +1332,7 @@ impl ViewerApp {
             tune_phase: self.tune_phase,
             source_profile: self.source_profile.clone(),
         }
-        .save();
+        .save_slot(self.slot_id);
     }
 
     /// 音声の状態表示 + 出力デバイス/source の選択UI。
@@ -1849,7 +1800,7 @@ impl ViewerApp {
     }
 }
 
-impl ViewerApp {
+impl Session {
     fn render_params(&self) -> render::Params {
         let m = self.shared.mode.lock().unwrap().clone();
         // 実測した有効映像の外接矩形。MODEの hactive は送出フレームの幅(常に1024)で
@@ -3543,19 +3494,18 @@ impl ViewerApp {
 }
 
 /// --- NIC受信バッファーの警告 ---
-impl ViewerApp {
+impl Session {
     /// 受信バッファーが小さすぎないかを知らせる。
     ///
     /// **二段構えにしてある。** 設定を読む方は「壊れる前に」警告できて直し方も
     /// 名指しできるが、`*ReceiveBuffers` を公開しないドライバでは空振りする。
     /// 実測のロスはどんなNICでも「いま実際に落ちている」ことを言えるが、
     /// 起きてからしか分からない。どちらかが引っかかれば取りこぼさない。
-    /// ウィンドウの操作(新規 / すべて終了)。
+    /// ウィンドウの操作。
     ///
-    /// ★**「すべて終了」を目に見える場所に置く。** ウィンドウごとに別プロセス
-    ///   なので、⌘Q が全部を閉じるかどうかは OS とツールキットの都合に乗って
-    ///   いる。押せば必ず全部終わる口を1つ用意しておく。
-    /// ★**1つしか開いていないときは出さない。** そのときは ⌘Q で足りる。
+    /// ★**⌘Q はアプリ全体、⌘W はこのウィンドウ。** 1プロセスになったので
+    ///   macOS の作法がそのまま効く。以前は別プロセスだったため ⌘Q が1つしか
+    ///   閉じず、「すべて終了」を自前で用意する必要があった。
     fn window_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui
@@ -3565,49 +3515,9 @@ impl ViewerApp {
             {
                 self.open_new_session(None);
             }
-            if self.other_windows {
-                if ui
-                    .small_button("すべて終了")
-                    .on_hover_text(
-                        "開いている全ウィンドウを閉じます。\n                         次に起動すると、この並びがそのまま戻ります",
-                    )
-                    .clicked()
-                {
-                    claim::request_quit_all();
-                    self.window_closed = true;
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                ui.weak(egui::RichText::new(format!("#{}", self.slot.id)).size(10.0))
-                    .on_hover_text("このウィンドウの番号。設定はこの番号ごとに保存されます");
-            }
+            ui.weak(egui::RichText::new(format!("#{}", self.slot_id)).size(10.0))
+                .on_hover_text("このウィンドウの番号。設定はこの番号ごとに保存されます");
         });
-    }
-
-    /// 終了まわりの見張り。**毎フレーム呼ぶ。**
-    ///
-    /// - × ボタン / ⌘W で閉じられたなら、伝播しない印を付ける
-    /// - 他のウィンドウが ⌘Q されていたら、自分も閉じる
-    fn watch_exit(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.viewport().close_requested()) {
-            self.window_closed = true;
-            return;
-        }
-        // ファイルを毎フレーム読まない
-        let due = self
-            .quit_check_at
-            .map_or(true, |t: std::time::Instant| t.elapsed() >= std::time::Duration::from_secs(1));
-        if !due {
-            return;
-        }
-        self.quit_check_at = Some(std::time::Instant::now());
-        let me = self.slot.id;
-        self.other_windows =
-            (0..claim::MAX_SLOTS).any(|i| i != me && claim::slot_in_use(i));
-        if claim::quit_all_requested(self.started_nanos) {
-            // 印は既に出ているので、自分は伝播しない
-            self.window_closed = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
     }
 
     /// いま掴んでいるボード(受信スレッドが決める)。
@@ -3643,19 +3553,12 @@ impl ViewerApp {
             .any(|m| own != Some(*m) && !busy.contains(m))
     }
 
-    /// 新しい Viewer を別ウィンドウ(別プロセス)で開く。
+    /// 新しいウィンドウを開くようアプリへ頼む。
     ///
-    /// ★**1枚のボードを2つの Viewer で見ることはできない。** ボードの映像送り先は
-    ///   プロトコル上1つしか無いので、指名せずに2つ開くと同じボードを取り合う。
-    ///   だから「別のボードを開く」を主な入口にしてある。
+    /// ★**ここでは開かない。** ウィンドウを増やすのはセッションの仕事ではないし、
+    ///   描画の途中で自分の入っている配列を触ることになる。要求だけ置く。
     fn open_new_session(&mut self, mac: Option<[u8; 6]>) {
-        match session::spawn_new(mac, None) {
-            Ok(()) => self.toasts.info(match &mac {
-                Some(m) => format!("別ウィンドウで開きます: {}", session::mac_to_string(m)),
-                None => "新しいウィンドウを開きます".to_string(),
-            }),
-            Err(e) => self.toasts.notice(format!("新しいウィンドウを開けません: {e}")),
-        }
+        self.want_new_window = Some(mac);
     }
 
     /// ボード名を16バイトNUL詰めの4語にする。長すぎるなら None。
@@ -3765,7 +3668,7 @@ impl ViewerApp {
                 )
                 .on_hover_text(format!(
                     "{} だけにつなぐ(見つからなければ未選択のまま待つ)",
-                    session::mac_to_string(&m)
+                    claim::mac_string(&m)
                 ));
             }
             self.set_board_sel(next);
@@ -4191,7 +4094,7 @@ impl ViewerApp {
 ///
 /// 管理者権限が無くて直せない人に毎回出すのは敵対的なので、「今後表示しない」を
 /// 用意して設定に保存する(パネル内の表示は消さない)。
-impl ViewerApp {
+impl Session {
     fn netcheck_modal(&mut self, ctx: &egui::Context) {
         if !self.netcheck_modal {
             return;
@@ -4245,7 +4148,7 @@ impl ViewerApp {
 }
 
 /// --- MimicX リモート入力 ---
-impl ViewerApp {
+impl Session {
     /// 物理キーを MimicX へ転送する。毎フレーム、UIを組む前に呼ぶ
     /// (`raw_input_hook`)。
     ///
@@ -4266,7 +4169,7 @@ impl ViewerApp {
         if !raw.focused {
             // 以後の解放イベントが届かないので押下状態を忘れる
             self.remote_toggle.reset();
-        } else if !self.keytap.mods().is_toggle_combo() {
+        } else if !self.keytap.as_ref().is_some_and(|k| k.mods().is_toggle_combo()) {
             // 修飾が揃っていない間は組み合わせのラッチを戻す。macOS は ⌘ を
             // 押しながらの keyUp を配送しないことがあり、これが無いと2回目が
             // 効かない。修飾は keytap 側(キーと同じ経路)を見る
@@ -4276,7 +4179,7 @@ impl ViewerApp {
         // **転送中でも必ず効く**(これが抜け道になる)
         let mut edge = false;
         let mut forward: Vec<(u32, bool)> = Vec::new();
-        for ev in self.keytap.drain() {
+        for ev in self.keytap.as_mut().map(|k| k.drain()).unwrap_or_default() {
             let Some(code) = remote_input::keycode_from_mac_vk(ev.vk) else {
                 remote_input::log_unknown(ev.vk, ev.pressed);
                 continue;
@@ -4333,7 +4236,9 @@ impl ViewerApp {
             self.remote.key(usage, pressed);
         }
         // 次のイベントを egui へ渡すかどうかを keytap へ伝える
-        self.keytap.set_capturing(self.remote.active());
+        if let Some(k) = self.keytap.as_ref() {
+            k.set_capturing(self.remote.active());
+        }
     }
 
     /// 転送中であることを画面に出す。キーが実機へ流れている状態は見ただけでは
@@ -4420,24 +4325,157 @@ impl ViewerApp {
     }
 }
 
-impl eframe::App for ViewerApp {
-    /// MimicX へのキー転送。キーそのものは keytap(AppKit のイベント監視)から
-    /// 取るので、ここでは RawInput を読むだけ(フォーカスと修飾の状態)
-    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        self.remote_step(ctx, raw_input);
+/// アプリ本体。**ウィンドウ(セッション)を束ねるだけ。**
+///
+/// ★**1プロセス・複数ウィンドウにする。** 以前はウィンドウごとに別プロセスに
+///   していたが、macOS の .app は単一インスタンスなので `open -n` で起こすしか
+///   なく、その結果 ⌘Q が1つしか閉じない・Dock に複数並ぶ・「全部閉じてから
+///   起動し直す」ができない、と macOS のアプリとして破綻していた。
+///   `show_viewport_immediate` は `App::ui` と同じ `&mut Ui` を渡してくるので、
+///   セッションの描画関数はそのまま使える。
+struct App {
+    sessions: Vec<Session>,
+    /// 新しいウィンドウを作るときに要る素。**起動時の引数を持ち回す。**
+    port: u16,
+    bind: String,
+    no_vsync: bool,
+    decay: f32,
+    interlace_decay: f32,
+}
+
+impl App {
+    /// 空いているうち最小のウィンドウ番号。
+    fn lowest_free_id(&self) -> u32 {
+        (0..claim::MAX_SLOTS).find(|i| !self.sessions.iter().any(|s| s.slot_id == *i)).unwrap_or(0)
     }
 
-    /// 終了時にも保存する(遅延書込の待ち時間中に閉じても取りこぼさない)
-    fn on_exit(&mut self) {
-        // ★**⌘Q なら全ウィンドウを終わらせる。** ウィンドウごとに別プロセスなので、
-        //   そのままだと ⌘Q が1つしか閉じず、**アプリ全体を終了できない**。
-        //   macOS は .app が1つでも生きていれば Dock から起動しても既存インスタンスを
-        //   前面に出すだけなので、「全部閉じて起動し直す」ができず、前回の並びを
-        //   復元する動きが一生始まらない。
-        //   × ボタンや ⌘W(= `close_requested`)は**このウィンドウだけ**閉じる。
-        if !self.window_closed {
-            claim::request_quit_all();
+    /// ウィンドウを1つ増やす。上限に達していれば false。
+    fn add_session(
+        &mut self,
+        ctx: &egui::Context,
+        rs: Option<eframe::egui_wgpu::RenderState>,
+        id: Option<u32>,
+    ) -> bool {
+        if self.sessions.len() as u32 >= claim::MAX_SLOTS {
+            return false;
         }
+        let id = id.unwrap_or_else(|| self.lowest_free_id());
+        if self.sessions.iter().any(|s| s.slot_id == id) {
+            return false;
+        }
+        let cfg = settings::Settings::load_slot(id);
+        let mut audio = receiver::AudioOpts::default();
+        audio.source = cfg.audio_source;
+        audio.device = cfg.audio_device.clone();
+        self.sessions.push(Session::new(
+            id, ctx, rs, self.port, Some("255.255.255.255".to_string()), None,
+            self.bind.clone(), self.no_vsync, self.decay, self.interlace_decay,
+            audio, cfg,
+        ));
+        true
+    }
+
+    /// 前回いっしょに開いていたウィンドウを開き直す。
+    ///
+    /// ★**プロセスを起こさない。** 以前は `open -n` で別プロセスを立てていたが、
+    ///   1プロセスになったのでその場で足すだけ。
+    fn restore_windows(
+        &mut self,
+        ctx: &egui::Context,
+        rs: Option<eframe::egui_wgpu::RenderState>,
+    ) {
+        let me = self.sessions.first().map_or(0, |s| s.slot_id);
+        for id in settings::Settings::slots_to_restore(me, claim::MAX_SLOTS) {
+            if self.add_session(ctx, rs.clone(), Some(id)) {
+                eprintln!("ウィンドウ #{id} を復元しました");
+            }
+        }
+    }
+}
+
+impl eframe::App for App {
+    /// MimicX へのキー転送。キーそのものは keytap(AppKit のイベント監視)から
+    /// 取るので、ここでは RawInput を読むだけ(フォーカスと修飾の状態)
+    ///
+    /// ★**転送先は1つだけ。** キーは実機のキーボードに化けるので、複数の
+    ///   ウィンドウが同時に送ると誰も操作できなくなる。
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if let Some(s) = self.sessions.first_mut() {
+            s.remote_step(ctx, raw_input);
+        }
+    }
+
+    fn on_exit(&mut self) {
+        for s in &mut self.sessions {
+            s.on_close();
+        }
+    }
+
+    fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // 主ウィンドウ
+        if let Some(s) = self.sessions.first_mut() {
+            s.ui(root);
+        }
+        // 追加ウィンドウ。**ここで &mut Ui が降ってくる**ので、主ウィンドウと
+        // まったく同じ描画関数を使える
+        let ctx = root.ctx().clone();
+        let mut closed: Vec<u32> = Vec::new();
+        for s in self.sessions.iter_mut().skip(1) {
+            let id = egui::ViewportId::from_hash_of(("retrocastx-session", s.slot_id));
+            let mut builder = egui::ViewportBuilder::default()
+                .with_title(format!("RetroCast X #{}", s.slot_id))
+                .with_inner_size(s.window_size);
+            if let Some(p) = s.window_pos {
+                builder = builder.with_position(p);
+            }
+            ctx.show_viewport_immediate(id, builder, |ui, _class| {
+                if ui.ctx().input(|i| i.viewport().close_requested()) {
+                    closed.push(s.slot_id);
+                    return;
+                }
+                s.ui(ui);
+            });
+        }
+        // セッションからの「窓を増やして」要求を拾う。**描画のあとで処理する** ─
+        // 描いている最中に自分の入っている配列を触ることになるため。
+        let mut wanted: Vec<Option<[u8; 6]>> = Vec::new();
+        for s in &mut self.sessions {
+            if let Some(m) = s.want_new_window.take() {
+                wanted.push(m);
+            }
+        }
+        for mac in wanted {
+            let rs = self.sessions.first().and_then(|s| s.render_state.clone());
+            if self.add_session(&ctx, rs, None) {
+                if let (Some(m), Some(last)) = (mac, self.sessions.last_mut()) {
+                    last.set_board_sel(settings::BoardSel::Mac(m));
+                }
+            } else {
+                eprintln!("ウィンドウはすでに {} 個開いています(上限)", claim::MAX_SLOTS);
+            }
+        }
+        if !closed.is_empty() {
+            self.sessions.retain(|s| {
+                let keep = !closed.contains(&s.slot_id);
+                if !keep {
+                    // 閉じたウィンドウのGPUテクスチャを捨てる(フレーム1枚ぶんある)
+                    if let Some(rs) = s.render_state.as_ref() {
+                        if let Some(m) =
+                            rs.renderer.write().callback_resources.get_mut::<render::Blits>()
+                        {
+                            m.remove(s.slot_id);
+                        }
+                    }
+                }
+                keep
+            });
+        }
+    }
+}
+
+impl Session {
+    /// 終了時にも保存する(遅延書込の待ち時間中に閉じても取りこぼさない)
+    fn on_close(&mut self) {
         // 押しっぱなしのキーを実機に残さない。ここで送らないと操作不能になる
         self.remote.set_enabled(false);
         // 遅延を無視して即座に書く
@@ -4445,7 +4483,7 @@ impl eframe::App for ViewerApp {
         self.flush_settings();
     }
 
-    fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, root: &mut egui::Ui) {
         let t_ui = std::time::Instant::now();
         let ctx = root.ctx().clone();
         // ドット復元の係数を受信スレッドへ渡す(組立時に生のADCコードへ掛ける)。
@@ -4495,8 +4533,6 @@ impl eframe::App for ViewerApp {
         // MimicX への転送中はここへ来ない。raw_input_hook が先にイベントを
         // 取り除いているので、Tab も B も X68000 のキーとして送られる
         // (⌘+Shift+ESC で転送を切れば元に戻る)。
-        self.watch_exit(&ctx);
-
         // ⌘N(Windows/Linux は Ctrl+N)で新しいセッションを開く。
         //
         // ★**macOS の .app は二重起動できない。** Finder や Dock から2つ目を
@@ -4506,6 +4542,10 @@ impl eframe::App for ViewerApp {
             // ★**いつでも開ける。** 空いているボードが無ければ「未選択」の窓が
             //   開くだけ。開けない方が不便だし、あとで空けば繋がる。
             self.open_new_session(None);
+        }
+        // ⌘W で自分を閉じる(macOS の作法。⌘Q はアプリ全体)
+        if root.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
+            root.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if root.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
             self.show_panel = !self.show_panel;
@@ -5226,7 +5266,7 @@ impl eframe::App for ViewerApp {
     }
 }
 
-impl Drop for ViewerApp {
+impl Drop for Session {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
     }
@@ -5242,21 +5282,21 @@ mod tests {
     #[test]
     fn board_name_roundtrips_and_bounds() {
         for n in ["", "a", "retrocastx-i5", "0123456789abcdef", "エックス"] {
-            let w = ViewerApp::name_to_words(n).expect("16バイト以内なのに拒否された");
-            assert_eq!(ViewerApp::words_to_name(w), n, "往復で変わった: {n:?}");
+            let w = Session::name_to_words(n).expect("16バイト以内なのに拒否された");
+            assert_eq!(Session::words_to_name(w), n, "往復で変わった: {n:?}");
         }
         // 17バイトは入らない
-        assert!(ViewerApp::name_to_words("0123456789abcdefg").is_none());
+        assert!(Session::name_to_words("0123456789abcdefg").is_none());
         // UTF-8 は文字数ではなくバイト数で効く(6文字=18バイト)
-        assert!(ViewerApp::name_to_words("あいうえおか").is_none());
-        assert!(ViewerApp::name_to_words("あいうえお").is_some());
+        assert!(Session::name_to_words("あいうえおか").is_none());
+        assert!(Session::name_to_words("あいうえお").is_some());
     }
 
     /// 語の並びが**電線上のバイト順**と一致していること。ここがずれると
     /// 名前が4バイトごとに入れ替わって出る。
     #[test]
     fn name_words_match_wire_order() {
-        let w = ViewerApp::name_to_words("ABCDEFGH").unwrap();
+        let w = Session::name_to_words("ABCDEFGH").unwrap();
         assert_eq!(w[0], u32::from_le_bytes(*b"ABCD"));
         assert_eq!(w[1], u32::from_le_bytes(*b"EFGH"));
         assert_eq!(w[2], 0);
