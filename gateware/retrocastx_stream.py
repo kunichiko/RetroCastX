@@ -189,8 +189,12 @@ class RetroCastXStreamer(LiteXModule):
                  mac_address=MAC_ADDRESS, capture=None,
                  cfg_vbp=0, cfg_hs_offset=0, cfg_pll_divide=1104,
                  cfg_in_mux1=0xAA,
-                 extra_stats=None,
+                 extra_stats=None, extra_cfg=None,
                  ):
+        # extra_cfg: {CONFIGキー: 書き換え可能なSignal}。SETで書き、GETで読み返す。
+        #   ★**キーを1つ足すたびに配線を書かないで済むようにする。** 個体設定
+        #     (0x46〜)のときは専用ポートを6本足したが、診断用の設定キーは
+        #     これから増える一方なので、表で渡せる口を作っておく。
         # extra_stats: {CONFIGキー: 読み出し専用のSignal}。ストリーマの外側にある
         # 診断値(いまはARP学習)をCONFIGのGETで読めるようにするための口。
         # capture: TvpCapture(sysドメインI/F) を渡すと、テストパターンの代わりに
@@ -819,6 +823,9 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x1E),
                         self.cfg_gain_r.eq(rx.data[:8]),
                     ),
+                    *[If((cfg_target == 0) & (cfg_key == k),
+                         sig.eq(rx.data[:len(sig)]),
+                      ) for k, sig in (extra_cfg or {}).items()],
                     If(cfg_target == 1,
                         argus_reg.eq(rx.data),
                     ),
@@ -944,6 +951,7 @@ class RetroCastXStreamer(LiteXModule):
                 0x37: reply_mux.eq(capture.cfg_black_th),
             })
         _add_reply({k: reply_mux.eq(sig) for k, sig in (extra_stats or {}).items()})
+        _add_reply({k: reply_mux.eq(sig) for k, sig in (extra_cfg or {}).items()})
         self.comb += Case(cfg_key, reply_cases)
         self.sync += cfg_reply_val.eq(Mux(cfg_target == 1, argus_reg, reply_mux))
 
@@ -1755,7 +1763,59 @@ class RetroCastXStream(SoCMini):
                     Subsignal("sda",    Pins("U16")),
                     Subsignal("resetb", Pins("C18")),
                     IOStandard("LVCMOS33"), Misc("PULLMODE=UP"))]
+        # --- デジタルRGB(TTL RGBI + HS/VS)とデバッグ端子 ---
+        #
+        # ボール名は hardware/adc-frontend/README.md の表と一致させること。
+        # ★**入力は J13 → ESD → プルダウン → SN74LVC2G17 → FPGA。** 5V TTL を
+        #   直接入れると ECP5 の保護ダイオードが導通して壊れる(5Vトレラント
+        #   ではない)ので、必ずバッファを通った側に繋がっている。
+        # ★**dbg1〜6 は試験信号の出力に使う。** デジタルRGBを出せる実機が
+        #   手元に無いので、ここから J13 へジャンパで戻して**本番の経路ごと**
+        #   確かめる(retrocastx_drgb.py 冒頭)。
+        _drgb_io = [
+            ("drgb", 0,
+                Subsignal("r",  Pins("K3")),   # SO-DIMM 146
+                Subsignal("g",  Pins("J5")),   # 144
+                Subsignal("b",  Pins("J4")),   # 142
+                Subsignal("i",  Pins("H5")),   # 140
+                Subsignal("hs", Pins("H3")),   # 136
+                Subsignal("vs", Pins("F3")),   # 132
+                IOStandard("LVCMOS33")),
+            # デバッグ端子 J4 の dbg1〜dbg6(ヘッダ pin3〜8)
+            ("dbg_out", 0,
+                Subsignal("r",  Pins("M1")),   # dbg1 / header pin3
+                Subsignal("g",  Pins("N2")),   # dbg2 / pin4
+                Subsignal("b",  Pins("N3")),   # dbg3 / pin5
+                Subsignal("i",  Pins("T2")),   # dbg4 / pin6
+                Subsignal("hs", Pins("M3")),   # dbg5 / pin7
+                Subsignal("vs", Pins("T3")),   # dbg6 / pin8
+                IOStandard("LVCMOS33")),
+        ]
         platform.add_extension(_i2c_io)
+        platform.add_extension(_drgb_io)
+
+        # --- デジタルRGB: 試験信号の生成 + 入力の測定 ---
+        from retrocastx_drgb import DigitalRgbGen, DigitalRgbProbe
+        drgb_pads = platform.request("drgb")
+        dbg_pads = platform.request("dbg_out")
+        self.drgb_gen = DigitalRgbGen()
+        # bit0 = 生成器を動かす / bit1 = 同期を負極性にする。
+        # ★**既定は「出す」。** 出しっぱなしでも入力に何も繋がなければ無害で、
+        #   繋いだ瞬間に確かめられる。切りたくなったら key 0x78 で落とす。
+        drgb_gen_ctl = Signal(2, reset=0b11)
+        self.comb += [
+            self.drgb_gen.enable.eq(drgb_gen_ctl[0]),
+            self.drgb_gen.neg_sync.eq(drgb_gen_ctl[1]),
+        ]
+        self.drgb = DigitalRgbProbe(drgb_pads, sys_clk_freq)
+        self.comb += [
+            dbg_pads.r.eq(self.drgb_gen.r),
+            dbg_pads.g.eq(self.drgb_gen.g),
+            dbg_pads.b.eq(self.drgb_gen.b),
+            dbg_pads.i.eq(self.drgb_gen.i),
+            dbg_pads.hs.eq(self.drgb_gen.hs),
+            dbg_pads.vs.eq(self.drgb_gen.vs),
+        ]
         # I2Cは100kHz(長い手配線+弱プルアップでも読出しの取りこぼしを避ける)
         self.status = StatusDisplay(platform.request("tvp_oled_i2c"), sys_clk_freq,
                                     i2c_freq=100e3, green_input=green_input,
@@ -1847,7 +1907,25 @@ class RetroCastXStream(SoCMini):
             # (SOG=_3固定 + R/G/Bはビルド引数)。実行時は key 0x69 で上書き。
             cfg_in_mux1=((2 << 6) | ((red_input - 1) << 4) |
                          ((green_input - 1) << 2) | (blue_input - 1)),
+            extra_cfg={
+                # デジタルRGB(0x0078〜)。生成器の入切と、測定の覗き位置
+                0x78: drgb_gen_ctl,
+                0x79: self.drgb.cfg_htotal,
+                0x7A: self.drgb.cfg_row,
+                0x7B: self.drgb.cfg_dot,
+                0x7C: self.drgb.cfg_hstart,
+                0x7D: self.drgb.cfg_hactive,
+            },
             extra_stats={
+                # デジタルRGB の測定値(読み取り専用)
+                0x70: self.drgb.stat_fh,
+                0x71: self.drgb.stat_fv,
+                0x72: self.drgb.stat_lines,
+                0x73: self.drgb.stat_hlen,
+                0x74: self.drgb.stat_level,
+                0x75: self.drgb.stat_pol,
+                0x76: self.drgb.stat_pixel,
+                0x77: self.drgb.stat_edges,
                 0x40: learner.learn_count,
                 0x41: learner.hit_count,
                 0x42: learner.miss_count,
