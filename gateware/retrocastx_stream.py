@@ -1796,16 +1796,28 @@ class RetroCastXStream(SoCMini):
 
         # --- デジタルRGB: 試験信号の生成 + 入力の測定 ---
         from retrocastx_drgb import DigitalRgbGen, DigitalRgbProbe
+        from migen.genlib.cdc import MultiReg
         drgb_pads = platform.request("drgb")
         dbg_pads = platform.request("dbg_out")
-        self.drgb_gen = DigitalRgbGen()
+        # ★**生成器は aud(12.288MHz XO)で動かす。** 測定側は sys(25MHz由来)で、
+        #   **水晶が別**。だからループバックでも
+        #     ・本物のドリフト(2つの水晶の ppm 差)
+        #     ・1ドットが 45/12.288 = 3.662 サンプルという**分数**
+        #   が入る。sys の整数分周(45/3 = ちょうど3.000サンプル/ドット)だと
+        #   ドット境界が毎ライン同じ位相に来て、**受け側の分数アキュムレータが
+        #   一度も効かないまま「通った」ことになる**(2026-09-09 に気付いた)。
+        # ★**クロックドメインは増やしていない。** 既にある aud に載せただけ。
+        self.drgb_gen = ClockDomainsRenamer("aud")(DigitalRgbGen())
         # bit0 = 生成器を動かす / bit1 = 同期を負極性にする。
         # ★**既定は「出す」。** 出しっぱなしでも入力に何も繋がなければ無害で、
         #   繋いだ瞬間に確かめられる。切りたくなったら key 0x78 で落とす。
         drgb_gen_ctl = Signal(2, reset=0b11)
+        # sys → aud のドメイン跨ぎ。ゆっくりしか変わらない制御線なので2段で足りる
+        drgb_ctl_aud = Signal(2, reset=0b11)
+        self.specials += MultiReg(drgb_gen_ctl, drgb_ctl_aud, "aud", reset=0b11)
         self.comb += [
-            self.drgb_gen.enable.eq(drgb_gen_ctl[0]),
-            self.drgb_gen.neg_sync.eq(drgb_gen_ctl[1]),
+            self.drgb_gen.enable.eq(drgb_ctl_aud[0]),
+            self.drgb_gen.neg_sync.eq(drgb_ctl_aud[1]),
         ]
         self.drgb = DigitalRgbProbe(drgb_pads, sys_clk_freq)
         self.comb += [
