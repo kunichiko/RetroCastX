@@ -486,12 +486,39 @@ impl EguiBlit {
     }
 }
 
+/// ウィンドウごとの映像テクスチャ置き場。
+///
+/// ★**`CallbackResources` は型で索く辞書。** `EguiBlit` を直接入れると
+///   アプリ全体で1つしか持てず、**2つ目のウィンドウが1つ目の映像を映す**。
+///   ウィンドウ番号で引ける入れ物にして、型の下に並べる。
+#[derive(Default)]
+pub struct Blits(pub std::collections::HashMap<u32, EguiBlit>);
+
+impl Blits {
+    /// そのウィンドウの置き場を用意する(無ければ作る)。
+    pub fn entry<'a>(
+        &'a mut self,
+        id: u32,
+        device: &wgpu::Device,
+        target: wgpu::TextureFormat,
+    ) -> &'a mut EguiBlit {
+        self.0.entry(id).or_insert_with(|| EguiBlit::new(device, target))
+    }
+
+    /// ウィンドウを閉じたら捨てる。**GPUメモリはフレーム1枚ぶん(数MB)ある。**
+    pub fn remove(&mut self, id: u32) {
+        self.0.remove(&id);
+    }
+}
+
 /// egui の Shape として積む描画命令。矩形は egui 側で決め、その中を
 /// フルスクリーンと同じシェーダで塗る。
 pub struct Callback {
     pub params: Params,
     /// 描画先の画素数(論理座標ではなく実画素。Retinaでは2倍になる)
     pub dst: (f32, f32),
+    /// どのウィンドウの映像を描くか
+    pub session: u32,
 }
 
 impl eframe::egui_wgpu::CallbackTrait for Callback {
@@ -503,7 +530,7 @@ impl eframe::egui_wgpu::CallbackTrait for Callback {
         _encoder: &mut wgpu::CommandEncoder,
         res: &mut eframe::egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        if let Some(b) = res.get::<EguiBlit>() {
+        if let Some(b) = res.get::<Blits>().and_then(|m| m.0.get(&self.session)) {
             if let Some((_, _, _, w, h)) = b.tex.as_ref() {
                 b.pipeline.write_uniforms(
                     queue, &b.uniform, &self.params, *w, *h, self.dst.0, self.dst.1);
@@ -518,7 +545,7 @@ impl eframe::egui_wgpu::CallbackTrait for Callback {
         rp: &mut wgpu::RenderPass<'static>,
         res: &eframe::egui_wgpu::CallbackResources,
     ) {
-        if let Some(b) = res.get::<EguiBlit>() {
+        if let Some(b) = res.get::<Blits>().and_then(|m| m.0.get(&self.session)) {
             if let Some((_, _, bind, _, _)) = b.tex.as_ref() {
                 rp.set_pipeline(&b.pipeline.pipeline);
                 rp.set_bind_group(0, bind, &[]);

@@ -19,10 +19,9 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::OnceLock;
-
-/// 実際に使う設定ファイル。`use_profile` で起動時に決める。
-static ACTIVE: OnceLock<PathBuf> = OnceLock::new();
+// ★**「いまの設定ファイル」をグローバルに持たない。** 1プロセスで複数の
+//   ウィンドウを開くようになったので、プロセスに1つでは足りない
+//   (2つ目のウィンドウが1つ目の設定を上書きする)。番号は呼び側が持つ。
 
 /// ウィンドウがどのボードに繋がるか。
 ///
@@ -359,18 +358,8 @@ impl Settings {
         base.join("retrocastx").join("viewer.conf")
     }
 
-    /// 実際に読み書きする場所。`use_profile` を呼んでいなければ `path()`。
-    pub fn active_path() -> PathBuf {
-        ACTIVE.get().cloned().unwrap_or_else(Self::path)
-    }
-
-    /// 起動時に1回だけ、自分のウィンドウ番号の設定ファイルを選ぶ。
-    pub fn use_slot(id: u32) {
-        let _ = ACTIVE.set(Self::path_for_slot(id));
-    }
-
-    pub fn load() -> Self {
-        Self::parse(&std::fs::read_to_string(Self::active_path()).unwrap_or_default())
+    pub fn load_slot(id: u32) -> Self {
+        Self::parse(&std::fs::read_to_string(Self::path_for_slot(id)).unwrap_or_default())
     }
 
     fn parse(text: &str) -> Self {
@@ -519,8 +508,8 @@ impl Settings {
         s
     }
 
-    pub fn save(&self) {
-        let path = Self::active_path();
+    pub fn save_slot(&self, id: u32) {
+        let path = Self::path_for_slot(id);
         if let Some(dir) = path.parent() {
             if std::fs::create_dir_all(dir).is_err() {
                 return;

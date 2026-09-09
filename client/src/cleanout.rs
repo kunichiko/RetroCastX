@@ -30,8 +30,11 @@ pub const PRESETS: &[(&str, [f32; 2])] = &[
 
 pub const DEFAULT_SIZE: [f32; 2] = [1280.0, 720.0];
 
-fn viewport_id() -> egui::ViewportId {
-    egui::ViewportId::from_hash_of("retrocastx-clean-output")
+/// ★**ウィンドウごとに別のIDにする。** 1プロセスで複数の本体ウィンドウを開く
+///   ようになったので、固定IDだと2つ目の配信出力が1つ目と同じ窓を掴み、
+///   後から描いた方だけが映る(先に開いた側は黙って消える)。
+fn viewport_id(session: u32) -> egui::ViewportId {
+    egui::ViewportId::from_hash_of(("retrocastx-clean-output", session))
 }
 
 /// 映像の表示比を決める。**ベゼルは使わない**(クリーン出力の趣旨なので)。
@@ -87,6 +90,8 @@ pub struct Opts {
     pub aspect: egui::Vec2,
     /// 映像が来ているか
     pub has_video: bool,
+    /// どの本体ウィンドウのものか(ビューポートIDを分けるため)
+    pub session: u32,
 }
 
 pub fn show(
@@ -111,7 +116,7 @@ pub fn show(
 
     let mut keep_open = true;
     let mut paint = Some(paint);
-    ctx.show_viewport_immediate(viewport_id(), builder, |ctx, _class| {
+    ctx.show_viewport_immediate(viewport_id(opts.session), builder, |ctx, _class| {
         // 既に開いているウィンドウにはビルダーの指定が効かないので、
         // 設定を変えたときだけ明示的にコマンドを送る。
         if opts.resize {
