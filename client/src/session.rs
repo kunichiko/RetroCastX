@@ -11,6 +11,17 @@
 
 use std::path::{Path, PathBuf};
 
+/// 起動時の**事前走査**で読む引数。本体の引数ループより先に見る必要がある
+/// (設定ファイルの置き場所や復元の可否がこれで決まるため)。
+///
+/// ★**1か所にまとめる。** ここと引数ループが食い違うと、子プロセスが
+///   `unknown arg` で即死する ─ 実際 `--slot` を渡した復元がそれで
+///   丸ごと動いていなかった(症状は「1つしか開かない」)。
+pub const PRESCAN_FLAGS: [&str; 2] = ["--slot", "--no-restore"];
+
+/// `PRESCAN_FLAGS` のうち、値を1つ取るもの。
+pub const PRESCAN_WITH_VALUE: [&str; 1] = ["--slot"];
+
 /// 実行ファイルのパスから `.app` バンドルの根を求める。
 ///
 /// `/Applications/RetroCastX.app/Contents/MacOS/retrocastx-viewer`
@@ -64,6 +75,7 @@ pub fn mac_to_string(mac: &[u8; 6]) -> String {
 pub fn spawn_new(mac: Option<[u8; 6]>, slot: Option<u32>) -> std::io::Result<()> {
     let exe = std::env::current_exe()?;
     let mut extra = args_without(std::env::args().skip(1), &["--mac", "--slot"]);
+    debug_assert!(PRESCAN_FLAGS.contains(&"--slot"));
     if let Some(m) = &mac {
         extra.push("--mac".into());
         extra.push(mac_to_string(m));
@@ -126,6 +138,17 @@ mod tests {
         .map(String::from);
         let out = args_without(args, &["--mac", "--slot"]);
         assert_eq!(out, vec!["--bind", "192.168.11.24", "--no-vsync"]);
+    }
+
+    /// ★**渡す引数は必ず受け側が知っていること。** `--slot` を渡すのに
+    ///   引数ループが知らなかったため、復元で起こした子が `unknown arg` で
+    ///   即死していた(2026-09-09 に実機で発覚)。
+    #[test]
+    fn every_flag_we_pass_is_prescanned() {
+        for f in ["--slot", "--no-restore"] {
+            assert!(PRESCAN_FLAGS.contains(&f), "{f} が事前走査の一覧に無い");
+        }
+        assert!(PRESCAN_WITH_VALUE.iter().all(|f| PRESCAN_FLAGS.contains(f)));
     }
 
     #[test]

@@ -234,6 +234,16 @@ fn main() -> eframe::Result {
                     args.next().expect("--audio-buffer needs ms").parse().unwrap();
                 audio.max_ms = audio.prebuffer_ms * 3;
             }
+            // 起動の最初に事前走査で読んである(設定ファイルの置き場所と
+            // 復元の可否がこれで決まるため)。ここでは読み飛ばすだけ。
+            // ★**知らないと即死する。** 復元で起こした子に `--slot` を渡して
+            //   いたのに、ここが知らずに `unknown arg` で exit(2) していた。
+            //   症状は「起動しても1つしか開かない」で、原因から遠い。
+            f if session::PRESCAN_FLAGS.contains(&f) => {
+                if session::PRESCAN_WITH_VALUE.contains(&f) {
+                    args.next();
+                }
+            }
             other => {
                 eprintln!("unknown arg: {other}");
                 std::process::exit(2);
