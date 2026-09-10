@@ -388,7 +388,12 @@ class RetroCastXStreamer(LiteXModule):
         if cap_mode:
             self.comb += [
                 mode_htotal.eq(capture.meas_htotal),
-                mode_vtotal.eq(capture.meas_vtotal),
+                # ★生の meas_vtotal ではなく、フレーム連続一致で濾した方を出す。
+                #   生値には偽VSYNC由来の単発異常(実機で 210/311/367/1136/2446)が
+                #   混ざり、Viewer 側はそれをモード変更と受け取ってウィンドウの
+                #   リサイズと再フィットを始めてしまう。生値は CONFIG 0x23 で
+                #   引けるので診断には困らない。
+                mode_vtotal.eq(capture.meas_vtotal_stable),
                 mode_vactive.eq(capture.out_vactive),
                 mode_dotclk.eq(capture.meas_dotclk),
                 mode_hfreq.eq(capture.meas_hfreq * 1000),

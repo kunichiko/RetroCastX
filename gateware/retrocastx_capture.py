@@ -200,6 +200,14 @@ class TvpCapture(Module):
         self.meas_vfreq  = Signal(32)             # 垂直周波数 [mHz] (8秒積算)
         self.meas_htotal = Signal(16)             # 1ライン当たりDATACLK数
         self.meas_vtotal = Signal(16)             # 1フレーム当たりライン数
+        # ★ vtotal は「1秒窓のたまたまの1サンプル」なので偽VSYNCがそのまま出る。
+        #   測定用VSYNC(vs_meas)は固定ガード64しか掛かっていない(鶏と卵を避ける
+        #   ため意図的)ので、64行より後に出た偽VSYNCは素通りする。実機では
+        #   vtotal 568 のところに 210/311/367/1136/2446 といった値が数十秒に一度
+        #   混ざった(1136=VSYNC取りこぼし、他は偽VSYNCによる分割)。
+        #   フレームごとに同じ値が連続したときだけ更新する版を別に持ち、
+        #   モード追従とMODE報告はこちらを使う。meas_vtotal は生のまま診断に残す。
+        self.meas_vtotal_stable = Signal(16)      # 連続一致したvtotalだけ通した値
         # 生同期(TVPを通らない経路)から測った絶対値。**pll_divideに一切依存しない。**
         #
         # 既存の meas_hfreq はTVPのHSOUTのエッジを数えているので、TVPのPLLが
@@ -296,6 +304,31 @@ class TvpCapture(Module):
             If(hs_edge, If(vrow_m != 0x1FFF, vrow_m.eq(vrow_m + 1))),
             If(vs_meas, vrow_m.eq(0)),
         ]
+
+        # --- vtotal のフレーム単位フィルタ(pixドメイン) ---
+        # VSYNCごとに「前回と同じ値か」を見て、VT_HOLD+1 フレーム連続して同じ
+        # だったときだけ vt_ok を更新する。単発の偽VSYNC/取りこぼしは1フレーム
+        # で消えるので通らない。フレーム周期(約18ms)基準なので、本物のモード
+        # 変更には 4フレーム = 0.07秒 で追従できる。
+        #
+        # ここを1秒窓の meas_vtotal 側でやってはいけない。1秒に1回しか値が
+        # 変わらないので「3回連続」に3秒かかるうえ、以前の実装はsysクロック
+        # ごとに数えていて、新しい値が来た最初のサイクルには既に飽和しており
+        # ヒステリシスが全く効いていなかった(単発の異常値が即採用されていた)。
+        VT_HOLD = 3
+        vt_cand = Signal(13)
+        vt_n    = Signal(max=VT_HOLD + 1)
+        vt_ok   = Signal(13)
+        vt_same = Signal()
+        self.comb += vt_same.eq(vrow_m == vt_cand)
+        self.sync.pix += If(vs_meas,
+            If(vt_same,
+                If(vt_n != VT_HOLD, vt_n.eq(vt_n + 1)).Else(vt_ok.eq(vt_cand)),
+            ).Else(
+                vt_cand.eq(vrow_m), vt_n.eq(0),
+            ),
+        )
+        self.specials += MultiReg(vt_ok, self.meas_vtotal_stable, "sys")
 
         # --- 1画素(16bit)の詰め方。伝送フォーマットで切り替える ---
         #
@@ -1069,8 +1102,6 @@ class TvpCapture(Module):
         # 垂直バックポーチはモードで多少違うが、まず vbp 固定で追従させる。
         # 揺れで書き換え続けないよう、同じ値が連続してから反映する(ヒステリシス)。
         if auto_vtotal:
-            v_last = Signal(16)
-            v_cnt = Signal(3)
             # ±1 の違いでは採り直さない。
             #
             # インターレースでは1フィールドが 262.5 ラインなので、VSOUT間のHSOUT数は
@@ -1090,19 +1121,19 @@ class TvpCapture(Module):
             # 実機では「262行, 262行, 1行」の3つ組が延々と繰り返し、その1行の
             # フレームで受信側の未充填が523になって画面全体が暗転していた。
             # 交互に出る262/263のうち大きい方に張り付けば早回りは起きない。
+            #
+            # 「連続して同じ値か」の判定は pix 側(meas_vtotal_stable)で
+            # フレーム単位に済ませてある。ここは範囲と距離だけを見る。
+            # 以前はここで sysクロックを数えており、1秒に1回しか変わらない
+            # meas_vtotal に対して常に飽和していたため、単発の異常値(実機で
+            # 観測した 210/311/367/1136/2446)がそのまま採用されていた。
             vt_far = Signal()
-            self.comb += vt_far.eq((self.meas_vtotal > self.cfg_vtotal)
-                                   | (self.meas_vtotal < (self.cfg_vtotal - 1)))
+            self.comb += vt_far.eq((self.meas_vtotal_stable > self.cfg_vtotal)
+                                   | (self.meas_vtotal_stable < (self.cfg_vtotal - 1)))
             self.sync += [
-                If(self.meas_vtotal != v_last,
-                    v_last.eq(self.meas_vtotal), v_cnt.eq(0),
-                ).Elif(v_cnt != 4,
-                    v_cnt.eq(v_cnt + 1),
-                ),
-                # 現実的な範囲の値が3回続き、かつ現在値から2以上離れていたら採用する
-                If((v_cnt >= 3) & (self.meas_vtotal >= 100)
-                                & (self.meas_vtotal < 1500) & vt_far,
-                    self.cfg_vtotal.eq(self.meas_vtotal),
+                If((self.meas_vtotal_stable >= 100)
+                   & (self.meas_vtotal_stable < 1500) & vt_far,
+                    self.cfg_vtotal.eq(self.meas_vtotal_stable),
                 ),
             ]
             # vbp から導く値は毎サイクル更新する。以前は上の「安定判定が成立した1回」

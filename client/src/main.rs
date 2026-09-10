@@ -735,6 +735,39 @@ const PHASE_SENSITIVE: f32 = 0.85;
 ///   はずだが、点と画素の丸めやパネル幅の増減で毎回わずかに残る。Windows の
 ///   DPI 拡大では1回あたりの目減りが大きく、**同期がふらつくたびに合わせ直して
 ///   窓が消えていった**(2026-09-10 実機。Macでは目減りが小さく気付かなかった)。
+/// 要求した内寸と実寸のずれをどこまで許すか[point]。
+/// 端数の丸めは通すが、タイトルバーや枠のぶん(数十point)は通さない。
+const FIT_TOLERANCE: f32 = 4.0;
+
+/// 要求してから答え合わせをするまでの猶予。ウィンドウマネージャの応答と
+/// アニメーションを待つぶん。
+const FIT_VERDICT_AFTER: std::time::Duration = std::time::Duration::from_millis(700);
+
+/// 直前の内寸要求が通ったかの判定。
+#[derive(Debug, PartialEq, Eq)]
+enum FitVerdict {
+    /// まだ分からない(猶予内)。要求を保持して次のフレームで見直す
+    Pending,
+    /// 要求どおりになった
+    Honored,
+    /// 猶予を過ぎても要求と違う。以後この環境では自動サイズ合わせをしない
+    Ignored,
+}
+
+fn fit_verdict(
+    requested: egui::Vec2,
+    actual: egui::Vec2,
+    elapsed: std::time::Duration,
+) -> FitVerdict {
+    if (actual - requested).length() <= FIT_TOLERANCE {
+        FitVerdict::Honored
+    } else if elapsed >= FIT_VERDICT_AFTER {
+        FitVerdict::Ignored
+    } else {
+        FitVerdict::Pending
+    }
+}
+
 fn fit_target(
     window: egui::Vec2,
     avail: egui::Vec2,
@@ -918,6 +951,18 @@ struct Session {
     ///   映像が乱れて同期がふらつくと**絵の大きさは変わっていないのに**変化する。
     ///   それでウィンドウを合わせ直していたため、乱れるたびに窓が縮んでいった。
     fitted_sig: Option<(u16, u16, u32, [u32; 4])>,
+    /// 直前に OS へ要求した内寸。次のフレームで実際の内寸と突き合わせる。
+    ///
+    /// ★**要求どおりにならない環境がある。** `fit_target` は
+    ///   「余白 = 内寸 - 描画領域」を測って、その余白ぶんを足した内寸を要求する。
+    ///   要求した内寸と、次に測れる内寸がずれる環境では、そのずれが毎回余白に
+    ///   化けて積もり、合わせ直すたびにウィンドウが縮んでいく(Windows で発生。
+    ///   macOS では出なかった)。**ずれを見つけたら合わせるのをやめる。**
+    ///   合っていない環境で反復しても正しい大きさには辿り着けないし、
+    ///   ユーザーが手で決めた大きさを奪い続ける方がずっと害が大きい。
+    fit_requested: Option<(egui::Vec2, std::time::Instant)>,
+    /// 要求が通らないと分かった環境では、自動サイズ合わせを止める
+    fit_disabled: bool,
     /// 受信中フレームの寸法(GPUテクスチャは callback_resources 側が持つ)
     frame_size: (u32, u32),
     render_state: Option<eframe::egui_wgpu::RenderState>,
@@ -998,6 +1043,13 @@ struct Session {
     netcheck_modal: bool,
     /// 「今後表示しない」。設定に保存する
     netcheck_muted: bool,
+    /// 直ったことを確認したので、再起動を勧めるダイアログを出す。
+    ///
+    /// ★**直った直後が勧めどき。** 受信バッファーはNICドライバのリングなので、
+    ///   広げても**すでに開いているソケットの取りこぼしの記録は消えない**し、
+    ///   アダプタのリセットで購読も切れている。ここで再起動を促さないと
+    ///   「直したのに lost が増えたまま」で直っていないように見える。
+    netcheck_restart_ask: bool,
     /// 「直す」を押した結果。**押しただけで終わりにしない** ─ UACを拒否したり
     /// ドライバが受け付けなかったりするので、確かめ直して結果を出す。
     netcheck_fix: Option<String>,
@@ -1099,6 +1151,8 @@ impl Session {
             want_fit: false,
             pending_mode: None,
             fitted_sig: None,
+            fit_requested: None,
+            fit_disabled: false,
             frame_size: (0, 0),
             render_state,
             seen_gen: 0,
@@ -1143,6 +1197,7 @@ impl Session {
             netcheck: None,
             netcheck_modal: false,
             netcheck_muted: cfg.netcheck_muted,
+            netcheck_restart_ask: false,
             netcheck_fix: None,
             netcheck_recheck_at: None,
         };
@@ -4098,6 +4153,31 @@ impl Session {
         }
     }
 
+    /// 受信バッファーの修正を実行する。パネルとダイアログの両方から呼ぶ。
+    fn start_netcheck_fix(&mut self, adapter: Option<&str>) {
+        self.netcheck_fix = Some(match netcheck::apply_fix(adapter) {
+            Ok(()) => "実行しました。反映を確認しています…".to_string(),
+            Err(e) => format!("直せませんでした: {e}"),
+        });
+        // アダプタのリセットが終わってから調べ直す
+        self.netcheck_recheck_at =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(6));
+    }
+
+    /// アプリを再起動する。
+    ///
+    /// ★**受信スレッドを止めてから起こす。** すぐ起こすと、まだこちらが
+    ///   UDP 34600 を握っているので新しい方が空きポートへ落ちる。
+    fn restart_app(&mut self, ctx: &egui::Context) {
+        self.shared.stop.store(true, Ordering::Relaxed);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        if let Ok(exe) = std::env::current_exe() {
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            let _ = std::process::Command::new(exe).args(&args).spawn();
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
     /// 受信バッファーを調べる相手のIP。
     ///
     /// ★**ボード発見を待たない。** 待つと、新規の機械でいちばん警告が要る場面
@@ -4146,12 +4226,14 @@ impl Session {
                 self.netcheck_recheck_at = None;
                 if let Some(addr) = self.board_addr_for_netcheck() {
                     let b = netcheck::probe(&addr);
-                    self.netcheck_fix = Some(if b.should_warn() {
-                        format!("まだ {} のままです(管理者で拒否した可能性)",
-                                b.value().unwrap_or(0))
+                    if b.should_warn() {
+                        self.netcheck_fix = Some(format!(
+                            "まだ {} のままです(管理者で拒否した可能性)",
+                            b.value().unwrap_or(0)));
                     } else {
-                        "直りました。次回の起動から効きます".to_string()
-                    });
+                        self.netcheck_fix = Some("直りました".to_string());
+                        self.netcheck_restart_ask = true;
+                    }
                     self.netcheck_modal = false;
                     self.netcheck = Some(b);
                 }
@@ -4191,19 +4273,14 @@ impl Session {
         //   昇格させず、ShellExecuteW の runas でこの1コマンドだけ昇格させる。
         //   コピーの方も残す ─ UACを使えない環境や、内容を確認したい人のため。
         let cmd = netcheck::fix_command(cfg.adapter());
+        let mut fix_now = false;
         ui.horizontal(|ui| {
             if cfg!(windows) {
                 let b = ui.small_button("直す(管理者)").on_hover_text(format!(
                     "次を管理者権限で実行します:\n{cmd}\n\n                     ★実行するとNICが数秒切れます(ドライバがアダプタを\n                     　リセットするため)。映像も一度止まります"
                 ));
                 if b.clicked() {
-                    self.netcheck_fix = Some(match netcheck::apply_fix(cfg.adapter()) {
-                        Ok(()) => "実行しました。反映を確認しています…".to_string(),
-                        Err(e) => format!("直せませんでした: {e}"),
-                    });
-                    // アダプタのリセットが終わってから調べ直す
-                    self.netcheck_recheck_at =
-                        Some(std::time::Instant::now() + std::time::Duration::from_secs(6));
+                    fix_now = true;
                 }
             }
             if ui.small_button("コマンドをコピー").clicked() {
@@ -4213,6 +4290,9 @@ impl Session {
                 ui.weak("管理者のPowerShellで実行");
             }
         });
+        if fix_now {
+            self.start_netcheck_fix(cfg.adapter());
+        }
         if let Some(msg) = &self.netcheck_fix {
             ui.weak(egui::RichText::new(msg).size(11.0));
         }
@@ -4231,6 +4311,41 @@ impl Session {
 /// 管理者権限が無くて直せない人に毎回出すのは敵対的なので、「今後表示しない」を
 /// 用意して設定に保存する(パネル内の表示は消さない)。
 impl Session {
+    /// 直ったので再起動を勧める。
+    fn netcheck_restart_modal(&mut self, ctx: &egui::Context) {
+        if !self.netcheck_restart_ask {
+            return;
+        }
+        let mut close = false;
+        let mut restart = false;
+        egui::Modal::new(egui::Id::new("netcheck_restart")).show(ctx, |ui| {
+            ui.set_max_width(460.0);
+            ui.heading("受信バッファーを広げました");
+            ui.add_space(6.0);
+            ui.label(format!(
+                "アダプタの受信バッファーが {} になりました。\n\
+                 ★**アプリを再起動してください。** アダプタがリセットされたので\n\
+                 　購読が切れており、取りこぼしの記録も残ったままです。",
+                netcheck::RECOMMENDED
+            ));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.button("いま再起動する").clicked() {
+                    restart = true;
+                }
+                if ui.button("あとで").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if restart {
+            self.netcheck_restart_ask = false;
+            self.restart_app(ctx);
+        } else if close {
+            self.netcheck_restart_ask = false;
+        }
+    }
+
     fn netcheck_modal(&mut self, ctx: &egui::Context) {
         if !self.netcheck_modal {
             return;
@@ -4239,6 +4354,7 @@ impl Session {
         let cmd = netcheck::fix_command(cfg.adapter());
         let mut close = false;
         let mut mute = false;
+        let mut fix_now = false;
         egui::Modal::new(egui::Id::new("netcheck_modal")).show(ctx, |ui| {
             ui.set_max_width(520.0);
             ui.heading("NIC の受信バッファーが小さすぎます");
@@ -4251,12 +4367,29 @@ impl Session {
                 netcheck::RECOMMENDED,
             ));
             ui.add_space(6.0);
-            ui.label("管理者の PowerShell で次を実行してください:");
+            // ★**ここにも「直す」を置く。** 右パネルにしか無かったので、
+            //   ダイアログを見た人は手作業に誘導されていた ─ 気付かせるための
+            //   ダイアログが、いちばん簡単な直し方を隠していた。
+            ui.label(if cfg!(windows) {
+                "「直す(管理者)」を押すと、次を管理者権限で実行します:"
+            } else {
+                "管理者の PowerShell で次を実行してください:"
+            });
             ui.add(
                 egui::Label::new(egui::RichText::new(&cmd).monospace().size(11.0)).wrap(),
             );
             ui.add_space(10.0);
             ui.horizontal(|ui| {
+                if cfg!(windows) {
+                    let b = ui.button("直す(管理者)").on_hover_text(
+                        "★実行するとNICが数秒切れます\n\
+                         (ドライバがアダプタをリセットするため)。映像も一度止まります",
+                    );
+                    if b.clicked() {
+                        fix_now = true;
+                        close = true;
+                    }
+                }
                 if ui.button("コマンドをコピー").clicked() {
                     ui.ctx().copy_text(cmd.clone());
                 }
@@ -4273,6 +4406,9 @@ impl Session {
                 }
             });
         });
+        if fix_now {
+            self.start_netcheck_fix(cfg.adapter());
+        }
         if mute {
             self.netcheck_muted = true;
             self.mark_settings_dirty();
@@ -4642,6 +4778,25 @@ impl Session {
             if (sz - self.window_size).length() > 1.0 {
                 self.window_size = sz;
                 self.mark_settings_dirty();
+            }
+            // ★**要求した内寸になったか、その場で答え合わせをする。**
+            //   ここで見るのは「OSが要求を額面どおり受けたか」だけ。次の
+            //   合わせ直し(モードが変わるまで来ないこともある)まで待つと、
+            //   間に挟まった手動リサイズを「通らなかった」と誤判定する。
+            if let Some((want, at)) = self.fit_requested {
+                match fit_verdict(want, sz, at.elapsed()) {
+                    FitVerdict::Pending => {}
+                    FitVerdict::Honored => self.fit_requested = None,
+                    FitVerdict::Ignored => {
+                        self.fit_requested = None;
+                        self.fit_disabled = true;
+                        eprintln!(
+                            "fit: 要求した内寸 {:.0}x{:.0} が {:.0}x{:.0} にしか\
+                             ならないので自動サイズ合わせをやめます\
+                             (要求と実寸が食い違う環境)",
+                            want.x, want.y, sz.x, sz.y);
+                    }
+                }
             }
         }
         // ★**位置は外枠(`outer_rect`)で覚える。** `with_position` が指すのは
@@ -5365,17 +5520,23 @@ impl Session {
         if self.want_fit && self.last_tex.x > 0.0 && self.last_avail.x > 0.0 {
             self.want_fit = false;
             self.fitted_sig = self.display_sig();
+            // ★答え合わせは実寸を測っている側でやる(fit_requested)。通らない
+            //   環境と分かったら fit_disabled が立ち、以後は手を出さない。
             let mon = ctx.input(|i| i.viewport().monitor_size);
-            if let Some(want) =
-                fit_target(self.window_size, self.last_avail, self.last_tex, mon)
-            {
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
+            if !self.fit_disabled {
+                if let Some(want) =
+                    fit_target(self.window_size, self.last_avail, self.last_tex, mon)
+                {
+                    self.fit_requested = Some((want, std::time::Instant::now()));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
+                }
             }
         }
 
         self.remote_badge(&ctx);
         self.toasts.show(&ctx);
         self.netcheck_modal(&ctx);
+        self.netcheck_restart_modal(&ctx);
         self.clean_output(&ctx);
 
         // ★**映像が来ている間は連続で描画する。**
@@ -5444,6 +5605,28 @@ mod tests {
             }
         }
         panic!("50回合わせても収束しない(縮み続けている): {win:?}");
+    }
+
+    /// ★**要求が通らない環境では反復をやめる。** `fit_target` の式自体は
+    ///   モニタ上限を入れても収束する(総当たりで確認済み)。Windows で窓が
+    ///   縮み続けたのは式ではなく、要求した内寸と次に測れる内寸がずれ、その
+    ///   ずれが毎回「余白」に化けて積もったため。ずれを見つけたら降りる。
+    #[test]
+    fn fit_gives_up_when_request_is_ignored() {
+        let want = egui::vec2(1160.0, 820.0);
+        let short = std::time::Duration::from_millis(100);
+        let long = FIT_VERDICT_AFTER + std::time::Duration::from_millis(1);
+
+        // ぴったり = 通った
+        assert_eq!(fit_verdict(want, want, short), FitVerdict::Honored);
+        // 端数の丸めは通ったとみなす
+        assert_eq!(fit_verdict(want, want + egui::vec2(2.0, 0.0), long),
+                   FitVerdict::Honored);
+        // タイトルバーぶんずれている。猶予内はまだ判断しない
+        let off = want - egui::vec2(0.0, 30.0);
+        assert_eq!(fit_verdict(want, off, short), FitVerdict::Pending);
+        // 猶予を過ぎても違えば、この環境では諦める
+        assert_eq!(fit_verdict(want, off, long), FitVerdict::Ignored);
     }
 
     /// 丸め程度の差では動かさない。
