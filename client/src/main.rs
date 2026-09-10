@@ -735,6 +735,39 @@ const PHASE_SENSITIVE: f32 = 0.85;
 ///   はずだが、点と画素の丸めやパネル幅の増減で毎回わずかに残る。Windows の
 ///   DPI 拡大では1回あたりの目減りが大きく、**同期がふらつくたびに合わせ直して
 ///   窓が消えていった**(2026-09-10 実機。Macでは目減りが小さく気付かなかった)。
+/// 要求した内寸と実寸のずれをどこまで許すか[point]。
+/// 端数の丸めは通すが、タイトルバーや枠のぶん(数十point)は通さない。
+const FIT_TOLERANCE: f32 = 4.0;
+
+/// 要求してから答え合わせをするまでの猶予。ウィンドウマネージャの応答と
+/// アニメーションを待つぶん。
+const FIT_VERDICT_AFTER: std::time::Duration = std::time::Duration::from_millis(700);
+
+/// 直前の内寸要求が通ったかの判定。
+#[derive(Debug, PartialEq, Eq)]
+enum FitVerdict {
+    /// まだ分からない(猶予内)。要求を保持して次のフレームで見直す
+    Pending,
+    /// 要求どおりになった
+    Honored,
+    /// 猶予を過ぎても要求と違う。以後この環境では自動サイズ合わせをしない
+    Ignored,
+}
+
+fn fit_verdict(
+    requested: egui::Vec2,
+    actual: egui::Vec2,
+    elapsed: std::time::Duration,
+) -> FitVerdict {
+    if (actual - requested).length() <= FIT_TOLERANCE {
+        FitVerdict::Honored
+    } else if elapsed >= FIT_VERDICT_AFTER {
+        FitVerdict::Ignored
+    } else {
+        FitVerdict::Pending
+    }
+}
+
 fn fit_target(
     window: egui::Vec2,
     avail: egui::Vec2,
@@ -918,6 +951,18 @@ struct Session {
     ///   映像が乱れて同期がふらつくと**絵の大きさは変わっていないのに**変化する。
     ///   それでウィンドウを合わせ直していたため、乱れるたびに窓が縮んでいった。
     fitted_sig: Option<(u16, u16, u32, [u32; 4])>,
+    /// 直前に OS へ要求した内寸。次のフレームで実際の内寸と突き合わせる。
+    ///
+    /// ★**要求どおりにならない環境がある。** `fit_target` は
+    ///   「余白 = 内寸 - 描画領域」を測って、その余白ぶんを足した内寸を要求する。
+    ///   要求した内寸と、次に測れる内寸がずれる環境では、そのずれが毎回余白に
+    ///   化けて積もり、合わせ直すたびにウィンドウが縮んでいく(Windows で発生。
+    ///   macOS では出なかった)。**ずれを見つけたら合わせるのをやめる。**
+    ///   合っていない環境で反復しても正しい大きさには辿り着けないし、
+    ///   ユーザーが手で決めた大きさを奪い続ける方がずっと害が大きい。
+    fit_requested: Option<(egui::Vec2, std::time::Instant)>,
+    /// 要求が通らないと分かった環境では、自動サイズ合わせを止める
+    fit_disabled: bool,
     /// 受信中フレームの寸法(GPUテクスチャは callback_resources 側が持つ)
     frame_size: (u32, u32),
     render_state: Option<eframe::egui_wgpu::RenderState>,
@@ -1106,6 +1151,8 @@ impl Session {
             want_fit: false,
             pending_mode: None,
             fitted_sig: None,
+            fit_requested: None,
+            fit_disabled: false,
             frame_size: (0, 0),
             render_state,
             seen_gen: 0,
@@ -4732,6 +4779,25 @@ impl Session {
                 self.window_size = sz;
                 self.mark_settings_dirty();
             }
+            // ★**要求した内寸になったか、その場で答え合わせをする。**
+            //   ここで見るのは「OSが要求を額面どおり受けたか」だけ。次の
+            //   合わせ直し(モードが変わるまで来ないこともある)まで待つと、
+            //   間に挟まった手動リサイズを「通らなかった」と誤判定する。
+            if let Some((want, at)) = self.fit_requested {
+                match fit_verdict(want, sz, at.elapsed()) {
+                    FitVerdict::Pending => {}
+                    FitVerdict::Honored => self.fit_requested = None,
+                    FitVerdict::Ignored => {
+                        self.fit_requested = None;
+                        self.fit_disabled = true;
+                        eprintln!(
+                            "fit: 要求した内寸 {:.0}x{:.0} が {:.0}x{:.0} にしか\
+                             ならないので自動サイズ合わせをやめます\
+                             (要求と実寸が食い違う環境)",
+                            want.x, want.y, sz.x, sz.y);
+                    }
+                }
+            }
         }
         // ★**位置は外枠(`outer_rect`)で覚える。** `with_position` が指すのは
         //   外枠なので、内枠(`inner_rect`)を渡すと**毎回タイトルバーの高さだけ
@@ -5454,11 +5520,16 @@ impl Session {
         if self.want_fit && self.last_tex.x > 0.0 && self.last_avail.x > 0.0 {
             self.want_fit = false;
             self.fitted_sig = self.display_sig();
+            // ★答え合わせは実寸を測っている側でやる(fit_requested)。通らない
+            //   環境と分かったら fit_disabled が立ち、以後は手を出さない。
             let mon = ctx.input(|i| i.viewport().monitor_size);
-            if let Some(want) =
-                fit_target(self.window_size, self.last_avail, self.last_tex, mon)
-            {
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
+            if !self.fit_disabled {
+                if let Some(want) =
+                    fit_target(self.window_size, self.last_avail, self.last_tex, mon)
+                {
+                    self.fit_requested = Some((want, std::time::Instant::now()));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
+                }
             }
         }
 
@@ -5534,6 +5605,28 @@ mod tests {
             }
         }
         panic!("50回合わせても収束しない(縮み続けている): {win:?}");
+    }
+
+    /// ★**要求が通らない環境では反復をやめる。** `fit_target` の式自体は
+    ///   モニタ上限を入れても収束する(総当たりで確認済み)。Windows で窓が
+    ///   縮み続けたのは式ではなく、要求した内寸と次に測れる内寸がずれ、その
+    ///   ずれが毎回「余白」に化けて積もったため。ずれを見つけたら降りる。
+    #[test]
+    fn fit_gives_up_when_request_is_ignored() {
+        let want = egui::vec2(1160.0, 820.0);
+        let short = std::time::Duration::from_millis(100);
+        let long = FIT_VERDICT_AFTER + std::time::Duration::from_millis(1);
+
+        // ぴったり = 通った
+        assert_eq!(fit_verdict(want, want, short), FitVerdict::Honored);
+        // 端数の丸めは通ったとみなす
+        assert_eq!(fit_verdict(want, want + egui::vec2(2.0, 0.0), long),
+                   FitVerdict::Honored);
+        // タイトルバーぶんずれている。猶予内はまだ判断しない
+        let off = want - egui::vec2(0.0, 30.0);
+        assert_eq!(fit_verdict(want, off, short), FitVerdict::Pending);
+        // 猶予を過ぎても違えば、この環境では諦める
+        assert_eq!(fit_verdict(want, off, long), FitVerdict::Ignored);
     }
 
     /// 丸め程度の差では動かさない。
