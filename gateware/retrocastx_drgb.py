@@ -312,7 +312,15 @@ class DigitalRgbProbe(Module):
         self.sync += If(vs_edge, row.eq(0)).Elif(hs_edge, row.eq(row + 1))
         self.sync += [
             dot_step.eq(0),
-            If(hs_edge,
+            # ★**信号が来ていないときは止める。** `stat_hlen` は最初の HS が来る
+            #   まで 0 で、そのとき `acc >= 0` は**常に真**になる。すると
+            #   `dotn` が毎クロック回り、20bitの加算器と12bitのカウンタが 45MHz で
+            #   走り続ける ─ 数えるものが無いのに。**縮退した暴走状態**で、
+            #   ループバックの線を繋いでいない間はずっとこれになる。
+            If(self.stat_hlen == 0,
+                acc.eq(0),
+                dotn.eq(0),
+            ).Elif(hs_edge,
                 acc.eq(self.stat_hlen >> 1),      # 半ドットぶん進めて中央へ
                 dotn.eq(0),
             ).Elif(acc >= self.stat_hlen,
