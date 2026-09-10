@@ -141,15 +141,19 @@ dataclk 96.37MHz PASS)。
 **真逆。** litex_boards の原典には "The order of the two PHYs is swapped with the
 naming of the connectors" としか書いておらず、どちらを指すかは自明でない。
 
-### 実機で確かめたこと(2026-09-11)
+### 実機で確かめたこと(2026-09-11)── **決着**
 
-LEDのランプテスト(CONFIG 0x7E)で **R1 を点けると J11 の緑が光る**。
-`main.ato` は io_r1 を `jack` に繋いでおり、`jack` を ETH2 と呼んでいるので、
+- LEDのランプテスト(CONFIG 0x7E)で **io_r1 を点けると J11 の緑が光る**。
+  `main.ato` は io_r1 を `jack` に繋いでおり、`jack` を ETH2 と呼んでいるので
+  **jack = J11 = ETH2**
+- LANケーブルは **J12** に挿してあり、それが `--eth-phy 1` で通っている。
+  よって **litex eth1 = J12 = ETH1**
 
-    ETH2 = J11 = io_r1/io_t1    ETH1 = J12 = io_u1/io_y2
+    litex eth0 = ETH2 = J11 = jack  = io_r1/io_t1
+    litex eth1 = ETH1 = J12 = jack2 = io_u1/io_y2   ← 映像ストリーム既定
 
-ここまでは確定。**PHY と litex index の対応はまだ実機で取れていない**
-(ケーブルがどちらのジャックに挿さっているかの確認待ち)。
+**`retrocastx_stream.py` が正しく、`main.ato` の docstring が誤りだった**
+(2026-09-11 に修正済み)。
 
 ### v1.0 でどうするか
 
@@ -163,8 +167,7 @@ LEDのランプテスト(CONFIG 0x7E)で **R1 を点けると J11 の緑が光�
 3. `main.ato` のモジュール名を `jack_eth0` / `jack_eth1` にする
 4. 文書から ETH1/ETH2 を消す。どうしても i5 側のシルクを指すときは
    「i5モジュールのETH1」と明示する
-5. **どちらが正しいかを実機で確定してから**、間違っている方のコメントを直す
-   (いま直すと、間違った方に合わせてしまう恐れがある)
+5. ~~どちらが正しいかを実機で確定してから直す~~ → 済(上記)
 
 ★ここは半日溶かした前科がある。**名前ではなく実測で確かめてから書く。**
 

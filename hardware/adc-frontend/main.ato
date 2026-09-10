@@ -739,8 +739,18 @@ module EthernetPort:
     - PHY側センタータップ: 各0.1µF→GND のみ(B50612D は内部バイアスで無給電可)
     - Bob-Smith終端(75Ω+1nF)は HR911130A 内蔵
     - 論理GND-シャーシ間: 各ポート 4.7nF/2kV ×2(1812)
-    - **ETH2=jack=PHY0=litex eth1(映像ストリーム既定)、ETH1=jack2=PHY1=litex eth0(将来のデュアルリンク/2.5G化用)**
-      ※litexのデフォルトindexは0=ETH1だが、gatewareはeth1(=ETH2)を要求して映像を出す。
+    - **ETH2 = jack = J11 = litex eth0**(将来のデュアルリンク/2.5G化用)
+      **ETH1 = jack2 = J12 = litex eth1**(映像ストリーム既定。gateware の --eth-phy 1)
+      ※ここは以前「ETH2=litex eth1、ETH1=litex eth0」と**逆に**書いてあった
+        (2026-09-11 修正)。litex_boards には "The order of the two PHYs is
+        swapped with the naming of the connectors" としか書いておらず、
+        どちらを指すかは自明でないため、実機で確かめた:
+          ・LEDのランプテストで **io_r1 を点けると J11 の緑が光る**。
+            io_r1 は jack 側なので **jack = J11 = ETH2**
+          ・LANケーブルは **J12** に挿してあり、それが --eth-phy 1 で通る。
+            よって **litex eth1 = J12 = ETH1**
+        ★**名前ではなく実測で確かめること。** ここの取り違えで半日溶かした
+          前科がある(gateware/retrocastx_stream.py の該当コメント参照)。
     - LED: 両ポートのMagJack緑/黄LEDをFPGA GPIOで駆動(ETH2=io_r1/io_t1, ETH1=io_u1/io_y2)
       ※以前ここに「ETH1=io_w1/io_v1」と書いてあったのは誤り(2026-09-02修正)。
         io_w1/io_v1 は CH347 の UART0。信号宣言(led_g_drive2/led_y_drive2)が正。
