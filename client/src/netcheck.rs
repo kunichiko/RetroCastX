@@ -76,13 +76,32 @@ impl Buffers {
     }
 }
 
-/// 直し方。警告と一緒に出してコピーさせる
+/// 直し方。警告と一緒に出してコピーさせる。**そのまま昇格実行にも渡す**。
+///
+/// ★**アダプタ名をエスケープする。** PowerShell の単引用符の中では `'` を `''` と
+///   書く。名前は OS から来る文字列で、こちらが選べない ─ エスケープを省くと、
+///   引用符を含む名前でコマンドが壊れる(黙って別のことをする方が、動かないより悪い)。
 pub fn fix_command(adapter: Option<&str>) -> String {
-    let name = adapter.unwrap_or("イーサネット");
+    let name = adapter.unwrap_or("イーサネット").replace('\'', "''");
     format!(
         "Set-NetAdapterAdvancedProperty -Name '{name}' \
          -RegistryKeyword '*ReceiveBuffers' -RegistryValue {RECOMMENDED}"
     )
+}
+
+/// 昇格実行に渡す powershell.exe の引数。
+///
+/// ★**引用符の入れ子を1段で済ませる。** `Start-Process -Verb RunAs` を PowerShell
+///   から呼ぶ形にすると引用が二重三重になり、空白入りのアダプタ名
+///   (「イーサネット 2」は実在する)で壊れる。ShellExecuteW に直接 runas を
+///   頼めば、外側の `"` 1段だけで済む。
+///
+/// Windows 以外でも組み立てられるようにしてある(**この文字列だけは試験できる**
+/// ため。実行そのものは Windows でしか確かめられない)。
+pub fn fix_params(adapter: Option<&str>) -> String {
+    // コマンド側は単引用符しか使わないので、外側の二重引用符と衝突しない。
+    // 将来 `"` が入る形に変えたときのために念のため退避する
+    format!("-NoProfile -Command \"{}\"", fix_command(adapter).replace('"', "`\""))
 }
 
 /// `board` (ボードのIPv4文字列) への経路上にある NIC の受信バッファー設定を返す。
@@ -323,6 +342,27 @@ mod tests {
 
     /// 直し方のコマンドにアダプタ名が入ること(名前が違うとそのまま貼れない)
     #[test]
+    /// ★**引用符を含むアダプタ名で壊れないこと。** 名前は OS から来るので
+    ///   こちらが選べない。壊れたコマンドが管理者権限で走るのは避けたい。
+    #[test]
+    fn fix_command_escapes_quotes_in_adapter_name() {
+        let cmd = fix_command(Some("Bob's NIC"));
+        assert!(cmd.contains("-Name 'Bob''s NIC'"), "{cmd}");
+        // 単引用符が偶数個 = 引用が閉じている
+        assert_eq!(cmd.matches('\'').count() % 2, 0, "引用符が閉じていない: {cmd}");
+    }
+
+    /// 昇格実行に渡す引数。**外側の二重引用符は1段だけ**であること。
+    #[test]
+    fn fix_params_quote_only_once() {
+        let p = fix_params(Some("イーサネット 2"));
+        assert!(p.starts_with("-NoProfile -Command \""), "{p}");
+        assert!(p.ends_with('"'), "{p}");
+        assert_eq!(p.matches('"').count(), 2, "二重引用符が入れ子になっている: {p}");
+        assert!(p.contains("-Name 'イーサネット 2'"), "{p}");
+    }
+
+    #[test]
     fn fix_command_uses_adapter_name() {
         let cmd = fix_command(Some("イーサネット 2"));
         assert!(cmd.contains("-Name 'イーサネット 2'"), "{cmd}");
@@ -330,5 +370,70 @@ mod tests {
         assert!(cmd.contains("2048"), "{cmd}");
         // 名前が取れなかったときも貼れる形にしておく
         assert!(fix_command(None).contains("-Name 'イーサネット'"));
+    }
+}
+
+/// 受信バッファーを**その場で直す**。
+///
+/// ★**コマンドを見せて終わりにしない。** 直すには管理者権限が要るので、
+///   これまでは「コピーして管理者の PowerShell で実行してください」と頼んでいた。
+///   PowerShell を管理者で開く手順を知らない人はここで詰まるし、知っていても
+///   毎回の作業が残る。**押したら UAC が出て、承諾すれば直る**ようにする。
+///
+/// ★**こちらでは昇格しない。** アプリ自体を管理者で動かすと、以後すべての操作が
+///   管理者権限で走る(映像を受けるだけのアプリでそれは重い)。`ShellExecuteW` の
+///   `runas` で**この1コマンドだけ**を別プロセスとして昇格させる。
+///
+/// ★**NICが一瞬切れる。** advanced property を変えるとドライバがアダプタを
+///   リセットするので、リンクが数秒落ちる。呼ぶ側はそれを伝えること。
+///
+/// 戻り値は「起動できたか」。**直ったかどうかではない**(UACで拒否されることも
+/// あるし、反映の確認は `probe` をやり直して行う)。
+pub fn apply_fix(adapter: Option<&str>) -> Result<(), String> {
+    imp_fix::apply(&fix_params(adapter))
+}
+
+#[cfg(not(target_os = "windows"))]
+mod imp_fix {
+    pub fn apply(_params: &str) -> Result<(), String> {
+        Err("この機能は Windows だけです".into())
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod imp_fix {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+
+    fn wide(s: &str) -> Vec<u16> {
+        std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    pub fn apply(params: &str) -> Result<(), String> {
+        let op = wide("runas");
+        let file = wide("powershell.exe");
+        let par = wide(params);
+        // SAFETY: 3つの文字列はいずれもNUL終端で、呼び出し中は生存している
+        let rc = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                op.as_ptr(),
+                file.as_ptr(),
+                par.as_ptr(),
+                std::ptr::null(),
+                SW_HIDE as i32,
+            )
+        };
+        // ShellExecuteW は成功時に 32 より大きい値を返す(歴史的な仕様)
+        if rc as isize > 32 {
+            Ok(())
+        } else {
+            // 1223 = ERROR_CANCELLED。UACで「いいえ」を押した場合
+            Err(match rc as isize {
+                1223 => "許可されませんでした(UACで拒否)".into(),
+                n => format!("起動できませんでした (code {n})"),
+            })
+        }
     }
 }

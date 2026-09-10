@@ -725,6 +725,32 @@ const PHASE_SENSITIVE: f32 = 0.85;
 /// 小さい側はドットを飛ばして絵が壊れる。非対称なので迷ったら上。
 ///
 /// `probes` は (最良位相, 最良の鮮鋭度, 最悪の鮮鋭度) を候補の順(htotal降順)に。
+/// 「画に合わせる」ときの目標のウィンドウ内寸。動かす必要が無ければ `None`。
+///
+/// `tex` は**画の実寸ではなく、いま画面に出ている(レターボックス後の)大きさ**。
+/// だから `tex + 外側の余白` は必ず現在の内寸**以下**になる ─ つまりこの操作は
+/// 「余白を削って縮める」。1回なら意図どおりだが、**繰り返すと縮み続ける**。
+///
+/// ★**丸め程度の差では動かさない。** 比が一致すれば余白は0になって収束する
+///   はずだが、点と画素の丸めやパネル幅の増減で毎回わずかに残る。Windows の
+///   DPI 拡大では1回あたりの目減りが大きく、**同期がふらつくたびに合わせ直して
+///   窓が消えていった**(2026-09-10 実機。Macでは目減りが小さく気付かなかった)。
+fn fit_target(
+    window: egui::Vec2,
+    avail: egui::Vec2,
+    tex: egui::Vec2,
+    monitor: Option<egui::Vec2>,
+) -> Option<egui::Vec2> {
+    let chrome = window - avail;
+    let mut want = tex + chrome;
+    // 画面より大きくしない(はみ出すと操作できなくなる)
+    if let Some(mon) = monitor {
+        want = want.min(mon * 0.95);
+    }
+    let delta = (want - window).abs();
+    (delta.x > 3.0 || delta.y > 3.0).then_some(want)
+}
+
 fn quick_pick(probes: &[(u8, f32, f32)]) -> (usize, f32) {
     let rel_of = |p: &(u8, f32, f32)| if p.1 > 0.0 { p.2 / p.1 } else { 1.0 };
     let (mut j, mut min_rel) = (0usize, f32::MAX);
@@ -879,6 +905,19 @@ struct Session {
     did_autofit: bool,
     /// 次のフレームでウィンドウを等倍に合わせる
     want_fit: bool,
+    /// 切り替わりかけているモードと、それを最初に見た時刻。
+    ///
+    /// ★**すぐには追従しない。** モードは fh/vtotal/htotal の**測定値**から
+    ///   作るので、同期が一瞬乱れるだけで別のモードに見える。そのたびに
+    ///   切り出しと回転をリセットしていたため、**絵が飛んでいた**
+    ///   (2026-09-10。ボード側で vactive が 568→372 に飛ぶ現象を実測)。
+    pending_mode: Option<(String, std::time::Instant)>,
+    /// 最後にウィンドウを合わせたときの「絵の大きさを決める要素」。
+    ///
+    /// ★**モードキーとは別に持つ。** モードキーは fh/htotal/vtotal で作るので、
+    ///   映像が乱れて同期がふらつくと**絵の大きさは変わっていないのに**変化する。
+    ///   それでウィンドウを合わせ直していたため、乱れるたびに窓が縮んでいった。
+    fitted_sig: Option<(u16, u16, u32, [u32; 4])>,
     /// 受信中フレームの寸法(GPUテクスチャは callback_resources 側が持つ)
     frame_size: (u32, u32),
     render_state: Option<eframe::egui_wgpu::RenderState>,
@@ -959,6 +998,11 @@ struct Session {
     netcheck_modal: bool,
     /// 「今後表示しない」。設定に保存する
     netcheck_muted: bool,
+    /// 「直す」を押した結果。**押しただけで終わりにしない** ─ UACを拒否したり
+    /// ドライバが受け付けなかったりするので、確かめ直して結果を出す。
+    netcheck_fix: Option<String>,
+    /// 直したあとに調べ直す時刻(アダプタのリセットが終わるのを待つ)
+    netcheck_recheck_at: Option<std::time::Instant>,
 }
 
 impl Session {
@@ -1053,6 +1097,8 @@ impl Session {
             last_tex: egui::Vec2::ZERO,
             did_autofit: false,
             want_fit: false,
+            pending_mode: None,
+            fitted_sig: None,
             frame_size: (0, 0),
             render_state,
             seen_gen: 0,
@@ -1097,6 +1143,8 @@ impl Session {
             netcheck: None,
             netcheck_modal: false,
             netcheck_muted: cfg.netcheck_muted,
+            netcheck_fix: None,
+            netcheck_recheck_at: None,
         };
         // ★起動時にも一度合わせる。設定に前回の音声入力が残っていても、
         //   復元した映像ソースと食い違ったままにしない。
@@ -1924,8 +1972,31 @@ impl Session {
     fn follow_mode(&mut self) {
         let Some(key) = self.current_mode_key() else { return };
         if key == self.mode_key {
+            self.pending_mode = None;
             return;
         }
+        // ★**新しいモードが続いていることを確かめてから追従する。**
+        //
+        //   モードキーは測定値(fh / vtotal / htotal)から作るので、入力の同期が
+        //   一瞬乱れるだけで別のモードに見える。そのまま追従すると
+        //   「未知のモード → 切り出しと回転をリセット」で**絵が飛ぶ**。
+        //   実測では乱れは1秒ほど続いたので、それより長く待つ。
+        //
+        //   ★**遅れても実害は小さい。** 映像そのものは MODE パケットに即座に
+        //     追従する。ここで遅れるのは切り出し・回転・位相の復元だけ。
+        const SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+        match &self.pending_mode {
+            Some((k, since)) if *k == key => {
+                if since.elapsed() < SETTLE {
+                    return;
+                }
+            }
+            _ => {
+                self.pending_mode = Some((key, std::time::Instant::now()));
+                return;
+            }
+        }
+        self.pending_mode = None;
         if !self.mode_key.is_empty() {
             let old = self.mode_key.clone();
             self.modes.insert(old, [self.crop[0], self.crop[1], self.crop[2],
@@ -1949,7 +2020,17 @@ impl Session {
         }
         self.mode_key = key;
         self.mark_settings_dirty();
-        self.want_fit = true;
+        // ★**絵の大きさが変わったときだけ合わせ直す。** 同期がふらついただけで
+        //   窓を動かさない(乱れるたびに窓が動くのは実害が大きい)。
+        if self.display_sig() != self.fitted_sig {
+            self.want_fit = true;
+        }
+    }
+
+    /// 絵の見た目の大きさを決める要素だけを拾った署名。
+    fn display_sig(&self) -> Option<(u16, u16, u32, [u32; 4])> {
+        let m = self.shared.mode.lock().unwrap();
+        m.as_ref().map(|m| (m.hactive, m.vactive, self.rotate, self.crop))
     }
 
     /// pll_divide を変える。hs_offset を同じ比で追従させて絵が動かないようにする。
@@ -4017,37 +4098,63 @@ impl Session {
         }
     }
 
+    /// 受信バッファーを調べる相手のIP。
+    ///
+    /// ★**ボード発見を待たない。** 待つと、新規の機械でいちばん警告が要る場面
+    ///   (まだ何も映っていない状態)で黙ってしまう。ブロードキャスト宛でも経路は
+    ///   引けるので、送り先の NIC は分かる。取り違えても Unsupported / Unknown に
+    ///   落ちるだけで、嘘の警告にはならない(実機のWi-Fiで確認済み)。
+    /// ★**全アダプタを見てはいけない。** 知りたいのは「実際に受信に使われる NIC」。
+    ///   Wi-Fi と有線が両方生きている機械で誤判定する。
+    fn board_addr_for_netcheck(&self) -> Option<String> {
+        let addr = self
+            .shared
+            .boards
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .map(|b| b.addr.clone())
+            .or_else(|| {
+                let d = self.shared.sub_dest.lock().unwrap().clone();
+                (!d.is_empty()).then_some(d)
+            })?;
+        // ポート番号や、複数NIC時の空白区切りが付くことがあるので落とす
+        let first = addr.split_whitespace().next().unwrap_or(&addr);
+        Some(first.split(':').next().unwrap_or(first).to_string())
+    }
+
     fn netcheck_ui(&mut self, ui: &mut egui::Ui, s: &receiver::StatsSnapshot) {
         // ボードのアドレスが分かってから1回だけ調べる。経路から NIC を決めるので、
         // 相手のIPが要る(Wi-Fiと有線が両方生きている機械で誤判定しないため)
         if self.netcheck.is_none() {
-            let addr = self
-                .shared
-                .boards
-                .lock()
-                .unwrap()
-                .values()
-                .next()
-                .map(|b| b.addr.clone())
-                // ボードが見つかる前でも判定できるように、SUBSCRIBE の宛先で
-                // 代替する。**ボード発見を待つと、新規の機械でいちばん警告が
-                // 要る場面(まだ何も映っていない状態)で黙ってしまう。**
-                // ブロードキャスト宛でも経路は引けるので、送り先の NIC が分かる。
-                // 取り違えても Unsupported / Unknown に落ちるだけで、嘘の警告には
-                // ならない(実機のWi-Fiで確認済み)
-                .or_else(|| {
-                    let d = self.shared.sub_dest.lock().unwrap().clone();
-                    (!d.is_empty()).then_some(d)
-                });
-            if let Some(addr) = addr {
-                // ポート番号が付いていることがあるので落とす
-                let ip = addr.split(':').next().unwrap_or(&addr).to_string();
+            if let Some(ip) = self.board_addr_for_netcheck() {
                 let b = netcheck::probe(&ip);
                 // 起動ごとに1回だけ。パネルは Tab で隠せるうえ --fullscreen には
                 // そもそも無いので、パネル内の表示だけでは「遊ぶときのモード」で
                 // 気付けない
                 self.netcheck_modal = b.should_warn() && !self.netcheck_muted;
                 self.netcheck = Some(b);
+            }
+        }
+
+        // ★**直したあと必ず確かめ直す。** 「実行しました」で終わらせると、
+        //   UACを拒否した場合やドライバが受け付けなかった場合に、直っていないのに
+        //   直った気になる。レジストリを読み直せば事実が分かる。
+        if let Some(t) = self.netcheck_recheck_at {
+            if t.elapsed() > std::time::Duration::ZERO {
+                self.netcheck_recheck_at = None;
+                if let Some(addr) = self.board_addr_for_netcheck() {
+                    let b = netcheck::probe(&addr);
+                    self.netcheck_fix = Some(if b.should_warn() {
+                        format!("まだ {} のままです(管理者で拒否した可能性)",
+                                b.value().unwrap_or(0))
+                    } else {
+                        "直りました。次回の起動から効きます".to_string()
+                    });
+                    self.netcheck_modal = false;
+                    self.netcheck = Some(b);
+                }
             }
         }
 
@@ -4080,14 +4187,35 @@ impl Session {
                     "NICの受信バッファーが小さい可能性があります\n                     (このドライバは設定値を公開していないので確認できません)",
                 );
         }
-        // 直すには管理者権限が要るので、こちらでは適用せずコマンドを渡す
+        // ★**押したら直る**ようにする。管理者権限が要るのでこのプロセスは
+        //   昇格させず、ShellExecuteW の runas でこの1コマンドだけ昇格させる。
+        //   コピーの方も残す ─ UACを使えない環境や、内容を確認したい人のため。
         let cmd = netcheck::fix_command(cfg.adapter());
         ui.horizontal(|ui| {
+            if cfg!(windows) {
+                let b = ui.small_button("直す(管理者)").on_hover_text(format!(
+                    "次を管理者権限で実行します:\n{cmd}\n\n                     ★実行するとNICが数秒切れます(ドライバがアダプタを\n                     　リセットするため)。映像も一度止まります"
+                ));
+                if b.clicked() {
+                    self.netcheck_fix = Some(match netcheck::apply_fix(cfg.adapter()) {
+                        Ok(()) => "実行しました。反映を確認しています…".to_string(),
+                        Err(e) => format!("直せませんでした: {e}"),
+                    });
+                    // アダプタのリセットが終わってから調べ直す
+                    self.netcheck_recheck_at =
+                        Some(std::time::Instant::now() + std::time::Duration::from_secs(6));
+                }
+            }
             if ui.small_button("コマンドをコピー").clicked() {
                 ui.ctx().copy_text(cmd.clone());
             }
-            ui.weak("管理者のPowerShellで実行");
+            if !cfg!(windows) {
+                ui.weak("管理者のPowerShellで実行");
+            }
         });
+        if let Some(msg) = &self.netcheck_fix {
+            ui.weak(egui::RichText::new(msg).size(11.0));
+        }
         ui.add(egui::Label::new(egui::RichText::new(&cmd).monospace().size(10.0)).wrap());
     }
 }
@@ -5236,14 +5364,13 @@ impl Session {
         }
         if self.want_fit && self.last_tex.x > 0.0 && self.last_avail.x > 0.0 {
             self.want_fit = false;
-            let chrome = self.window_size - self.last_avail;
-            let mut want = self.last_tex + chrome;
-            // 画面より大きくしない(はみ出すと操作できなくなる)
+            self.fitted_sig = self.display_sig();
             let mon = ctx.input(|i| i.viewport().monitor_size);
-            if let Some(mon) = mon {
-                want = want.min(mon * 0.95);
+            if let Some(want) =
+                fit_target(self.window_size, self.last_avail, self.last_tex, mon)
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
             }
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
         }
 
         self.remote_badge(&ctx);
@@ -5293,6 +5420,51 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★**繰り返しても縮み続けないこと。** `last_tex` はレターボックス後の
+    ///   表示サイズなので、素直に合わせると毎回余白ぶん小さくなる。同期が
+    ///   ふらつくたびに合わせ直していたため、Windows で窓が消えていった。
+    #[test]
+    fn fit_does_not_shrink_forever() {
+        let panel = egui::vec2(360.0, 0.0);      // 右パネルぶんの余白
+        let aspect = 4.0 / 3.0;
+        let mut win = egui::vec2(1160.0, 820.0);
+        for i in 0..50 {
+            let avail = win - panel;
+            // 画は領域に内接する(= レターボックスが残る)
+            let fit = (avail.x / aspect).min(avail.y);
+            let tex = egui::vec2(fit * aspect, fit);
+            match fit_target(win, avail, tex, None) {
+                Some(next) => {
+                    assert!(next.x > 100.0 && next.y > 100.0,
+                            "{i}回目で潰れた: {next:?}");
+                    win = next;
+                }
+                None => return,   // 収束した
+            }
+        }
+        panic!("50回合わせても収束しない(縮み続けている): {win:?}");
+    }
+
+    /// 丸め程度の差では動かさない。
+    #[test]
+    fn fit_ignores_rounding_noise() {
+        let win = egui::vec2(1000.0, 800.0);
+        let avail = egui::vec2(640.0, 800.0);
+        // 2ポイントだけ小さい = 丸めの範囲
+        let tex = egui::vec2(638.0, 799.0);
+        assert_eq!(fit_target(win, avail, tex, None), None);
+    }
+
+    /// 意味のある変化なら動かす(効かなくなっていないこと)。
+    #[test]
+    fn fit_still_resizes_when_it_matters() {
+        let win = egui::vec2(1000.0, 800.0);
+        let avail = egui::vec2(640.0, 800.0);
+        let tex = egui::vec2(640.0, 480.0);      // 縦に大きな余白
+        let want = fit_target(win, avail, tex, None).expect("動くべき場面で動かない");
+        assert_eq!(want, egui::vec2(1000.0, 480.0));
+    }
 
     /// ★**ANNOUNCE の name は16バイト固定。** 日本語は1文字3バイトなので、
     ///   「5文字までしか入らない」ことに UI 側で気付ける必要がある。

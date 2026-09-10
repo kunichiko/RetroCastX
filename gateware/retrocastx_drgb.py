@@ -107,7 +107,12 @@ class DigitalRgbGen(Module):
         self.hstart, self.vstart = hstart, vstart
         self.dot_div = dot_div
 
-        self.enable = Signal(reset=1)
+        # ★**「ピンの駆動」と「内部ロジック」を別々に止められるようにする。**
+        #   同じビットストリームのまま両方を切り替えられれば、**配置が変わらない
+        #   まま**「ピンを振ったせいか、論理を足したせいか」を切り分けられる。
+        #   ビルドを分けると配置も変わってしまい、どちらの効果か分からなくなる。
+        self.enable = Signal(reset=1)       # 0 = 6本とも Low に固定(駆動を止める)
+        self.run = Signal(reset=1)          # 0 = 内部カウンタを止める(論理を静める)
         self.neg_sync = Signal(reset=1)     # 1 = アイドルHigh、パルスでLow
 
         self.r = Signal(); self.g = Signal(); self.b = Signal(); self.i = Signal()
@@ -120,10 +125,11 @@ class DigitalRgbGen(Module):
         dot = Signal()
         if dot_div > 1:
             div = Signal(max=dot_div)
-            self.sync += If(div == dot_div - 1, div.eq(0)).Else(div.eq(div + 1))
-            self.comb += dot.eq(div == dot_div - 1)
+            self.sync += If(self.run,
+                If(div == dot_div - 1, div.eq(0)).Else(div.eq(div + 1)))
+            self.comb += dot.eq(self.run & (div == dot_div - 1))
         else:
-            self.comb += dot.eq(1)
+            self.comb += dot.eq(self.run)
 
         self.sync += If(dot,
             If(self.x == htotal - 1,
@@ -132,12 +138,15 @@ class DigitalRgbGen(Module):
             ).Else(self.x.eq(self.x + 1)),
         )
 
+        # ★**enable は6本すべてを止める。** 以前は色の4本しか見ておらず、
+        #   HS/VS は出続けていた。そのため「生成器を切って切り分ける」が
+        #   成立せず、原因究明を一度誤らせた(2026-09-10)。
         hs_pulse = Signal(); vs_pulse = Signal()
         self.comb += [
             hs_pulse.eq(self.x < hs_width),
             vs_pulse.eq(self.y < vs_width),
-            self.hs.eq(hs_pulse ^ self.neg_sync),
-            self.vs.eq(vs_pulse ^ self.neg_sync),
+            self.hs.eq(self.enable & (hs_pulse ^ self.neg_sync)),
+            self.vs.eq(self.enable & (vs_pulse ^ self.neg_sync)),
         ]
 
         active = Signal()
@@ -164,7 +173,7 @@ class DigitalRgbGen(Module):
         ]
 
         rgbi = Signal(4)
-        self.comb += If(~active | ~self.enable,
+        self.comb += If(~active | ~self.enable | ~self.run,
             rgbi.eq(0),
         ).Elif(py < vactive // 2,
             If(in_bars, rgbi.eq(bar)).Else(rgbi.eq(0)),
@@ -303,7 +312,15 @@ class DigitalRgbProbe(Module):
         self.sync += If(vs_edge, row.eq(0)).Elif(hs_edge, row.eq(row + 1))
         self.sync += [
             dot_step.eq(0),
-            If(hs_edge,
+            # ★**信号が来ていないときは止める。** `stat_hlen` は最初の HS が来る
+            #   まで 0 で、そのとき `acc >= 0` は**常に真**になる。すると
+            #   `dotn` が毎クロック回り、20bitの加算器と12bitのカウンタが 45MHz で
+            #   走り続ける ─ 数えるものが無いのに。**縮退した暴走状態**で、
+            #   ループバックの線を繋いでいない間はずっとこれになる。
+            If(self.stat_hlen == 0,
+                acc.eq(0),
+                dotn.eq(0),
+            ).Elif(hs_edge,
                 acc.eq(self.stat_hlen >> 1),      # 半ドットぶん進めて中央へ
                 dotn.eq(0),
             ).Elif(acc >= self.stat_hlen,

@@ -1811,13 +1811,21 @@ class RetroCastXStream(SoCMini):
         # bit0 = 生成器を動かす / bit1 = 同期を負極性にする。
         # ★**既定は「出す」。** 出しっぱなしでも入力に何も繋がなければ無害で、
         #   繋いだ瞬間に確かめられる。切りたくなったら key 0x78 で落とす。
-        drgb_gen_ctl = Signal(2, reset=0b11)
+        # bit0=ピンを駆動 / bit1=同期を負極性 / bit2=内部カウンタを回す。
+        #
+        # ★**一度これを既定OFFにした。** 2026-09-10、この生成器を入れた
+        #   ビットストリームで映像のVSYNC誤検出(毎分1回)が起きたため。
+        #   原因は**生成器ではなく測定器の暴走**だった(`retrocastx_drgb.py` の
+        #   `stat_hlen == 0` の項)。直った後、交互試験で 900秒 0回 を確認して
+        #   既定ONに戻した。
+        drgb_gen_ctl = Signal(3, reset=0b111)
         # sys → aud のドメイン跨ぎ。ゆっくりしか変わらない制御線なので2段で足りる
-        drgb_ctl_aud = Signal(2, reset=0b11)
-        self.specials += MultiReg(drgb_gen_ctl, drgb_ctl_aud, "aud", reset=0b11)
+        drgb_ctl_aud = Signal(3)
+        self.specials += MultiReg(drgb_gen_ctl, drgb_ctl_aud, "aud")
         self.comb += [
             self.drgb_gen.enable.eq(drgb_ctl_aud[0]),
             self.drgb_gen.neg_sync.eq(drgb_ctl_aud[1]),
+            self.drgb_gen.run.eq(drgb_ctl_aud[2]),
         ]
         self.drgb = DigitalRgbProbe(drgb_pads, sys_clk_freq)
         self.comb += [
