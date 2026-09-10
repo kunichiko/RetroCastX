@@ -905,6 +905,13 @@ struct Session {
     did_autofit: bool,
     /// 次のフレームでウィンドウを等倍に合わせる
     want_fit: bool,
+    /// 切り替わりかけているモードと、それを最初に見た時刻。
+    ///
+    /// ★**すぐには追従しない。** モードは fh/vtotal/htotal の**測定値**から
+    ///   作るので、同期が一瞬乱れるだけで別のモードに見える。そのたびに
+    ///   切り出しと回転をリセットしていたため、**絵が飛んでいた**
+    ///   (2026-09-10。ボード側で vactive が 568→372 に飛ぶ現象を実測)。
+    pending_mode: Option<(String, std::time::Instant)>,
     /// 最後にウィンドウを合わせたときの「絵の大きさを決める要素」。
     ///
     /// ★**モードキーとは別に持つ。** モードキーは fh/htotal/vtotal で作るので、
@@ -1090,6 +1097,7 @@ impl Session {
             last_tex: egui::Vec2::ZERO,
             did_autofit: false,
             want_fit: false,
+            pending_mode: None,
             fitted_sig: None,
             frame_size: (0, 0),
             render_state,
@@ -1964,8 +1972,31 @@ impl Session {
     fn follow_mode(&mut self) {
         let Some(key) = self.current_mode_key() else { return };
         if key == self.mode_key {
+            self.pending_mode = None;
             return;
         }
+        // ★**新しいモードが続いていることを確かめてから追従する。**
+        //
+        //   モードキーは測定値(fh / vtotal / htotal)から作るので、入力の同期が
+        //   一瞬乱れるだけで別のモードに見える。そのまま追従すると
+        //   「未知のモード → 切り出しと回転をリセット」で**絵が飛ぶ**。
+        //   実測では乱れは1秒ほど続いたので、それより長く待つ。
+        //
+        //   ★**遅れても実害は小さい。** 映像そのものは MODE パケットに即座に
+        //     追従する。ここで遅れるのは切り出し・回転・位相の復元だけ。
+        const SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+        match &self.pending_mode {
+            Some((k, since)) if *k == key => {
+                if since.elapsed() < SETTLE {
+                    return;
+                }
+            }
+            _ => {
+                self.pending_mode = Some((key, std::time::Instant::now()));
+                return;
+            }
+        }
+        self.pending_mode = None;
         if !self.mode_key.is_empty() {
             let old = self.mode_key.clone();
             self.modes.insert(old, [self.crop[0], self.crop[1], self.crop[2],
