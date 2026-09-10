@@ -1832,9 +1832,17 @@ class RetroCastXStream(SoCMini):
         #   「RXC が動いているか」との AND を取る(retrocastx_ethled.py)。
         from migen.genlib.cdc import MultiReg
         from retrocastx_ethled import EthLeds, ActivityTap
-        link_inband = Signal()
+        # in-band status の4ビットをまとめて sys へ渡す。
+        # {duplex, speed[1:0], link} の並び(RGMII の RXD[3:0] そのもの)。
+        # ★**速度も一緒に見る。** 100BASE-T で繋がっていると帯域が足りず
+        #   パケットを落とすが、「リンクはある」ので原因に辿り着きにくい。
+        inband = self.ethphy.rx.inband_status.fields
+        inband_raw = Signal(4)
         self.specials += MultiReg(
-            self.ethphy.rx.inband_status.fields.link_status, link_inband, "sys")
+            Cat(inband.link_status, inband.clock_speed, inband.duplex_status),
+            inband_raw, "sys")
+        link_inband = Signal()
+        self.comb += link_inband.eq(inband_raw[0])
         # 送受信どちらかが動いたら黄を点ける。**eth_rx/eth_tx に足すのは
         # FF 1個ずつだけ**にしてある(この2つは LiteEth の CDC FIFO が
         # 配線律速でクリティカルパスになっており、論理を足すと配置の
@@ -1843,8 +1851,32 @@ class RetroCastXStream(SoCMini):
             "eth_rx", self.ethphy.source.valid)
         self.submodules.eth_act_tx = act_tx = ActivityTap(
             "eth_tx", self.ethphy.sink.valid)
+        # ランプテスト(CONFIG 0x7E)。0=通常 / 1=全消灯 / 2=全点灯。
+        # ★**これが無いと立ち上げで詰む。** 光らないときに、ピン割り当てが
+        #   違うのか論理が0なのかを分けられない。
+        self.eth_led_force = Signal(2)
         self.submodules.eth_leds = eth_leds = EthLeds(
-            sys_clk_freq, link_inband, act_rx.pulse | act_tx.pulse)
+            sys_clk_freq, link_inband, act_rx.pulse | act_tx.pulse,
+            force=self.eth_led_force)
+        # 診断値(CONFIG 0x7F)。光らないときに何が0なのかを実機から引く。
+        act_cnt = Signal(8)
+        rx_edges = Signal(16)
+        rxa_p = Signal()
+        self.sync += [
+            If(act_rx.pulse | act_tx.pulse, act_cnt.eq(act_cnt + 1)),
+            rxa_p.eq(eth_leds.rxclk.tgl_sync),
+            If(eth_leds.rxclk.tgl_sync != rxa_p, rx_edges.eq(rx_edges + 1)),
+        ]
+        self.eth_link_stat = Signal(32)
+        self.comb += self.eth_link_stat.eq(Cat(
+            inband_raw,                 # [3:0]  {duplex, speed[1:0], link}
+            eth_leds.rxclk_alive,       # [4]    RXCが動いているか
+            eth_leds.green,             # [5]
+            eth_leds.yellow,            # [6]
+            Signal(),                   # [7]    予約
+            act_cnt,                    # [15:8] 通信の印を数えた回数
+            rx_edges,                   # [31:16] RXC由来のトグルを数えた回数
+        ))
         led_pads = platform.request("eth_led", eth_phy)
         self.comb += [
             led_pads.green.eq(eth_leds.green),
@@ -1996,6 +2028,8 @@ class RetroCastXStream(SoCMini):
                 0x7B: self.drgb.cfg_dot,
                 0x7C: self.drgb.cfg_hstart,
                 0x7D: self.drgb.cfg_hactive,
+                # MagJack LED のランプテスト(0=通常 / 1=全消灯 / 2=全点灯)
+                0x7E: self.eth_led_force,
             },
             extra_stats={
                 # デジタルRGB の測定値(読み取り専用)
@@ -2007,6 +2041,8 @@ class RetroCastXStream(SoCMini):
                 0x75: self.drgb.stat_pol,
                 0x76: self.drgb.stat_pixel,
                 0x77: self.drgb.stat_edges,
+                # MagJack LED の診断。光らないときに何が0なのかを引く
+                0x7F: self.eth_link_stat,
                 0x40: learner.learn_count,
                 0x41: learner.hit_count,
                 0x42: learner.miss_count,

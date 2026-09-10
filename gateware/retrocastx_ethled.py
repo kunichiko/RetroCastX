@@ -59,9 +59,10 @@ class ClockAlive(Module):
     """
     def __init__(self, cd_name, timeout):
         self.alive = Signal()
+        self.tgl_sync = Signal()   # 向こう側のトグルを sys で受けたもの(診断用)
 
         self.submodules.tgl = tgl = ClockDomainsRenamer(cd_name)(_Toggler())
-        tog_s = Signal()
+        tog_s = self.tgl_sync
         self.specials += MultiReg(tgl.tog, tog_s, "sys")
         tog_p = Signal()
         cnt = Signal(max=timeout + 1)
@@ -100,11 +101,17 @@ class EthLeds(Module):
 
     link_inband : in-band status のリンクビット(sys へ同期済みのもの)
     act         : 送受信いずれかが動いた印(sysドメインのパルスまたはレベル)
+    force       : ランプテスト。0=通常 / 1=全消灯 / 2=全点灯。
+                  ★**基板の立ち上げでこれが無いと詰む。** 消えているとき、
+                    原因がピン割り当てなのか論理なのかを分けられない
+                    (実際に両方消えて、切り分けに1ビルド余計にかかった)。
     """
     def __init__(self, sys_clk_freq, link_inband, act,
-                 rx_cd="eth_rx", hold_ms=40, link_timeout_us=200):
+                 rx_cd="eth_rx", hold_ms=40, link_timeout_us=200, force=None):
         self.green = Signal()
         self.yellow = Signal()
+        self.link = Signal()         # 判定結果(診断用に外へ出す)
+        self.rxclk_alive = Signal()  # RXCが動いているか(診断用)
 
         # RXC が止まっていないか。1000BASE-T なら 125MHz なので 200us もあれば
         # 十分すぎるが、10BASE-T の 2.5MHz でもトグルは 400ns 周期なので通る。
@@ -115,15 +122,27 @@ class EthLeds(Module):
         self.submodules.blip = blip = Stretch(hold)
         self.comb += blip.i.eq(act)
 
-        link = Signal()
+        link = self.link
+        g = Signal(); y = Signal()
         self.comb += [
+            self.rxclk_alive.eq(rxclk.alive),
             link.eq(link_inband & rxclk.alive),
-            self.green.eq(link),
+            g.eq(link),
             # ★**リンクが無いのに黄が点くのはおかしい。** 相手がいないのに
             #   自分が送り続けている(発見のブロードキャスト等)ときに点くと、
             #   「繋がっているのに通信できない」ように見えてしまう。
-            self.yellow.eq(link & blip.o),
+            y.eq(link & blip.o),
         ]
+        if force is None:
+            self.comb += [self.green.eq(g), self.yellow.eq(y)]
+        else:
+            self.comb += If(force == 1,
+                self.green.eq(0), self.yellow.eq(0),
+            ).Elif(force == 2,
+                self.green.eq(1), self.yellow.eq(1),
+            ).Else(
+                self.green.eq(g), self.yellow.eq(y),
+            )
 
 
 class ActivityTap(Module):
