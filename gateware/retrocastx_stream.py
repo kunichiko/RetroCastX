@@ -1831,7 +1831,7 @@ class RetroCastXStream(SoCMini):
         #   **最後の値のまま凍る**。抜線しても緑が点きっぱなしになるので、
         #   「RXC が動いているか」との AND を取る(retrocastx_ethled.py)。
         from migen.genlib.cdc import MultiReg
-        from retrocastx_ethled import EthLeds, ActivityTap
+        from retrocastx_ethled import EthLeds, ActivityTap, LampTest
         # in-band status の4ビットをまとめて sys へ渡す。
         # {duplex, speed[1:0], link} の並び(RGMII の RXD[3:0] そのもの)。
         # ★**速度も一緒に見る。** 100BASE-T で繋がっていると帯域が足りず
@@ -1841,8 +1841,18 @@ class RetroCastXStream(SoCMini):
         self.specials += MultiReg(
             Cat(inband.link_status, inband.clock_speed, inband.duplex_status),
             inband_raw, "sys")
+        # ★**この基板の PHY は in-band status を出していない。**
+        #   実機で 0x7F を読むと [3:0] が常に 0(link/speed/duplex 全部0)で、
+        #   一方で RXC は回っており(トグル1130回)パケットも流れていた
+        #   (通信の印239回)。タイミングのずれなら化けた値が出るはずで、
+        #   きれいに0が続くのは「PHYがIFGでRXDをLowに固定している」= 
+        #   in-band status が無効、ということ。Broadcom のシャドウレジスタで
+        #   有効化できるはずだが、それには MDIO のマスタが要る(CPU無し)。
+        #
+        #   代わりに **RXC が動いているか** をリンクとする。生値は 0x7F に
+        #   残してあるので、将来 in-band を有効にできたら切り替えられる。
         link_inband = Signal()
-        self.comb += link_inband.eq(inband_raw[0])
+        self.comb += link_inband.eq(1)      # in-band は使わない(上記)
         # 送受信どちらかが動いたら黄を点ける。**eth_rx/eth_tx に足すのは
         # FF 1個ずつだけ**にしてある(この2つは LiteEth の CDC FIFO が
         # 配線律速でクリティカルパスになっており、論理を足すと配置の
@@ -1851,21 +1861,31 @@ class RetroCastXStream(SoCMini):
             "eth_rx", self.ethphy.source.valid)
         self.submodules.eth_act_tx = act_tx = ActivityTap(
             "eth_tx", self.ethphy.sink.valid)
-        # ランプテスト(CONFIG 0x7E)。0=通常 / 1=全消灯 / 2=全点灯。
+        # ランプテスト(CONFIG 0x7E)。意味は retrocastx_ethled.LampTest を参照。
         # ★**これが無いと立ち上げで詰む。** 光らないときに、ピン割り当てが
-        #   違うのか論理が0なのかを分けられない。
-        self.eth_led_force = Signal(2)
+        #   違うのか論理が0なのかを分けられない。しかも**使っていない側の
+        #   ポートも点けられないと基板の不良と切り分けられない**
+        #   (実機で J12 の緑だけ点かず、J11 の緑を点けて初めて分かった)。
+        self.eth_led_force = Signal(8)
         self.submodules.eth_leds = eth_leds = EthLeds(
-            sys_clk_freq, link_inband, act_rx.pulse | act_tx.pulse,
-            force=self.eth_led_force)
+            sys_clk_freq, link_inband, act_rx.pulse | act_tx.pulse)
         # 診断値(CONFIG 0x7F)。光らないときに何が0なのかを実機から引く。
         act_cnt = Signal(8)
         rx_edges = Signal(16)
         rxa_p = Signal()
+        # ★**一度でも RXC が途絶えたかを覚えておく(スティッキー)。**
+        #   「リンクが切れたら RXC も止まる」PHY なら RXC をリンクの代わりに
+        #   使えるが、リンク無しでも RXC を出し続ける PHY だと使えない。
+        #   ケーブルを抜いている間は当然通信できないので、抜いて挿してから
+        #   これを読む。0x7E へ書くとクリアされる。
+        rxclk_was_dead = Signal()
         self.sync += [
             If(act_rx.pulse | act_tx.pulse, act_cnt.eq(act_cnt + 1)),
             rxa_p.eq(eth_leds.rxclk.tgl_sync),
             If(eth_leds.rxclk.tgl_sync != rxa_p, rx_edges.eq(rx_edges + 1)),
+            If(~eth_leds.rxclk_alive, rxclk_was_dead.eq(1)),
+            # 3 を書いている間はクリア。3→0 と戻して計測を始める
+            If(self.eth_led_force == 3, rxclk_was_dead.eq(0)),
         ]
         self.eth_link_stat = Signal(32)
         self.comb += self.eth_link_stat.eq(Cat(
@@ -1873,19 +1893,28 @@ class RetroCastXStream(SoCMini):
             eth_leds.rxclk_alive,       # [4]    RXCが動いているか
             eth_leds.green,             # [5]
             eth_leds.yellow,            # [6]
-            Signal(),                   # [7]    予約
+            rxclk_was_dead,             # [7]    一度でもRXCが途絶えたか
             act_cnt,                    # [15:8] 通信の印を数えた回数
             rx_edges,                   # [31:16] RXC由来のトグルを数えた回数
         ))
-        led_pads = platform.request("eth_led", eth_phy)
+        # 4本ぶんをまとめて作る。並びは下から
+        #   bit0 = eth0 緑 / bit1 = eth0 黄 / bit2 = eth1 緑 / bit3 = eth1 黄
+        # 通常は使っている側だけ動かし、使っていない側は消灯する
+        # (未使用ピンは既定で弱プルアップになるので、明示的に0を出す)。
+        normal = Signal(4)
+        if eth_phy == 0:
+            self.comb += normal.eq(Cat(eth_leds.green, eth_leds.yellow, 0, 0))
+        else:
+            self.comb += normal.eq(Cat(0, 0, eth_leds.green, eth_leds.yellow))
+        self.submodules.eth_lamp = lamp = LampTest(self.eth_led_force, normal)
+        pads0 = platform.request("eth_led", 0)
+        pads1 = platform.request("eth_led", 1)
         self.comb += [
-            led_pads.green.eq(eth_leds.green),
-            led_pads.yellow.eq(eth_leds.yellow),
+            pads0.green.eq(lamp.out[0]),
+            pads0.yellow.eq(lamp.out[1]),
+            pads1.green.eq(lamp.out[2]),
+            pads1.yellow.eq(lamp.out[3]),
         ]
-        # 使っていない方のポートは明示的に消しておく。未使用ピンは既定で
-        # 弱プルアップになるので、220Ω越しでも薄く光りうる。
-        other_pads = platform.request("eth_led", 1 - eth_phy)
-        self.comb += [other_pads.green.eq(0), other_pads.yellow.eq(0)]
 
         # --- デジタルRGB: 試験信号の生成 + 入力の測定 ---
         from retrocastx_drgb import DigitalRgbGen, DigitalRgbProbe

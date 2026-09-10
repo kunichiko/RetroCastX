@@ -16,7 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from migen import *
-from retrocastx_ethled import EthLeds, ActivityTap
+from retrocastx_ethled import EthLeds, ActivityTap, LampTest
 
 # SIM時間を詰めるため、クロックを 1MHz として時間定数を実機より短く取る。
 # 大事なのは「何サイクルになるか」なので、以下は狙ったサイクル数から逆算した値。
@@ -64,8 +64,9 @@ def main():
         yield from settle(30)
         yield from snap("受信から55サイクル")
 
-        # --- 抜線。in-band は最後の値(1)のまま凍り、RXC だけ止まる ---
-        yield from snap("抜線の直前")
+        yield from snap("通信が止まった後")
+
+
 
     def rxclk_running(stop_at):
         """eth_rx クロックを stop_at サイクルまで回し、そこで止める。"""
@@ -114,7 +115,44 @@ def main():
         "★RXCのエッジが途絶えても緑が点いたまま。in-band status は eth_rx " \
         "ドメインにあるので、PHYがRXCを止めると最後の値で凍る。見張りが要る"
 
-    print("\n[OK] 緑=リンク(RXC停止も検出) / 黄=通信中(引き伸ばしあり)")
+    # --- ランプテスト(4本ぶんの強制指定)---
+    #
+    # ★**使っていない側のポートも点けられること。** 実機で J12 の緑だけ
+    #   点かなかったとき、J11 の緑を点けて初めて「基板の不良か、こちらの
+    #   ピン間違いか」を分けられた。使用中のポートしか振れないと詰む。
+    class LampWrap(Module):
+        def __init__(self):
+            self.clock_domains.cd_sys = ClockDomain()
+            self.force = Signal(8)
+            self.normal = Signal(4)
+            self.submodules.lamp = LampTest(self.force, self.normal)
+
+    lw = LampWrap()
+    log3 = []
+
+    def tb3():
+        yield lw.normal.eq(0b1100)      # eth1 の緑黄だけが通常動作
+        yield
+        for tag, f, exp in (
+            ("通常",        0x00, 0b1100),
+            ("全消灯",      0x01, 0b0000),
+            ("全点灯",      0x02, 0b1111),
+            ("通常(クリア)", 0x03, 0b1100),
+            ("eth0緑だけ",  0x11, 0b0001),
+            ("eth1緑だけ",  0x14, 0b0100),
+            ("緑2本",       0x15, 0b0101),
+        ):
+            yield lw.force.eq(f)
+            yield
+            got = (yield lw.lamp.out)
+            log3.append((tag, f, got, exp))
+
+    run_simulation(lw, tb3(), vcd_name=None)
+    for tag, f, got, exp in log3:
+        print(f"  ランプ {tag:<12} force={f:#04x} → {got:04b} (期待 {exp:04b})")
+        assert got == exp, f"ランプテスト {tag}: {got:04b} 期待 {exp:04b}"
+
+    print("\n[OK] 緑=リンク(RXC停止も検出) / 黄=通信中 / ランプテスト4本個別")
 
 
 if __name__ == "__main__":

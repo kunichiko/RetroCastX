@@ -101,13 +101,10 @@ class EthLeds(Module):
 
     link_inband : in-band status のリンクビット(sys へ同期済みのもの)
     act         : 送受信いずれかが動いた印(sysドメインのパルスまたはレベル)
-    force       : ランプテスト。0=通常 / 1=全消灯 / 2=全点灯。
-                  ★**基板の立ち上げでこれが無いと詰む。** 消えているとき、
-                    原因がピン割り当てなのか論理なのかを分けられない
-                    (実際に両方消えて、切り分けに1ビルド余計にかかった)。
+    ランプテスト(強制点灯)は `LampTest` の方でまとめて掛ける。
     """
     def __init__(self, sys_clk_freq, link_inband, act,
-                 rx_cd="eth_rx", hold_ms=40, link_timeout_us=200, force=None):
+                 rx_cd="eth_rx", hold_ms=40, link_timeout_us=200):
         self.green = Signal()
         self.yellow = Signal()
         self.link = Signal()         # 判定結果(診断用に外へ出す)
@@ -133,16 +130,7 @@ class EthLeds(Module):
             #   「繋がっているのに通信できない」ように見えてしまう。
             y.eq(link & blip.o),
         ]
-        if force is None:
-            self.comb += [self.green.eq(g), self.yellow.eq(y)]
-        else:
-            self.comb += If(force == 1,
-                self.green.eq(0), self.yellow.eq(0),
-            ).Elif(force == 2,
-                self.green.eq(1), self.yellow.eq(1),
-            ).Else(
-                self.green.eq(g), self.yellow.eq(y),
-            )
+        self.comb += [self.green.eq(g), self.yellow.eq(y)]
 
 
 class ActivityTap(Module):
@@ -162,3 +150,39 @@ class ActivityTap(Module):
         tog_p = Signal()
         self.sync += tog_p.eq(tog_s)
         self.comb += self.pulse.eq(tog_s != tog_p)
+
+
+class LampTest(Module):
+    """4本のLED(両ポートの緑/黄)に強制指定を掛ける。
+
+    ★**立ち上げでこれが無いと詰む。** 光らないときに、原因がピン割り当て
+      なのか論理が0なのかを分けられない。実際に両方消えて切り分けに
+      1ビルド余計にかかり、さらに「片方だけ光る」段になって、
+      **使っていない側のポートも点けられないと基板の不良と切り分けられない**
+      ことが分かった。だから最初から4本ぜんぶ個別に振れるようにしておく。
+
+    force の意味:
+
+        0            通常(リンク/通信に従う。未使用ポートは消灯)
+        1            全消灯
+        2            全点灯(両ポート4本)
+        3            通常 + 診断のスティッキーをクリア
+        0x10 | mask  個別。mask の bit で1本ずつ指定する
+
+    ビットの並びは `normal` / `out` と同じで、下から
+
+        bit0 = eth0 緑 / bit1 = eth0 黄 / bit2 = eth1 緑 / bit3 = eth1 黄
+
+    (eth0 = コネクタ ETH2 = J11、eth1 = コネクタ ETH1 = J12)
+    """
+    def __init__(self, force, normal):
+        self.out = Signal(4)
+        self.comb += If(force == 1,
+            self.out.eq(0),
+        ).Elif(force == 2,
+            self.out.eq(0b1111),
+        ).Elif(force[4],
+            self.out.eq(force[0:4]),
+        ).Else(
+            self.out.eq(normal),
+        )
