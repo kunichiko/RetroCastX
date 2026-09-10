@@ -1796,8 +1796,64 @@ class RetroCastXStream(SoCMini):
                 Subsignal("vs", Pins("T3")),   # dbg6 / pin8
                 IOStandard("LVCMOS33")),
         ]
+        # --- MagJack のリンク/通信LED(v0.9.0)---
+        # RJ45 の緑/黄LEDは **FPGA の GPIO から駆動する**。カソードはGND、
+        # アノードへ220Ω なので **アクティブHigh**。
+        # (hardware/adc-frontend/main.ato の EthernetJacks モジュール)
+        #
+        # ★index とコネクタ表記は入れ替わっている(上の LiteEthPHYRGMII の
+        #   コメント参照)。ここでも litex の index に合わせて並べてある。
+        _eth_led_io = [
+            ("eth_led", 0,                      # = コネクタ ETH2 = J11
+                Subsignal("green",  Pins("R1")),    # SO-DIMM 42
+                Subsignal("yellow", Pins("T1")),    # 44
+                IOStandard("LVCMOS33")),
+            ("eth_led", 1,                      # = コネクタ ETH1 = J12(既定)
+                Subsignal("green",  Pins("U1")),    # 46
+                Subsignal("yellow", Pins("Y2")),    # 48
+                IOStandard("LVCMOS33")),
+        ]
         platform.add_extension(_i2c_io)
         platform.add_extension(_drgb_io)
+        platform.add_extension(_eth_led_io)
+
+        # --- LEDを駆動する ---
+        #
+        # 緑 = リンク確立 / 黄 = 通信中。普通のNICと同じ割り当てにしてある。
+        #
+        # ★**リンクの判定に MDIO は要らない。** RGMII はフレームの合間
+        #   (RX_CTL=0)に RXD でリンク/速度/全二重を運んでおり、LiteEth の
+        #   `LiteEthPHYRGMIIRX` が既に復号して CSR に載せている
+        #   (`with_inband_status=True` が既定)。その信号をそのまま貰う。
+        #
+        # ★**それだけでは足りない。** in-band status のレジスタは eth_rx
+        #   ドメインにあるので、リンクが切れて PHY が RXC を止めると
+        #   **最後の値のまま凍る**。抜線しても緑が点きっぱなしになるので、
+        #   「RXC が動いているか」との AND を取る(retrocastx_ethled.py)。
+        from migen.genlib.cdc import MultiReg
+        from retrocastx_ethled import EthLeds, ActivityTap
+        link_inband = Signal()
+        self.specials += MultiReg(
+            self.ethphy.rx.inband_status.fields.link_status, link_inband, "sys")
+        # 送受信どちらかが動いたら黄を点ける。**eth_rx/eth_tx に足すのは
+        # FF 1個ずつだけ**にしてある(この2つは LiteEth の CDC FIFO が
+        # 配線律速でクリティカルパスになっており、論理を足すと配置の
+        # 当たり外れが変わる。上の SEEDS のコメント参照)。
+        self.submodules.eth_act_rx = act_rx = ActivityTap(
+            "eth_rx", self.ethphy.source.valid)
+        self.submodules.eth_act_tx = act_tx = ActivityTap(
+            "eth_tx", self.ethphy.sink.valid)
+        self.submodules.eth_leds = eth_leds = EthLeds(
+            sys_clk_freq, link_inband, act_rx.pulse | act_tx.pulse)
+        led_pads = platform.request("eth_led", eth_phy)
+        self.comb += [
+            led_pads.green.eq(eth_leds.green),
+            led_pads.yellow.eq(eth_leds.yellow),
+        ]
+        # 使っていない方のポートは明示的に消しておく。未使用ピンは既定で
+        # 弱プルアップになるので、220Ω越しでも薄く光りうる。
+        other_pads = platform.request("eth_led", 1 - eth_phy)
+        self.comb += [other_pads.green.eq(0), other_pads.yellow.eq(0)]
 
         # --- デジタルRGB: 試験信号の生成 + 入力の測定 ---
         from retrocastx_drgb import DigitalRgbGen, DigitalRgbProbe

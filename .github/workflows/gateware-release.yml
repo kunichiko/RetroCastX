@@ -104,7 +104,7 @@ jobs:
           #   静かに壊れる**(ページ内で折り返す)ので、模擬で潰しておく。
           cd gateware
           for f in sim_stream.py sim_arp.py sim_status.py sim_eeprom_cfg.py sim_drgb.py \
-                   sim_capture_meas.py sim_vtotal_glitch.py; do
+                   sim_capture_meas.py sim_vtotal_glitch.py sim_ethled.py; do
             echo "=== $f ==="
             python "$f"
           done
