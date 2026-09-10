@@ -998,6 +998,13 @@ struct Session {
     netcheck_modal: bool,
     /// 「今後表示しない」。設定に保存する
     netcheck_muted: bool,
+    /// 直ったことを確認したので、再起動を勧めるダイアログを出す。
+    ///
+    /// ★**直った直後が勧めどき。** 受信バッファーはNICドライバのリングなので、
+    ///   広げても**すでに開いているソケットの取りこぼしの記録は消えない**し、
+    ///   アダプタのリセットで購読も切れている。ここで再起動を促さないと
+    ///   「直したのに lost が増えたまま」で直っていないように見える。
+    netcheck_restart_ask: bool,
     /// 「直す」を押した結果。**押しただけで終わりにしない** ─ UACを拒否したり
     /// ドライバが受け付けなかったりするので、確かめ直して結果を出す。
     netcheck_fix: Option<String>,
@@ -1143,6 +1150,7 @@ impl Session {
             netcheck: None,
             netcheck_modal: false,
             netcheck_muted: cfg.netcheck_muted,
+            netcheck_restart_ask: false,
             netcheck_fix: None,
             netcheck_recheck_at: None,
         };
@@ -4098,6 +4106,31 @@ impl Session {
         }
     }
 
+    /// 受信バッファーの修正を実行する。パネルとダイアログの両方から呼ぶ。
+    fn start_netcheck_fix(&mut self, adapter: Option<&str>) {
+        self.netcheck_fix = Some(match netcheck::apply_fix(adapter) {
+            Ok(()) => "実行しました。反映を確認しています…".to_string(),
+            Err(e) => format!("直せませんでした: {e}"),
+        });
+        // アダプタのリセットが終わってから調べ直す
+        self.netcheck_recheck_at =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(6));
+    }
+
+    /// アプリを再起動する。
+    ///
+    /// ★**受信スレッドを止めてから起こす。** すぐ起こすと、まだこちらが
+    ///   UDP 34600 を握っているので新しい方が空きポートへ落ちる。
+    fn restart_app(&mut self, ctx: &egui::Context) {
+        self.shared.stop.store(true, Ordering::Relaxed);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        if let Ok(exe) = std::env::current_exe() {
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            let _ = std::process::Command::new(exe).args(&args).spawn();
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
     /// 受信バッファーを調べる相手のIP。
     ///
     /// ★**ボード発見を待たない。** 待つと、新規の機械でいちばん警告が要る場面
@@ -4146,12 +4179,14 @@ impl Session {
                 self.netcheck_recheck_at = None;
                 if let Some(addr) = self.board_addr_for_netcheck() {
                     let b = netcheck::probe(&addr);
-                    self.netcheck_fix = Some(if b.should_warn() {
-                        format!("まだ {} のままです(管理者で拒否した可能性)",
-                                b.value().unwrap_or(0))
+                    if b.should_warn() {
+                        self.netcheck_fix = Some(format!(
+                            "まだ {} のままです(管理者で拒否した可能性)",
+                            b.value().unwrap_or(0)));
                     } else {
-                        "直りました。次回の起動から効きます".to_string()
-                    });
+                        self.netcheck_fix = Some("直りました".to_string());
+                        self.netcheck_restart_ask = true;
+                    }
                     self.netcheck_modal = false;
                     self.netcheck = Some(b);
                 }
@@ -4191,19 +4226,14 @@ impl Session {
         //   昇格させず、ShellExecuteW の runas でこの1コマンドだけ昇格させる。
         //   コピーの方も残す ─ UACを使えない環境や、内容を確認したい人のため。
         let cmd = netcheck::fix_command(cfg.adapter());
+        let mut fix_now = false;
         ui.horizontal(|ui| {
             if cfg!(windows) {
                 let b = ui.small_button("直す(管理者)").on_hover_text(format!(
                     "次を管理者権限で実行します:\n{cmd}\n\n                     ★実行するとNICが数秒切れます(ドライバがアダプタを\n                     　リセットするため)。映像も一度止まります"
                 ));
                 if b.clicked() {
-                    self.netcheck_fix = Some(match netcheck::apply_fix(cfg.adapter()) {
-                        Ok(()) => "実行しました。反映を確認しています…".to_string(),
-                        Err(e) => format!("直せませんでした: {e}"),
-                    });
-                    // アダプタのリセットが終わってから調べ直す
-                    self.netcheck_recheck_at =
-                        Some(std::time::Instant::now() + std::time::Duration::from_secs(6));
+                    fix_now = true;
                 }
             }
             if ui.small_button("コマンドをコピー").clicked() {
@@ -4213,6 +4243,9 @@ impl Session {
                 ui.weak("管理者のPowerShellで実行");
             }
         });
+        if fix_now {
+            self.start_netcheck_fix(cfg.adapter());
+        }
         if let Some(msg) = &self.netcheck_fix {
             ui.weak(egui::RichText::new(msg).size(11.0));
         }
@@ -4231,6 +4264,41 @@ impl Session {
 /// 管理者権限が無くて直せない人に毎回出すのは敵対的なので、「今後表示しない」を
 /// 用意して設定に保存する(パネル内の表示は消さない)。
 impl Session {
+    /// 直ったので再起動を勧める。
+    fn netcheck_restart_modal(&mut self, ctx: &egui::Context) {
+        if !self.netcheck_restart_ask {
+            return;
+        }
+        let mut close = false;
+        let mut restart = false;
+        egui::Modal::new(egui::Id::new("netcheck_restart")).show(ctx, |ui| {
+            ui.set_max_width(460.0);
+            ui.heading("受信バッファーを広げました");
+            ui.add_space(6.0);
+            ui.label(format!(
+                "アダプタの受信バッファーが {} になりました。\n\
+                 ★**アプリを再起動してください。** アダプタがリセットされたので\n\
+                 　購読が切れており、取りこぼしの記録も残ったままです。",
+                netcheck::RECOMMENDED
+            ));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.button("いま再起動する").clicked() {
+                    restart = true;
+                }
+                if ui.button("あとで").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if restart {
+            self.netcheck_restart_ask = false;
+            self.restart_app(ctx);
+        } else if close {
+            self.netcheck_restart_ask = false;
+        }
+    }
+
     fn netcheck_modal(&mut self, ctx: &egui::Context) {
         if !self.netcheck_modal {
             return;
@@ -4239,6 +4307,7 @@ impl Session {
         let cmd = netcheck::fix_command(cfg.adapter());
         let mut close = false;
         let mut mute = false;
+        let mut fix_now = false;
         egui::Modal::new(egui::Id::new("netcheck_modal")).show(ctx, |ui| {
             ui.set_max_width(520.0);
             ui.heading("NIC の受信バッファーが小さすぎます");
@@ -4251,12 +4320,29 @@ impl Session {
                 netcheck::RECOMMENDED,
             ));
             ui.add_space(6.0);
-            ui.label("管理者の PowerShell で次を実行してください:");
+            // ★**ここにも「直す」を置く。** 右パネルにしか無かったので、
+            //   ダイアログを見た人は手作業に誘導されていた ─ 気付かせるための
+            //   ダイアログが、いちばん簡単な直し方を隠していた。
+            ui.label(if cfg!(windows) {
+                "「直す(管理者)」を押すと、次を管理者権限で実行します:"
+            } else {
+                "管理者の PowerShell で次を実行してください:"
+            });
             ui.add(
                 egui::Label::new(egui::RichText::new(&cmd).monospace().size(11.0)).wrap(),
             );
             ui.add_space(10.0);
             ui.horizontal(|ui| {
+                if cfg!(windows) {
+                    let b = ui.button("直す(管理者)").on_hover_text(
+                        "★実行するとNICが数秒切れます\n\
+                         (ドライバがアダプタをリセットするため)。映像も一度止まります",
+                    );
+                    if b.clicked() {
+                        fix_now = true;
+                        close = true;
+                    }
+                }
                 if ui.button("コマンドをコピー").clicked() {
                     ui.ctx().copy_text(cmd.clone());
                 }
@@ -4273,6 +4359,9 @@ impl Session {
                 }
             });
         });
+        if fix_now {
+            self.start_netcheck_fix(cfg.adapter());
+        }
         if mute {
             self.netcheck_muted = true;
             self.mark_settings_dirty();
@@ -5376,6 +5465,7 @@ impl Session {
         self.remote_badge(&ctx);
         self.toasts.show(&ctx);
         self.netcheck_modal(&ctx);
+        self.netcheck_restart_modal(&ctx);
         self.clean_output(&ctx);
 
         // ★**映像が来ている間は連続で描画する。**
