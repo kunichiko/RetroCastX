@@ -10,7 +10,43 @@ export PATH="$HOME/opt/oss-cad-suite/bin:$PATH"
 .venv/bin/python sim_arp.py                     # 受信からのARP学習(retrocastx_net.py)の検証
 .venv/bin/python sim_status.py                  # 共有I2C(TVP7002 + OLED)の検証
 .venv/bin/python sim_eeprom_cfg.py              # 個体設定ページ(EEPROM)の読み書き検証
+.venv/bin/python sim_drgb.py                    # デジタルRGB(生成器→測定器のループバック)
 ```
+
+## デジタルRGB(TTL RGBI + HS/VS)
+
+デジタルRGBを出せる実機が無いので、**デバッグ端子から試験信号を出して
+デジタルRGB入力へ戻す**(`gateware/retrocastx_drgb.py`)。レベル変換器と
+コネクタを含む**本番の経路**を通るので、実機が来たときに疑う場所が論理だけになる。
+
+ジャンパ(6本 + GND):
+
+| J4(デバッグ端子) | | J13(デジタルRGB) |
+|---|---|---|
+| pin3 dbg1 | → | pin2 R |
+| pin4 dbg2 | → | pin3 G |
+| pin5 dbg3 | → | pin4 B |
+| pin6 dbg4 | → | pin5 I |
+| pin7 dbg5 | → | pin6 HS |
+| pin8 dbg6 | → | pin7 VS |
+| pin1/2 GND | → | pin1 or 8 GND |
+
+狙うタイミングは PC-8001 / mkII 系(**14.31818MHz / htotal 910 / fH 15,734Hz**
+= NTSC そのもの。8001 はコンポジット出力も持つので NTSC 準拠でないと成立しない)。
+★この値は μPD3301 の実装解析(Web)によるもので、**回路図やサービスマニュアルの
+ような一次資料では未確認**。実機が入ったら検算すること。
+
+生成側は sys の整数分周(45MHz / 3 = 15.0MHz、htotal 953)で **fH を実機に
+0.035% まで合わせる**。ドットクロックの絶対値は違うが、受け側は同期から作り直す
+ので問題にならない。新しいクロックドメインを作らないのが肝
+(eth_rx のタイミングが配置シード次第で落ちる基板なので)。
+
+    python3 -m retrocastx.cfg get 0x0070   # fH
+    python3 -m retrocastx.cfg get 0x0075   # 極性(測定値。決め打ちしていない)
+    python3 -m retrocastx.cfg get 0x0077   # 1ドット縞の色変化回数
+
+★**ループバックで確かめられないこと**: 生成側と測定側が同じクロックなので、
+送り側と受け側のクロック差(ドリフト)は試験できない。そこは実機でしか出ない。
 
 `retrocastx_i2c.py` は起動時に基板の EUI-48 EEPROM(24AA025E48)から
 **MACと個体設定(ボード名 / 静的IP)** を読む。`sim_eeprom_cfg.py` は EEPROM を

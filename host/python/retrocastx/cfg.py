@@ -105,6 +105,21 @@ KNOWN = [
     (0x0063, "sog_vlines",        "垂直区間の間隔[水平エッジ数](読専)"),
     (0x0064, "sog_vth",           "垂直とみなすLow期間の閾値[pixクロック] 既定400"),
     (0x0066, "field_invert",      "インターレースのフィールド極性を入れ替える(0/1)"),
+    # --- デジタルRGB(TTL RGBI + HS/VS)。gateware/retrocastx_drgb.py ---
+    (0x0070, "drgb_fh",     "デジタルRGB: 水平同期の実測[Hz](RO)"),
+    (0x0071, "drgb_fv",     "デジタルRGB: 垂直同期の実測[mHz](RO)"),
+    (0x0072, "drgb_lines",  "デジタルRGB: VS間のHS本数=vtotal(RO)"),
+    (0x0073, "drgb_hlen",   "デジタルRGB: 1ラインのsysクロック数(RO)"),
+    (0x0074, "drgb_level",  "デジタルRGB: 生レベル bit0..5={r,g,b,i,hs,vs}(RO)"),
+    (0x0075, "drgb_pol",    "デジタルRGB: 極性の実測 bit0=HS負 bit1=VS負(RO)"),
+    (0x0076, "drgb_pixel",  "デジタルRGB: 覗いた位置の色 bit3:0=IBGR bit4=有効(RO)"),
+    (0x0077, "drgb_edges",  "デジタルRGB: 覗いたラインの色変化回数。1ドット縞なら hactive-1(RO)"),
+    (0x0078, "drgb_gen",    "デジタルRGB: 試験信号 bit0=出す bit1=同期を負極性に"),
+    (0x0079, "drgb_htotal", "デジタルRGB: ドット位置の計算に使う水平トータル"),
+    (0x007A, "drgb_row",    "デジタルRGB: 覗くライン(VSからの本数)"),
+    (0x007B, "drgb_dot",    "デジタルRGB: 覗くドット(有効映像の先頭から)"),
+    (0x007C, "drgb_hstart", "デジタルRGB: 有効映像の先頭ドット"),
+    (0x007D, "drgb_hactive","デジタルRGB: 有効映像のドット数"),
 ]
 
 
