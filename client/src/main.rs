@@ -959,6 +959,11 @@ struct Session {
     netcheck_modal: bool,
     /// 「今後表示しない」。設定に保存する
     netcheck_muted: bool,
+    /// 「直す」を押した結果。**押しただけで終わりにしない** ─ UACを拒否したり
+    /// ドライバが受け付けなかったりするので、確かめ直して結果を出す。
+    netcheck_fix: Option<String>,
+    /// 直したあとに調べ直す時刻(アダプタのリセットが終わるのを待つ)
+    netcheck_recheck_at: Option<std::time::Instant>,
 }
 
 impl Session {
@@ -1097,6 +1102,8 @@ impl Session {
             netcheck: None,
             netcheck_modal: false,
             netcheck_muted: cfg.netcheck_muted,
+            netcheck_fix: None,
+            netcheck_recheck_at: None,
         };
         // ★起動時にも一度合わせる。設定に前回の音声入力が残っていても、
         //   復元した映像ソースと食い違ったままにしない。
@@ -4017,37 +4024,63 @@ impl Session {
         }
     }
 
+    /// 受信バッファーを調べる相手のIP。
+    ///
+    /// ★**ボード発見を待たない。** 待つと、新規の機械でいちばん警告が要る場面
+    ///   (まだ何も映っていない状態)で黙ってしまう。ブロードキャスト宛でも経路は
+    ///   引けるので、送り先の NIC は分かる。取り違えても Unsupported / Unknown に
+    ///   落ちるだけで、嘘の警告にはならない(実機のWi-Fiで確認済み)。
+    /// ★**全アダプタを見てはいけない。** 知りたいのは「実際に受信に使われる NIC」。
+    ///   Wi-Fi と有線が両方生きている機械で誤判定する。
+    fn board_addr_for_netcheck(&self) -> Option<String> {
+        let addr = self
+            .shared
+            .boards
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .map(|b| b.addr.clone())
+            .or_else(|| {
+                let d = self.shared.sub_dest.lock().unwrap().clone();
+                (!d.is_empty()).then_some(d)
+            })?;
+        // ポート番号や、複数NIC時の空白区切りが付くことがあるので落とす
+        let first = addr.split_whitespace().next().unwrap_or(&addr);
+        Some(first.split(':').next().unwrap_or(first).to_string())
+    }
+
     fn netcheck_ui(&mut self, ui: &mut egui::Ui, s: &receiver::StatsSnapshot) {
         // ボードのアドレスが分かってから1回だけ調べる。経路から NIC を決めるので、
         // 相手のIPが要る(Wi-Fiと有線が両方生きている機械で誤判定しないため)
         if self.netcheck.is_none() {
-            let addr = self
-                .shared
-                .boards
-                .lock()
-                .unwrap()
-                .values()
-                .next()
-                .map(|b| b.addr.clone())
-                // ボードが見つかる前でも判定できるように、SUBSCRIBE の宛先で
-                // 代替する。**ボード発見を待つと、新規の機械でいちばん警告が
-                // 要る場面(まだ何も映っていない状態)で黙ってしまう。**
-                // ブロードキャスト宛でも経路は引けるので、送り先の NIC が分かる。
-                // 取り違えても Unsupported / Unknown に落ちるだけで、嘘の警告には
-                // ならない(実機のWi-Fiで確認済み)
-                .or_else(|| {
-                    let d = self.shared.sub_dest.lock().unwrap().clone();
-                    (!d.is_empty()).then_some(d)
-                });
-            if let Some(addr) = addr {
-                // ポート番号が付いていることがあるので落とす
-                let ip = addr.split(':').next().unwrap_or(&addr).to_string();
+            if let Some(ip) = self.board_addr_for_netcheck() {
                 let b = netcheck::probe(&ip);
                 // 起動ごとに1回だけ。パネルは Tab で隠せるうえ --fullscreen には
                 // そもそも無いので、パネル内の表示だけでは「遊ぶときのモード」で
                 // 気付けない
                 self.netcheck_modal = b.should_warn() && !self.netcheck_muted;
                 self.netcheck = Some(b);
+            }
+        }
+
+        // ★**直したあと必ず確かめ直す。** 「実行しました」で終わらせると、
+        //   UACを拒否した場合やドライバが受け付けなかった場合に、直っていないのに
+        //   直った気になる。レジストリを読み直せば事実が分かる。
+        if let Some(t) = self.netcheck_recheck_at {
+            if t.elapsed() > std::time::Duration::ZERO {
+                self.netcheck_recheck_at = None;
+                if let Some(addr) = self.board_addr_for_netcheck() {
+                    let b = netcheck::probe(&addr);
+                    self.netcheck_fix = Some(if b.should_warn() {
+                        format!("まだ {} のままです(管理者で拒否した可能性)",
+                                b.value().unwrap_or(0))
+                    } else {
+                        "直りました。次回の起動から効きます".to_string()
+                    });
+                    self.netcheck_modal = false;
+                    self.netcheck = Some(b);
+                }
             }
         }
 
@@ -4080,14 +4113,35 @@ impl Session {
                     "NICの受信バッファーが小さい可能性があります\n                     (このドライバは設定値を公開していないので確認できません)",
                 );
         }
-        // 直すには管理者権限が要るので、こちらでは適用せずコマンドを渡す
+        // ★**押したら直る**ようにする。管理者権限が要るのでこのプロセスは
+        //   昇格させず、ShellExecuteW の runas でこの1コマンドだけ昇格させる。
+        //   コピーの方も残す ─ UACを使えない環境や、内容を確認したい人のため。
         let cmd = netcheck::fix_command(cfg.adapter());
         ui.horizontal(|ui| {
+            if cfg!(windows) {
+                let b = ui.small_button("直す(管理者)").on_hover_text(format!(
+                    "次を管理者権限で実行します:\n{cmd}\n\n                     ★実行するとNICが数秒切れます(ドライバがアダプタを\n                     　リセットするため)。映像も一度止まります"
+                ));
+                if b.clicked() {
+                    self.netcheck_fix = Some(match netcheck::apply_fix(cfg.adapter()) {
+                        Ok(()) => "実行しました。反映を確認しています…".to_string(),
+                        Err(e) => format!("直せませんでした: {e}"),
+                    });
+                    // アダプタのリセットが終わってから調べ直す
+                    self.netcheck_recheck_at =
+                        Some(std::time::Instant::now() + std::time::Duration::from_secs(6));
+                }
+            }
             if ui.small_button("コマンドをコピー").clicked() {
                 ui.ctx().copy_text(cmd.clone());
             }
-            ui.weak("管理者のPowerShellで実行");
+            if !cfg!(windows) {
+                ui.weak("管理者のPowerShellで実行");
+            }
         });
+        if let Some(msg) = &self.netcheck_fix {
+            ui.weak(egui::RichText::new(msg).size(11.0));
+        }
         ui.add(egui::Label::new(egui::RichText::new(&cmd).monospace().size(10.0)).wrap());
     }
 }
