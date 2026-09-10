@@ -725,6 +725,32 @@ const PHASE_SENSITIVE: f32 = 0.85;
 /// 小さい側はドットを飛ばして絵が壊れる。非対称なので迷ったら上。
 ///
 /// `probes` は (最良位相, 最良の鮮鋭度, 最悪の鮮鋭度) を候補の順(htotal降順)に。
+/// 「画に合わせる」ときの目標のウィンドウ内寸。動かす必要が無ければ `None`。
+///
+/// `tex` は**画の実寸ではなく、いま画面に出ている(レターボックス後の)大きさ**。
+/// だから `tex + 外側の余白` は必ず現在の内寸**以下**になる ─ つまりこの操作は
+/// 「余白を削って縮める」。1回なら意図どおりだが、**繰り返すと縮み続ける**。
+///
+/// ★**丸め程度の差では動かさない。** 比が一致すれば余白は0になって収束する
+///   はずだが、点と画素の丸めやパネル幅の増減で毎回わずかに残る。Windows の
+///   DPI 拡大では1回あたりの目減りが大きく、**同期がふらつくたびに合わせ直して
+///   窓が消えていった**(2026-09-10 実機。Macでは目減りが小さく気付かなかった)。
+fn fit_target(
+    window: egui::Vec2,
+    avail: egui::Vec2,
+    tex: egui::Vec2,
+    monitor: Option<egui::Vec2>,
+) -> Option<egui::Vec2> {
+    let chrome = window - avail;
+    let mut want = tex + chrome;
+    // 画面より大きくしない(はみ出すと操作できなくなる)
+    if let Some(mon) = monitor {
+        want = want.min(mon * 0.95);
+    }
+    let delta = (want - window).abs();
+    (delta.x > 3.0 || delta.y > 3.0).then_some(want)
+}
+
 fn quick_pick(probes: &[(u8, f32, f32)]) -> (usize, f32) {
     let rel_of = |p: &(u8, f32, f32)| if p.1 > 0.0 { p.2 / p.1 } else { 1.0 };
     let (mut j, mut min_rel) = (0usize, f32::MAX);
@@ -879,6 +905,12 @@ struct Session {
     did_autofit: bool,
     /// 次のフレームでウィンドウを等倍に合わせる
     want_fit: bool,
+    /// 最後にウィンドウを合わせたときの「絵の大きさを決める要素」。
+    ///
+    /// ★**モードキーとは別に持つ。** モードキーは fh/htotal/vtotal で作るので、
+    ///   映像が乱れて同期がふらつくと**絵の大きさは変わっていないのに**変化する。
+    ///   それでウィンドウを合わせ直していたため、乱れるたびに窓が縮んでいった。
+    fitted_sig: Option<(u16, u16, u32, [u32; 4])>,
     /// 受信中フレームの寸法(GPUテクスチャは callback_resources 側が持つ)
     frame_size: (u32, u32),
     render_state: Option<eframe::egui_wgpu::RenderState>,
@@ -1058,6 +1090,7 @@ impl Session {
             last_tex: egui::Vec2::ZERO,
             did_autofit: false,
             want_fit: false,
+            fitted_sig: None,
             frame_size: (0, 0),
             render_state,
             seen_gen: 0,
@@ -1956,7 +1989,17 @@ impl Session {
         }
         self.mode_key = key;
         self.mark_settings_dirty();
-        self.want_fit = true;
+        // ★**絵の大きさが変わったときだけ合わせ直す。** 同期がふらついただけで
+        //   窓を動かさない(乱れるたびに窓が動くのは実害が大きい)。
+        if self.display_sig() != self.fitted_sig {
+            self.want_fit = true;
+        }
+    }
+
+    /// 絵の見た目の大きさを決める要素だけを拾った署名。
+    fn display_sig(&self) -> Option<(u16, u16, u32, [u32; 4])> {
+        let m = self.shared.mode.lock().unwrap();
+        m.as_ref().map(|m| (m.hactive, m.vactive, self.rotate, self.crop))
     }
 
     /// pll_divide を変える。hs_offset を同じ比で追従させて絵が動かないようにする。
@@ -5290,14 +5333,13 @@ impl Session {
         }
         if self.want_fit && self.last_tex.x > 0.0 && self.last_avail.x > 0.0 {
             self.want_fit = false;
-            let chrome = self.window_size - self.last_avail;
-            let mut want = self.last_tex + chrome;
-            // 画面より大きくしない(はみ出すと操作できなくなる)
+            self.fitted_sig = self.display_sig();
             let mon = ctx.input(|i| i.viewport().monitor_size);
-            if let Some(mon) = mon {
-                want = want.min(mon * 0.95);
+            if let Some(want) =
+                fit_target(self.window_size, self.last_avail, self.last_tex, mon)
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
             }
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
         }
 
         self.remote_badge(&ctx);
@@ -5347,6 +5389,51 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★**繰り返しても縮み続けないこと。** `last_tex` はレターボックス後の
+    ///   表示サイズなので、素直に合わせると毎回余白ぶん小さくなる。同期が
+    ///   ふらつくたびに合わせ直していたため、Windows で窓が消えていった。
+    #[test]
+    fn fit_does_not_shrink_forever() {
+        let panel = egui::vec2(360.0, 0.0);      // 右パネルぶんの余白
+        let aspect = 4.0 / 3.0;
+        let mut win = egui::vec2(1160.0, 820.0);
+        for i in 0..50 {
+            let avail = win - panel;
+            // 画は領域に内接する(= レターボックスが残る)
+            let fit = (avail.x / aspect).min(avail.y);
+            let tex = egui::vec2(fit * aspect, fit);
+            match fit_target(win, avail, tex, None) {
+                Some(next) => {
+                    assert!(next.x > 100.0 && next.y > 100.0,
+                            "{i}回目で潰れた: {next:?}");
+                    win = next;
+                }
+                None => return,   // 収束した
+            }
+        }
+        panic!("50回合わせても収束しない(縮み続けている): {win:?}");
+    }
+
+    /// 丸め程度の差では動かさない。
+    #[test]
+    fn fit_ignores_rounding_noise() {
+        let win = egui::vec2(1000.0, 800.0);
+        let avail = egui::vec2(640.0, 800.0);
+        // 2ポイントだけ小さい = 丸めの範囲
+        let tex = egui::vec2(638.0, 799.0);
+        assert_eq!(fit_target(win, avail, tex, None), None);
+    }
+
+    /// 意味のある変化なら動かす(効かなくなっていないこと)。
+    #[test]
+    fn fit_still_resizes_when_it_matters() {
+        let win = egui::vec2(1000.0, 800.0);
+        let avail = egui::vec2(640.0, 800.0);
+        let tex = egui::vec2(640.0, 480.0);      // 縦に大きな余白
+        let want = fit_target(win, avail, tex, None).expect("動くべき場面で動かない");
+        assert_eq!(want, egui::vec2(1000.0, 480.0));
+    }
 
     /// ★**ANNOUNCE の name は16バイト固定。** 日本語は1文字3バイトなので、
     ///   「5文字までしか入らない」ことに UI 側で気付ける必要がある。
