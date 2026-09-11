@@ -1641,9 +1641,16 @@ class RetroCastXStream(SoCMini):
         #   はんだ不良を直したところ index=1 のまま ping/発見/ストリームが
         #   全て通った(26フレーム, lost_pkts=0)。index=0 は seed 3 で
         #   eth_rx 122.55MHz(制約125)で閉じないため、J11 へ移すならシード探索が要る。
+        # ★**mdc/mdio は LiteEth に渡さない。** 渡すと LiteEth が
+        #   `LiteEthPHYMDIO` を勝手に生やして pads.mdc を駆動し、pads.mdio に
+        #   Tristate を張る。こちらで MDIO を持つので二重駆動になる。
+        #   リンク状態は MDIO でしか取れない(retrocastx_mdio.py 冒頭に、
+        #   in-band status / RXCの生存 / RXCの周波数を実機で潰した記録がある)。
+        from retrocastx_mdio import PadsWithoutMdio, MdioReader, MdioPoller
+        eth_pads = platform.request("eth", eth_phy)
         self.ethphy = LiteEthPHYRGMII(
             clock_pads = platform.request("eth_clocks", eth_phy),
-            pads       = platform.request("eth", eth_phy),
+            pads       = PadsWithoutMdio(eth_pads),
             tx_delay   = 0e-9)
         # --- 自MAC: 基板の EUI-48 を使う ---
         #
@@ -1796,8 +1803,169 @@ class RetroCastXStream(SoCMini):
                 Subsignal("vs", Pins("T3")),   # dbg6 / pin8
                 IOStandard("LVCMOS33")),
         ]
+        # --- MagJack のリンク/通信LED(v0.9.0)---
+        # RJ45 の緑/黄LEDは **FPGA の GPIO から駆動する**。カソードはGND、
+        # アノードへ220Ω なので **アクティブHigh**。
+        # (hardware/adc-frontend/main.ato の EthernetJacks モジュール)
+        #
+        # ★index とコネクタ表記は入れ替わっている(上の LiteEthPHYRGMII の
+        #   コメント参照)。ここでも litex の index に合わせて並べてある。
+        _eth_led_io = [
+            ("eth_led", 0,                      # = コネクタ ETH2 = J11
+                Subsignal("green",  Pins("R1")),    # SO-DIMM 42
+                Subsignal("yellow", Pins("T1")),    # 44
+                IOStandard("LVCMOS33")),
+            ("eth_led", 1,                      # = コネクタ ETH1 = J12(既定)
+                Subsignal("green",  Pins("U1")),    # 46
+                Subsignal("yellow", Pins("Y2")),    # 48
+                IOStandard("LVCMOS33")),
+        ]
         platform.add_extension(_i2c_io)
         platform.add_extension(_drgb_io)
+        platform.add_extension(_eth_led_io)
+
+        # --- LEDを駆動する ---
+        #
+        # 緑 = リンク確立 / 黄 = 通信中。普通のNICと同じ割り当てにしてある。
+        #
+        # ★**リンクの判定に MDIO は要らない。** RGMII はフレームの合間
+        #   (RX_CTL=0)に RXD でリンク/速度/全二重を運んでおり、LiteEth の
+        #   `LiteEthPHYRGMIIRX` が既に復号して CSR に載せている
+        #   (`with_inband_status=True` が既定)。その信号をそのまま貰う。
+        #
+        # ★**それだけでは足りない。** in-band status のレジスタは eth_rx
+        #   ドメインにあるので、リンクが切れて PHY が RXC を止めると
+        #   **最後の値のまま凍る**。抜線しても緑が点きっぱなしになるので、
+        #   「RXC が動いているか」との AND を取る(retrocastx_ethled.py)。
+        from migen.genlib.cdc import MultiReg
+        from retrocastx_ethled import EthLeds, ActivityTap, LampTest
+        # in-band status の4ビットをまとめて sys へ渡す。
+        # {duplex, speed[1:0], link} の並び(RGMII の RXD[3:0] そのもの)。
+        # ★**速度も一緒に見る。** 100BASE-T で繋がっていると帯域が足りず
+        #   パケットを落とすが、「リンクはある」ので原因に辿り着きにくい。
+        inband = self.ethphy.rx.inband_status.fields
+        inband_raw = Signal(4)
+        self.specials += MultiReg(
+            Cat(inband.link_status, inband.clock_speed, inband.duplex_status),
+            inband_raw, "sys")
+        # ★**この基板の PHY は in-band status を出していない。**
+        #   実機で 0x7F を読むと [3:0] が常に 0(link/speed/duplex 全部0)で、
+        #   一方で RXC は回っており(トグル1130回)パケットも流れていた
+        #   (通信の印239回)。タイミングのずれなら化けた値が出るはずで、
+        #   きれいに0が続くのは「PHYがIFGでRXDをLowに固定している」= 
+        #   in-band status が無効、ということ。Broadcom のシャドウレジスタで
+        #   有効化できるはずだが、それには MDIO のマスタが要る(CPU無し)。
+        #
+        #   代わりに **RXC が動いているか** をリンクとする。生値は 0x7F に
+        #   残してあるので、将来 in-band を有効にできたら切り替えられる。
+        # --- MDIO で PHY のレジスタを読み続ける ---
+        #
+        # PHYアドレスとレジスタ番号、リンクを表すビット位置は CONFIG 0x6C で
+        # 差し替えられる。**アドレスは実測でしか分からない**(基板の PHYA[0]
+        # ストラップで決まり、2つのPHYがバスを共有している)ので、ホストから
+        # 番地を振れるようにしてある。焼き直さずに走査できる。
+        #
+        #   0x6C  [4:0] PHYAD / [12:8] REGAD / [19:16] リンクのビット位置
+        #   0x6D  読めた16bit(読み取り専用)
+        #
+        # 既定は BMSR(reg 1)の bit2 = Link Status。PHYAD の既定は 0。
+        from migen.fhdl.specials import Tristate
+        mdio_o = Signal(); mdio_oe = Signal(); mdio_i = Signal()
+        self.specials += Tristate(eth_pads.mdio, mdio_o, mdio_oe, mdio_i)
+        self.submodules.mdio = mdio = MdioReader(
+            eth_pads.mdc, mdio_o, mdio_oe, mdio_i, sys_clk_freq)
+        # ★**PHYアドレスは litex の index と同じだった**(2026-09-11 実測)。
+        #   MDIOバスを走査したら 0 と 1 の2つだけが応答し(どちらも Broadcom、
+        #   PHYID 0x0362/0x5E62 = B50612D)、ケーブルを挿してある J12 =
+        #   litex eth1 側が **PHYAD 1** で BMSR=0x796D(link=1)、もう片方の
+        #   PHYAD 0 は BMSR=0x7949(link=0)だった。
+        self.cfg_mdio_sel = Signal(20, reset=(2 << 16) | (1 << 8) | eth_phy)
+        self.comb += mdio.phyad.eq(self.cfg_mdio_sel[0:5])
+        # 巡回して読む番地。BMSR は LED が常に要るので固定枠を持たせ、
+        # 3枠目はホストから振れるようにして立ち上げ・切り分けに使う。
+        #   reg 1    BMSR。bit2 = Link Status(ラッチロー)
+        #   reg 0x19 Broadcom の Auxiliary Status。[10:8] が確定した速度で、
+        #            7 = 1000BASE-T 全二重(実測 0x871C)
+        self.submodules.mdio_poll = mdio_poll = MdioPoller(
+            mdio, [1, 0x19, self.cfg_mdio_sel[8:13]])
+        bmsr, aux, sel = mdio_poll.data
+        self.stat_mdio_data = Signal(32)
+        self.comb += self.stat_mdio_data.eq(Cat(bmsr, sel))
+        self.stat_mdio_aux = aux
+        # ★**レジスタで受ける。** 16bitの可変シフタと比較器をLEDの論理まで
+        #   組合せで引きずると sys のクリティカルパスに乗る(実際、足した直後の
+        #   ビルドで crg_clkout が 45.21MHz = 余裕0.5% まで落ちた)。
+        #   LEDは1クロック遅れても何も困らない。
+        link_inband = Signal()
+        speed_ok = Signal()
+        self.sync += [
+            link_inband.eq((bmsr >> self.cfg_mdio_sel[16:20]) & 1),
+            # 1000BASE-T 全二重のときだけ「速度は期待どおり」。
+            # それ以外は緑をゆっくり点滅させて気付けるようにする。
+            speed_ok.eq(aux[8:11] == 7),
+        ]
+        # 送受信どちらかが動いたら黄を点ける。**eth_rx/eth_tx に足すのは
+        # FF 1個ずつだけ**にしてある(この2つは LiteEth の CDC FIFO が
+        # 配線律速でクリティカルパスになっており、論理を足すと配置の
+        # 当たり外れが変わる。上の SEEDS のコメント参照)。
+        self.submodules.eth_act_rx = act_rx = ActivityTap(
+            "eth_rx", self.ethphy.source.valid)
+        self.submodules.eth_act_tx = act_tx = ActivityTap(
+            "eth_tx", self.ethphy.sink.valid)
+        # ランプテスト(CONFIG 0x7E)。意味は retrocastx_ethled.LampTest を参照。
+        # ★**これが無いと立ち上げで詰む。** 光らないときに、ピン割り当てが
+        #   違うのか論理が0なのかを分けられない。しかも**使っていない側の
+        #   ポートも点けられないと基板の不良と切り分けられない**
+        #   (実機で J12 の緑だけ点かず、J11 の緑を点けて初めて分かった)。
+        self.eth_led_force = Signal(8)
+        self.submodules.eth_leds = eth_leds = EthLeds(
+            sys_clk_freq, link_inband, act_rx.pulse | act_tx.pulse,
+            speed_ok=speed_ok)
+        # 診断値(CONFIG 0x7F)。光らないときに何が0なのかを実機から引く。
+        act_cnt = Signal(8)
+        # ★**一度でも RXC が途絶えたかを覚えておく(スティッキー)。**
+        #   「リンクが切れたら RXC も止まる」PHY なら RXC をリンクの代わりに
+        #   使えるが、リンク無しでも RXC を出し続ける PHY だと使えない。
+        #   ケーブルを抜いている間は当然通信できないので、抜いて挿してから
+        #   これを読む。0x7E へ書くとクリアされる。
+        # RXC が動いているかは残す(「クロックが来ない = リンク無し」は
+        # PHYの実装に依らず正しい)。ただし**それだけでは足りない**ことが
+        # 実機で分かっているので、リンクの主判定は MDIO(上記)。
+        rxclk_was_dead = Signal()
+        self.sync += [
+            If(act_rx.pulse | act_tx.pulse, act_cnt.eq(act_cnt + 1)),
+            If(~eth_leds.rxclk_alive, rxclk_was_dead.eq(1)),
+            # 3 を書いている間はクリア。3→0 と戻して計測を始める
+            If(self.eth_led_force == 3, rxclk_was_dead.eq(0)),
+        ]
+        self.eth_link_stat = Signal(32)
+        self.comb += self.eth_link_stat.eq(Cat(
+            inband_raw,                 # [3:0]  {duplex, speed[1:0], link}
+            eth_leds.rxclk_alive,       # [4]    RXCが動いているか
+            eth_leds.green,             # [5]
+            eth_leds.yellow,            # [6]
+            rxclk_was_dead,             # [7]    一度でもRXCが途絶えたか
+            act_cnt,                    # [15:8]  通信の印を数えた回数
+            bmsr,                       # [31:16] BMSR(リンクの生値)
+        ))
+        # 4本ぶんをまとめて作る。並びは下から
+        #   bit0 = eth0 緑 / bit1 = eth0 黄 / bit2 = eth1 緑 / bit3 = eth1 黄
+        # 通常は使っている側だけ動かし、使っていない側は消灯する
+        # (未使用ピンは既定で弱プルアップになるので、明示的に0を出す)。
+        normal = Signal(4)
+        if eth_phy == 0:
+            self.comb += normal.eq(Cat(eth_leds.green, eth_leds.yellow, 0, 0))
+        else:
+            self.comb += normal.eq(Cat(0, 0, eth_leds.green, eth_leds.yellow))
+        self.submodules.eth_lamp = lamp = LampTest(self.eth_led_force, normal)
+        pads0 = platform.request("eth_led", 0)
+        pads1 = platform.request("eth_led", 1)
+        self.comb += [
+            pads0.green.eq(lamp.out[0]),
+            pads0.yellow.eq(lamp.out[1]),
+            pads1.green.eq(lamp.out[2]),
+            pads1.yellow.eq(lamp.out[3]),
+        ]
 
         # --- デジタルRGB: 試験信号の生成 + 入力の測定 ---
         from retrocastx_drgb import DigitalRgbGen, DigitalRgbProbe
@@ -1940,6 +2108,10 @@ class RetroCastXStream(SoCMini):
                 0x7B: self.drgb.cfg_dot,
                 0x7C: self.drgb.cfg_hstart,
                 0x7D: self.drgb.cfg_hactive,
+                # MagJack LED のランプテスト(0=通常 / 1=全消灯 / 2=全点灯)
+                0x7E: self.eth_led_force,
+                # MDIO: [4:0]PHYAD [12:8]REGAD [19:16]リンクのビット位置
+                0x6C: self.cfg_mdio_sel,
             },
             extra_stats={
                 # デジタルRGB の測定値(読み取り専用)
@@ -1951,6 +2123,12 @@ class RetroCastXStream(SoCMini):
                 0x75: self.drgb.stat_pol,
                 0x76: self.drgb.stat_pixel,
                 0x77: self.drgb.stat_edges,
+                # MagJack LED の診断。光らないときに何が0なのかを引く
+                0x7F: self.eth_link_stat,
+                # MDIO: 下位16=BMSR / 上位16=0x6C で指定した番地の値
+                0x6D: self.stat_mdio_data,
+                # MDIO: Broadcom の Auxiliary Status(0x19)。[10:8]=確定した速度
+                0x6E: self.stat_mdio_aux,
                 0x40: learner.learn_count,
                 0x41: learner.hit_count,
                 0x42: learner.miss_count,
