@@ -101,10 +101,16 @@ class EthLeds(Module):
 
     link_inband : in-band status のリンクビット(sys へ同期済みのもの)
     act         : 送受信いずれかが動いた印(sysドメインのパルスまたはレベル)
+    speed_ok : リンク速度が期待どおりか。**0 だと緑をゆっくり点滅させる。**
+               100BASE-T で繋がると帯域が足りずパケットを落とすが、
+               「リンクはある」ので原因に辿り着きにくい。目で分かるようにする。
+               省略すると常に点灯。
+
     ランプテスト(強制点灯)は `LampTest` の方でまとめて掛ける。
     """
     def __init__(self, sys_clk_freq, link_inband, act,
-                 rx_cd="eth_rx", hold_ms=40, link_timeout_us=200):
+                 rx_cd="eth_rx", hold_ms=40, link_timeout_us=200,
+                 speed_ok=None, blink_ms=250):
         self.green = Signal()
         self.yellow = Signal()
         self.link = Signal()         # 判定結果(診断用に外へ出す)
@@ -119,12 +125,25 @@ class EthLeds(Module):
         self.submodules.blip = blip = Stretch(hold)
         self.comb += blip.i.eq(act)
 
+        # 速度が期待どおりでないときの点滅
+        blink = Signal(reset=1)
+        if speed_ok is None:
+            speed_ok = 1
+        else:
+            period = max(int(sys_clk_freq * blink_ms / 1000), 2)
+            bc = Signal(max=period)
+            self.sync += If(bc == period - 1,
+                bc.eq(0), blink.eq(~blink),
+            ).Else(
+                bc.eq(bc + 1),
+            )
+
         link = self.link
         g = Signal(); y = Signal()
         self.comb += [
             self.rxclk_alive.eq(rxclk.alive),
             link.eq(link_inband & rxclk.alive),
-            g.eq(link),
+            g.eq(link & (speed_ok | blink)),
             # ★**リンクが無いのに黄が点くのはおかしい。** 相手がいないのに
             #   自分が送り続けている(発見のブロードキャスト等)ときに点くと、
             #   「繋がっているのに通信できない」ように見えてしまう。
