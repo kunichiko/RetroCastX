@@ -1,0 +1,102 @@
+(footprint "XINGLIGHT_XL_2020RGBC_2812B:LED-SMD_4P-L2.0-W2.0-BR-1"
+	(version 20241229)
+	(generator "faebryk_convert")
+	(generator_version "v5")
+	(layer "F.Cu")
+	(tedit "5DC5F6A4")
+	(uuid "0c660563-98bf-448f-a225-509a498786f0")
+	(property "Reference" "REF**"
+		(at 0 -4.65)
+		(layer "F.SilkS")
+		(uuid "529dbb95-e7a4-4d91-8b39-98bb15dc9041")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "LED-SMD_4P-L2.0-W2.0-BR-1"
+		(at 0 4.65)
+		(layer "F.Fab")
+		(uuid "a2287a76-383d-45e5-a641-b56cf6e82606")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_circle
+		(center 1 1)
+		(end 1.03 1)
+		(stroke
+			(width 0.06)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(locked no)
+		(uuid "54f0ee5f-ee68-4348-b8cd-5fbdf0ea2be5")
+	)
+	(fp_line
+		(start -1 1.1)
+		(end 1 1.1)
+		(stroke
+			(width 0.15)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(layers "F.SilkS")
+		(locked no)
+		(uuid "1943425d-7a60-4e75-b207-9a62b2fcf495")
+	)
+	(fp_line
+		(start 1 -1.1)
+		(end -1 -1.1)
+		(stroke
+			(width 0.15)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(layers "F.SilkS")
+		(locked no)
+		(uuid "cd5ac1eb-aeaa-49cf-a019-a1991bfeff59")
+	)
+	(pad "4" smd rect
+		(at -0.68 0.65 180)
+		(size 0.85 0.65)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(uuid "8d5e0ec4-ceb2-46c1-bd9e-0903629daefe")
+	)
+	(pad "3" smd rect
+		(at -0.68 -0.65 180)
+		(size 0.85 0.65)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(uuid "f0e68823-17a2-44bf-8b63-d48a630886ad")
+	)
+	(pad "2" smd rect
+		(at 0.68 -0.65 180)
+		(size 0.85 0.65)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(uuid "30a0754e-ee57-4ddb-b9b4-01ed07d8e69a")
+	)
+	(pad "1" smd rect
+		(at 0.68 0.65 180)
+		(size 0.85 0.65)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(uuid "fb9e953d-d548-4aa7-8802-4c2c7b8d4d7c")
+	)
+	(model "${KIPRJMOD}/../../parts/XINGLIGHT_XL_2020RGBC_2812B/6.STEP"
+		(offset
+			(xyz 0 0 -0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 0)
+		)
+	)
+	(embedded_fonts no)
+)

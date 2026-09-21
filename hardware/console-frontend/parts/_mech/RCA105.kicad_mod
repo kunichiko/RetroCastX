@@ -1,0 +1,236 @@
+(footprint "RCA105"
+	(version 20241229)
+	(generator "manual")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "RCA (phono) jack RCA-105, right-angle PCB mount, hand-soldered (not JLC-assembled). Land pattern per the manufacturer drawing \"RCA-105 / T:1.6 Dimensions of PC board holes, tolerance +-0.1 (Printed-bottom view)\": TWO slots, both on the connector axis: pad1 2.30x1.50 at 4.80 behind the reference plane, pad2 1.00x2.30 at 8.30 behind the reference plane. pad1 = shell/GND, pad2 = centre conductor (signal). Both pads sit on the axis, so the bottom-view drawing needs no mirroring. Origin = reference plane (x=0, put the board edge here) on the barrel axis (y=0). Frame 10.00 wide x 13.00 high, body 10.00+-0.20 deep behind the reference plane; barrel phi8.30+-0.10 protrudes 9.30 IN FRONT of the reference plane (overhangs the board edge); barrel axis sits 8.00 above the PCB surface (5.00 below the top of the frame); legs 3.70 long.")
+	(tags "rca phono jack RCA-105 right-angle")
+	(property "Reference" "REF**"
+		(at 5.0 -6.6 0)
+		(layer "F.SilkS")
+		(uuid "c105a001-0000-4000-8000-000000000001")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "RCA105"
+		(at 5.0 6.6 0)
+		(layer "F.Fab")
+		(uuid "c105a001-0000-4000-8000-000000000002")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "c105a001-0000-4000-8000-000000000003")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" "RCA jack, right-angle, PCB mount"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "c105a001-0000-4000-8000-000000000004")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "hand_solder" "true"
+		(at 5.0 -6.6 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "c105a001-0000-4000-8000-000000000005")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr through_hole exclude_from_pos_files)
+	(fp_line
+		(start 0 -5.0)
+		(end 10.0 -5.0)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "c105a001-0000-4000-8000-000000000010")
+	)
+	(fp_line
+		(start 10.0 -5.0)
+		(end 10.0 5.0)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "c105a001-0000-4000-8000-000000000011")
+	)
+	(fp_line
+		(start 10.0 5.0)
+		(end 0 5.0)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "c105a001-0000-4000-8000-000000000012")
+	)
+	(fp_line
+		(start 0 5.0)
+		(end 0 -5.0)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "c105a001-0000-4000-8000-000000000013")
+	)
+	(fp_line
+		(start -9.3 -4.15)
+		(end 0 -4.15)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "c105a001-0000-4000-8000-000000000020")
+	)
+	(fp_line
+		(start 0 -4.15)
+		(end 0 4.15)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "c105a001-0000-4000-8000-000000000021")
+	)
+	(fp_line
+		(start 0 4.15)
+		(end -9.3 4.15)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "c105a001-0000-4000-8000-000000000022")
+	)
+	(fp_line
+		(start -9.3 4.15)
+		(end -9.3 -4.15)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "c105a001-0000-4000-8000-000000000023")
+	)
+	(fp_line
+		(start 0 -5.0)
+		(end 0 5.0)
+		(stroke
+			(width 0.2)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "c105a001-0000-4000-8000-000000000030")
+	)
+	(fp_line
+		(start -9.55 -5.25)
+		(end 10.25 -5.25)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "c105a001-0000-4000-8000-000000000040")
+	)
+	(fp_line
+		(start 10.25 -5.25)
+		(end 10.25 5.25)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "c105a001-0000-4000-8000-000000000041")
+	)
+	(fp_line
+		(start 10.25 5.25)
+		(end -9.55 5.25)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "c105a001-0000-4000-8000-000000000042")
+	)
+	(fp_line
+		(start -9.55 5.25)
+		(end -9.55 -5.25)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "c105a001-0000-4000-8000-000000000043")
+	)
+	(fp_text user "board edge"
+		(at 0 -5.9 90)
+		(layer "F.SilkS")
+		(uuid "c105a001-0000-4000-8000-000000000201")
+		(effects
+			(font
+				(size 0.6 0.6)
+				(thickness 0.1)
+			)
+		)
+	)
+	(fp_text user "1=GND 2=SIG"
+		(at 6.4 3.6 0)
+		(layer "F.SilkS")
+		(uuid "c105a001-0000-4000-8000-000000000202")
+		(effects
+			(font
+				(size 0.6 0.6)
+				(thickness 0.1)
+			)
+		)
+	)
+	(pad "1" thru_hole oval
+		(at 4.8 0)
+		(size 3.3 2.5)
+		(drill oval 2.3 1.5)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "c105a001-0000-4000-8000-000000000101")
+	)
+	(pad "2" thru_hole oval
+		(at 8.3 0)
+		(size 2.0 3.3)
+		(drill oval 1.0 2.3)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "c105a001-0000-4000-8000-000000000102")
+	)
+	(embedded_fonts no)
+)

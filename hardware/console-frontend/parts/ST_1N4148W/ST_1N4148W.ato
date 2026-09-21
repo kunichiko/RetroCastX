@@ -1,0 +1,22 @@
+import is_atomic_part
+import has_part_picked
+import has_designator_prefix
+
+component ST_1N4148W_package:
+    """1N4148W 汎用スイッチングダイオード(SOD-123)。LCSC: C81598(JLCPCB Basic part)
+
+    フットプリントとシンボルは **KiCad 同梱の Diode_SMD:D_SOD-123 と Device:D から
+    取り込んだ**。LCSCから ato create part で取得できなかったため(この機体から
+    LCSCへ到達できない)。ネットワークが復活したら
+      ato create part -s C81598 -a
+    で正規の自動生成品に差し替えてよい。
+
+    ★ピン番号は KiCad 標準規約: 1 = K(カソード) / 2 = A(アノード)。
+    Vf は 1mA で約0.55V、60mA で約0.80V。150mA定格、75V。
+    """
+    trait is_atomic_part<manufacturer="ST(Semtech)", partnumber="1N4148W", footprint="D_SOD-123.kicad_mod", symbol="1N4148W.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C81598", manufacturer="ST(Semtech)", partno="1N4148W">
+    trait has_designator_prefix<prefix="D">
+
+    signal K ~ pin 1
+    signal A ~ pin 2

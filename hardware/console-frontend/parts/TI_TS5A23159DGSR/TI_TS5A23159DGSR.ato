@@ -1,0 +1,25 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component TI_TS5A23159DGSR_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C42751", date="2026-09-21T07:58:22.949172+00:00", checksum="a2bbcf47166f7e78cf5da1ecbce5255fb9fc8e8018762fbd14239c7c4d35fef6">
+
+    trait is_atomic_part<manufacturer="TI", partnumber="TS5A23159DGSR", footprint="VSSOP-10_L3.0-W3.0-P0.50-LS4.9-BL.kicad_mod", symbol="TS5A23159DGSR.kicad_sym", model="VSSOP-10_L3.0-W3.0-H1.1-LS4.9-P0.50.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C42751", manufacturer="TI", partno="TS5A23159DGSR">
+    trait has_designator_prefix<prefix="U">
+
+    # pins
+    signal COM1 ~ pin 10
+    signal COM2 ~ pin 6
+    signal GND ~ pin 3
+    signal IN1 ~ pin 1
+    signal IN2 ~ pin 5
+    signal NC1 ~ pin 9
+    signal NC2 ~ pin 7
+    signal NO1 ~ pin 2
+    signal NO2 ~ pin 4
+    signal Vpos ~ pin 8

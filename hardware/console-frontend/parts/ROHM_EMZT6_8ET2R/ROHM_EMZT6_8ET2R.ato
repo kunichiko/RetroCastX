@@ -1,0 +1,20 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component ROHM_EMZT6_8ET2R_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C510333", date="2026-07-28T14:09:20.156202+00:00", checksum="e2f21140982186d75412c961ffd9b2480acd992d701b998adf902a84d12ce9e9">
+
+    trait is_atomic_part<manufacturer="ROHM", partnumber="EMZT6.8ET2R", footprint="EMT6_L1.6-W1.2-P0.50-LS1.6-BL.kicad_mod", symbol="EMZT6.8ET2R.kicad_sym", model="EMT6_L1.6-W1.2-P0.50-LS1.6-BL.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C510333", manufacturer="ROHM", partno="EMZT6.8ET2R">
+    trait has_designator_prefix<prefix="U">
+
+    # pins
+    pin 1
+    pin 2
+    pin 3
+    pin 4
+    pin 5
