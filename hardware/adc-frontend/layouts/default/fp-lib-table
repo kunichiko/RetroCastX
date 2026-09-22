@@ -309,13 +309,6 @@
 		(descr "atopile: part lib: RICHTEK_RT9013_18GB")
 	)
 	(lib
-		(name "YIYUAN_YTC_A1251_08ABW")
-		(type "KiCad")
-		(uri "${KIPRJMOD}/../../parts/YIYUAN_YTC_A1251_08ABW")
-		(options "")
-		(descr "atopile: part lib: YIYUAN_YTC_A1251_08ABW")
-	)
-	(lib
 		(name "TE_Connectivity_1473005_4")
 		(type "KiCad")
 		(uri "${KIPRJMOD}/../../parts/TE_Connectivity_1473005_4")
@@ -363,5 +356,19 @@
 		(uri "${KIPRJMOD}/../../parts/XINGLIGHT_XL_2020RGBC_2812B")
 		(options "")
 		(descr "atopile: part lib: XINGLIGHT_XL_2020RGBC_2812B")
+	)
+	(lib
+		(name "HDGC_0_5K_1_5_16PWB")
+		(type "KiCad")
+		(uri "${KIPRJMOD}/../../parts/HDGC_0_5K_1_5_16PWB")
+		(options "")
+		(descr "atopile: part lib: HDGC_0_5K_1_5_16PWB")
+	)
+	(lib
+		(name "XFCN_BH254V_10P")
+		(type "KiCad")
+		(uri "${KIPRJMOD}/../../parts/XFCN_BH254V_10P")
+		(options "")
+		(descr "atopile: part lib: XFCN_BH254V_10P")
 	)
 )

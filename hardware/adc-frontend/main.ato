@@ -8,7 +8,7 @@ import is_atomic_part
 import has_part_picked
 import has_designator_prefix
 import has_part_removed
-from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, BoxHeaderAux2x5, Tp1Pad, PogoPin, HeaderJtag, HeaderOled, HeaderDebug20, MountingHoleM26, SolderJumperClosed, HeaderSVideo, Fiducial
+from "parts/_mech/mech.ato" import HeaderArgus, SolderJumper, SpdifRxModule, HeaderSync3, MiniDin8Rgb, Tp1Pad, PogoPin, HeaderOled, HeaderDebug20, MountingHoleM3, SolderJumperClosed, Fiducial
 from "parts/TE_Connectivity_1473005_4/sodimm_i5.ato" import SoDimmI5
 from "parts/RICHTEK_RT9013_18GB/RICHTEK_RT9013_18GB.ato" import RICHTEK_RT9013_18GB_package
 from "parts/WCH_CH347F/WCH_CH347F.ato" import WCH_CH347F_package
@@ -398,39 +398,150 @@ component Eeprom24aa025e48:
     signal vcc ~ pin 8
 
 
-component DigitalRgbConnector:
-    """デジタルRGB(TTL)入力コネクタ: 1.25mmピッチ 単列8極、右アングルSMD。
-    YIYUAN YTC-A1251-08ABW(A1251/PicoBlade互換系)。LCSC: C7436577
+component BoxHeaderDigitalRgb2x5:
+    """デジタルRGB(TTL)入力: **2×5 ボックスヘッダ(ストレート/垂直)**、2.54mm。
+    XFCN BH254V-10P。LCSC: C492442(在庫29,370 / $0.062)
 
-    ピン配置(ピッチ1.25mm、pad9/10=取付タブ):
-      1=GND  2=R  3=G  4=B  5=I(輝度)  6=HS  7=VS  8=GND   9,10=取付タブ→GND
+    v1.0 で 1.25mmピッチ 単列8極(v0.9.0 の J6 = YIYUAN YTC-A1251-08ABW)から
+    置き換えた。**一般的な10芯フラットケーブル(IDC)がそのまま使える**ようにするため。
+    信号は6本 + GND なので 2×4(8極)でも足りるが、**秋月電子などで手に入りやすいのは
+    10芯**なので 2×5 にして、増えた2極をGNDに充てている。
 
-    **信号の並びを R/G/B/I → HS/VS の自然な順にしている**(2026-08-11 変更)。
-    以前は「フレーム全体を壊すのは同期なので HS/VS を GND の隣に置く」という理由で
-    1=GND 2=HS 3=R…7=VS としていたが、変換ケーブルを自作する前提だと**並びの
-    分かりやすさ(取り違え防止)の方が実利が大きい**と判断して並べ替えた。
-    8極では信号6本+GND2本しか取れないので、GNDは両端(1と8)のみ。この順では
-    VS(7)はGND(8)に隣接するが、HS(6)は I(5) と VS(7) に挟まれてGNDに隣接しない。
-    ケーブルが長くノイズが出る場合は同シリーズの10極(GNDを1本おきに配置)へ
-    差し替えられる(フットプリント変更のみ)。
+    ## ピン配置(ピン番号 = フラットケーブルの導体順)
 
-    ★取付タブ(pad9/10)は機械保持用。GNDへ落として実装強度と静電的な安定を得る。
-    ★JLCの実装ライブラリ収載は未確認。実装対象外になる場合は手はんだで対応可
-      (0.8mmパッド・1.25mmピッチなので難しくない)。
+        1  GND      2  R
+        3  G        4  GND
+        5  B        6  I(輝度)
+        7  GND      8  HS
+        9  VS      10  GND
+
+    リボン上の並びは `GND R G GND B I GND HS VS GND`。
+
+    ★**GNDを2〜3本ごとに挟んで、6本すべてが隣にGNDを持つようにしてある。**
+      リボンケーブルは**隣の導体が帰り路**になるので、これがクロストークと波形の
+      鈍りに一番効く。R/G/B/I はドットクロック速度(機種により数〜14MHz)で変化する
+      ので無視できない。
+
+        R(2)  → GND(1) に隣接      I(6)  → GND(7) に隣接
+        G(3)  → GND(4) に隣接      HS(8) → GND(7) に隣接
+        B(5)  → GND(4) に隣接      VS(9) → GND(10) に隣接
+
+      v0.9.0 の8極では信号6本+GND2本しか取れずGNDは両端だけだった(HSがGNDに
+      隣接しない)。README にも「10極にするならGNDを1本おき」と書いてあり、
+      v1.0 でそれを実現した形。
+    ★**信号の順番は R/G/B/I → HS/VS のまま**(2026-08-11 に「ケーブル自作時の
+      分かりやすさ優先」で決めた並び)。GNDを挟んだだけで色と同期の順序は変えていない。
+    ★IDCのボックスヘッダは**導体1本目がpin1、2本目がpin2…と交互に奇数列/偶数列へ**
+      入るので、`ピン番号 = 導体の順番`で数えられる。
+
+    ## ストレート(垂直)にした理由と外形
+
+    ★**一度 右アングル(L型, BH254R-10P / C492448)にしたが、基板上の場所が足りず
+      ストレートへ戻した**(2026-09-21)。L型はシュラウドがパッド列から +y 方向へ
+      8.8mm 伸びて外形 20.5 × 13.9mm になる。ストレートなら **20.30 × 8.70mm** で、
+      y 方向が 5mm 以上小さい。**高さ方向(基板から上)には余裕があるので、
+      リボンが基板に垂直に立つのは許容する**という判断。
+
+    取り込んだフットプリント(`IDC-TH_10P-P2.54-V-R2-C5-S2.54`)の実測:
+
+        パッド      2列 × 5、y = ±1.27(列間2.54)、x = -5.08〜+5.08
+        シュラウド  20.30 × 8.70mm(パッド列を囲む。片側へ伸びない)
+        ピン1       **x = -5.08, y = +1.27**
+
+    ★**ピン1の角はL型と逆**(L型は x=+5.08, y=-1.27 だった)。L型用に置いた向きの
+      ままストレートに差し替えると**コネクタが180°回った状態**になる。シルクの「1」と
+      リボンの赤線の向きを必ず確認すること。
+    ★シュラウドの極性切り欠きが**リボンの抜ける向き**を決める。基板の外側/空いている
+      側へ向けて配置する。
+
+    ## 機種ごとの変換ケーブルは自作する
+
+    PC-6001mkII/SR・PC-8801・X1 等のデジタルRGB出力(8ピンDIN等)から、この
+    2×5 IDC への変換ケーブルを作る。**5V TTL のまま入れてよい**(基板側は
+    ESD → 10kプルダウン → SN74LVC2G17 の5Vトレラント・シュミット入力)。
+    csync(複合同期)しか出ない機種は HS(pin8)へ入れればゲートウェアで分離できる。
     """
-    trait is_atomic_part<manufacturer="YIYUAN", partnumber="YTC-A1251-08ABW", footprint="parts/YIYUAN_YTC_A1251_08ABW/CONN-SMD_8P-P1.25_YTC-A1251-08ABW.kicad_mod", symbol="parts/YIYUAN_YTC_A1251_08ABW/YTC-A1251-08ABW.kicad_sym">
-    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C7436577", manufacturer="YIYUAN", partno="YTC-A1251-08ABW">
+    trait is_atomic_part<manufacturer="XFCN", partnumber="BH254V-10P", footprint="parts/XFCN_BH254V_10P/IDC-TH_10P-P2.54-V-R2-C5-S2.54.kicad_mod", symbol="parts/XFCN_BH254V_10P/BH254V-10P.kicad_sym", model="parts/XFCN_BH254V_10P/IDC-TH_10P-P2.54-V-R2-C5-S2.54.STEP">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C492442", manufacturer="XFCN", partno="BH254V-10P">
     trait has_designator_prefix<prefix="J">
     signal gnd ~ pin 1
     signal r ~ pin 2
     signal g ~ pin 3
-    signal b ~ pin 4
-    signal intensity ~ pin 5
-    signal hs ~ pin 6
-    signal vs ~ pin 7
+    gnd ~ pin 4
+    signal b ~ pin 5
+    signal intensity ~ pin 6
+    gnd ~ pin 7
+    signal hs ~ pin 8
+    signal vs ~ pin 9
+    gnd ~ pin 10
+
+
+component FfcConsole16:
+    """小亀基板(コンソール入力基板)への 0.5mmピッチ 16芯 FFC コネクタ。
+    HDGC 0.5K-1.5-16PWB(SMD・右アングル・下接点・フリップロック)。LCSC: C2919558
+
+    ## ピン配置(信号1本ごとにGNDを挟む)
+
+        1  Y/CVBS  (小亀のスイッチ出口 → GIN_1 と SOGIN_1 へ)
+        2  GND
+        3  C/Pr    (→ RIN_1)
+        4  GND
+        5  Pb      (→ BIN_1。予備兼コンポーネント入力)
+        6  GND
+        7  音声L   (→ PCM1808 #3)
+        8  GND
+        9  音声R   (→ PCM1808 #3)
+        10 GND
+        11 LED_DATA(小亀のシリアルLED専用。FPGAのGPIOから直接)
+        12 GND
+        13 GPIO1   (小亀のアナログスイッチ選択。L=コンポジット/コンポーネント H=S端子)
+        14 GPIO2   (予備)
+        15 +3.3V   (アナログスイッチ用)
+        16 +5V     (シリアルLED用)
+
+    ## ★向き(type A / type D)を発注前に決めること
+
+    FFC は**接点が両端で同じ面(type A)か反対面(type D)か**で、
+    「n番 ↔ n番」になるか「n番 ↔ 17-n番」になるかが変わる。この基板と小亀基板は
+    どちらも**下接点**のコネクタなので、ケーブルの種別と2枚の基板の向きの組み合わせで
+    決まる。**レイアウトを決めた時点で紙に描いて確認し、通電前に導通試験をすること。**
+    どちらでも救えるようにしたい場合は両面接点品(HDGC 0.5K-1.5W-16PWB, C5337050)に
+    差し替える(ランドは別)。ロックが無い品種なので抜けやすいのが代償。
+
+    ★両基板のシルクに「1」を打つこと。0.5mmピッチ16芯で1ピンずれると、
+      映像が音声入力に入り +5V が GPIO に当たる。
+
+    ## 電気的な前提
+
+    - **Y/C の 75Ω 終端は小亀基板側**(ジャック直近、スイッチの手前)。こちらでは
+      終端しない(`VideoInputChannelNoTerm`)。両方で終端すると 37.5Ω で振幅が半分に
+      なるうえ、小亀から来る 1.65V の中点バイアスが潰れる。
+    - **Pb だけは直流結合**で来るので、終端はこちら側(`ch_b1` の 75Ω)。
+    - 10cmのFFCは 8fsc(28.6MHz)でも電気的に短い(往復0.7ns、コンポジットの
+      立ち上がり ~100ns に対して0.7%)。
+    - pad 17/18 は機械保持用のSMDタブ。GNDへ落として実装強度を得る。
+    """
+    trait is_atomic_part<manufacturer="HDGC", partnumber="0.5K-1.5-16PWB", footprint="parts/HDGC_0_5K_1_5_16PWB/FPC-SMD_16P-P0.50_HDGC_0.5K-1.5-16PWB.kicad_mod", symbol="parts/HDGC_0_5K_1_5_16PWB/0.5K-1.5-16PWB.kicad_sym", model="parts/HDGC_0_5K_1_5_16PWB/FPC-SMD_16P-P0.50_HDGC_0.5K-1.5-16PWB.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C2919558", manufacturer="HDGC", partno="0.5K-1.5-16PWB">
+    trait has_designator_prefix<prefix="J">
+    signal y ~ pin 1
+    signal gnd ~ pin 2
+    signal c ~ pin 3
+    gnd ~ pin 4
+    signal pb ~ pin 5
+    gnd ~ pin 6
+    signal audio_l ~ pin 7
     gnd ~ pin 8
-    gnd ~ pin 9    # 取付タブ
-    gnd ~ pin 10   # 取付タブ
+    signal audio_r ~ pin 9
+    gnd ~ pin 10
+    signal led_data ~ pin 11
+    gnd ~ pin 12
+    signal gpio1 ~ pin 13
+    signal gpio2 ~ pin 14
+    signal p3v3 ~ pin 15
+    signal p5v ~ pin 16
+    gnd ~ pin 17   # 機械保持タブ
+    gnd ~ pin 18   # 機械保持タブ
 
 
 component UsbCPowerReceptacle:
@@ -529,6 +640,39 @@ module VideoInputChannel:
     output ~> c_aa ~> power.lv
 
 
+module VideoInputChannelNoTerm:
+    """VideoInputChannel から **75Ω終端を外した版**。小亀基板から来る Y/C 用。
+
+    小亀基板(hardware/console-frontend)は、アナログスイッチの前で
+    **ジャック直近に75Ωを置き、100nFで直流を切って1.65Vへ持ち上げてから**
+    スイッチに通している(スイッチの信号範囲が GND〜VCC なので、AC結合の
+    送り出しだと同期先端が負に潜って保護ダイオードに食われるため)。
+
+    したがってFFCで来る Y/C の線は:
+
+      - **既に終端済み**。ここでもう一度75Ωを入れると合計37.5Ωで振幅が半分になる
+      - **1.65Vの直流が乗っている**。75Ωで受けると 22mA 流れてバイアスが潰れる
+
+    の2つの理由で、こちら側には終端を置けない。結合(100nF)とアンチエイリアス
+    (220Ω + 33pF)は VideoInputChannel と同一。
+
+    ★**Pb(BIN_1)はこのモジュールではなく VideoInputChannel を使う。** Pb は
+      小亀基板でスイッチを通らず直流結合のまま来るので、終端はこちら側で行う。
+    """
+    signal input
+    signal output
+    power = new ElectricPower  # アンチエイリアスのグラウンド基準
+
+    signal coupled
+    c_ac = new C100nF_0402
+    input ~> c_ac ~> coupled
+
+    r_aa = new R220_0402
+    coupled ~> r_aa ~> output
+    c_aa = new C33pF_0402
+    output ~> c_aa ~> power.lv
+
+
 module DigitalRgbFrontEnd:
     """デジタルRGB(TTL)入力段: 5V TTL 6本 → ESD → プルダウン → 3.3V化 → FPGA直結。
 
@@ -618,18 +762,31 @@ module DigitalRgbFrontEnd:
 
     # 色4bitを2個に、同期2本を1個にまとめる(同期のバッファはHS/VSの遅延差が
     # そろうので、同一パッケージに入れる方が位相比較に有利)
-    buf[0].in_a ~ in_r
-    buf[0].out_a ~ out_r
-    buf[0].in_b ~ in_g
-    buf[0].out_b ~ out_g
-    buf[1].in_a ~ in_b
-    buf[1].out_a ~ out_b
-    buf[1].in_b ~ in_i
-    buf[1].out_b ~ out_i
-    buf[2].in_a ~ in_hs
-    buf[2].out_a ~ out_hs
-    buf[2].in_b ~ in_vs
-    buf[2].out_b ~ out_vs
+    #
+    # ★**各パッケージ内で ch.A / ch.B を入れ替えてある**(2026-09-21、レイアウト都合)。
+    #   SOT-23-6 では ch.A(in_a pin1 / out_a pin6)が「下側」、ch.B(in_b pin3 /
+    #   out_b pin4)が「上側」に並ぶ。コネクタ(J6)側は R/G/B/I/HS/VS の順に並ぶので、
+    #   A=R のままだと各パッケージの手前で2本が交差する。入れ替えると交差が消える。
+    #   **dualの2chは同一仕様なので電気的には等価**(buf_sync = U2 で同じことをした)。
+    #
+    #       U10 = buf[0]  ch.A = G / ch.B = R
+    #       U11 = buf[1]  ch.A = I / ch.B = B
+    #       U12 = buf[2]  ch.A = VS / ch.B = HS
+    #
+    #   ★入れ替えるときは**入力と出力の両方**を揃えること(片方だけ直すと
+    #     バッファを通った信号が別の色になる)。
+    buf[0].in_a ~ in_g
+    buf[0].out_a ~ out_g
+    buf[0].in_b ~ in_r
+    buf[0].out_b ~ out_r
+    buf[1].in_a ~ in_i
+    buf[1].out_a ~ out_i
+    buf[1].in_b ~ in_b
+    buf[1].out_b ~ out_b
+    buf[2].in_a ~ in_vs
+    buf[2].out_a ~ out_vs
+    buf[2].in_b ~ in_hs
+    buf[2].out_b ~ out_hs
 
 
 module AudioAdc:
@@ -1002,14 +1159,13 @@ module App:
     pogo_tdo.pad ~ ft2232.jtag_tdo
     ft2232.jtag_tck.override_net_name = "jtag_tck"  # 自動名が数値になるのを回避
 
-    # JTAGデバッグ端子(念のための予備, コネクタ未実装/DNP): 同JTAG信号へ並列引き出し
-    jtag_hdr = new HeaderJtag
-    jtag_hdr.tck ~ ft2232.jtag_tck
-    jtag_hdr.tms ~ ft2232.jtag_tms
-    jtag_hdr.tdi ~ ft2232.jtag_tdi
-    jtag_hdr.tdo ~ ft2232.jtag_tdo
-    jtag_hdr.gnd ~ gnd
-    jtag_hdr.vref ~ p3v3_io.hv
+    # ★JTAGデバッグ端子(1x6ヘッダ, v0.9.0 の J3)は v1.0 で削除した(2026-09-21)。
+    #   「外部JTAG器を繋げるように」という保険だったが、**FPGAのJTAGへ届く経路は
+    #   モジュール底面のパッド = ポゴピンしか無い**ので、このヘッダは結局
+    #   「同じポゴピンをCH347Fの代わりに外から叩く」用途しか持たない。
+    #   ポゴピンが届かない場合の保険にはならず(そちらが失敗したら外部器でも届かない)、
+    #   CH347Fの故障という限られた場合にしか効かないので、面積を返した。
+    #   J3 は欠番のまま(tools/lock_designators.py が番号の再利用を防ぐ)。
 
     signal p5v_ext
     # ★既定=閉のジャンパを使う(2026-08-11 修正)。ここは i5 モジュールへの5V供給
@@ -1142,22 +1298,32 @@ module App:
     vga.b_gnd ~ gnd
     vga.shield ~ gnd
 
-    # --- 第2映像入力 (2x5ボックスヘッダ) ---
+    # --- 第2映像入力 (ミニDIN8ピン: FRAMEMEISTER互換) ---
     #
-    # ArgusX向けの2x8ボックスヘッダ(J12)はここにあったが削除した(2026-08-12)。
-    # ArgusXは将来作る構想であって現存しないうえ、基板面積が逼迫していたため、
-    # 実在する用途に置き換える方が価値が高いと判断した。
-    #
-    # MSX専用ではなく **2台目のX68000なども繋げる汎用の第2入力** にしてある。
-    # ピン番号=フラットケーブルの導体順。詳細は mech.ato の BoxHeaderAux2x5 参照。
+    # v0.9.0 は 2x5 ボックスヘッダ(J4)で、繋ぐには毎回ケーブルを自作する必要があった。
+    # v1.0 で **FRAMEMEISTER(XRGB-mini)の RGB IN と同じミニDIN8ピン**に置き換える。
+    # マイコンソフトの「RGB21→ミニDIN8」ケーブルや、その互換品(NESRGB / 3DORGB /
+    # Supergun など事実上の標準になっている)がそのまま挿せる。ピン配置と信号レベルの
+    # 根拠は MiniDin8Rgb の docstring にまとめてある。
     #
     # ★入力の切り替えはTVPの入力セレクタで行う。アナログスイッチもリレーも不要:
     #     reg 0x19  0xAA = SOG/R/G/B すべて _3 = D-SUB15経路
     #               0x55 = SOG/R/G/B すべて _2 = この第2入力
-    #     reg 1Ah   bit0 HS SEL / bit2 VS SEL  0=_A(D-SUB) 1=_B(第2入力)
+    #     reg 1Ah   bit0 HS SEL / bit2 VS SEL  0=_A(D-SUB) 1=_B(HeaderSync3)
     #   使わない側は Hi-Z のまま放置できる(アナログ入力インピーダンス 500kΩ)。
-    aux = new BoxHeaderAux2x5
-    aux.gnd ~ gnd
+    din8 = new MiniDin8Rgb
+    din8.gnd ~ gnd
+    din8.shell ~ gnd
+
+    # ESD保護(コネクタ直近に置く)。外部コネクタなのでR/G/BとCSYNCの4本に付ける。
+    # ★v0.9.0 の 2x5ヘッダ経路にはRGBのESDが無かった(D-SUB経路にはあった)。
+    #   ミニDIN8は外に出るコネクタなので、D-SUB と同じ扱いに揃える。
+    esd_din8 = new EsdArray4
+    esd_din8.gnd ~ gnd
+    din8.r ~ esd_din8.io1
+    din8.g ~ esd_din8.io2
+    din8.b ~ esd_din8.io3
+    din8.csync ~ esd_din8.io4
 
     # R/G/B は D-SUB と同じ前段(75Ω終端 + 0.1uF結合 + 220Ω/33pF アンチエイリアス)
     ch_r2 = new VideoInputChannel
@@ -1166,30 +1332,44 @@ module App:
     ch_r2.power ~ p3v3_a
     ch_g2.power ~ p3v3_a
     ch_b2.power ~ p3v3_a
-    aux.r ~ ch_r2.input
-    aux.g ~ ch_g2.input
-    aux.b ~ ch_b2.input
+    din8.r ~ ch_r2.input
+    din8.g ~ ch_g2.input
+    din8.b ~ ch_b2.input
     ch_r2.output ~ tvp.rin_2
     ch_g2.output ~ tvp.gin_2
     ch_b2.output ~ tvp.bin_2
 
-    # 音声L/R は **専用のADC(旧LINE入力用)** へ入れる。下の音声セクション参照。
+    # 音声L/R は **この端子専用のADC(U14)** へ入れる。下の音声セクション参照。
     # D-SUBと同じネットへ並列に入れると、D-SUB側のL/Rが短絡する(排他使用でも
-    # 配線は常に存在する)ので、ADCを分ける。
+    # 配線は常に存在する)ので、ADCを分ける。v1.0で小亀基板の音声にも専用ADCを
+    # 足したので、3系統すべて独立になった(受動加算の1.5kΩは廃止)。
 
-    # CSYNC(映像レベル) → SOGIN_2。
+    # CSYNC(映像レベル) → SOGIN_2。**75Ω終端 + 1/2分圧**。
     #
-    # MSXのCSYNCは 1.8Vpp(オシロ実測 1.8〜2.0Vpp)。TVP7002 のアナログ入力は
-    # 推奨 0.5〜2Vpp、絶対最大 2.3V なので、そのままだと余裕が無い。
-    # 75Ω終端したうえで 1/2 に分圧し、0.9〜1.0Vpp = 推奨範囲の中央で受ける。
+    # 入ってくる振幅は機器とケーブルによって一桁変わる。ここが v1.0 で確認した要点:
+    #
+    #   規格(EIAJ RGB21 / FRAMEMEISTER 仕様)  0.3Vpp 負極性、75Ω
+    #   MSX(実測)                             1.8〜2.0Vpp
+    #   TTL CSYNCのコンソール直結              素で5Vpp。75Ω負荷で3.6V級まで沈む
+    #     (NTSC SNES / MD1・MD2・MD3・32X・CDX / Master System / Saturn など。
+    #      定石はケーブル側に直列330〜680Ω+DCカットを入れて0.3〜0.7Vppに落とすこと)
+    #
+    # TVP7002 のアナログ入力は推奨 0.5〜2Vpp、**絶対最大 2.3V**。1/2分圧にすると
+    #
+    #   0.3Vpp → 0.15Vpp   1.8Vpp → 0.9Vpp   3.6Vpp → 1.8Vpp(絶対最大内)
+    #
+    # となり、**上限側の保護として効く**。下限側は基板ではなく設定で吸収できる:
+    # SOGスライサの閾値は可変で、slice_level = 350mV × NTH/31(reg 10h[7:3]、
+    # 既定 NTH=11 = 124mV、11.2mV刻み)。0.15Vpp なら NTH=7(79mV)で振幅の約50%。
+    # ゲートウェアは CONFIG key 0x50(cfg_sog_thresh)で既に可変にしてある。
+    # ★だから **分圧を外してはいけない**(外すとTTL直結で絶対最大を超える)。
     # 分圧は 1.5kΩ×2(既存部品。合計3kΩで75Ω終端をほとんど乱さない)。
-    # レベルが足りなければ下側を開放(1/1)、過大なら比を下げる。
     r_cs_term = new R75_0402
     r_cs_top = new R1K5_0402
     r_cs_bot = new R1K5_0402
     signal csync_div
-    aux.csync ~> r_cs_term ~> gnd
-    aux.csync ~> r_cs_top ~> csync_div
+    din8.csync ~> r_cs_term ~> gnd
+    din8.csync ~> r_cs_top ~> csync_div
     csync_div ~> r_cs_bot ~> gnd
     # SOGIN_2 へはアナログ入力の規定どおり 0.1uF で結合する(データシート:
     # 「The inputs must be ac coupled. The recommended coupling capacitor is 0.1 uF」)
@@ -1201,24 +1381,33 @@ module App:
     sog2_coupled ~> r_sog2 ~> tvp.sogin_2
     tvp.sogin_2 ~> c_sog2_aa ~> gnd
 
-    # HSYNC/VSYNC(TTL) → HSYNC_B / VSYNC_B。
+    # HSYNC/VSYNC(TTL) → HSYNC_B / VSYNC_B。**1x3ヘッダ(J: HeaderSync3)から受ける。**
     #
-    # X68000などのTTL同期は5Vで、TVPのデジタル入力(IOVDD=3.3V基準)へ直結できない。
-    # D-SUB経路と同じく ESD + 5VトレラントのシュミットバッファSN74LVC2G17 を通す。
+    # ミニDIN8 には CSYNC しか無いので、HSYNC/VSYNC が別々に出ている機種や、
+    # TTLレベルのCSYNC(上記のとおりアナログ経路に入れると絶対最大に余裕が無い)の
+    # ためにヘッダを残す。5VトレラントのシュミットバッファSN74LVC2G17を通す。
     # TVP側は reg 1Ah の HS SEL/VS SEL で _A(D-SUB) と _B(こちら) を切り替える。
+    hdr_sync = new HeaderSync3
+    hdr_sync.gnd ~ gnd
     esd_sync2 = new EsdArray4
     esd_sync2.gnd ~ gnd
-    aux.hsync ~ esd_sync2.io1
-    aux.vsync ~ esd_sync2.io2
+    hdr_sync.hsync ~ esd_sync2.io1
+    hdr_sync.vsync ~ esd_sync2.io2
     buf_sync2 = new Lvc2g17
     buf_sync2.vcc ~ p3v3_io.hv
     buf_sync2.gnd ~ gnd
     c_buf2 = new C100nF_0402
     buf_sync2.vcc ~> c_buf2 ~> gnd
-    aux.hsync ~ buf_sync2.in_b
-    aux.vsync ~ buf_sync2.in_a
+    hdr_sync.hsync ~ buf_sync2.in_b
+    hdr_sync.vsync ~ buf_sync2.in_a
     buf_sync2.out_b ~ tvp.hsync_b
     buf_sync2.out_a ~ tvp.vsync_b
+    # ★未接続時に浮かせないためのプルアップ(v1.0で追加)。理由は buf_sync 側の
+    #   コメント参照(docs/TODO.md 10-5b の実機不具合)。
+    pu_hsync2 = new R10K_0402
+    pu_vsync2 = new R10K_0402
+    hdr_sync.hsync ~> pu_hsync2 ~> p3v3_io.hv
+    hdr_sync.vsync ~> pu_vsync2 ~> p3v3_io.hv
 
     # YS(D-SUB15 pin7): X68000のスーパーインポーズ/イメージユニット関連status。
     # capture用途では未使用だが、将来取り込む場合に備えテストパッドへ引き出す
@@ -1255,7 +1444,31 @@ module App:
     buf_sync.out_b ~ tvp.hsync_a
     buf_sync.out_a ~ tvp.vsync_a
 
-    # HSYNC_B / VSYNC_B は第2入力(2x5ヘッダ)のTTL同期に使う(上記参照)
+    # ★**未接続時に入力を浮かせないためのプルアップ(v1.0で追加)。**
+    #
+    # コンポジット/S端子/ミニDIN8 を使っているとき、D-SUB の HSYNC/VSYNC には
+    # 何も繋がらない。シュミット入力でも浮くと中間電位で自己発振し、捕捉側の
+    # `raw_ok`(生同期の周期が (64, 0xF000) に入るか)が**誤って立つ**。すると
+    # 存在しない同期の位相でフィールド極性が決まり、両フィールドが同じスロットへ
+    # 交互に上書きされて**絵が1ライン上下に震える**(実機 2026-09-06、コンポジット
+    # 480i。ゲートウェア側は CONFIG key 0x6A で回避できるが根本はこれ)。
+    # 経緯は docs/TODO.md 10-5b。
+    #
+    # **プルダウンではなくプルアップにする理由**:
+    #   - レトロ機のTTL同期は負極性(アイドルHigh)。プルアップなら「未接続 =
+    #     同期パルスが来ていない」という意味と一致する。プルダウンだと「同期が
+    #     ずっとアサートされている」相当の状態になる
+    #   - オープンコレクタ出力の機種を繋いだ場合もそのまま動く
+    # 5V TTL が High を出しているときに 3.3V レールへ流れる逆電流は 0.17mA、
+    # Low を引くときの負荷は 0.33mA。LVC入力は5Vトレラント、ESDは6.8V品なので
+    # クランプしない。VSYNC側は r_vs(220Ω)の後に入るが、Low時のオフセットは
+    # 3.3V×220/10220 = 71mV で無害。
+    pu_hsync = new R10K_0402
+    pu_vsync = new R10K_0402
+    vga.hsync ~> pu_hsync ~> p3v3_io.hv
+    vs_delayed ~> pu_vsync ~> p3v3_io.hv
+
+    # HSYNC_B / VSYNC_B は第2入力側のTTL同期(1x3ヘッダ HeaderSync3)に使う(上記参照)
 
     # --- H-PLL ループフィルタ (FILT1 -> 1.5kΩ + 100nF -> PLL_F, FILT2 -> 4.7nF -> PLL_F) ---
     r_filt = new R1K5_0402
@@ -1274,7 +1487,11 @@ module App:
     c_osc = new C100nF_0402
     osc.vcc ~> c_osc ~> gnd
 
-    # --- 第3入力: S-Video / コンポジット(1x4ヘッダ -> GIN_1/RIN_1/SOGIN_1) ---
+    # --- 第3入力: 小亀基板(S端子/コンポジット/コンポーネント) -> GIN_1/RIN_1/BIN_1/SOGIN_1 ---
+    #
+    # v0.9.0 は基板上の 2x4 ボックスヘッダ(J5)だったが、v1.0 で**16芯FFCで繋ぐ
+    # 小亀基板(hardware/console-frontend)**へ移した。ミニDIN4(S端子)とRCA×5は
+    # コネクタが大きく、メイン基板の端をこれ以上使えないため。
     #
     # ★TVP7002はコンポジットをデコードできない。型名が "VIDEO AND GRAPHICS
     #   DIGITIZER" で decoder ではなく、データシート全文に NTSC/PAL/SECAM/CVBS/
@@ -1282,33 +1499,78 @@ module App:
     #   この端子は **8fsc線同期サンプラー**として使い、Y/C分離と復調は Viewer 側で
     #   行う前提。設計と手順は docs/composite-video-plan.md。
     #
-    # 1番系統は元々すべて未使用終端(10nF/1nF)だった。そのシュントは
-    # VideoInputChannel が持つ 33pF アンチエイリアスで置き換わるので削除してある。
-    # ★_1 系統に 10nF を残すと直列220Ωと組んで fc≈72kHz になり映像が完全に潰れる。
-    #   第2入力を足した時に _2 系統で同じ間違いをしている(2026-08-12に発見)。
+    # ## 小亀側での切り替え(TODO 10-5 の結論を実装したもの)
+    #
+    # コンポジットとS端子のYは**同じ1本のFFC線を共有する**。両方のジャックを
+    # 並列に繋ぐと、片方しか挿していなくても相手のジャック側の終端が並列に入って
+    # 振幅が落ちるので、小亀基板上の **2ch SPDT アナログスイッチ(TS5A23159)**で
+    # 選ぶ。選択線は FFC の GPIO1(FPGAのGPIO 1本)。
+    #
+    #   GPIO1=L(既定)  コンポジット: CVBS→FFC1(Y)  Pr→FFC3(C)  (+ Pb は常時FFC5)
+    #                   → この位置は **YPbPrコンポーネント入力**でもある
+    #   GPIO1=H         S端子     : Y→FFC1  C→FFC3
+    # 既定(プルダウン)をコンポジットにしてあるのは、ゲートウェアがこのGPIOを
+    # 駆動しない状態でも「黄色いケーブルを挿しただけで映る」ようにするため。
+    #
+    # 同期タップ(SOGIN_1)はスイッチの出口から分岐するので、**映像と同期が必ず
+    # 一緒に切り替わる**。物理スイッチだと「設定はコンポジットなのにスイッチは
+    # S端子側」という食い違いを作れてしまうが、この構成ではそれが起きない。
+    #
+    # ## 75Ω終端は小亀基板(ジャック直近)に置く
+    #
+    # スイッチの信号範囲は GND〜VCC(絶対最大 -0.5V)しかない。ところが出力に
+    # コンデンサが入っている機種を 75Ω でGNDへ終端すると波形の平均が0Vになり、
+    # 同期先端が -0.35V(暗い絵)〜 -0.85V(白い絵)まで潜る。絵の明るさで潜る量が
+    # 動くので、スイッチの保護ダイオードが**同期先端だけ**を食う。そこで小亀側で
+    # 「75Ω終端 → 100nF → 1.65Vへ持ち上げ」てからスイッチに入れている。
+    #
+    # よってこちら側の Y/C は `VideoInputChannelNoTerm`(終端なし)で受ける。
+    # 両方で終端すると 37.5Ω で振幅が半分になり、さらに中点バイアスが潰れる。
+    # 副産物として「選ばれていない入力も終端されたまま」になる利点もつく
+    # (未終端だと送り出しが開放を見て振幅2倍、漏れ込みも2倍)。
+    # **Pb だけはスイッチを通らず直流結合で来る**ので終端はこちら(ch_b1 の 75Ω)。
     #
     # 定数は D-SUB / 第2入力の RGB チャンネルと**まったく同じ**(75Ω終端 + 100nF結合
     # + 220Ω + 33pF)。8fscサンプリング(NTSC 1820サンプル/ライン = 28.636MHz、
     # ナイキスト14.32MHz)に対し、TVP入力容量10pFを含む実効43pFで fc=16.8MHz と
     # ちょうど合う。4fsc(910)だとナイキストが7.16MHzに下がり、この定数では減衰が
     # -0.45dBしか無く折り返しに無防備になるので 8fsc を前提にしている。
-    svideo = new HeaderSVideo
-    svideo.gnd ~ gnd
+    ffc = new FfcConsole16
+    ffc.gnd ~ gnd
+    ffc.p3v3 ~ p3v3_io.hv
+    ffc.p5v ~ power_5v.hv
 
-    ch_y = new VideoInputChannel
-    ch_c = new VideoInputChannel
+    # ★Y/C は**小亀基板側で終端済み**なので、ここでは終端しない版を使う
+    #   (両方に75Ωを入れると37.5Ωで振幅が半分。さらに小亀から1.65Vの中点
+    #    バイアスが乗って来るので、75Ωで受けると22mA流れてバイアスが潰れる)。
+    #   Pb はスイッチを通らず直流結合で来るので、通常版(終端あり)で受ける。
+    ch_y = new VideoInputChannelNoTerm
+    ch_c = new VideoInputChannelNoTerm
+    ch_b1 = new VideoInputChannel   # Pb(コンポーネント)/ 予備入力 -> BIN_1
     ch_y.power ~ p3v3_a
     ch_c.power ~ p3v3_a
+    ch_b1.power ~ p3v3_a
 
-    esd_svideo = new EsdArray4
-    esd_svideo.gnd ~ gnd
-    svideo.y ~ esd_svideo.io1
-    svideo.c ~ esd_svideo.io2
+    # ESDは**小亀基板のジャック直近**にも入れてあるが、FFCで10cm引き回した先の
+    # このコネクタ側にも置く(ケーブルが拾う分と、小亀を繋がずにFFCパッドへ直接
+    # プローブしたときの保護)。4ch品1個で Y/C/Pb + 予備GPIO1本ぶん。
+    esd_ffc = new EsdArray4
+    esd_ffc.gnd ~ gnd
+    ffc.y ~ esd_ffc.io1
+    ffc.c ~ esd_ffc.io2
+    ffc.pb ~ esd_ffc.io3
+    ffc.gpio2 ~ esd_ffc.io4   # 予備線。将来ここに外部信号を通すかもしれないので保護しておく
 
-    svideo.y ~ ch_y.input
-    svideo.c ~ ch_c.input
+    ffc.y ~ ch_y.input
+    ffc.c ~ ch_c.input
+    ffc.pb ~ ch_b1.input
     ch_y.output ~ tvp.gin_1     # 輝度は Y/G チャンネルへ(ボトムレベルクランプ既定)
     ch_c.output ~ tvp.rin_1     # 色差は R チャンネルへ(ミッドレベルクランプが既定)
+    ch_b1.output ~ tvp.bin_1    # Pb は B チャンネルへ(ミッドレベルクランプが既定)
+    # ★クランプ基準は reg 10h[2:0] の既定値(Blue=mid / Green=bottom / Red=mid)が
+    #   そのまま正しい。データシート: 「Bottom-level clamping is required for Y and
+    #   RGB inputs, while mid-level clamping is required for Pb and Pr inputs」。
+    #   S端子の C も交流成分が±に振れる信号なので mid で合っている。
 
     # Y から SOG を分岐(3番系統の c_sog3 と同じ作り)。同期は輝度側に乗っているので、
     # S-Video でもコンポジットでもこの1本で足りる。C 側には同期が無い。
@@ -1320,24 +1582,28 @@ module App:
     r_sog1 = new R220_0402
     c_sog1_aa = new C33pF_0402_DNP
     signal sog1_coupled
-    svideo.y ~> c_sog1 ~> sog1_coupled
+    ffc.y ~> c_sog1 ~> sog1_coupled
     sog1_coupled ~> r_sog1 ~> tvp.sogin_1
     tvp.sogin_1 ~> c_sog1_aa ~> gnd
 
+    # 小亀基板の制御線: アナログスイッチの選択(GPIO1)と予備(GPIO2)。
+    # ★GPIO1 は小亀側で 10kΩ プルダウンしてあるので、ビットストリームを焼く前
+    #   (FPGAのI/Oが入力のまま)でも**コンポジット側**に確定する。浮かせない。
+    sodimm.io_k4 ~ ffc.gpio1     # pin148 (K4) 小亀のY/C切替(L=コンポジット H=S端子)
+    sodimm.io_k5 ~ ffc.gpio2     # pin150 (K5) 予備
+
     # --- 未使用アナログ入力の処理(datasheet: video系10nF, SOG系1nFをGNDへ) ---
     #
-    # ★_2 系統(第2入力)と _1 系統(S-Video/コンポジット)は**使う**のでここに含めては
-    #   いけない。10nF が付くと直列220Ωと組んで fc≈72kHz になり映像が完全に潰れる。
+    # ★_2 系統(ミニDIN8)と _1 系統(小亀基板)は**使う**のでここに含めてはいけない。
+    #   10nF が付くと直列220Ωと組んで fc≈72kHz になり映像が完全に潰れる。
     #   第2入力を足した時にこれを外し忘れていた(2026-08-12に発見・修正)。
-    #   残るのは BIN_1 と GIN_4 のみ。SOGIN_1 も使うので nc_sog_caps は無くなった。
+    #   **v1.0 で BIN_1 も使う**(小亀基板の Pb / 予備入力)ので、残るのは GIN_4 だけ。
     # ★配列ではなく個別の名前にしてある。**配列の添字は atopile_address になるので、
     #   要素を減らすと残った部品のネットだけが入れ替わる。** 以前は
     #   [0]=rin_1 [1]=bin_1 [2]=gin_1 [3]=gin_4 だったので、_1系統を使い始めた時に
     #   2要素へ減らしたら nc_caps[0] が rin_1 から bin_1 に変わり、**フットプリントと
     #   既存配線はそのままネットだけが変わって rin1 と bin1_nc を短絡した**
     #   (2026-08-14に発見)。名前を固定しておけばこの事故は起きない。
-    nc_bin1 = new C10nF_0402
-    tvp.bin_1 ~> nc_bin1 ~> gnd
     nc_gin4 = new C10nF_0402
     tvp.gin_4 ~> nc_gin4 ~> gnd
 
@@ -1440,6 +1706,10 @@ module App:
     # --- デジタルRGB入力(TTL R/G/B/I + HS/VS): TVP7002を経由せずFPGA直結 ---
     # PC-6001mkII/SR・PC-8801・X1 等のデジタルRGB(16色)を取り込む。
     # 5V TTL → ESD → 10kプルダウン → SN74LVC2G17(5Vトレラント シュミット)→ 3.3V。
+    # ★v1.0 でコネクタを **2x5 ボックスヘッダ**に変更(一般的な10芯フラットケーブルが
+    #   使えるように)。ピン番号=導体順で
+    #     1=GND 2=R 3=G 4=GND 5=B 6=I 7=GND 8=HS 9=VS 10=GND
+    #   **GNDを挟んで6本すべてが隣にGNDを持つ**(リボンは隣の導体が帰り路になる)。
     # ドットクロックはFPGA内でオーバーサンプリング(50〜100MHz)して再生するので
     # クロック線は無い。HSにcsync(複合同期)が来る機種でもゲートウェアで分離できる。
     # アナログRGB経路とはFPGAピンが別なので、両方を繋いだままにしても干渉しない。
@@ -1447,7 +1717,7 @@ module App:
     drgb.gnd ~ gnd
     drgb.power_3v3 ~ p3v3_io
 
-    j_drgb = new DigitalRgbConnector
+    j_drgb = new BoxHeaderDigitalRgb2x5
     j_drgb.gnd ~ gnd
     j_drgb.r ~ drgb.in_r
     j_drgb.g ~ drgb.in_g
@@ -1555,6 +1825,22 @@ module App:
     tp_led_do = new Tp1Pad
     led_status.DO ~ tp_led_do.pad
 
+    # --- 小亀基板のシリアルLED用データ線(v1.0で追加) ---
+    #
+    # **メイン基板のLED(D1)の DO から数珠つなぎにするのではなく、専用GPIOにした。**
+    # 数珠つなぎなら GPIO を消費しないが、小亀を挿していないときと挿したときで
+    # 1本のチェーンの長さが変わるので、ゲートウェアが送るビット数と実機の構成が
+    # ずれる。専用線なら「小亀のLEDは小亀のチャンネル」で独立に扱える。
+    # SO-DIMMの空きGPIOは v1.0 の追加後もまだ6本あるので、1本使ってよい。
+    #
+    # 220Ω は源端整合(反射制動)とESD緩衝。**SO-DIMM側に寄せて配置すること**
+    # (送り側に置かないと効果が出ない)。FFCで10cm伸ばすぶん、こちらは
+    # メイン基板のD1より反射が乗りやすいので、この抵抗は必須。
+    # LEDの電源は FFC の +5V(pin16)。小亀側でダイオード1個落として 4.2〜4.45V に
+    # するので、3.3V CMOS の DIN で VIH(0.7×VDD)を満たす(D1と同じ設計)。
+    r_led_kokame = new R220_0402
+    sodimm.io_a2 ~> r_led_kokame ~> ffc.led_data   # pin154 (A2)
+
 
     # --- 音声入力(3系統: DSUB15音声 / 第2映像入力の音声 / S/PDIF光) ---
     # クロック系: 12.288MHz XO(=256fs@48kHz)を両ADCのSCKIとFPGA(F1=PCLKC6_1)へ。
@@ -1600,72 +1886,75 @@ module App:
     vga.audio_l ~ adc_dsub.in_l   # DSUB15 pin10
     vga.audio_r ~ adc_dsub.in_r   # DSUB15 pin11
 
-    # ADC B: 第2映像入力(2x5ヘッダ)の音声。
+    # ADC B: 第2映像入力(ミニDIN8)の音声。
     #
-    # ★以前は基板上の3.5mmステレオLINEジャックに繋いでいたが、そのジャックは
-    #   削除した(2026-08-12)。第2映像入力を足すにあたり音声も2系統必要になり、
-    #   D-SUBと同じADCへ並列に入れるとL/Rが短絡してしまう。LINE入力は
-    #   「映像と無関係な音を混ぜる」ための機能で優先度が低く、基板面積も逼迫して
-    #   いたので、空いたADCを第2入力へ振り替えるのが最も無駄がないと判断した。
-    #   ADCは元から2個独立(U1=D-SUB / U2=こちら)でDOUTも別なので、
-    #   **2系統の音声を同時に取り込める**(排他ではない)。
-    #   AUDIOパケットの source=1 の意味が「LINE入力」から「第2入力」に変わる。
+    # ★v0.9.0 では「ミニDIN8(当時は2x5ヘッダ)」と「S端子ヘッダ」の2端子を、
+    #   直列1.5kΩ×4 の**受動加算**で1個のADCに相乗りさせていた。v1.0で
+    #   **PCM1808 を3個にして映像系統ごとに独立させた**ので、加算抵抗は廃止した。
+    #   加算は「両方挿すと両方鳴る」という分かりにくい振る舞いと -4.8dB の損失が
+    #   あり、系統ごとの音量校正もできなかった。ADC 1個 ($0.5) で全部消える。
     adc_aux = new AudioAdc
     adc_aux.gnd ~ gnd
     adc_aux.power_5va ~ p5v_audio
     adc_aux.power_3v3 ~ p3v3_io
-    # --- 第2入力の音声: 2x5ヘッダ と S-Videoヘッダ を受動加算で兼用 ---
-    #
-    # PCM1808 を増やさずに2端子で1個のADCを共有する。双方に直列1.5kΩを入れて
-    # 加算ノードへ落とす。**セレクタではなく加算**なので両方挿せば両方鳴るが、
-    # 実際の使い方は「2台目の機械を1台ずつ繋ぐ」なので実害が無い。
-    #
-    # 定数の根拠(PCM1808 データシート SLES177B の Analog Input):
-    #     入力インピーダンス  60 kΩ
-    #     フルスケール入力    0.6 × VCC = 3.0 Vp-p (1.06 Vrms) @ VCC=5V
-    #     入力センター電圧    0.5 × VCC = 2.5 V (内部バイアス、直列1µFで受ける)
-    #
-    #     片方だけ接続(他方は開放)        60/(60+1.5)          = -0.21 dB ← ほぼ無損失
-    #     両方接続(相手のZout≈600Ω)      (1.5+0.6)‖60 で分圧   = -4.8 dB
-    #     両方接続で両方鳴らす            各 -4.8 dB で加算(理想の-6dBに近い)
-    #
-    # ★直列抵抗が無いと、両方の機器を繋いだとき互いの出力段が押し合う。1.5kΩなら
-    #   最悪(逆相1Vrms同士)でも 2V/3kΩ = 0.7mA しか流れず、どちらの出力も壊れない。
-    # ★1.5kΩは既にBOMにある値(r_cs_top / r_filt と同じ)。1kΩだとBOM行が増える。
-    #   60kΩに対して1.5kΩなので、値の選択は片側接続時の損失にほとんど効かない。
-    # ★ESD(esd_audio)は加算ノード側に付く。直列1.5kΩがESD電流を制限するので
-    #   「直列抵抗 + TVS」という定石の並びになる。
-    r_mix_aux_l = new R1K5_0402
-    r_mix_aux_r = new R1K5_0402
-    r_mix_sv_l = new R1K5_0402
-    r_mix_sv_r = new R1K5_0402
-    aux.audio_l ~> r_mix_aux_l ~> adc_aux.in_l
-    aux.audio_r ~> r_mix_aux_r ~> adc_aux.in_r
-    svideo.audio_l ~> r_mix_sv_l ~> adc_aux.in_l
-    svideo.audio_r ~> r_mix_sv_r ~> adc_aux.in_r
+    din8.audio_l ~ adc_aux.in_l
+    din8.audio_r ~ adc_aux.in_r
 
-    # 音声入力のESD(4ライン: D-SUB音声L/R + 第2入力音声L/R)
+    # ADC C: 小亀基板(S端子/コンポジット/コンポーネント)の音声。FFC経由。
+    #
+    # 小亀基板側は RCA(白/赤)を 10kΩ でGNDへ落としてFFCへ出すだけ。ACカップリングと
+    # バイアスは PCM1808 側(AudioAdc の c_in_*)にあるので、FFCには直流0Vの
+    # ライン信号が乗る。10cmのFFCで隣がGNDなので、ライン入力(-10dBV級)としては十分。
+    adc_kokame = new AudioAdc
+    adc_kokame.gnd ~ gnd
+    adc_kokame.power_5va ~ p5v_audio
+    adc_kokame.power_3v3 ~ p3v3_io
+    ffc.audio_l ~ adc_kokame.in_l
+    ffc.audio_r ~ adc_kokame.in_r
+
+    # 音声入力のESD(4ライン: D-SUB音声L/R + ミニDIN8音声L/R)
     esd_audio = new EsdArray4
     esd_audio.gnd ~ gnd
     adc_dsub.in_l ~ esd_audio.io1
     adc_dsub.in_r ~ esd_audio.io2
     adc_aux.in_l ~ esd_audio.io3
     adc_aux.in_r ~ esd_audio.io4
+    # 小亀の音声L/R(2ライン)。残り2chは未使用
+    esd_audio2 = new EsdArray4
+    esd_audio2.gnd ~ gnd
+    adc_kokame.in_l ~ esd_audio2.io1
+    adc_kokame.in_r ~ esd_audio2.io2
 
-    # I2S共有バス
+    # I2S共有バス(SCKI/BCK/LRCKは3個共通。DOUTだけ個別 = 3系統同時キャプチャ可能)
     audio_mclk ~ adc_dsub.adc.scki
     audio_mclk ~ adc_aux.adc.scki
+    audio_mclk ~ adc_kokame.adc.scki
     audio_bck ~ adc_dsub.adc.bck
     audio_bck ~ adc_aux.adc.bck
+    audio_bck ~ adc_kokame.adc.bck
     audio_lrck ~ adc_dsub.adc.lrc
     audio_lrck ~ adc_aux.adc.lrc
+    audio_lrck ~ adc_kokame.adc.lrc
 
     # S/PDIF光受信(デコードはFPGA内)
+    #
+    # ★電源のフィルタを v1.0 で追加した。データシートの応用回路は Vcc に
+    #   **L2=47uH + C1=0.1uF**(「the C1,C2 capacitor must be placed within 7mm」)を
+    #   指定しているが、v0.9.0 は 0.1uF だけだった。47uH はBOMに無いので、既存の
+    #   フェライトビーズ(MPZ1608S221, 220Ω@100MHz)+ 10uF で代える。47uH ほど低い
+    #   周波数からは効かないが、光受信の前段アンプにデジタル電源のノイズが回り込む
+    #   のを抑える意図は満たせる。**部品は既存BOMのまま**で行数が増えない。
     spdif = new SpdifRxModule
-    spdif.vcc ~ p3v3_io.hv
+    fb_spdif = new FerriteBead
+    signal p3v3_spdif
+    p3v3_io.hv ~ fb_spdif.p1
+    fb_spdif.p2 ~ p3v3_spdif
+    spdif.vcc ~ p3v3_spdif
     spdif.gnd ~ gnd
     c_spdif = new C100nF_0402
     spdif.vcc ~> c_spdif ~> gnd
+    c_spdif_bulk = new C10uF_0805
+    spdif.vcc ~> c_spdif_bulk ~> gnd
 
     # --- 音声系をP4に集約(pin128-138, 順序整理) ---
     # ADC側の信号はすべてP3に集約(139-147)。S/PDIFとXO入力のみP4(128/130)。
@@ -1674,8 +1963,9 @@ module App:
     # XOを直接P3で受けることはできないため、この経路にしている。
     sodimm.io_e4 ~ spdif.out            # pin128 (E4) S/PDIFビットストリーム
     sodimm.io_f1 ~ audio_mclk_in        # pin130 (F1=PCLKC6_1) XO 12.288MHz 入力
-    sodimm.io_a3 ~ adc_aux.adc.dout    # pin139 (A3) I2S DOUT(第2映像入力の音声)
+    sodimm.io_a3 ~ adc_aux.adc.dout     # pin139 (A3) I2S DOUT(ミニDIN8の音声)
     sodimm.io_c2 ~ adc_dsub.adc.dout    # pin141 (C2) I2S DOUT(DSUB音声)
+    sodimm.io_d3 ~ adc_kokame.adc.dout  # pin129 (D3) I2S DOUT(小亀基板の音声)
     sodimm.io_b1 ~ audio_bck            # pin143 (B1) FPGA出力
     sodimm.io_c1 ~ audio_lrck           # pin145 (C1) FPGA出力
     sodimm.io_d2 ~ audio_mclk           # pin147 (D2) FPGA出力(MCLKバッファ)→両ADC
@@ -1687,8 +1977,9 @@ module App:
     j11_argus.sda ~ tvp.sda
     j11_argus.scl ~ tvp.scl
 
-    # --- 基板固定用ネジ穴 M2.6 ×5(GNDに接続) ---
-    # 穴径2.8mm(M2.6クリアランス普通級)・5.6mmアニュラーパッド・表裏露出。
+    # --- 基板固定用ネジ穴 M3 ×5(GNDに接続) ---
+    # 穴径3.2mm(M3クリアランス普通級)・6.4mmアニュラーパッド・表裏露出。
+    # ★v1.0 で M2.6 から M3 へ拡大した(ねじ・スペーサの入手性)。
     # GNDベタへベタ付け(zone_connect 2)。
     # ★金属スペーサ/金属筐体だと論理GNDが筐体に落ち、MagJack用のシャーシGND島の
     #   分離(4.7nF/2kV)がネジ経由で短絡される。樹脂スペーサを使うか、分離をやめる
@@ -1697,7 +1988,7 @@ module App:
     # 位置は基板上で決める(左上/右上/左下)。回路的な接続は無い。
     fid = new Fiducial[3]
 
-    mount = new MountingHoleM26[5]
+    mount = new MountingHoleM3[5]
     mount[0].gnd ~ gnd
     mount[1].gnd ~ gnd
     mount[2].gnd ~ gnd
@@ -1805,7 +2096,7 @@ module App:
     # SOGIN_3(sync-on-green)の結合後。自動命名だと "lv" になって追えない
     sog3_coupled.override_net_name = "vin_g3_sog_ac"
 
-    # 第2入力(2x5ヘッダ)
+    # 第2入力(ミニDIN8: FRAMEMEISTER互換)
     ch_r2.input.override_net_name = "vin_r2"
     ch_g2.input.override_net_name = "vin_g2"
     ch_b2.input.override_net_name = "vin_b2"
@@ -1816,12 +2107,12 @@ module App:
     ch_g2.output.override_net_name = "gin2"
     ch_b2.output.override_net_name = "bin2"
     # 第2入力のCSYNC: コネクタ → 分圧後 → 結合後 → SOGIN_2
-    aux.csync.override_net_name = "vin_csync2"
+    din8.csync.override_net_name = "vin_csync2"
     csync_div.override_net_name = "vin_csync2_div"
     sog2_coupled.override_net_name = "vin_csync2_ac"
-    # 第2入力のTTL同期: コネクタ → シュミット後(TVPピン)
-    aux.hsync.override_net_name = "vin_hsync2"
-    aux.vsync.override_net_name = "vin_vsync2"
+    # 第2入力のTTL同期(1x3ヘッダ): コネクタ → シュミット後(TVPピン)
+    hdr_sync.hsync.override_net_name = "vin_hsync2"
+    hdr_sync.vsync.override_net_name = "vin_vsync2"
     tvp.hsync_b.override_net_name = "hsync_b"
     tvp.vsync_b.override_net_name = "vsync_b"
 
@@ -1914,37 +2205,49 @@ module App:
     # --- 音声: アナログ入力 / I2S DOUT ---
     adc_dsub.in_l.override_net_name = "aud_dsub_l"
     adc_dsub.in_r.override_net_name = "aud_dsub_r"
-    # 第2入力の音声は2端子を受動加算するので、加算ノードと各端子側を分けて命名する。
-    # 明示しないと S-Video 側が "audio_l-1" のような自動命名になって追えない。
-    adc_aux.in_l.override_net_name = "aud_aux_l"      # 加算ノード(R2本 + ESD + 1uF)
-    adc_aux.in_r.override_net_name = "aud_aux_r"
-    aux.audio_l.override_net_name = "aud_hdr_l"       # 2x5ヘッダ側(抵抗の手前)
-    aux.audio_r.override_net_name = "aud_hdr_r"
-    svideo.audio_l.override_net_name = "aud_sv_l"     # S-Videoヘッダ側(抵抗の手前)
-    svideo.audio_r.override_net_name = "aud_sv_r"
+    # 音声は v1.0 で3系統が完全に独立した(受動加算をやめてADCを3個にした)。
+    adc_aux.in_l.override_net_name = "aud_din8_l"     # ミニDIN8 pin2
+    adc_aux.in_r.override_net_name = "aud_din8_r"     # ミニDIN8 pin1
+    adc_kokame.in_l.override_net_name = "aud_kokame_l"  # FFC pin7
+    adc_kokame.in_r.override_net_name = "aud_kokame_r"  # FFC pin9
     adc_dsub.adc.vinl.override_net_name = "aud_dsub_l_ac"
     adc_dsub.adc.vinr.override_net_name = "aud_dsub_r_ac"
-    adc_aux.adc.vinl.override_net_name = "aud_aux_l_ac"
-    adc_aux.adc.vinr.override_net_name = "aud_aux_r_ac"
+    adc_aux.adc.vinl.override_net_name = "aud_din8_l_ac"
+    adc_aux.adc.vinr.override_net_name = "aud_din8_r_ac"
+    adc_kokame.adc.vinl.override_net_name = "aud_kokame_l_ac"
+    adc_kokame.adc.vinr.override_net_name = "aud_kokame_r_ac"
     adc_dsub.adc.dout.override_net_name = "i2s_dout_dsub"
-    adc_aux.adc.dout.override_net_name = "i2s_dout_line"
+    adc_aux.adc.dout.override_net_name = "i2s_dout_din8"
+    adc_kokame.adc.dout.override_net_name = "i2s_dout_kokame"
     spdif.out.override_net_name = "spdif"
+    p3v3_spdif.override_net_name = "p3v3_spdif"   # FB出口 → PLR135/T10 の Vcc
     adc_dsub.adc.vref.override_net_name = "aud_vref_dsub"
-    adc_aux.adc.vref.override_net_name = "aud_vref_line"
+    adc_aux.adc.vref.override_net_name = "aud_vref_din8"
+    adc_kokame.adc.vref.override_net_name = "aud_vref_kokame"
 
-    # --- 未使用アナログ入力の終端(どのピンの終端かを判別可能に) ---
-    # 第3入力(S-Video / コンポジット、1x4ヘッダ)
-    ch_y.input.override_net_name = "vin_y1"
-    ch_c.input.override_net_name = "vin_c1"
+    # --- 第3入力(小亀基板: S端子 / コンポジット / コンポーネント、16芯FFC) ---
+    ch_y.input.override_net_name = "vin_y1"         # FFC pin1: S端子Y または CVBS/コンポーネントY
+    ch_c.input.override_net_name = "vin_c1"         # FFC pin3: S端子C または コンポーネントPr
+    ch_b1.input.override_net_name = "vin_pb1"       # FFC pin5: コンポーネントPb / 予備
     ch_y.coupled.override_net_name = "vin_y1_ac"
     ch_c.coupled.override_net_name = "vin_c1_ac"
+    ch_b1.coupled.override_net_name = "vin_pb1_ac"
     ch_y.output.override_net_name = "gin1"          # 輝度 -> GIN_1
     ch_c.output.override_net_name = "rin1"          # 色差 -> RIN_1
+    ch_b1.output.override_net_name = "bin1"         # Pb -> BIN_1
     tvp.sogin_1.override_net_name = "sogin1"        # Yから分岐した同期
     sog1_coupled.override_net_name = "vin_y1_sog_ac"
+    # 小亀基板の制御線(FFC)。自動命名だとピン番号に化ける
+    ffc.gpio1.override_net_name = "kokame_sw_sel"
+    ffc.gpio2.override_net_name = "kokame_gpio2"
+    ffc.led_data.override_net_name = "kokame_led_din"
+    # ffc.p3v3 / ffc.p5v は p3v3_io / p5v と同じネットなので命名しない(衝突する)
 
-    tvp.bin_1.override_net_name = "bin1_nc"
+    # --- 未使用アナログ入力の終端(どのピンの終端かを判別可能に) ---
     tvp.gin_4.override_net_name = "gin4_nc"
+    # 未接続のまま出すピン。自動命名だと "5" のような数字になって追えない
+    din8.nc5.override_net_name = "din8_nc5"
+    spdif.mount.override_net_name = "spdif_mount_nc"
     tvp.sogin_2.override_net_name = "sogin2"        # 第2入力のCSYNC(分圧+0.1uF結合)
 
     # 電源レールは明示命名する。atopileの自動命名は他ネットの命名状況に依存して

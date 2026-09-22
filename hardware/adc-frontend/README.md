@@ -2,22 +2,69 @@
 
 レトロPCのアナログRGB(VGA HD-15経由)を TI TVP7002 でデジタル化し、
 24bitパラレル + DATACLK/HSOUT/VSOUT/SOGOUT を Colorlight i5 EXTボードへ渡す
-**HAT基板**(EXTのP1/P2/P4に直接スタック)。GbE MagJack・**音声入力3系統**・
+**HAT基板**(EXTのP1/P2/P4に直接スタック)。GbE MagJack・**音声入力4系統**・
 ArgusX制御コネクタ搭載。回路は `main.ato`(Atopile)。
 
-## 音声入力(3系統)
+## v1.0 の変更点(v0.9.0 → v1.0)
+
+v0.9.0(2026-08-19 発注、実機動作確認済み)からの差分。**電気的に効く変更**と
+**部品・コネクタの入れ替え**を分けて書く。
+
+### 入力コネクタ
+
+| 端子 | v0.9.0 | v1.0 |
+|---|---|---|
+| アナログRGB | D-SUB15(2列DA-15, X68000式) | 変更なし |
+| 第2映像入力 | J4: 2×5 ボックスヘッダ(要自作ケーブル) | **J13: ミニDIN8(FRAMEMEISTER互換)** |
+| 第2入力のTTL同期 | 同ヘッダの9/10ピン | **J14: 1×3 ヘッダ(HSYNC/VSYNC/GND)** |
+| S端子/コンポジット | J5: 2×4 ボックスヘッダ | **J15: 16芯FFC → 小亀基板**(`hardware/console-frontend`) |
+| 光デジタル(S/PDIF) | J8: PLR135/**T** | J8: PLR135/**T10**(ランドが小さい) |
+| デジタルRGB | J6: 1.25mm 単列8極(SMD) | **J6: 2×5 ボックスヘッダ(ストレート)**(XFCN BH254V-10P, C492442)。一般的な10芯フラットケーブルが使える。位置も別エッジへ移動 |
+| USB-C | J2 | 変更なし |
+
+### 電気的な変更
+
+- **同期入力にプルアップ 10kΩ を追加**(R47-R50)。D-SUB と 1x3 ヘッダの
+  HSYNC/VSYNC。未接続時にシュミット入力が浮いて自己発振し、捕捉側の `raw_ok` が
+  誤って立つ不具合(`docs/TODO.md` 10-5b、実機 2026-09-06)の根本対策。
+  **プルダウンではなくプルアップ**(レトロ機のTTL同期は負極性=アイドルHigh。
+  オープンコレクタ出力の機種にも対応できる)
+- **PCM1808 を2個 → 3個**。映像系統ごとに独立させ、受動加算の 1.5kΩ×4 を廃止
+- **BIN_1 を実入力に昇格**(小亀基板の Pb / 予備線)。未使用終端の 10nF を撤去し、
+  他のチャンネルと同じ前段(75Ω/100nF/220Ω/33pF)を付けた
+- **S/PDIF受信の電源にフェライト+10µFを追加**(FB4/C96)。データシートの応用回路が
+  47µH+0.1µF を要求しているのに v0.9.0 は 0.1µF だけだった
+- **ネジ穴 M2.6 → M3**(穴2.8→3.2mm、パッド5.6→6.4mm)。ねじとスペーサの入手性
+- ミニDIN8 の R/G/B/CSYNC に ESD を追加(v0.9.0 の 2x5 ヘッダ経路には無かった)
+- **JTAGデバッグ端子(J3, 1×6ヘッダ)を削除**。「外部JTAG器を繋げるように」という保険
+  だったが、**FPGAのJTAGへ届く経路はモジュール底面のパッド = ポゴピンしか無い**ので、
+  ポゴピンが届かない場合の保険にはならない(CH347Fが壊れた場合にしか効かない)。
+  J3 は欠番のまま(`tools/lock_designators.py` が番号の再利用を防ぐ)
+
+### ソフト側に必要な追随(v1.0 基板を使うとき)
+
+- 音声ソースが3系統になる(`i2s_dout_dsub` / `i2s_dout_din8` / `i2s_dout_kokame`、
+  DOUT は SO-DIMM 141 / 139 / **129**)。AUDIOパケットの source 番号が増える
+- 小亀基板のアナログスイッチ選択線が **SO-DIMM 148(K4)**、予備が150(K5)、
+  小亀のシリアルLEDデータが **154(A2)**。プロファイルから駆動する
+- ミニDIN8 のプロファイルは **SOGスライス閾値(CONFIG key 0x50)を下げる**
+  (規格準拠ケーブルのCSYNCは0.3Vpp → 1/2分圧後0.15Vpp。既定のNTH=11=124mVでは
+  振幅の83%を切ってしまう。NTH=7 = 79mV が50%点)
+
+## 音声入力(4系統)
 
 | 系統 | 経路 | 変換 |
 |---|---|---|
-| RGB端子音声 | J10(D-SUB15)**ピン10=L / ピン11=R** → **U13** PCM1808(直結) | 16bit/48kHz I2S |
-| LINE入力 | J12(3.5mmステレオ) → **U14** PCM1808 | 16bit/48kHz I2S |
-| 光デジタル | J13(TOSLINKモジュール) → FPGA直結 | S/PDIFをゲートウェアでデコード |
+| RGB端子音声 | J1(D-SUB15)**ピン10=L / ピン11=R** → **U13** PCM1808(直結) | 16bit/48kHz I2S |
+| ミニDIN8音声 | J13 **ピン2=L / ピン1=R** → **U14** PCM1808(直結) | 16bit/48kHz I2S |
+| 小亀基板音声 | J15(FFC **7=L / 9=R**)← RCA白/赤 → **U17** PCM1808 | 16bit/48kHz I2S |
+| 光デジタル | J8(PLR135/T10 TOSLINK) → FPGA直結 | S/PDIFをゲートウェアでデコード |
 
 - **クロック**: X3(12.288MHz XO =256fs@48kHz)は **FPGAにだけ**入る
   (SO-DIMM 130 = F1 = PCLKC6_1)。**ADCのSCKIはFPGAが出し直したもの**で、
   SO-DIMM 147(D2)から両ADCへ配る。BCK(143)= MCLK/4 = 3.072MHz、
   LRCK(145)= MCLK/256 = 48kHz も同じくFPGA生成の共通供給。
-  **DOUTのみ個別**(U13=141, U14=139)なのでアナログ2系統は同時キャプチャ可能。
+  **DOUTのみ個別**(U13=141, U14=139, U17=129)なのでアナログ3系統は同時キャプチャ可能。
   S/PDIFのDIRチップは不要(FPGAでデコード)
 
   ★**XOはADCに直接は繋がっていない。** 以前この節は「XO→両ADCのSCKIとFPGA」と
@@ -54,7 +101,7 @@ ArgusX制御コネクタ搭載。回路は `main.ato`(Atopile)。
 **デジタルRGB**を取り込む。TTLの R/G/B/I(輝度)4bit + HS + VS の6本。
 
 ```
-J13(1.25mm 8極) → ESD → 10kプルダウン → SN74LVC2G17 ×3 → FPGA(SO-DIMM P4クラスタ)
+J6(2×5 ボックスヘッダ) → ESD → 10kプルダウン → SN74LVC2G17 ×3 → FPGA(SO-DIMM P4クラスタ)
                                         (5Vトレラント・シュミット)
 ```
 
@@ -76,22 +123,37 @@ J13(1.25mm 8極) → ESD → 10kプルダウン → SN74LVC2G17 ×3 → FPGA(SO-
 - アナログRGB経路とは**FPGAピンが別**なので、アナログ機とデジタル機を**両方繋いだままに
   してよい**(音声だけは排他 → デジタル機の音声は J6 の3.5mm LINE入力を使う)
 
-### コネクタ(J13)と信号順
+### コネクタ(J6)と信号順 ── v1.0 で 2×5 ボックスヘッダへ
 
-**YIYUAN YTC-A1251-08ABW**(1.25mmピッチ 単列8極、右アングルSMD、LCSC: C7436577)。
+**XFCN BH254V-10P**(2×5 ボックスヘッダ、2.54mm、**ストレート/垂直**、LCSC: C492442)。
 
-| pin | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | tab(9,10) |
-|---|---|---|---|---|---|---|---|---|---|
-| 信号 | GND | R | G | B | I | HS | VS | GND | GND |
+| pin | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 信号 | GND | **R** | **G** | GND | **B** | **I** | GND | **HS** | **VS** | GND |
 
-**信号は R/G/B/I → HS/VS の自然な並び**にしている(2026-08-11 変更)。以前は
-「フレーム全体を壊すのは同期なので HS/VS を GND の隣に置く」という理由で
-`GND/HS/R/G/B/I/VS/GND` にしていたが、変換ケーブルを自作する前提では**並びの
-分かりやすさ(取り違え防止)の方が実利が大きい**と判断して並べ替えた。
-8極では信号6本+GND2本しか取れないのでGNDは両端のみで、この順だと VS(7) は GND(8) に
-隣接するが HS(6) は GND に隣接しない。ケーブルが長くノイズが出る場合は同シリーズの
-**10極**(GNDを1本おき)に差し替えられる(フットプリント変更のみ)。
-機種ごとの変換ケーブル(8ピンDIN等 → 1.25mm 8極)は自作する。
+```
+   1 GND    3 G    5 B    7 GND    9 VS      ← 奇数列
+   2 R      4 GND  6 I    8 HS    10 GND     ← 偶数列
+```
+
+- **ピン番号 = フラットケーブルの導体順**。IDCは導体1本目がpin1、2本目がpin2…と
+  交互に奇数列/偶数列へ入るので、ケーブル自作時に「導体のn本目 → n番ピン」で数えられる
+- **なぜ 2×5 か**: 信号6本+GNDなので 2×4(8極)で足りるが、**秋月電子などで手に入り
+  やすいのは10芯**。増えた2極をGNDに充てた
+- ★**GNDを挟んで6本すべてが隣にGNDを持つ**ようにしてある。リボンケーブルは
+  **隣の導体が帰り路**になるので、ここがクロストークと波形の鈍りに一番効く。
+  R/G/B/I はドットクロック速度(機種により数〜14MHz)で変化するので無視できない。
+  v0.9.0 の8極では信号6本+GND2本しか取れず GND は両端だけ(HS が GND に隣接しない)で、
+  README にも「10極にするならGNDを1本おき」と書いてあった。v1.0 でそれを実現した
+- **信号の順番は R/G/B/I → HS/VS のまま**(2026-08-11 に「ケーブル自作時の分かりやすさ
+  優先」で決めた並び)。GNDを挟んだだけで色と同期の順序は変えていない
+- ★**一度 右アングル(L型, BH254R-10P)にしたが、基板上の場所が足りずストレートに
+  戻した**。L型はシュラウドが +y へ 8.8mm 伸びて外形 20.5 × 13.9mm になる。
+  ストレートは **20.30 × 8.70mm** で y 方向が5mm以上小さい。**高さ方向には余裕がある**
+  ので、リボンが基板に垂直に立つのは許容する判断
+- ピン1は **x = -5.08, y = +1.27**(L型とは逆の角)。シルクの「1」とリボンの赤線の
+  向きを必ず確認する。シュラウドの極性切り欠きがリボンの抜ける向きを決める
+- 機種ごとの変換ケーブル(8ピンDIN等 → 2×5 IDC)は自作する。**5V TTLのまま入れてよい**
 
 ### SO-DIMM割当(P4クラスタの空き)
 
@@ -193,21 +255,21 @@ ESD が PESD5V0U4BW → 実際は EMZT6.8ET2R など)。値・在庫は LCSC 品
 
 | Ref | 部品 | メーカー | LCSC | 回路上の位置 |
 |---|---|---|---|---|
-| D1, D2, D3, D4, D5, D6, D8 | EMZT6.8ET2R | ROHM | C510333 | `esd_rgb, esd_sync2, esd_sync, esd_svideo, drgb.esd[0], drgb.esd[1], esd_audio` |
+| D1, D2, D3, D5, D6, D8, D10, D11, D12 | EMZT6.8ET2R | ROHM | C510333 | `esd_rgb, esd_sync2, esd_sync, drgb.esd[0], drgb.esd[1], esd_audio, esd_din8, esd_ffc, esd_audio2` |
 | D7 | 1N4148W | ST(Semtech) | C81598 | `d_led` |
 | D9 | USBLC6-2SC6 | STMICROELECTRONICS | C7519 | `esd_usb` |
-| FB1, FB2, FB3 | MPZ1608S221ATA00 | TDK | C76815 | `fb_avdd, fb_pll, fb_audio` |
-| H1, H2, H3, H4, H5 | MountingHole_2.8mm_M2.6_Pad | — | — | `mount[0], mount[1], mount[2], mount[3], mount[4]` |
+| FB1, FB2, FB3, FB4 | MPZ1608S221ATA00 | TDK | C76815 | `fb_avdd, fb_pll, fb_audio, fb_spdif` |
+| H1, H2, H3, H4, H5 | MountingHole_3.2mm_M3_Pad | — | — | `mount[0], mount[1], mount[2], mount[3], mount[4]` |
 | J1 | DS1037-15FNAKT76-0CC | CONNFLY | C77836 | `vga` |
 | J2 | TYPE-C-31-M-12 | 韩国韩荣 | C165948 | `usbc` |
-| J3 | Header_1x6_P2.54mm | — | — | `jtag_hdr` |
-| J4 | BoxHeader_2x5_P2.54mm | — | — | `aux` |
-| J5 | BoxHeader_2x4_P2.54mm | — | — | `svideo` |
-| J6 | YTC-A1251-08ABW | YIYUAN | C7436577 | `j_drgb` |
+| J6 | BH254V-10P | XFCN | C492442 | `j_drgb` |
 | J7 | Header_2x15_P2.54mm | — | — | `j_dbg` |
-| J8 | PLR135_T | — | — | `spdif` |
+| J8 | PLR135_T10 | — | — | `spdif` |
 | J9, J10 | Header_1x4_P2.54mm | — | — | `j11_argus, j_oled` |
 | J11, J12 | HR911130A | HANRUN | C54408 | `eth.jack, eth.jack2` |
+| J13 | MJ373_8B | — | — | `din8` |
+| J14 | Header_1x3_P2.54mm | — | — | `hdr_sync` |
+| J15 | 0.5K-1.5-16PWB | HDGC | C2919558 | `ffc` |
 | JP1 | SolderJumper_2_Bridged | — | — | `sj_ext5v` |
 | LED1 | XL-2020RGBC-2812B | XINGLIGHT | C5349955 | `led_status` |
 | PG1, PG2, PG3, PG4 | PogoPin_D1.0mm | — | — | `pogo_tck, pogo_tms, pogo_tdi, pogo_tdo` |
@@ -219,7 +281,7 @@ ESD が PESD5V0U4BW → 実際は EMZT6.8ET2R など)。値・在庫は LCSC 品
 | U6 | TLV70019DDCR | TI | C2862411 | `supply.ldo_d19` |
 | U7 | CH347F | WCH | C18221627 | `ft2232.ch` |
 | U9 | 1473005-4 | TE Connectivity | C428482 | `sodimm` |
-| U13, U14 | PCM1808PWR | TI | C55513 | `adc_dsub.adc, adc_aux.adc` |
+| U13, U14, U17 | PCM1808PWR | TI | C55513 | `adc_dsub.adc, adc_aux.adc, adc_kokame.adc` |
 | U15, U16 | 24AA025E48-I/SN | MICROCHIP | C46840 | `eeprom_mac0, eeprom_mac1` |
 | X1 | OT322527MJBA4SL | YXC | C725995 | `osc` |
 | X2 | X32258MSB4SI | YXC | C2682774 | `ft2232.xtal` |

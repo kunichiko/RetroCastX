@@ -47,6 +47,10 @@ gateware/bitstreams/
 # 全体を対象にしている。自作PDFを入れたいときだけ git add -f すること。
 *.pdf
 *.PDF
+# 図面が出品ページの画像でしか手に入らない部品(RCA-105など)も同じ扱い。
+# datasheets/ 配下の画像はコミットしない
+hardware/*/datasheets/*.png
+hardware/*/datasheets/*.jpg
 
 # KiCad の編集ロック(そのマシンでの編集中を示す一時ファイル。追跡しない)
 *.lck
