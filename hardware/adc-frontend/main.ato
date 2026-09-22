@@ -1927,10 +1927,11 @@ module App:
     adc_aux.in_l ~ esd_audio.io3
     adc_aux.in_r ~ esd_audio.io4
     # 小亀の音声L/R(2ライン)。残り2chは未使用
+    # io1=R / io2=L の順(L/Rを入れ替えてある。FFC側の配線が素直になるため)
     esd_audio2 = new EsdArray4
     esd_audio2.gnd ~ gnd
-    adc_kokame.in_l ~ esd_audio2.io1
-    adc_kokame.in_r ~ esd_audio2.io2
+    adc_kokame.in_r ~ esd_audio2.io1
+    adc_kokame.in_l ~ esd_audio2.io2
 
     # I2S共有バス(SCKI/BCK/LRCKは3個共通。DOUTだけ個別 = 3系統同時キャプチャ可能)
     audio_mclk ~ adc_dsub.adc.scki
