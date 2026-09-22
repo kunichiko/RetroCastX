@@ -476,42 +476,42 @@ component BoxHeaderDigitalRgb2x5:
     gnd ~ pin 10
 
 
-component FfcConsole16:
-    """小亀基板(コンソール入力基板)への 0.5mmピッチ 16芯 FFC コネクタ。
-    HDGC 0.5K-1.5-16PWB(SMD・右アングル・下接点・フリップロック)。LCSC: C2919558
+component FfcConsole20:
+    """小亀基板(コンソール入力基板)への 0.5mmピッチ **20芯** FFC コネクタ。
+    HDGC 0.5K-1.5-20PWB(SMD・右アングル・下接点・フリップロック)。LCSC: C2919559
 
-    ## ピン配置(信号1本ごとにGNDを挟む)
+    ## ピン配置(信号1本ごとにGNDを挟み、電源は2本ずつ)
 
-        1  音声L   (→ PCM1808 #3)
-        2  GND
-        3  音声R   (→ PCM1808 #3)
-        4  GND
-        5  Pb      (→ BIN_1。予備兼コンポーネント入力)
-        6  GND
-        7  C/Pr    (→ RIN_1)
-        8  GND
-        9  Y/CVBS  (小亀のスイッチ出口 → GIN_1 と SOGIN_1 へ)
-        10 GND
-        11 LED_DATA(小亀のシリアルLED専用。FPGAのGPIOから直接)
-        12 GPIO2   (予備)
-        13 GPIO1   (小亀のアナログスイッチ選択。L=コンポジット/コンポーネント H=S端子)
-        14 GND
-        15 +3.3V   (アナログスイッチ用)
-        16 +5V     (シリアルLED用)
+        1  音声L          11 LED_DATA(小亀のシリアルLED)
+        2  GND            12 GND
+        3  音声R          13 GPIO2(予備)
+        4  GND            14 GND
+        5  Pb             15 GPIO1(小亀のアナログスイッチ選択)
+        6  GND            16 GND
+        7  C / Pr         17 +3.3V
+        8  GND            18 +3.3V
+        9  Y / CVBS       19 +5V
+        10 GND            20 +5V
 
-    ★**並びは 2026-09-22 に変更した**(レイアウト都合)。音声を1〜3番へ、映像を
-      5〜9番へ寄せてある。映像3本(Pb/C/Y)と音声2本はそれぞれGNDで挟まれたまま。
+    ★**16芯から20芯に増やした**(2026-09-22)。増えた4本の使い道:
+      - **LED_DATA / GPIO2 / GPIO1 にもGNDを隣接させた**。16芯では制御3本が
+        並んでいて、800kHzのLEDデータが隣のGPIOと並走していた
+      - **+3.3V と +5V を2本ずつ**にした。FFCの1導体は 0.5A 級なので、小亀の
+        シリアルLED(2個で最大120mA)には1本でも足りるが、**電源の往復抵抗が
+        半分になる**ぶん映像のGND基準が安定する(FFCは細いので効く)
+
+    映像3本(Pb/C/Y)と音声2本は、いずれも両隣がGNDのまま。
 
     ## ★向き(type A / type D)を発注前に決めること
 
     FFC は**接点が両端で同じ面(type A)か反対面(type D)か**で、
-    「n番 ↔ n番」になるか「n番 ↔ 17-n番」になるかが変わる。この基板と小亀基板は
+    「n番 ↔ n番」になるか「n番 ↔ 21-n番」になるかが変わる。この基板と小亀基板は
     どちらも**下接点**のコネクタなので、ケーブルの種別と2枚の基板の向きの組み合わせで
     決まる。**レイアウトを決めた時点で紙に描いて確認し、通電前に導通試験をすること。**
-    どちらでも救えるようにしたい場合は両面接点品(HDGC 0.5K-1.5W-16PWB, C5337050)に
-    差し替える(ランドは別)。ロックが無い品種なので抜けやすいのが代償。
+    現状のネットリストは「同一平面・開口部が向かい合う・type A・平らに1本」を前提に、
+    **小亀側を逆順(n ↔ 21-n)**で定義してある。
 
-    ★両基板のシルクに「1」を打つこと。0.5mmピッチ16芯で1ピンずれると、
+    ★両基板のシルクに「1」を打つこと。0.5mmピッチ20芯で1ピンずれると、
       映像が音声入力に入り +5V が GPIO に当たる。
 
     ## 電気的な前提
@@ -522,10 +522,10 @@ component FfcConsole16:
     - **Pb だけは直流結合**で来るので、終端はこちら側(`ch_b1` の 75Ω)。
     - 10cmのFFCは 8fsc(28.6MHz)でも電気的に短い(往復0.7ns、コンポジットの
       立ち上がり ~100ns に対して0.7%)。
-    - pad 17/18 は機械保持用のSMDタブ。GNDへ落として実装強度を得る。
+    - pad 21/22 は機械保持用のSMDタブ。GNDへ落として実装強度を得る。
     """
-    trait is_atomic_part<manufacturer="HDGC", partnumber="0.5K-1.5-16PWB", footprint="parts/HDGC_0_5K_1_5_16PWB/FPC-SMD_16P-P0.50_HDGC_0.5K-1.5-16PWB.kicad_mod", symbol="parts/HDGC_0_5K_1_5_16PWB/0.5K-1.5-16PWB.kicad_sym", model="parts/HDGC_0_5K_1_5_16PWB/FPC-SMD_16P-P0.50_HDGC_0.5K-1.5-16PWB.step">
-    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C2919558", manufacturer="HDGC", partno="0.5K-1.5-16PWB">
+    trait is_atomic_part<manufacturer="HDGC", partnumber="0.5K-1.5-20PWB", footprint="parts/HDGC_0_5K_1_5_20PWB/FPC-SMD_20P-P0.50_HDGC_0.5K-1.5-20PWB.kicad_mod", symbol="parts/HDGC_0_5K_1_5_20PWB/0.5K-1.5-20PWB.kicad_sym", model="parts/HDGC_0_5K_1_5_20PWB/FPC-SMD_20P-P0.50_HDGC_0.5K-1.5-20PWB.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C2919559", manufacturer="HDGC", partno="0.5K-1.5-20PWB">
     trait has_designator_prefix<prefix="J">
     signal audio_l ~ pin 1
     signal gnd ~ pin 2
@@ -538,13 +538,17 @@ component FfcConsole16:
     signal y ~ pin 9
     gnd ~ pin 10
     signal led_data ~ pin 11
-    signal gpio2 ~ pin 12
-    signal gpio1 ~ pin 13
+    gnd ~ pin 12
+    signal gpio2 ~ pin 13
     gnd ~ pin 14
-    signal p3v3 ~ pin 15
-    signal p5v ~ pin 16
-    gnd ~ pin 17   # 機械保持タブ
-    gnd ~ pin 18   # 機械保持タブ
+    signal gpio1 ~ pin 15
+    gnd ~ pin 16
+    signal p3v3 ~ pin 17
+    p3v3 ~ pin 18
+    signal p5v ~ pin 19
+    p5v ~ pin 20
+    gnd ~ pin 21   # 機械保持タブ
+    gnd ~ pin 22   # 機械保持タブ
 
 
 component UsbCPowerReceptacle:
@@ -1492,7 +1496,7 @@ module App:
 
     # --- 第3入力: 小亀基板(S端子/コンポジット/コンポーネント) -> GIN_1/RIN_1/BIN_1/SOGIN_1 ---
     #
-    # v0.9.0 は基板上の 2x4 ボックスヘッダ(J5)だったが、v1.0 で**16芯FFCで繋ぐ
+    # v0.9.0 は基板上の 2x4 ボックスヘッダ(J5)だったが、v1.0 で**20芯FFCで繋ぐ
     # 小亀基板(hardware/console-frontend)**へ移した。ミニDIN4(S端子)とRCA×5は
     # コネクタが大きく、メイン基板の端をこれ以上使えないため。
     #
@@ -1538,7 +1542,7 @@ module App:
     # ナイキスト14.32MHz)に対し、TVP入力容量10pFを含む実効43pFで fc=16.8MHz と
     # ちょうど合う。4fsc(910)だとナイキストが7.16MHzに下がり、この定数では減衰が
     # -0.45dBしか無く折り返しに無防備になるので 8fsc を前提にしている。
-    ffc = new FfcConsole16
+    ffc = new FfcConsole20
     ffc.gnd ~ gnd
     ffc.p3v3 ~ p3v3_io.hv
     ffc.p5v ~ power_5v.hv
@@ -2211,7 +2215,7 @@ module App:
     # 音声は v1.0 で3系統が完全に独立した(受動加算をやめてADCを3個にした)。
     adc_aux.in_l.override_net_name = "aud_din8_l"     # ミニDIN8 pin2
     adc_aux.in_r.override_net_name = "aud_din8_r"     # ミニDIN8 pin1
-    adc_kokame.in_l.override_net_name = "aud_kokame_l"  # FFC pin1
+    adc_kokame.in_l.override_net_name = "aud_kokame_l"  # FFC pin1(20芯)
     adc_kokame.in_r.override_net_name = "aud_kokame_r"  # FFC pin3
     adc_dsub.adc.vinl.override_net_name = "aud_dsub_l_ac"
     adc_dsub.adc.vinr.override_net_name = "aud_dsub_r_ac"
@@ -2228,7 +2232,7 @@ module App:
     adc_aux.adc.vref.override_net_name = "aud_vref_din8"
     adc_kokame.adc.vref.override_net_name = "aud_vref_kokame"
 
-    # --- 第3入力(小亀基板: S端子 / コンポジット / コンポーネント、16芯FFC) ---
+    # --- 第3入力(小亀基板: S端子 / コンポジット / コンポーネント、20芯FFC) ---
     ch_y.input.override_net_name = "vin_y1"         # FFC pin9: S端子Y または CVBS/コンポーネントY
     ch_c.input.override_net_name = "vin_c1"         # FFC pin7: S端子C または コンポーネントPr
     ch_b1.input.override_net_name = "vin_pb1"       # FFC pin5: コンポーネントPb / 予備

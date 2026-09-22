@@ -1,13 +1,6 @@
 (fp_lib_table
 	(version 7)
 	(lib
-		(name "HDGC_0_5K_1_5_16PWB")
-		(type "KiCad")
-		(uri "${KIPRJMOD}/../../parts/HDGC_0_5K_1_5_16PWB")
-		(options "")
-		(descr "atopile: part lib: HDGC_0_5K_1_5_16PWB")
-	)
-	(lib
 		(name "TI_TS5A23159DGSR")
 		(type "KiCad")
 		(uri "${KIPRJMOD}/../../parts/TI_TS5A23159DGSR")
@@ -69,5 +62,12 @@
 		(uri "${KIPRJMOD}/../../parts/YAGEO_CC0603KRX7R9BB104")
 		(options "")
 		(descr "atopile: part lib: YAGEO_CC0603KRX7R9BB104")
+	)
+	(lib
+		(name "HDGC_0_5K_1_5_20PWB")
+		(type "KiCad")
+		(uri "${KIPRJMOD}/../../parts/HDGC_0_5K_1_5_20PWB")
+		(options "")
+		(descr "atopile: part lib: HDGC_0_5K_1_5_20PWB")
 	)
 )

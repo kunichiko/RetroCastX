@@ -1,0 +1,37 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component HDGC_0_5K_1_5_20PWB_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C2919559", date="2026-09-22T05:05:40.314867+00:00", checksum="aa65c3543f158a19eb15ed0a50225c036c013b049e3f1c4fbc32c2030a3e3f9f">
+
+    trait is_atomic_part<manufacturer="HDGC", partnumber="0.5K-1.5-20PWB", footprint="FPC-SMD_20P-P0.50_HDGC_0.5K-1.5-20PWB.kicad_mod", symbol="0.5K-1.5-20PWB.kicad_sym", model="FPC-SMD_20P-P0.50_HDGC_0.5K-1.5-20PWB.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C2919559", manufacturer="HDGC", partno="0.5K-1.5-20PWB">
+    trait has_designator_prefix<prefix="FPC">
+
+    # pins
+    pin 1
+    pin 2
+    pin 3
+    pin 4
+    pin 5
+    pin 6
+    pin 7
+    pin 8
+    pin 9
+    pin 10
+    pin 11
+    pin 12
+    pin 13
+    pin 14
+    pin 15
+    pin 16
+    pin 17
+    pin 18
+    pin 19
+    pin 20
+    pin 21
+    pin 22

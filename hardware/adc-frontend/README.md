@@ -17,7 +17,7 @@ v0.9.0(2026-08-19 発注、実機動作確認済み)からの差分。**電気�
 | アナログRGB | D-SUB15(2列DA-15, X68000式) | 変更なし |
 | 第2映像入力 | J4: 2×5 ボックスヘッダ(要自作ケーブル) | **J13: ミニDIN8(FRAMEMEISTER互換)** |
 | 第2入力のTTL同期 | 同ヘッダの9/10ピン | **J14: 1×3 ヘッダ(HSYNC/VSYNC/GND)** |
-| S端子/コンポジット | J5: 2×4 ボックスヘッダ | **J15: 16芯FFC → 小亀基板**(`hardware/console-frontend`)。並びは `音声L/GND/音声R/GND/Pb/GND/C/GND/Y/GND/LED/GPIO2/GPIO1/GND/+3.3V/+5V` |
+| S端子/コンポジット | J5: 2×4 ボックスヘッダ | **J15: 20芯FFC → 小亀基板**(`hardware/console-frontend`)。並びは `音声L/GND/音声R/GND/Pb/GND/C/GND/Y/GND/LED/GND/GPIO2/GND/GPIO1/GND/+3.3V/+3.3V/+5V/+5V`(全信号がGNDに隣接、電源は2本ずつ) |
 | 光デジタル(S/PDIF) | J8: PLR135/**T** | J8: PLR135/**T10**(ランドが小さい) |
 | デジタルRGB | J6: 1.25mm 単列8極(SMD) | **J6: 2×5 ボックスヘッダ(ストレート)**(XFCN BH254V-10P, C492442)。一般的な10芯フラットケーブルが使える。位置も別エッジへ移動 |
 | USB-C | J2 | 変更なし |
@@ -269,7 +269,7 @@ ESD が PESD5V0U4BW → 実際は EMZT6.8ET2R など)。値・在庫は LCSC 品
 | J11, J12 | HR911130A | HANRUN | C54408 | `eth.jack, eth.jack2` |
 | J13 | MJ373_8B | — | — | `din8` |
 | J14 | Header_1x3_P2.54mm | — | — | `hdr_sync` |
-| J15 | 0.5K-1.5-16PWB | HDGC | C2919558 | `ffc` |
+| J15 | 0.5K-1.5-20PWB | HDGC | C2919559 | `ffc` |
 | JP1 | SolderJumper_2_Bridged | — | — | `sj_ext5v` |
 | LED1 | XL-2020RGBC-2812B | XINGLIGHT | C5349955 | `led_status` |
 | PG1, PG2, PG3, PG4 | PogoPin_D1.0mm | — | — | `pogo_tck, pogo_tms, pogo_tdi, pogo_tdo` |

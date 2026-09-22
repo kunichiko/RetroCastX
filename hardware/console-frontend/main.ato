@@ -41,7 +41,7 @@ from "passives.ato" import C10uF_0805
 # source.
 #
 # 家庭用ゲーム機向けの入力端子(S端子 / コンポジット / 音声 / 実験用コンポーネント)を
-# 引き受け、0.5mmピッチ16芯FFC(10cm)でメイン基板(hardware/adc-frontend)へ渡す。
+# 引き受け、0.5mmピッチ20芯FFC(10cm)でメイン基板(hardware/adc-frontend)へ渡す。
 #
 # ## なぜ別基板にしたか
 #
@@ -62,43 +62,37 @@ from "passives.ato" import C10uF_0805
 # =============================================================================
 
 
-component FfcMain16:
-    """メイン基板へ渡す 0.5mmピッチ 16芯 FFC コネクタ。
-    HDGC 0.5K-1.5-16PWB(SMD・右アングル・下接点・フリップロック)。LCSC: C2919558
-    **メイン基板(adc-frontend の FfcConsole16)と同じ品番**。
+component FfcMain20:
+    """メイン基板へ渡す 0.5mmピッチ **20芯** FFC コネクタ。
+    HDGC 0.5K-1.5-20PWB(SMD・右アングル・下接点・フリップロック)。LCSC: C2919559
+    **メイン基板(adc-frontend の FfcConsole20)と同じ品番**。
 
-    ## ★ピン割当はメイン基板と逆順(1↔16)にしてある
+    ## ★ピン割当はメイン基板と逆順(n ↔ 21-n)
 
     使うケーブルは **type A(両端で接点が同じ面に出ている)**。これを
     **2枚の基板を同一平面に置き、コネクタの開口部を向かい合わせて平らに1本**で
-    繋ぐと、番号は必ず入れ替わる。理由は幾何だけで決まる:
+    繋ぐと、番号は必ず入れ替わる(同じ品番のコネクタを向かい合わせる = 互いに
+    180°回転した姿勢なので、一方の1番はケーブルの北端、他方の1番は南端に来る)。
 
-        同じ品番のコネクタを向かい合わせる = 互いに180°回転した姿勢
-        → 「開口部から見て左が1番」という部品固有の関係が鏡になり、
-          一方の1番はケーブルの北端、他方の1番は南端に来る
-        → ケーブル(ねじれ無し)の導体位置は両端で同じなので
-          **メイン基板 n番 ↔ この基板 (17-n)番**
+        1  +5V   (メイン 20)   11 GND      (メイン 10)
+        2  +5V   (メイン 19)   12 Y / CVBS (メイン 9)
+        3  +3.3V (メイン 18)   13 GND      (メイン 8)
+        4  +3.3V (メイン 17)   14 C / Pr   (メイン 7)
+        5  GND   (メイン 16)   15 GND      (メイン 6)
+        6  GPIO1 (メイン 15)   16 Pb       (メイン 5)
+        7  GND   (メイン 14)   17 GND      (メイン 4)
+        8  GPIO2 (メイン 13)   18 音声R    (メイン 3)
+        9  GND   (メイン 12)   19 GND      (メイン 2)
+        10 LED_DATA(メイン 11) 20 音声L    (メイン 1)
 
-    よってこの基板のピン割当は**メイン基板の逆順**:
-
-        1  +5V      (メイン 16)      9  GND      (メイン 8)
-        2  +3.3V    (メイン 15)     10  C / Pr   (メイン 7)
-        3  GND      (メイン 14)     11  GND      (メイン 6)
-        4  GPIO1    (メイン 13)     12  Pb       (メイン 5)
-        5  GPIO2    (メイン 12)     13  GND      (メイン 4)
-        6  LED_DATA (メイン 11)     14  音声R    (メイン 3)
-        7  GND      (メイン 10)     15  GND      (メイン 2)
-        8  Y / CVBS (メイン 9)      16  音声L    (メイン 1)
-
-    ★**2026-09-22 にメイン基板側の並びを変えた**(音声を1〜3番、映像を5〜9番へ、
-      GPIO1/GPIO2 と GND の位置も変更)。この表はそれに追随したもの。
-      **片方だけ直すと全部ずれる。**
+    ★**16芯から20芯に増やした**(2026-09-22)。制御3本(LED_DATA / GPIO2 / GPIO1)
+      にもGNDが隣接し、電源(+3.3V / +5V)が2本ずつになった。
 
     ## もし機械配置を変えるなら、ケーブル種別も一緒に変わる
 
     | 機械配置 | ケーブル | ピン対応 | この定義 |
     |---|---|---|---|
-    | 同一平面・開口部が向かい合う(平ら) | **type A** | n ↔ 17-n | **これ(現状)** |
+    | 同一平面・開口部が向かい合う(平ら) | **type A** | n ↔ 21-n | **これ(現状)** |
     | 重ね置き・開口部が同じ向き(180°折り返す) | type D | n ↔ n | 逆順をやめる |
 
     折り返すと接点面が裏返る(=type D が要る)が、導体の左右順は保たれるので、
@@ -112,34 +106,38 @@ component FfcMain16:
     超えてスイッチが死ぬ。手順:
 
         1. ケーブルを両側に挿す(電源は入れない)
-        2. 小亀基板の +5V パッド(FFC pin1)とメイン基板の +5V が導通するか
-        3. 小亀基板の Y(FFC pin8)とメイン基板の Y(FFC pin9)が導通するか
+        2. 小亀基板の +5V パッド(FFC pin1/2)とメイン基板の +5V が導通するか
+        3. 小亀基板の Y(FFC pin12)とメイン基板の Y(FFC pin9)が導通するか
         4. +5V と GND の間が短絡していないか
 
-    両基板のシルクに「1」を打つこと。pad 17/18 は機械保持用のSMDタブ → GND。
+    両基板のシルクに「1」を打つこと。pad 21/22 は機械保持用のSMDタブ → GND。
     """
-    trait is_atomic_part<manufacturer="HDGC", partnumber="0.5K-1.5-16PWB", footprint="parts/HDGC_0_5K_1_5_16PWB/FPC-SMD_16P-P0.50_HDGC_0.5K-1.5-16PWB.kicad_mod", symbol="parts/HDGC_0_5K_1_5_16PWB/0.5K-1.5-16PWB.kicad_sym", model="parts/HDGC_0_5K_1_5_16PWB/FPC-SMD_16P-P0.50_HDGC_0.5K-1.5-16PWB.step">
-    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C2919558", manufacturer="HDGC", partno="0.5K-1.5-16PWB">
+    trait is_atomic_part<manufacturer="HDGC", partnumber="0.5K-1.5-20PWB", footprint="parts/HDGC_0_5K_1_5_20PWB/FPC-SMD_20P-P0.50_HDGC_0.5K-1.5-20PWB.kicad_mod", symbol="parts/HDGC_0_5K_1_5_20PWB/0.5K-1.5-20PWB.kicad_sym", model="parts/HDGC_0_5K_1_5_20PWB/FPC-SMD_20P-P0.50_HDGC_0.5K-1.5-20PWB.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C2919559", manufacturer="HDGC", partno="0.5K-1.5-20PWB">
     trait has_designator_prefix<prefix="J">
-    # メイン基板の逆順(n ↔ 17-n)。上のdocstringの表と対応させて読むこと
+    # メイン基板の逆順(n ↔ 21-n)。上のdocstringの表と対応させて読むこと
     signal p5v ~ pin 1
-    signal p3v3 ~ pin 2
-    signal gnd ~ pin 3
-    signal gpio1 ~ pin 4
-    signal gpio2 ~ pin 5
-    signal led_data ~ pin 6
+    p5v ~ pin 2
+    signal p3v3 ~ pin 3
+    p3v3 ~ pin 4
+    signal gnd ~ pin 5
+    signal gpio1 ~ pin 6
     gnd ~ pin 7
-    signal y ~ pin 8
+    signal gpio2 ~ pin 8
     gnd ~ pin 9
-    signal c ~ pin 10
+    signal led_data ~ pin 10
     gnd ~ pin 11
-    signal pb ~ pin 12
+    signal y ~ pin 12
     gnd ~ pin 13
-    signal audio_r ~ pin 14
+    signal c ~ pin 14
     gnd ~ pin 15
-    signal audio_l ~ pin 16
-    gnd ~ pin 17   # 機械保持タブ
-    gnd ~ pin 18   # 機械保持タブ
+    signal pb ~ pin 16
+    gnd ~ pin 17
+    signal audio_r ~ pin 18
+    gnd ~ pin 19
+    signal audio_l ~ pin 20
+    gnd ~ pin 21   # 機械保持タブ
+    gnd ~ pin 22   # 機械保持タブ
 
 
 component EsdArray4:
@@ -227,7 +225,7 @@ module App:
     p3v3.voltage = 3.3V +/- 3%
     p5v.voltage = 5V +/- 5%
 
-    ffc = new FfcMain16
+    ffc = new FfcMain20
     ffc.gnd ~ gnd
     ffc.p3v3 ~ p3v3.hv
     ffc.p5v ~ p5v.hv
