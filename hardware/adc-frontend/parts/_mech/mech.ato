@@ -276,8 +276,11 @@ component SpdifRxModule:
     # /T10 のポストは位置決め用で、樹脂なら半田は乗らず、金属だと内部で何かに
     # 繋がっている可能性がある。GNDへ落とすと後者のときに短絡になる。
     # 機械強度はポストの圧入と信号3本の半田で足りる。
-    signal mount ~ pin 4
-    mount ~ pin 5
+    # ★ポストは**1本ずつ別ネット**にする。1ネットに2パッドあると、繋がない
+    #   のが正しいのに KiCad の DRC が「spdif_mount_nc 同士が未接続」と言う。
+    #   パッドが1個だけのネットは未接続として数えられない。
+    signal mount1 ~ pin 4
+    signal mount2 ~ pin 5
 
 
 component BoxHeader2x8Argus:

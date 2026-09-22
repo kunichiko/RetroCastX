@@ -2255,7 +2255,9 @@ module App:
     tvp.gin_4.override_net_name = "gin4_nc"
     # 未接続のまま出すピン。自動命名だと "5" のような数字になって追えない
     din8.nc5.override_net_name = "din8_nc5"
-    spdif.mount.override_net_name = "spdif_mount_nc"
+    # ポスト2本は繋がないので別ネット(同一ネットにするとDRCが未接続と言う)
+    spdif.mount1.override_net_name = "spdif_mount1_nc"
+    spdif.mount2.override_net_name = "spdif_mount2_nc"
     tvp.sogin_2.override_net_name = "sogin2"        # 第2入力のCSYNC(分圧+0.1uF結合)
 
     # 電源レールは明示命名する。atopileの自動命名は他ネットの命名状況に依存して
