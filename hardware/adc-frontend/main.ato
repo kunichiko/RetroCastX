@@ -482,22 +482,25 @@ component FfcConsole16:
 
     ## ピン配置(信号1本ごとにGNDを挟む)
 
-        1  Y/CVBS  (小亀のスイッチ出口 → GIN_1 と SOGIN_1 へ)
+        1  音声L   (→ PCM1808 #3)
         2  GND
-        3  C/Pr    (→ RIN_1)
+        3  音声R   (→ PCM1808 #3)
         4  GND
         5  Pb      (→ BIN_1。予備兼コンポーネント入力)
         6  GND
-        7  音声L   (→ PCM1808 #3)
+        7  C/Pr    (→ RIN_1)
         8  GND
-        9  音声R   (→ PCM1808 #3)
+        9  Y/CVBS  (小亀のスイッチ出口 → GIN_1 と SOGIN_1 へ)
         10 GND
         11 LED_DATA(小亀のシリアルLED専用。FPGAのGPIOから直接)
-        12 GND
+        12 GPIO2   (予備)
         13 GPIO1   (小亀のアナログスイッチ選択。L=コンポジット/コンポーネント H=S端子)
-        14 GPIO2   (予備)
+        14 GND
         15 +3.3V   (アナログスイッチ用)
         16 +5V     (シリアルLED用)
+
+    ★**並びは 2026-09-22 に変更した**(レイアウト都合)。音声を1〜3番へ、映像を
+      5〜9番へ寄せてある。映像3本(Pb/C/Y)と音声2本はそれぞれGNDで挟まれたまま。
 
     ## ★向き(type A / type D)を発注前に決めること
 
@@ -524,20 +527,20 @@ component FfcConsole16:
     trait is_atomic_part<manufacturer="HDGC", partnumber="0.5K-1.5-16PWB", footprint="parts/HDGC_0_5K_1_5_16PWB/FPC-SMD_16P-P0.50_HDGC_0.5K-1.5-16PWB.kicad_mod", symbol="parts/HDGC_0_5K_1_5_16PWB/0.5K-1.5-16PWB.kicad_sym", model="parts/HDGC_0_5K_1_5_16PWB/FPC-SMD_16P-P0.50_HDGC_0.5K-1.5-16PWB.step">
     trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C2919558", manufacturer="HDGC", partno="0.5K-1.5-16PWB">
     trait has_designator_prefix<prefix="J">
-    signal y ~ pin 1
+    signal audio_l ~ pin 1
     signal gnd ~ pin 2
-    signal c ~ pin 3
+    signal audio_r ~ pin 3
     gnd ~ pin 4
     signal pb ~ pin 5
     gnd ~ pin 6
-    signal audio_l ~ pin 7
+    signal c ~ pin 7
     gnd ~ pin 8
-    signal audio_r ~ pin 9
+    signal y ~ pin 9
     gnd ~ pin 10
     signal led_data ~ pin 11
-    gnd ~ pin 12
+    signal gpio2 ~ pin 12
     signal gpio1 ~ pin 13
-    signal gpio2 ~ pin 14
+    gnd ~ pin 14
     signal p3v3 ~ pin 15
     signal p5v ~ pin 16
     gnd ~ pin 17   # 機械保持タブ
@@ -2208,8 +2211,8 @@ module App:
     # 音声は v1.0 で3系統が完全に独立した(受動加算をやめてADCを3個にした)。
     adc_aux.in_l.override_net_name = "aud_din8_l"     # ミニDIN8 pin2
     adc_aux.in_r.override_net_name = "aud_din8_r"     # ミニDIN8 pin1
-    adc_kokame.in_l.override_net_name = "aud_kokame_l"  # FFC pin7
-    adc_kokame.in_r.override_net_name = "aud_kokame_r"  # FFC pin9
+    adc_kokame.in_l.override_net_name = "aud_kokame_l"  # FFC pin1
+    adc_kokame.in_r.override_net_name = "aud_kokame_r"  # FFC pin3
     adc_dsub.adc.vinl.override_net_name = "aud_dsub_l_ac"
     adc_dsub.adc.vinr.override_net_name = "aud_dsub_r_ac"
     adc_aux.adc.vinl.override_net_name = "aud_din8_l_ac"
@@ -2226,8 +2229,8 @@ module App:
     adc_kokame.adc.vref.override_net_name = "aud_vref_kokame"
 
     # --- 第3入力(小亀基板: S端子 / コンポジット / コンポーネント、16芯FFC) ---
-    ch_y.input.override_net_name = "vin_y1"         # FFC pin1: S端子Y または CVBS/コンポーネントY
-    ch_c.input.override_net_name = "vin_c1"         # FFC pin3: S端子C または コンポーネントPr
+    ch_y.input.override_net_name = "vin_y1"         # FFC pin9: S端子Y または CVBS/コンポーネントY
+    ch_c.input.override_net_name = "vin_c1"         # FFC pin7: S端子C または コンポーネントPr
     ch_b1.input.override_net_name = "vin_pb1"       # FFC pin5: コンポーネントPb / 予備
     ch_y.coupled.override_net_name = "vin_y1_ac"
     ch_c.coupled.override_net_name = "vin_c1_ac"

@@ -82,13 +82,17 @@ component FfcMain16:
     よってこの基板のピン割当は**メイン基板の逆順**:
 
         1  +5V      (メイン 16)      9  GND      (メイン 8)
-        2  +3.3V    (メイン 15)     10  音声L    (メイン 7)
-        3  GPIO2    (メイン 14)     11  GND      (メイン 6)
+        2  +3.3V    (メイン 15)     10  C / Pr   (メイン 7)
+        3  GND      (メイン 14)     11  GND      (メイン 6)
         4  GPIO1    (メイン 13)     12  Pb       (メイン 5)
-        5  GND      (メイン 12)     13  GND      (メイン 4)
-        6  LED_DATA (メイン 11)     14  C / Pr   (メイン 3)
+        5  GPIO2    (メイン 12)     13  GND      (メイン 4)
+        6  LED_DATA (メイン 11)     14  音声R    (メイン 3)
         7  GND      (メイン 10)     15  GND      (メイン 2)
-        8  音声R    (メイン 9)      16  Y / CVBS (メイン 1)
+        8  Y / CVBS (メイン 9)      16  音声L    (メイン 1)
+
+    ★**2026-09-22 にメイン基板側の並びを変えた**(音声を1〜3番、映像を5〜9番へ、
+      GPIO1/GPIO2 と GND の位置も変更)。この表はそれに追随したもの。
+      **片方だけ直すと全部ずれる。**
 
     ## もし機械配置を変えるなら、ケーブル種別も一緒に変わる
 
@@ -109,7 +113,7 @@ component FfcMain16:
 
         1. ケーブルを両側に挿す(電源は入れない)
         2. 小亀基板の +5V パッド(FFC pin1)とメイン基板の +5V が導通するか
-        3. 小亀基板の Y(FFC pin16)とメイン基板の Y(FFC pin1)が導通するか
+        3. 小亀基板の Y(FFC pin8)とメイン基板の Y(FFC pin9)が導通するか
         4. +5V と GND の間が短絡していないか
 
     両基板のシルクに「1」を打つこと。pad 17/18 は機械保持用のSMDタブ → GND。
@@ -120,20 +124,20 @@ component FfcMain16:
     # メイン基板の逆順(n ↔ 17-n)。上のdocstringの表と対応させて読むこと
     signal p5v ~ pin 1
     signal p3v3 ~ pin 2
-    signal gpio2 ~ pin 3
+    signal gnd ~ pin 3
     signal gpio1 ~ pin 4
-    signal gnd ~ pin 5
+    signal gpio2 ~ pin 5
     signal led_data ~ pin 6
     gnd ~ pin 7
-    signal audio_r ~ pin 8
+    signal y ~ pin 8
     gnd ~ pin 9
-    signal audio_l ~ pin 10
+    signal c ~ pin 10
     gnd ~ pin 11
     signal pb ~ pin 12
     gnd ~ pin 13
-    signal c ~ pin 14
+    signal audio_r ~ pin 14
     gnd ~ pin 15
-    signal y ~ pin 16
+    signal audio_l ~ pin 16
     gnd ~ pin 17   # 機械保持タブ
     gnd ~ pin 18   # 機械保持タブ
 
