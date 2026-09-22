@@ -49,6 +49,12 @@
 > ch_y/ch_c の 75Ω終端(小亀基板側へ移した)。**旧配線が宙に浮いて残るので、
 > 新しい部品をその位置に置けば繋がる**(2026-08-14 と同じ要領)。
 >
+> ★**フットプリントを差し替えたときの手順**は小亀基板の指示書
+> (`../../console-frontend/docs/layout-guidelines.md` の 4.5)にまとめてある。要点だけ:
+> **(1) `ato build` を2回**(1回目は新しいパッドにネットが付かない)/
+> **(2) 消したブロックの `(at x y rot)` を控えて書き戻す**(配置が失われる)/
+> **(3) `lock_designators.py` は最後の build の後**/ **(4) ゾーンを塗り直す(`B`)**。
+>
 > 基板の版数(title_block の rev)は **`v1.0` へ上げること**。`ato build` が rev と
 > grid_origin を落とすので、`tools/restore_pcb_settings.py` と
 > `tools/pcb_settings.json` の値も v1.0 に更新する。

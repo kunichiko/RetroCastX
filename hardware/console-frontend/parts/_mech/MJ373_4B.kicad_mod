@@ -160,8 +160,8 @@
 		(uuid "a1373002-0000-0400")
 		(effects
 			(font
-				(size 0.6 0.6)
-				(thickness 0.1)
+				(size 0.8 0.8)
+				(thickness 0.15)
 			)
 		)
 	)
@@ -171,8 +171,8 @@
 		(uuid "a1373002-0000-0401")
 		(effects
 			(font
-				(size 0.6 0.6)
-				(thickness 0.1)
+				(size 0.8 0.8)
+				(thickness 0.15)
 			)
 		)
 	)

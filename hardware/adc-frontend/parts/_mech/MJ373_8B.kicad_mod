@@ -3,7 +3,7 @@
 	(generator "manual")
 	(generator_version "9.0")
 	(layer "F.Cu")
-	(descr "Marushin MJ-373/8B mini DIN 8-pin jack, PCB mount, hand-soldered (not JLC-assembled). Land pattern per Marushin drawing MJ373/8B-001 \"T:1.6 Dimensions of PC board holes (Printed-Top view)\": 8 holes phi1.2 in two columns 2.5mm apart (x=8.5 and x=11.0 from the mating face); column x=8.5: pin5 y=+3.25 pin2 y=+1.5 pin1 y=-1.5 pin3 y=-3.25; column x=11.0: pin8 y=+3.25 pin7 y=+1.0 pin4 y=-1.5 pin6 y=-3.25 (pin7 is offset 0.5mm, it is NOT in line with pin2); 3 shell/ground slots 2.8x0.8 R0.4: pad9 at (4.7,0) vertical, pad10/pad11 at (5.5,-6.85)/(5.5,+6.85) horizontal. Origin = mating face (x=0) on the centreline (y=0); body 12.7 deep, flange 14.0 wide x 13.0 high. Drawing y is positive upwards; KiCad y is negated here.")
+	(descr "Marushin MJ-373/8B mini DIN 8-pin jack, PCB mount, hand-soldered (not JLC-assembled). Land pattern per Marushin drawing MJ373/8B-001 \"T:1.6 Dimensions of PC board holes (Printed-Top view)\": 8 holes: drill 1.1mm with 1.9x1.5mm oval lands (the drawing asks for phi1.2 board holes, but the narrowest pin pitch is 1.75mm so a round 2.0mm land shorts to its neighbour; 1.1/1.5 keeps a 0.25mm copper gap and a 0.20mm annular ring, above JLCPCB 2-layer 1oz minimum 0.18mm. The contact foot is a 0.8x0.4mm blade = 0.894mm diagonal, so even a worst-case 1.024mm finished hole still clears it) in two columns 2.5mm apart (x=8.5 and x=11.0 from the mating face); column x=8.5: pin5 y=+3.25 pin2 y=+1.5 pin1 y=-1.5 pin3 y=-3.25; column x=11.0: pin8 y=+3.25 pin7 y=+1.0 pin4 y=-1.5 pin6 y=-3.25 (pin7 is offset 0.5mm, it is NOT in line with pin2); 3 shell/ground slots 2.8x0.8 R0.4: pad9 at (4.7,0) vertical, pad10/pad11 at (5.5,-6.85)/(5.5,+6.85) horizontal. Origin = mating face (x=0) on the centreline (y=0); body 12.7 deep, flange 14.0 wide x 13.0 high. Drawing y is positive upwards; KiCad y is negated here.")
 	(tags "mini-din marushin MJ373_8B")
 	(property "Reference" "REF**"
 		(at 6.35 -8.6 0)
@@ -160,8 +160,8 @@
 		(uuid "a1373001-0000-0400")
 		(effects
 			(font
-				(size 0.6 0.6)
-				(thickness 0.1)
+				(size 0.8 0.8)
+				(thickness 0.15)
 			)
 		)
 	)
@@ -171,71 +171,71 @@
 		(uuid "a1373001-0000-0401")
 		(effects
 			(font
-				(size 0.6 0.6)
-				(thickness 0.1)
+				(size 0.8 0.8)
+				(thickness 0.15)
 			)
 		)
 	)
-	(pad "1" thru_hole circle
+	(pad "1" thru_hole oval
 		(at 8.5 1.5)
-		(size 2.0 2.0)
-		(drill 1.2)
+		(size 1.9 1.5)
+		(drill 1.1)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(uuid "a1373-8b00-4000-8000-100100000000")
 	)
-	(pad "2" thru_hole circle
+	(pad "2" thru_hole oval
 		(at 8.5 -1.5)
-		(size 2.0 2.0)
-		(drill 1.2)
+		(size 1.9 1.5)
+		(drill 1.1)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(uuid "a1373-8b00-4000-8000-100200000000")
 	)
-	(pad "3" thru_hole circle
+	(pad "3" thru_hole oval
 		(at 8.5 3.25)
-		(size 2.0 2.0)
-		(drill 1.2)
+		(size 1.9 1.5)
+		(drill 1.1)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(uuid "a1373-8b00-4000-8000-100300000000")
 	)
-	(pad "4" thru_hole circle
+	(pad "4" thru_hole oval
 		(at 11.0 1.5)
-		(size 2.0 2.0)
-		(drill 1.2)
+		(size 1.9 1.5)
+		(drill 1.1)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(uuid "a1373-8b00-4000-8000-100400000000")
 	)
-	(pad "5" thru_hole circle
+	(pad "5" thru_hole oval
 		(at 8.5 -3.25)
-		(size 2.0 2.0)
-		(drill 1.2)
+		(size 1.9 1.5)
+		(drill 1.1)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(uuid "a1373-8b00-4000-8000-100500000000")
 	)
-	(pad "6" thru_hole circle
+	(pad "6" thru_hole oval
 		(at 11.0 3.25)
-		(size 2.0 2.0)
-		(drill 1.2)
+		(size 1.9 1.5)
+		(drill 1.1)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(uuid "a1373-8b00-4000-8000-100600000000")
 	)
-	(pad "7" thru_hole circle
+	(pad "7" thru_hole oval
 		(at 11.0 -1.0)
-		(size 2.0 2.0)
-		(drill 1.2)
+		(size 1.9 1.5)
+		(drill 1.1)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(uuid "a1373-8b00-4000-8000-100700000000")
 	)
-	(pad "8" thru_hole circle
+	(pad "8" thru_hole oval
 		(at 11.0 -3.25)
-		(size 2.0 2.0)
-		(drill 1.2)
+		(size 1.9 1.5)
+		(drill 1.1)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(uuid "a1373-8b00-4000-8000-100800000000")

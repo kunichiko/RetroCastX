@@ -200,8 +200,8 @@
 		(uuid "c105a001-0000-4000-8000-000000000201")
 		(effects
 			(font
-				(size 0.6 0.6)
-				(thickness 0.1)
+				(size 0.8 0.8)
+				(thickness 0.15)
 			)
 		)
 	)
@@ -211,8 +211,8 @@
 		(uuid "c105a001-0000-4000-8000-000000000202")
 		(effects
 			(font
-				(size 0.6 0.6)
-				(thickness 0.1)
+				(size 0.8 0.8)
+				(thickness 0.15)
 			)
 		)
 	)
