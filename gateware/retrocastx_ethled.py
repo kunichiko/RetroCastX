@@ -7,11 +7,13 @@ v0.9.0 では RJ45 の LED を **FPGA の GPIO から駆動する**。
 
     カソードは GND、アノードへ 220Ω。**アクティブHigh。**
 
-    ETH2 = J11 = litex eth index 0 : 緑 R1 / 黄 T1
-    ETH1 = J12 = litex eth index 1 : 緑 U1 / 黄 Y2
+    LAN0 = J11 = litex eth index 0 : 緑 R1 / 黄 T1
+    LAN1 = J12 = litex eth index 1 : 緑 U1 / 黄 Y2(既定)
 
-    ★index とコネクタ表記は入れ替わっている(retrocastx_stream.py の
-      LiteEthPHYRGMII 生成部のコメント参照)。
+    ★**基板のシルクは LAN0 / LAN1** で、litex の index と同じ数字。
+      i5モジュール自身の印刷 ETH1/ETH2 とは逆順なので混ぜないこと
+      (i5のETH2 = LAN0、i5のETH1 = LAN1)。理由は retrocastx_stream.py の
+      LiteEthPHYRGMII 生成部のコメント参照。
 
 割り当ては普通のNICに合わせる:
 
@@ -192,7 +194,7 @@ class LampTest(Module):
 
         bit0 = eth0 緑 / bit1 = eth0 黄 / bit2 = eth1 緑 / bit3 = eth1 黄
 
-    (eth0 = コネクタ ETH2 = J11、eth1 = コネクタ ETH1 = J12)
+    (eth0 = LAN0 = J11、eth1 = LAN1 = J12)
     """
     def __init__(self, force, normal):
         self.out = Signal(4)

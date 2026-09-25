@@ -368,17 +368,20 @@ SO-DIMM 直結で使う独立実装)も同一だった。Bob-Smith の構成(75�
 
 ### ★実装時の注意
 
-**1. 基板に ETH1/ETH2 のシルクが無い。** どちらの RJ45 がどちらか基板上で判別できない。
+**1. この基板では LAN0 / LAN1 と呼ぶ**(v1.0 でシルクを入れた。ETH1/ETH2 は使わない)。
 
 ```
-J11 (y=58.5, 上側)  eth2_* = SO-DIMM 偶数ピン 16/18/24/22/28/30/36/34
-J12 (y=77.0, 下側)  eth1_* = SO-DIMM 奇数ピン 15/17/23/21/27/29/35/33
+LAN0 = J11 (y=58.5, 上側)  eth2_* = SO-DIMM 偶数ピン 16/18/24/22/28/30/36/34
+LAN1 = J12 (y=77.0, 下側)  eth1_* = SO-DIMM 奇数ピン 15/17/23/21/27/29/35/33  ← gateware 既定
 ```
 
-さらに**呼び名が資料間で逆**。`docs/sodimm-pinmap.html`(出典: wuxx ext-board 図)は
+**番号は litex の eth index に揃えてある**ので、シルクの数字がそのまま
+`--eth-phy` の値になり、MDIO の PHY アドレスとも一致する。
+
+★**i5モジュールの印刷 ETH1/ETH2 はこの番号と逆順**(i5のETH2 = LAN0)。
+資料間でも呼び名が食い違っている: `docs/sodimm-pinmap.html`(出典: wuxx ext-board 図)は
 偶数ピンを Eth2 と呼ぶが、rainbow-board は同じ偶数ピンを ETH1 と呼ぶ。配線は同じで
-ラベルだけの違いだが、ゲートウェアの PHY インデックス選択で迷う原因になる。
-→ v1.0 でシルクに ETH1/ETH2 を入れること。
+ラベルだけの違い。**だからこの基板からは ETH1/ETH2 を排除した**(`docs/TODO.md` 0c)。
 
 ★**litex の eth index との対応(2026-09-02 実機で確定)**。以前ここには
 「ETH2=jack(J11)=PHY0=litex eth1」と書いていたが**逆だった**。
@@ -387,9 +390,12 @@ J12 (y=77.0, 下側)  eth1_* = SO-DIMM 奇数ピン 15/17/23/21/27/29/35/33
 > The order of the two PHYs is swapped with the naming of the connectors on the
 > board so to match with the configuration of their PHYA[0] pins.
 
+つまり index は **PHYA[0] ストラップで決まる PHY アドレス**に合わせてあり、
+シルクの数字ではない。
+
 ```
-platform.request("eth", 0) = コネクタ ETH2 = eth2_*(偶数ピン) = J11
-platform.request("eth", 1) = コネクタ ETH1 = eth1_*(奇数ピン) = J12  ← gateware 既定
+platform.request("eth", 0) = LAN0 = eth2_*(偶数ピン) = J11  (i5の印刷は ETH2)
+platform.request("eth", 1) = LAN1 = eth1_*(奇数ピン) = J12  (i5の印刷は ETH1) ← gateware 既定
 ```
 
 手組み試作機では配線がたまたま index=1 と一致していたので露見せず、v0.9.0 で J11 に
@@ -614,7 +620,8 @@ RT9013-18 → TLV75718P へ置き換え済み)。履歴として残す。
   [kazkojima氏 i5ether](https://github.com/kazkojima/colorlight-i5-tips)準拠
   (1000BASE-T netboot/nfsroot動作実績あり):MDIはDC結合のまま、PHY側CTは各0.1µF→GND
   (B50612Dは内部バイアスで無給電可)、Bob-SmithはMagJack内蔵、GND-シャーシ間4.7nF/2kV×2。
-  **ETH2側ペア=LiteXのphy0** を使用(PHY番号とコネクタ名の対応は逆転に注意)
+  **i5のETH2側ペア = LiteX の eth index 0 = この基板の LAN0 = J11**
+  (i5モジュールの印刷 ETH1/ETH2 は LAN 番号と逆順。`docs/TODO.md` 0c)
 - EXTボードのGPIOヘッダは P2–P6(各2×15メス、GPIOは1ヘッダあたり18〜20本)。USB-C は
   DAPLink(JTAG書き込み+UARTコンソール)+VBUS。HDMIは出力のみ。SDスロット無し
 - **EXTのUSB-C電源には要注意(回路図 schematic/i5-i9-extboard.pdf で確認)**: PDコントローラなし・

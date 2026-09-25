@@ -617,15 +617,21 @@ PHYID `0x0362/0x5E62`):
 - ★**LiteEth に mdc/mdio を渡さないこと。** 渡すと `LiteEthPHYMDIO` を
   勝手に生やしてピンを二重駆動する(`PadsWithoutMdio` で隠す)
 
-### ETH1/ETH2 と litex index の対応(実測で確定)
+### LAN0 / LAN1 と litex index の対応(実測で確定)
 
-    litex eth0 = ETH2 = J11 = jack  = io_r1/io_t1
-    litex eth1 = ETH1 = J12 = jack2 = io_u1/io_y2   ← 映像ストリーム既定
+    litex eth0 = LAN0 = J11 = lan0 = io_r1/io_t1   (i5の印刷は ETH2)
+    litex eth1 = LAN1 = J12 = lan1 = io_u1/io_y2   ← 映像ストリーム既定(i5の印刷は ETH1)
 
 根拠はどちらも実測。LEDのランプテストで `io_r1` を点けると J11 の緑が光る
-(`io_r1` は `jack` 側 → `jack` = J11 = ETH2)。ケーブルは J12 で、それが
-`--eth-phy 1` で通る(→ litex eth1 = J12 = ETH1)。
+(`io_r1` は `lan0` 側 → `lan0` = J11)。ケーブルは J12 で、それが
+`--eth-phy 1` で通る(→ litex eth1 = J12 = LAN1)。
 `main.ato` の docstring が逆に書いてあったのを 2026-09-11 に直した。
+
+★**呼称は 2026-09-26 に LAN0 / LAN1 へ統一した**(`docs/TODO.md` 0c)。番号は
+litex の index = MDIO の PHY アドレスと同じ。**i5モジュールの印刷 ETH1/ETH2 は
+逆順**なので、そちらを指すときだけ「i5のETH1」と明示する。
+index が PHY アドレスに合わせてあるのは Colorlight の PHYA[0] ストラップが理由で、
+2つの PHY は mdio/mdc を共有している(入れ替えるとリンク判定が別の PHY を読む)。
 
 ### 立ち上げにランプテストを用意しておくこと
 
