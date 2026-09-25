@@ -223,42 +223,65 @@ component SolderJumper:
     signal b ~ pin 2
 
 component SpdifRxModule:
-    """光デジタル(TOSLINK)受信モジュール Everlight PLR135/T、2.4〜5.5V動作。
+    """光デジタル(TOSLINK)受信モジュール Everlight PLR135/T10、2.4〜5.5V動作。
 
-    秋月電子 109595(150円)。データシート: datasheets/plr135-t.pdf
-    (Everlight DPL-0000018_Rev.4)。16Mbps、Vout は TTL 互換。
+    データシート: datasheets/plr135-t.pdf (Everlight DPL-0000018_Rev.4。PLR135
+    ファミリ共通の電気仕様)。16Mbps、Vout は TTL 互換。
 
-    ## PLR135/T10 から PLR135/T へ変更した (2026-08-19)
+    ## PLR135/T へ逃げたのを v1.0 で /T10 へ戻した
 
-    T10 は DigiKey で廃品種・在庫0、代替の PLR237/T10BK も在庫0だった。
-    秋月で入手できる形状違いの PLR135/T に切り替えた。**ランドが違う**:
+    v0.9.0 では DigiKey で /T10 が廃品種・在庫0だったため、秋月で買える形状違いの
+    PLR135/T に切り替えていた。/T は**取付穴が φ3.20 で間隔 7.62mm**あり、
+    基板の端で 8mm 幅を占めて配置が苦しい(TODO 10-3)。/T10 は AliExpress 等で
+    入手できるので、ランドの小さい /T10 に戻す。
 
-        項目            PLR135/T (新)        PLR135/T10 (旧)
+        項目            PLR135/T10 (v1.0)    PLR135/T (v0.9.0)
         信号ピン        3本 2.54mmピッチ     同じ
-        信号穴径        φ0.80(実装はφ0.9)    φ0.9
-        取付穴の間隔    7.62mm               5.08mm
-        取付穴の径      φ3.20                φ1.15
-        信号列からの距離 3.95mm              2.63mm
-        信号列の位置    取付穴の中央         取付穴と同じx
+        信号穴径        φ0.80(実装はφ0.9)    同じ
+        取付穴の間隔    5.08mm               7.62mm
+        取付穴の径      φ1.15                φ3.20
+        信号列からの距離 2.63mm              3.95mm
 
-    ## ★ピン機能を訂正した
+    ## ★ピン機能は 1=Vcc / 2=GND / 3=Vout
 
-    データシート p6 の PIN FUNCTION は **1=Vcc / 2=GND / 3=Vout**。
-    旧定義は out=pin1 / vcc=pin3 で**VccとVoutが逆**だった。docstring に
-    「ピン番号は仮割り当て。データシートと必ず照合」と書かれたまま照合されて
-    いなかったもの。このまま実装すると 3.3V が出力ピンに加わり、モジュールが
-    壊れるところだった。
+    データシート p6 の PIN FUNCTION と応用回路(Fig.2/Fig.3 および Application
+    Circuit)が、いずれも **Vcc / GND / Vout の順**で並んでいる。
 
-    本体は約 11.5(W) x 11.3(D) x 19.5(H) mm。光ポートの筒は取付穴とは反対側
-    (フットプリントの +Y 方向)に突き出し、基板端から張り出す向きで使う。
+    ★**v0.9.0 以前の /T10 定義は out=pin1 / vcc=pin3 で VccとVoutが逆だった。**
+      docstring に「ピン番号は仮割り当て。データシートと必ず照合」と書かれたまま
+      照合されていなかったもので、/T へ差し替えた際の照合で発覚した。
+      そのまま実装すると 3.3V が出力ピンに加わってモジュールが壊れる。
+      **/T10 の現物を買ったら、通電前にテスターでピン1がVcc(内部で0.1uF経由GND、
+      ダイオード導通しない)であることを確認すること。**
+
+    ## 電源のフィルタ(v1.0で追加)
+
+    データシートの応用回路は Vcc に **L2=47uH + C1=0.1uF**(「C1,C2 capacitor must
+    be placed within 7mm」)を要求している。v0.9.0 は 0.1uF だけだった。
+    47uH はこの基板のBOMに無いので、既存の **フェライトビーズ(MPZ1608S221) +
+    10uF** で代える。47uH ほど低い周波数から効かないが、光受信の前段アンプに
+    デジタル電源のノイズが回り込むのを抑える意図は満たせる。
+
+    本体は約 11.5(W) x 11.3(D) x 19.5(H) mm。光ポートの筒は取付穴と同じ側
+    (フットプリントの -Y 方向)に突き出し、基板端から張り出す向きで使う。
     """
-    trait is_atomic_part<manufacturer="EVERLIGHT", partnumber="PLR135/T", footprint="PLR135_T.kicad_mod", symbol="PLR135_T.kicad_sym">
+    trait is_atomic_part<manufacturer="EVERLIGHT", partnumber="PLR135/T10", footprint="PLR135_T10.kicad_mod", symbol="PLR135_T10.kicad_sym">
     trait has_designator_prefix<prefix="J">
     trait has_part_removed  # 手実装/DNP: 基板にFPは載せるがJLC発注しない
     # 手実装(JLC発注除外)。has_part_picked無し
     signal vcc ~ pin 1     # データシート p6: 1=Vcc
     signal gnd ~ pin 2     #                 2=GND
     signal out ~ pin 3     #                 3=Vout (S/PDIFビットストリーム, TTL)
+    # pin 4/5 = 取付用のポスト(φ1.15)。**どこにも繋がない。**
+    # /T10 のポストは位置決め用で、樹脂なら半田は乗らず、金属だと内部で何かに
+    # 繋がっている可能性がある。GNDへ落とすと後者のときに短絡になる。
+    # 機械強度はポストの圧入と信号3本の半田で足りる。
+    # ★ポストは**1本ずつ別ネット**にする。1ネットに2パッドあると、繋がない
+    #   のが正しいのに KiCad の DRC が「spdif_mount_nc 同士が未接続」と言う。
+    #   パッドが1個だけのネットは未接続として数えられない。
+    signal mount1 ~ pin 4
+    signal mount2 ~ pin 5
+
 
 component BoxHeader2x8Argus:
     """ArgusX(アナログRGBマトリクスセレクタ)の2x8汎用映像端子と嵌合する
@@ -290,83 +313,123 @@ component BoxHeader2x8Argus:
     gnd ~ pin 16
     # pin 13(+5V), 15(VBUS) = NC(RetroCastXは自己給電)
 
-component BoxHeaderAux2x5:
-    """第2映像入力の 2x5 ボックスヘッダ(2.54mm, IDCリボン)。手実装/DNP。
+component MiniDin8Rgb:
+    """第2映像入力: FRAMEMEISTER(XRGB-mini)互換の **ミニDIN 8ピン** アナログRGB入力(メス)。
+    マル信無線電機 **MJ-373/8B**(基板取付)。手実装/DNP(JLC発注除外)。
 
-    MSX専用ではなく、**2台目のX68000など汎用の第2入力**として使う。
-    ピン番号 = フラットケーブルの導体順にしてあるので、ケーブル自作時に
-    「導体のn本目 → n番ピン」で数えられる(BOXヘッダからは奇数列/偶数列に
-    交互に出る)。
+    入手: 千石電商 / マルツ / モモハラ電機部品など。RoHS2対応品。
+    図面: https://www.mepc.jp/store/pdf/est/drawing/MJ-373-8B.pdf
 
-      1 R        2 G        3 B        4 GND
-      5 音声L    6 音声R    7 CSYNC    8 GND
-      9 HSYNC   10 VSYNC
+    v1.0 で 2x5 ボックスヘッダ(v0.9.0 の J4)から置き換えた。自作ケーブルを作らなくても
+    マイコンソフトの「RGB21ピン→ミニDIN8」ケーブルや、その互換ケーブル(NESRGB /
+    3DORGB / Supergun 等で事実上の標準になっている)がそのまま挿せる。
 
-    ★sync-on-green は使えない前提。緑は映像専用で、同期は CSYNC(映像レベル、
-      SOGIN_2へ)か HSYNC/VSYNC(TTL、HSYNC_B/VSYNC_Bへ)を使う。
-    ★MSXを繋ぐ場合は 8ピンDIN 45326 Type A から自作ケーブルで変換する:
-        DIN 6=R → 1 / 7=G → 2 / 8=B → 3 / 1=GND → 4,8
-        DIN 2=AUDIO(モノラル) → 5,6 の両方(ケーブル側で分岐)
-        DIN 4=CSYNC → 7
-      DIN の 3=AV(+5V) と 5=YS(+12V/+5V) は繋がないこと。
-      出典: https://www.msx.org/wiki/RGB_(8-pin_DIN_45326)
-    ★CSYNC は映像レベル(MSXで1.8Vpp)を想定。基板側で75Ω終端+1/2分圧してある。
-      TTLのCSYNCを入れる場合は 9(HSYNC)へ入れて4線モード(reg 0Eh=0x53)を使う。
+    ## ピン配置(FRAMEMEISTER RGB IN と同じ)
+
+        1=音声R  2=音声L  3=CSYNC  4=GND  5=未使用  6=B  7=G  8=R  シェル=GND
+
+    ミニDIN8の標準ピン番号で、ソケット正面(嵌合面)から見た並びは下記。
+
+        6  7  5     ← 上段
+        4  8  3     ← 中段(8は中央)
+          2  1      ← 下段(キー溝側)
+
+    ★**現物のケーブルで導通を確認してから発注すること。** ピン表の出典はコミュニティの
+      複数ソースの一致(shmups / RetroRGB 系)で、マイコンソフトの公開資料には無い。
+      → 実際に FRAMEMEISTER 付属の「ミニDIN8→RGB21」ケーブルをばらして確認済み
+        (2026-09-21, ohnaka): R/G/B/CSYNC/音声L/R と各GND・FGが素通しで、
+        **ケーブル内に分圧や同期分離は入っていない**。
+
+    ## フットプリント(図面から自作。★7番ピンだけ列からずれている)
+
+    メーカー図面の "T:1.6 Dimensions of PC board holes (Printed-Top view)" どおり。
+    原点は**嵌合面(x=0)と中心線(y=0)の交点**。KiCadのy軸は下が正なので図面のyを反転。
+
+        φ1.2 ×8   x=8.5 列: 5(y=+3.25) 2(+1.5) 1(-1.5) 3(-3.25)   ※図面のy(上が正)
+                  x=11.0列: 8(+3.25) **7(+1.0)** 4(-1.5) 6(-3.25)
+        スロット 2.8×0.8(R0.4) ×3: (4.7, 0)縦 / (5.5, ±6.85)横 → すべてシェル=GND
+        本体は奥行12.7、フランジ 14.0 × 13.0
+
+    ★**7番(G)は 2番と同じ列に無い**(中心線から+1.0mm、2番は+1.5mm)。図面の
+      「1.0」の寸法がこれ。画像解析で実測して確定した(2026-09-21)。等間隔だと
+      思い込んで描くと、**緑だけ嵌合しない**基板ができる。
+    ★x=0 が嵌合面。**基板外形をここに合わせる**(コネクタの筒は基板の外へ出す)。
+
+    ## 信号レベル(ここが設計の要点)
+
+    FRAMEMEISTER の仕様は「アナログRGB 0.7Vp-p(75Ω) / 複合同期 0.3Vp-p 負極性」
+    (取扱説明書 第4版 本体仕様)。0.3Vpp は**複合映像信号の同期先端の振幅**で、
+    SCART/RGB21 のディスプレイが 75Ω 終端で受ける「75Ωレベル同期」の標準値。
+
+    ところが**実機のコンソールは TTL(5Vpp)の CSYNC を出すものが多い**
+    (NTSC SNES / MD1・MD2・MD3・32X・CDX / Master System / Saturn など)。
+    だからケーブルや RGB MOD 側に直列 330〜680Ω + DCカット電解を入れて、
+    ディスプレイの 75Ω との分圧で 0.3〜0.7Vpp に落とすのが定石になっている
+    (例外: 日本版 Master System MK-2000 は素で約350mV)。MSX を実測したときの
+    1.8Vpp も「TTL的な出力が75Ω負荷で沈んだ値」と読むと整合する。
+
+    → **基板側は 75Ω終端 + 1.5k/1.5k の1/2分圧で受ける**(main.ato の r_cs_*)。
+      分圧はレベル合わせだけでなく、TTLを直結されたときに TVP の絶対最大 2.3V を
+      超えさせない保護も兼ねる。小振幅側は TVP の SOG スライス閾値が可変
+      (reg 10h[7:3] = 350mV×NTH/31、既定 NTH=11 = 124mV、CONFIG key 0x50)なので
+      設定で吸収する。詳細は main.ato の CSYNC セクション。
+
+    ## MSX を繋ぐ場合(8ピンDIN 45326 → ミニDIN8 の自作ケーブル)
+
+        DIN45326 6=R     → 8    DIN45326 7=G  → 7    DIN45326 8=B → 6
+        DIN45326 4=CSYNC → 3    DIN45326 1=GND → 4 + シェル
+        DIN45326 2=AUDIO(モノラル) → 1 と 2 の両方(ケーブル側で分岐)
+        DIN の 3=AV(+5V) と 5=YS(+12V/+5V) は繋がないこと
+        出典: https://www.msx.org/wiki/RGB_(8-pin_DIN_45326)
+
+    ★sync-on-green は使えない前提。緑は映像専用で、同期は CSYNC(SOGIN_2 へ)か、
+      HSYNC/VSYNC(TTL)を使う場合は 1x3 ヘッダ(HeaderSync3)へ入れる。
     """
-    trait is_atomic_part<manufacturer="", partnumber="BoxHeader_2x5_2.54", footprint="BoxHeader_2x5_P2.54mm.kicad_mod", symbol="BoxHeader_2x5.kicad_sym">
+    trait is_atomic_part<manufacturer="MARUSHIN", partnumber="MJ-373/8B", footprint="MJ373_8B.kicad_mod", symbol="MJ373_8B.kicad_sym">
     trait has_designator_prefix<prefix="J">
-    trait has_part_removed  # 手実装/DNP
-    signal r ~ pin 1
-    signal g ~ pin 2
-    signal b ~ pin 3
+    trait has_part_removed  # 手実装/DNP: 基板にFPは載せるがJLC発注しない
+    signal audio_r ~ pin 1
+    signal audio_l ~ pin 2
+    signal csync ~ pin 3
     signal gnd ~ pin 4
-    signal audio_l ~ pin 5
-    signal audio_r ~ pin 6
-    signal csync ~ pin 7
-    gnd ~ pin 8
-    signal hsync ~ pin 9
-    signal vsync ~ pin 10
+    signal nc5 ~ pin 5       # FRAMEMEISTER でも未使用
+    signal b ~ pin 6
+    signal g ~ pin 7
+    signal r ~ pin 8
+    # シェル(金属殻)/グラウンドコンタクトのスロット3か所
+    signal shell ~ pin 9     # 中央のグラウンドコンタクト (4.7, 0)
+    shell ~ pin 10           # 上のシェル脚 (5.5, -6.85)
+    shell ~ pin 11           # 下のシェル脚 (5.5, +6.85)
 
 
-component HeaderSVideo:
-    """S-Video / コンポジット映像 + 音声の 2×4 ボックスヘッダ(2.54mm, IDCリボン)。手実装/DNP。
+component HeaderSync3:
+    """TTL同期の予備入力 1×3 ヘッダ(2.54mm): 1=HSYNC 2=VSYNC 3=GND。手実装/DNP。
 
-    TVP7002 の**1番系統**(GIN_1 / RIN_1 / SOGIN_1)と、**第2入力と共用の PCM1808**に繋ぐ。
+    v1.0 で第2映像入力を **ミニDIN8ピン(FRAMEMEISTER互換)** に変えた副作用の受け皿。
+    ミニDIN8 には CSYNC しか無く HSYNC/VSYNC の線が無いので、TTL同期を使いたく
+    なったときのために `buf_sync2`(SN74LVC2G17, 5Vトレラント シュミット)の入力を
+    ここへ引き出しておく。TVP側は reg 1Ah の HS SEL/VS SEL で _A(D-SUB15)と
+    _B(こちら)を切り替える。
 
-        G G G G     ← 上段 (pin 2/4/6/8 すべてGND)
-        R L C Y     ← 下段 (pin 7/5/3/1)。**Y側が1番ピン**
+    ★**用途1: HSYNC/VSYNC が別々に出ている機種**。ミニDIN8のR/G/Bと併用する
+      (映像はDIN8、同期はここ)。
+    ★**用途2: TTLレベルのCSYNC**。HSYNC(pin1)へ入れて4線モード(reg 0Eh=0x53)で
+      受ける。ミニDIN8のCSYNCピンは75Ω終端+1/2分圧のアナログSOG経路に入って
+      いるので、**TTL(5Vpp)を入れるとTVPの絶対最大2.3Vに対して余裕が無い**。
+      TTL同期はこちらの5Vトレラント入力に入れるのが正しい。
+      (75Ωレベル=0.3〜1Vppに落としたCSYNCならDIN8側で受けられる。
+       レベルの話は main.ato の r_cs_* のコメント参照)
 
-      1=Y  2=GND  3=C  4=GND  5=音声L  6=GND  7=音声R  8=GND
-
-    **全ての信号が隣にGNDを持つ**ので、リボンケーブルでも撚り線でも帰りを取りやすい。
-
-    ★TVP7002はコンポジットをデコードできない(digitizerであってdecoderで、
-      副搬送波PLL・直交復調・Y/C分離が無い)。この端子は**8fsc線同期サンプラー**
-      として使い、復調はViewer側で行う前提。詳細は docs/composite-video-plan.md。
-
-    ★音声は**2x5ヘッダ(第2映像入力)と同じ PCM1808 を共有**する。ADCを増やさずに
-      2端子で1個を使うため、双方に直列1.5kΩを入れた受動加算にしてある
-      (セレクタではないので両方挿すと両方鳴る。定数の根拠は main.ato の r_mix_* 参照)。
-
-    使い方:
-      S-Video    Y → pin1 / C → pin3 / 音声 → pin5,7 / シールドと帰り → 偶数ピン
-      コンポジット  芯線 → pin1 / シールド → pin2  (pin3のCは未使用)
-
-    ★S-Video なら Y/C 分離(コムフィルタ)が不要になり、さらに C チャンネルが
-      独立ゲインで8bitを使い切れる(コンポジットは140 IRE を輝度と分け合う)ので
-      クロマ分解能が約4倍になる。
+    ★未接続時は 10kΩ で 3.3V へプルアップしてある(main.ato)。浮かせると
+      シュミットでも中間電位で自己発振し、捕捉側の raw_ok が誤って立つ
+      (実機で踏んだ。docs/TODO.md 10-5b)。
     """
-    trait is_atomic_part<manufacturer="", partnumber="BoxHeader_2x4_2.54", footprint="BoxHeader_2x4_P2.54mm.kicad_mod", symbol="BoxHeader_2x4.kicad_sym">
+    trait is_atomic_part<manufacturer="", partnumber="PinHeader_1x3_2.54", footprint="Header_1x3_P2.54mm.kicad_mod", symbol="Header_1x3.kicad_sym">
     trait has_designator_prefix<prefix="J">
-    trait has_part_removed  # 手実装/DNP
-    signal y ~ pin 1
-    signal c ~ pin 3
-    signal audio_l ~ pin 5
-    signal audio_r ~ pin 7
-    signal gnd ~ pin 2
-    gnd ~ pin 4
-    gnd ~ pin 6
-    gnd ~ pin 8
+    trait has_part_removed  # 手実装/DNP: 基板にFPは載せるがJLC発注しない
+    signal hsync ~ pin 1
+    signal vsync ~ pin 2
+    signal gnd ~ pin 3
 
 
 component Fiducial:
@@ -395,23 +458,27 @@ component Fiducial:
     signal pad ~ pin 1
 
 
-component MountingHoleM26:
-    """基板固定用ネジ穴 M2.6(GND接続)。
+component MountingHoleM3:
+    """基板固定用ネジ穴 M3(GND接続)。
 
-    穴径 2.8mm = M2.6 のクリアランス(普通級。ねじ外径2.6 + 0.2)。
-    5.6mm のアニュラーパッド付きメッキ穴で、**表裏どちらも銅が露出**する
-    (KiCad標準 MountingHole_2.7mm_M2.5_Pad と同じ作り: layers "*.Cu" "*.Mask")。
+    穴径 3.2mm = M3 のクリアランス(普通級。ねじ外径3.0 + 0.2)。
+    6.4mm のアニュラーパッド付きメッキ穴で、**表裏どちらも銅が露出**する
+    (KiCad標準 MountingHole_3.2mm_M3_Pad と同じ作り: layers "*.Cu" "*.Mask")。
     zone_connect 2 = GNDベタへベタ付け接続。
 
+    ★**v1.0 で M2.6(穴2.8mm)から M3(穴3.2mm)へ変えた。** M2.6 は入手できる
+      ねじ・スペーサの種類が少なく、ケースを作るときに困る。M3 なら樹脂スペーサも
+      金属スペーサも一般品が使える。穴が0.4mm太る分、周囲のクリアランスが要る
+      (パッド径 5.6→6.4mm)ので、レイアウトで四隅の部品を寄せすぎないこと。
     ★金属スペーサ/金属筐体で留めると、この穴を通じて**論理GNDが筐体に落ちる**。
       本基板はMagJackのシェル用に「シャーシGNDの島」を4.7nF/2kVで論理GNDから
       分離しているので、金属筐体だとその分離がネジ経由で短絡される。
       樹脂スペーサを使うか、分離をやめる判断を意図的にすること。
-    ★ネジ頭が銅に直接触れるので、頭の外径(M2.6なめしなべで約5mm)が
-      隣の配線に乗らないよう、周囲はパッド径5.6mmぶん空けておく。
+    ★ネジ頭が銅に直接触れるので、頭の外径(M3なべ小ねじで約5.5mm)が
+      隣の配線に乗らないよう、周囲はパッド径6.4mmぶん空けておく。
     穴だけなので実装対象外(JLC発注除外)。
     """
-    trait is_atomic_part<manufacturer="", partnumber="MountingHole_2.8mm_M2.6", footprint="MountingHole_2.8mm_M2.6_Pad.kicad_mod", symbol="MountingHole.kicad_sym">
+    trait is_atomic_part<manufacturer="", partnumber="MountingHole_3.2mm_M3", footprint="MountingHole_3.2mm_M3_Pad.kicad_mod", symbol="MountingHole.kicad_sym">
     trait has_designator_prefix<prefix="H">
     trait has_part_removed
     signal gnd ~ pin 1
@@ -423,21 +490,6 @@ component Tp1Pad:
     trait has_designator_prefix<prefix="TP">
     trait has_part_removed
     signal pad ~ pin 1
-
-component HeaderJtag:
-    """JTAGデバッグ端子(1×6, 2.54mm)。念のための予備。コネクタ未実装(DNP)。
-    ポゴピン(FT2232H ch.A)と並列に同じJTAG信号へ接続。外部JTAG器での書換え/
-    バウンダリスキャン用。ピン: 1=TCK 2=TMS 3=TDI 4=TDO 5=GND 6=3V3(VREF)。
-    手実装/DNP(JLC発注除外)。"""
-    trait is_atomic_part<manufacturer="", partnumber="PinHeader_1x6_2.54", footprint="Header_1x6_P2.54mm.kicad_mod", symbol="Header_1x6.kicad_sym">
-    trait has_designator_prefix<prefix="J">
-    trait has_part_removed
-    signal tck ~ pin 1
-    signal tms ~ pin 2
-    signal tdi ~ pin 3
-    signal tdo ~ pin 4
-    signal gnd ~ pin 5
-    signal vref ~ pin 6
 
 component PogoPin:
     """スプリング/ポゴピン(圧入TH)。Colorlight i5 モジュール底面のJTAGテストパッド

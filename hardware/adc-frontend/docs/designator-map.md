@@ -47,7 +47,15 @@ atopile は `keep_designators`(既定 true)のとき、`.kicad_pcb` の Referenc
 | C4 | **C64** | `adc_dsub.c_vref_b` | 100nF ±10% |
 | C5 | **C65** | `adc_dsub.dec[0]` | 100nF ±10% |
 | C6 | **C66** | `adc_dsub.dec[1]` | 100nF ±10% |
-| J7 | **J4** | `aux` | — |
+|  | **U17** | `adc_kokame.adc` | — |
+|  | **C94** | `adc_kokame.bulk[0]` | 10µF ±10% |
+|  | **C95** | `adc_kokame.bulk[1]` | 10µF ±10% |
+|  | **C88** | `adc_kokame.c_in_l` | 1µF ±10% |
+|  | **C89** | `adc_kokame.c_in_r` | 1µF ±10% |
+|  | **C90** | `adc_kokame.c_vref_a` | 10µF ±10% |
+|  | **C91** | `adc_kokame.c_vref_b` | 100nF ±10% |
+|  | **C92** | `adc_kokame.dec[0]` | 100nF ±10% |
+|  | **C93** | `adc_kokame.dec[1]` | 100nF ±10% |
 | U3 | **U2** | `buf_sync` | — |
 | U17 | **U8** | `buf_sync2` | — |
 | C13 | **C60** | `c_5va` | 10µF ±10% |
@@ -64,12 +72,17 @@ atopile は `keep_designators`(既定 true)のとき、`.kicad_pcb` の Referenc
 | C18 | **C31** | `c_sog3` | 100nF ±10% |
 | C85 | **C32** | `c_sog3_aa` | 33pF ±5% |
 | C19 | **C77** | `c_spdif` | 100nF ±10% |
+|  | **C96** | `c_spdif_bulk` | 10µF ±10% |
 | C20 | **C42** | `c_vs` | 1nF ±10% |
 | C21 | **C59** | `c_xo_audio` | 100nF ±10% |
 | C79 | **C30** | `ch_b.c_aa` | 33pF ±5% |
 | C22 | **C29** | `ch_b.c_ac` | 100nF ±10% |
 | R12 | **R9** | `ch_b.r_aa` | 220Ω ±1% |
 | R1 | **R8** | `ch_b.r_term` | 75Ω ±1% |
+|  | **C87** | `ch_b1.c_aa` | 33pF ±5% |
+|  | **C86** | `ch_b1.c_ac` | 100nF ±10% |
+|  | **R52** | `ch_b1.r_aa` | 220Ω ±1% |
+|  | **R51** | `ch_b1.r_term` | 75Ω ±1% |
 | C87 | **C38** | `ch_b2.c_aa` | 33pF ±5% |
 | C88 | **C37** | `ch_b2.c_ac` | 100nF ±10% |
 | R27 | **R16** | `ch_b2.r_aa` | 220Ω ±1% |
@@ -77,7 +90,6 @@ atopile は `keep_designators`(既定 true)のとき、`.kicad_pcb` の Referenc
 |  | **C50** | `ch_c.c_aa` | 33pF ±5% |
 |  | **C49** | `ch_c.c_ac` | 100nF ±10% |
 |  | **R26** | `ch_c.r_aa` | 220Ω ±1% |
-|  | **R25** | `ch_c.r_term` | 75Ω ±1% |
 | C80 | **C28** | `ch_g.c_aa` | 33pF ±5% |
 | C23 | **C27** | `ch_g.c_ac` | 100nF ±10% |
 | R13 | **R7** | `ch_g.r_aa` | 220Ω ±1% |
@@ -97,7 +109,6 @@ atopile は `keep_designators`(既定 true)のとき、`.kicad_pcb` の Referenc
 |  | **C48** | `ch_y.c_aa` | 33pF ±5% |
 |  | **C47** | `ch_y.c_ac` | 100nF ±10% |
 |  | **R24** | `ch_y.r_aa` | 220Ω ±1% |
-|  | **R23** | `ch_y.r_term` | 75Ω ±1% |
 | D7 | **D7** | `d_led` | — |
 | C25 | **C11** | `dec_caps[0]` | 100nF ±10% |
 | C35 | **C21** | `dec_caps[10]` | 100nF ±10% |
@@ -115,6 +126,7 @@ atopile は `keep_designators`(既定 true)のとき、`.kicad_pcb` の Referenc
 | C34 | **C20** | `dec_caps[9]` | 100nF ±10% |
 | C39 | **C78** | `dec_eeprom[0]` | 100nF ±10% |
 | C40 | **C79** | `dec_eeprom[1]` | 100nF ±10% |
+|  | **J13** | `din8` | — |
 | U14 | **U10** | `drgb.buf[0]` | — |
 | U15 | **U11** | `drgb.buf[1]` | — |
 | U16 | **U12** | `drgb.buf[2]` | — |
@@ -132,8 +144,10 @@ atopile は `keep_designators`(既定 true)のとき、`.kicad_pcb` の Referenc
 | U4 | **U15** | `eeprom_mac0` | — |
 | U5 | **U16** | `eeprom_mac1` | — |
 | D1 | **D8** | `esd_audio` | — |
+|  | **D12** | `esd_audio2` | — |
+|  | **D10** | `esd_din8` | — |
+|  | **D11** | `esd_ffc` | — |
 | D2 | **D1** | `esd_rgb` | — |
-|  | **D4** | `esd_svideo` | — |
 | D3 | **D3** | `esd_sync` | — |
 | D6 | **D2** | `esd_sync2` | — |
 |  | **D9** | `esd_usb` | — |
@@ -152,6 +166,8 @@ atopile は `keep_designators`(既定 true)のとき、`.kicad_pcb` の Referenc
 | FB1 | **FB3** | `fb_audio` | — |
 | FB2 | **FB1** | `fb_avdd` | — |
 | FB3 | **FB2** | `fb_pll` | — |
+|  | **FB4** | `fb_spdif` | — |
+|  | **J15** | `ffc` | — |
 |  | **FID1** | `fid[0]` | — |
 |  | **FID2** | `fid[1]` | — |
 |  | **FID3** | `fid[2]` | — |
@@ -163,24 +179,27 @@ atopile は `keep_designators`(既定 true)のとき、`.kicad_pcb` の Referenc
 |  | **U7** | `ft2232.ch` | — |
 | R15 | **R3** | `ft2232.r_reset` | 10kΩ ±1% |
 | X3 | **X2** | `ft2232.xtal` | — |
+|  | **J14** | `hdr_sync` | — |
 | J5 | **J9** | `j11_argus` | — |
 | J4 | **J7** | `j_dbg` | — |
 | J13 | **J6** | `j_drgb` | — |
 | J3 | **J10** | `j_oled` | — |
-| J1 | **J3** | `jtag_hdr` | — |
 | LED1 | **LED1** | `led_status` | — |
 | H1 | **H1** | `mount[0]` | — |
 | H2 | **H2** | `mount[1]` | — |
 | H3 | **H3** | `mount[2]` | — |
 | H4 | **H4** | `mount[3]` | — |
 | H5 | **H5** | `mount[4]` | — |
-|  | **C53** | `nc_bin1` | 10nF ±10% |
 |  | **C54** | `nc_gin4` | 10nF ±10% |
 | X1 | **X1** | `osc` | — |
 | PG1 | **PG1** | `pogo_tck` | — |
 | PG2 | **PG3** | `pogo_tdi` | — |
 | PG3 | **PG4** | `pogo_tdo` | — |
 | PG4 | **PG2** | `pogo_tms` | — |
+|  | **R49** | `pu_hsync` | 10kΩ ±1% |
+|  | **R47** | `pu_hsync2` | 10kΩ ±1% |
+|  | **R50** | `pu_vsync` | 10kΩ ±1% |
+|  | **R48** | `pu_vsync2` | 10kΩ ±1% |
 | R4 | **R1** | `r_cc1` | 5.1kΩ ±1% |
 | R5 | **R2** | `r_cc2` | 5.1kΩ ±1% |
 | R34 | **R19** | `r_cs_bot` | 1.5kΩ ±1% |
@@ -189,10 +208,7 @@ atopile は `keep_designators`(既定 true)のとき、`.kicad_pcb` の Referenc
 | R6 | **R22** | `r_filt` | 1.5kΩ ±1% |
 | R7 | **R28** | `r_i2ca` | 2.2kΩ ±1% |
 | R38 | **R38** | `r_led` | 220Ω ±1% |
-|  | **R39** | `r_mix_aux_l` | 1.5kΩ ±1% |
-|  | **R40** | `r_mix_aux_r` | 1.5kΩ ±1% |
-|  | **R41** | `r_mix_sv_l` | 1.5kΩ ±1% |
-|  | **R42** | `r_mix_sv_r` | 1.5kΩ ±1% |
+|  | **R53** | `r_led_kokame` | 220Ω ±1% |
 | R8 | **R31** | `r_rst` | 2.2kΩ ±1% |
 | R9 | **R30** | `r_scl` | 2.2kΩ ±1% |
 | R10 | **R29** | `r_sda` | 2.2kΩ ±1% |
@@ -212,7 +228,6 @@ atopile は `keep_designators`(既定 true)のとき、`.kicad_pcb` の Referenc
 | U7 | **U4** | `supply.ldo_a33` | — |
 | U8 | **U6** | `supply.ldo_d19` | — |
 | U9 | **U3** | `supply.ldo_io` | — |
-|  | **J5** | `svideo` | — |
 | TP2 | **TP2** | `tp_led_do` | — |
 | TP1 | **TP1** | `tp_ys` | — |
 | U10 | **U1** | `tvp` | — |

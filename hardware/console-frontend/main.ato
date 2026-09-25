@@ -1,0 +1,471 @@
+#pragma experiment("BRIDGE_CONNECT")
+#pragma experiment("FOR_LOOP")
+
+import ElectricPower
+import Resistor
+import Capacitor
+import is_atomic_part
+import has_part_picked
+import has_designator_prefix
+import has_part_removed
+from "parts/_mech/mech.ato" import MiniDin4SVideo
+from "parts/_mech/mech.ato" import RcaJack
+from "parts/_mech/mech.ato" import MountingHoleM3
+from "parts/_mech/mech.ato" import Fiducial
+from "parts/_mech/mech.ato" import Tp1Pad
+from "parts/TI_TS5A23159DGSR/TI_TS5A23159DGSR.ato" import TI_TS5A23159DGSR_package
+from "parts/XINGLIGHT_XL_2020RGBC_2812B/XINGLIGHT_XL_2020RGBC_2812B.ato" import XINGLIGHT_XL_2020RGBC_2812B_package
+from "parts/ST_1N4148W/ST_1N4148W.ato" import ST_1N4148W_package
+from "passives.ato" import R75_0603
+from "passives.ato" import R10K_0603
+from "passives.ato" import C100nF_0603
+from "passives.ato" import C10uF_0805
+
+# =============================================================================
+# RetroCastX 小亀基板(コンソール入力基板) v1.0
+#
+# Copyright Kunihiko Ohnaka
+#
+# This source describes Open Hardware and is licensed under the CERN-OHL-S v2.
+# You may redistribute and modify this source and make products using it under
+# the terms of the CERN-OHL-S v2 (https://ohwr.org/cern_ohl_s_v2.txt).
+# This source is distributed WITHOUT ANY EXPRESS OR IMPLIED WARRANTY,
+# INCLUDING OF MERCHANTABILITY, SATISFACTORY QUALITY AND FITNESS FOR A
+# PARTICULAR PURPOSE. Please see the CERN-OHL-S v2 for applicable conditions.
+#
+# Source location: https://github.com/kunichiko/RetroCastX
+#
+# As per CERN-OHL-S v2 section 4, should You produce hardware based on this
+# source, You must where practicable maintain the Source Location visible on
+# the external case of the device or other products you make using this
+# source.
+#
+# 家庭用ゲーム機向けの入力端子(S端子 / コンポジット / 音声 / 実験用コンポーネント)を
+# 引き受け、0.5mmピッチ20芯FFC(10cm)でメイン基板(hardware/adc-frontend)へ渡す。
+#
+# ## なぜ別基板にしたか
+#
+# メイン基板は 10x10cm で、基板の縁は D-SUB15 / RJ45×2 / USB-C / 光 / ミニDIN8 /
+# デジタルRGB で埋まっている。ミニDIN4(13.8mm角)とRCA×5(各12mm角)はこれ以上
+# 入らない。コンソール系は「使う人は使う、使わない人は全く使わない」ので、
+# 分離して必要な人だけ足せる形にするのが素直だった。
+#
+# ## この基板がやること(全部アナログの前段だけ)
+#
+#   1. 各ジャックの 75Ω 終端(**終端はこちら側に置く**。理由は後述)
+#   2. コンポジット/S端子Y の 2:1 切り替えと、コンポーネントPr/S端子C の 2:1 切り替え
+#      (TS5A23159、1本の選択線で両方。FFCのGPIO1 = FPGAのGPIO)
+#   3. ESD保護、音声のDC確定、シリアルLED
+#
+# **Y/C分離も復調もしない**。メイン基板のTVP7002で8fscサンプリングして、
+# Viewer(PC側)でデコードする。設計の根拠は docs/composite-video-plan.md。
+# =============================================================================
+
+
+component FfcMain20:
+    """メイン基板へ渡す 0.5mmピッチ **20芯** FFC コネクタ。
+    HDGC 0.5K-1.5-20PWB(SMD・右アングル・下接点・フリップロック)。LCSC: C2919559
+    **メイン基板(adc-frontend の FfcConsole20)と同じ品番**。
+
+    ## ★ピン割当はメイン基板と逆順(n ↔ 21-n)
+
+    使うケーブルは **type A(両端で接点が同じ面に出ている)**。これを
+    **2枚の基板を同一平面に置き、コネクタの開口部を向かい合わせて平らに1本**で
+    繋ぐと、番号は必ず入れ替わる(同じ品番のコネクタを向かい合わせる = 互いに
+    180°回転した姿勢なので、一方の1番はケーブルの北端、他方の1番は南端に来る)。
+
+        1  +5V   (メイン 20)   11 GND      (メイン 10)
+        2  +5V   (メイン 19)   12 Y / CVBS (メイン 9)
+        3  +3.3V (メイン 18)   13 GND      (メイン 8)
+        4  +3.3V (メイン 17)   14 C / Pr   (メイン 7)
+        5  GND   (メイン 16)   15 GND      (メイン 6)
+        6  GPIO1 (メイン 15)   16 Pb       (メイン 5)
+        7  GND   (メイン 14)   17 GND      (メイン 4)
+        8  GPIO2 (メイン 13)   18 音声R    (メイン 3)
+        9  GND   (メイン 12)   19 GND      (メイン 2)
+        10 LED_DATA(メイン 11) 20 音声L    (メイン 1)
+
+    ★**16芯から20芯に増やした**(2026-09-22)。制御3本(LED_DATA / GPIO2 / GPIO1)
+      にもGNDが隣接し、電源(+3.3V / +5V)が2本ずつになった。
+
+    ## もし機械配置を変えるなら、ケーブル種別も一緒に変わる
+
+    | 機械配置 | ケーブル | ピン対応 | この定義 |
+    |---|---|---|---|
+    | 同一平面・開口部が向かい合う(平ら) | **type A** | n ↔ 21-n | **これ(現状)** |
+    | 重ね置き・開口部が同じ向き(180°折り返す) | type D | n ↔ n | 逆順をやめる |
+
+    折り返すと接点面が裏返る(=type D が要る)が、導体の左右順は保たれるので、
+    向きの反転と面の反転が打ち消し合ってストレートになる。**どちらか一方だけを
+    変えると全部ずれる。**
+
+    ## ★通電前に導通試験をすること
+
+    仮定を間違えると **+5V が映像線(Y)に、映像がGPIOに当たる**。Yの線は
+    小亀側ではアナログスイッチのCOMに直結なので、5Vが載ると絶対最大(VCC+0.5V)を
+    超えてスイッチが死ぬ。手順:
+
+        1. ケーブルを両側に挿す(電源は入れない)
+        2. 小亀基板の +5V パッド(FFC pin1/2)とメイン基板の +5V が導通するか
+        3. 小亀基板の Y(FFC pin12)とメイン基板の Y(FFC pin9)が導通するか
+        4. +5V と GND の間が短絡していないか
+
+    両基板のシルクに「1」を打つこと。pad 21/22 は機械保持用のSMDタブ → GND。
+    """
+    trait is_atomic_part<manufacturer="HDGC", partnumber="0.5K-1.5-20PWB", footprint="parts/HDGC_0_5K_1_5_20PWB/FPC-SMD_20P-P0.50_HDGC_0.5K-1.5-20PWB.kicad_mod", symbol="parts/HDGC_0_5K_1_5_20PWB/0.5K-1.5-20PWB.kicad_sym", model="parts/HDGC_0_5K_1_5_20PWB/FPC-SMD_20P-P0.50_HDGC_0.5K-1.5-20PWB.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C2919559", manufacturer="HDGC", partno="0.5K-1.5-20PWB">
+    trait has_designator_prefix<prefix="J">
+    # メイン基板の逆順(n ↔ 21-n)。上のdocstringの表と対応させて読むこと
+    signal p5v ~ pin 1
+    p5v ~ pin 2
+    signal p3v3 ~ pin 3
+    p3v3 ~ pin 4
+    signal gnd ~ pin 5
+    signal gpio1 ~ pin 6
+    gnd ~ pin 7
+    signal gpio2 ~ pin 8
+    gnd ~ pin 9
+    signal led_data ~ pin 10
+    gnd ~ pin 11
+    signal y ~ pin 12
+    gnd ~ pin 13
+    signal c ~ pin 14
+    gnd ~ pin 15
+    signal pb ~ pin 16
+    gnd ~ pin 17
+    signal audio_r ~ pin 18
+    gnd ~ pin 19
+    signal audio_l ~ pin 20
+    gnd ~ pin 21   # 機械保持タブ
+    gnd ~ pin 22   # 機械保持タブ
+
+
+component EsdArray4:
+    """ROHM EMZT6.8ET2R コモンアノード 4ch ESDアレイ。LCSC: C510333
+
+    **メイン基板と同一部品**。パッケージは6ピンではなく**5ピン**(EMD5/SC-75A)で、
+    共通アノードはリード2。フットプリントはメイン基板で ROHM 推奨ランドに作り直した
+    ものをコピーしてある(取り込み時の汎用6パッド版はリードの無い裸パッドがあり、
+    パッド幅0.28mmでフィレットが実質ゼロだった)。経緯は
+    hardware/adc-frontend/main.ato の同名コンポーネントの docstring 参照。
+    Vz 6.47〜7.14V / Ct 7.0pF typ。4chとも等価なのでI/O割当順は任意。
+    """
+    trait is_atomic_part<manufacturer="ROHM", partnumber="EMZT6.8ET2R", footprint="parts/ROHM_EMZT6_8ET2R/EMT6_L1.6-W1.2-P0.50-LS1.6-BL.kicad_mod", symbol="parts/ROHM_EMZT6_8ET2R/EMZT6.8ET2R.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C510333", manufacturer="ROHM", partno="EMZT6.8ET2R">
+    trait has_designator_prefix<prefix="D">
+    signal io1 ~ pin 1
+    signal io2 ~ pin 3
+    signal io3 ~ pin 4
+    signal io4 ~ pin 5
+    signal gnd ~ pin 2
+
+
+module VideoJackFrontEnd:
+    """ジャック1本ぶんの前段: ESDは外、**75Ω終端 → 100nF → 中点バイアス**。
+
+    出力(`output`)はアナログスイッチの入力へ入る。
+
+    ## なぜACカップリングと中点バイアスを入れるのか(ここが設計の要点)
+
+    アナログスイッチ(TS5A23159, VCC=3.3V)が通せる信号範囲は **GND〜VCC** で、
+    絶対最大は **-0.5V 〜 VCC+0.5V**。コンポジット映像を 75Ω でGNDへ終端すると、
+    **送り出しがACカップリング(出力に電解コンデンサが入っている機種)だと
+    波形の平均値が0Vに落ち着く**ため、同期先端は負側へ潜る:
+
+        暗い絵(平均0.35V)  同期先端 ≈ -0.35V
+        白い絵(平均0.85V)  同期先端 ≈ -0.85V   ← 絶対最大を超える
+
+    しかも潜る量が絵の明るさ(APL)で動くので、スイッチのI/O保護ダイオードが
+    同期先端だけを食う。**同期先端はSOGスライサが見ている場所**なので、
+    ここが潰れると同期が不安定になる(しかも絵が明るいときだけ起きる)。
+
+    v0.9.0 は同じ 75Ω終端→100nF の並びだったが、終端ノードに能動素子が
+    無かったので問題にならなかった。スイッチを入れる v1.0 では効いてくる。
+
+    そこで **終端の直後に 100nF を入れて直流を切り、10kΩ で VCC/2(1.65V)へ
+    持ち上げてからスイッチに入れる**。スイッチから見ると信号は 1.15〜2.15V に
+    収まり、APLで動いても範囲を出ない。
+
+        カップリング   100nF × 10kΩ = 1ms >> 1ライン(63.5µs)   ラインごとの歪みなし
+        バイアス電流   各チャンネルの平均値 = バイアス電位 → 直流電流ゼロ(垂れない)
+        チャンネル間   10kΩ → 10µFでバイパスした低Zのバイアスレール → 10kΩ で約-70dB
+
+    ## 75Ω終端をこちら側に置く理由
+
+    メイン基板の同じ役目の75Ω(VideoInputChannel の r_term)は、**この基板で
+    終端するチャンネル(Y/C)では実装しない**。両方に入れると合計37.5Ωで振幅が
+    半分になる。ACカップリングでメイン基板側の直流経路が切れるので、終端は
+    どうしてもこちら側でなければならない。
+    副産物として「**選ばれていない入力も終端されたままになる**」という利点がつく
+    (未終端だと送り出しが開放を見て振幅が2倍になり、スイッチのオフ容量経由の
+    漏れ込みも2倍になる)。
+    """
+    signal input
+    signal output
+    signal vbias
+    power = new ElectricPower   # 終端のグラウンド基準
+
+    r_term = new R75_0603
+    input ~> r_term ~> power.lv
+
+    c_ac = new C100nF_0603
+    input ~> c_ac ~> output
+
+    r_bias = new R10K_0603
+    output ~> r_bias ~> vbias
+
+
+module App:
+    # --- 電源(すべてFFC経由でメイン基板から貰う。この基板にレギュレータは無い) ---
+    p3v3 = new ElectricPower
+    p5v = new ElectricPower
+    signal gnd
+    gnd ~ p3v3.lv
+    gnd ~ p5v.lv
+    p3v3.voltage = 3.3V +/- 3%
+    p5v.voltage = 5V +/- 5%
+
+    ffc = new FfcMain20
+    ffc.gnd ~ gnd
+    ffc.p3v3 ~ p3v3.hv
+    ffc.p5v ~ p5v.hv
+
+    # --- 入力ジャック ---
+    #
+    # **基板上の並び(前面の辺、左から)**:
+    #
+    #     S端子(ミニDIN4) → Pr(赤) → Pb(青) → CVBS(黄) → 音声L(白) → 音声R(赤)
+    #
+    # ★この並びは **「コンポーネント3本(Y=CVBS兼用 / Pr / Pb)が隣り合う」**
+    #   ことを優先したもの。YPbPr で使うときに3本のケーブルが1か所にまとまる。
+    #   コンポジット単体で使うときも CVBS(黄)が音声の隣なので、黄白赤の3本ケーブルが
+    #   そのまま挿せる。**赤が2個(Pr と 音声R)あるが両端に分かれる**ので混同しにくい。
+    #   シルクには必ず `Pr` / `AUDIO R` と書く。
+    sv = new MiniDin4SVideo
+    sv.gnd ~ gnd
+    sv.shell ~ gnd
+    j_pr = new RcaJack       # 赤: コンポーネント Pr(実験用。S端子のCと同じ線を共有)
+    j_pb = new RcaJack       # 青: コンポーネント Pb(実験用。予備線)
+    j_cvbs = new RcaJack     # 黄: コンポジット / コンポーネントの Y
+    j_aud_l = new RcaJack    # 白: 音声L
+    j_aud_r = new RcaJack    # 赤: 音声R
+    j_pr.gnd ~ gnd
+    j_pb.gnd ~ gnd
+    j_cvbs.gnd ~ gnd
+    j_aud_l.gnd ~ gnd
+    j_aud_r.gnd ~ gnd
+
+    # --- ESD保護(ジャック直近に置くこと) ---
+    #
+    # ★**ジャックの並びに合わせて2個のアレイを分担させてある**(2026-09-21)。
+    #   ESDは経路が短いほど効くので、1個で離れた端子をまとめると意味が薄れる。
+    #
+    #     D2 = esd_cvbs_aud : CVBS / 音声L / 音声R  ← 右の3個(1chあまる)
+    #     D3 = esd_sv_comp  : S端子Y / S端子C / Pr / Pb ← 左の3個(S端子は2本)
+    #
+    # ★デジグネータは atopile がインスタンス名の辞書順で振る(D1=d_led,
+    #   D2=esd_cvbs_aud, D3=esd_sv_comp)。**名前を変えると番号が動く**ので、
+    #   名前を付け替えるときは意図した番号になるか `ato build` 後に確認すること。
+    esd_cvbs_aud = new EsdArray4
+    esd_cvbs_aud.gnd ~ gnd
+    j_cvbs.sig ~ esd_cvbs_aud.io1
+    j_aud_l.sig ~ esd_cvbs_aud.io2
+    j_aud_r.sig ~ esd_cvbs_aud.io3
+    # io4 は未使用(4ch品なので1本余る)
+    esd_sv_comp = new EsdArray4
+    esd_sv_comp.gnd ~ gnd
+    # ★io1=C / io2=Y と**入れ替えてある**(2026-09-21)。ミニDIN4のパッドは
+    #   3=Y が x=8.5 側、4=C が x=11.0 側に並ぶので、Y を io1(下段左)に入れると
+    #   2本がアレイの手前で交差する。4chとも電気的に等価(EsdArray4 の docstring)
+    #   なので、入れ替えて交差を消すのがただの得。
+    sv.c ~ esd_sv_comp.io1
+    sv.y ~ esd_sv_comp.io2
+    j_pr.sig ~ esd_sv_comp.io3
+    j_pb.sig ~ esd_sv_comp.io4
+
+    # --- 中点バイアス(VCC/2 = 1.65V)。スイッチを通る4チャンネルで共用 ---
+    # 10µFでバイパスしてAC的に低Zにする。これでチャンネル間の漏れが -70dB 級になる。
+    signal vbias
+    r_bias_top = new R10K_0603
+    r_bias_bot = new R10K_0603
+    c_bias = new C10uF_0805
+    p3v3.hv ~> r_bias_top ~> vbias
+    vbias ~> r_bias_bot ~> gnd
+    vbias ~> c_bias ~> gnd
+
+    # --- スイッチを通る4チャンネルの前段 ---
+    fe_sv_y = new VideoJackFrontEnd
+    fe_sv_c = new VideoJackFrontEnd
+    fe_cvbs = new VideoJackFrontEnd
+    fe_pr = new VideoJackFrontEnd
+    fe_sv_y.power ~ p3v3
+    fe_sv_c.power ~ p3v3
+    fe_cvbs.power ~ p3v3
+    fe_pr.power ~ p3v3
+    fe_sv_y.vbias ~ vbias
+    fe_sv_c.vbias ~ vbias
+    fe_cvbs.vbias ~ vbias
+    fe_pr.vbias ~ vbias
+    sv.y ~ fe_sv_y.input
+    sv.c ~ fe_sv_c.input
+    j_cvbs.sig ~ fe_cvbs.input
+    j_pr.sig ~ fe_pr.input
+
+    # --- 2ch SPDT アナログスイッチ: Y系統とC系統を1本の選択線で同時に切り替える ---
+    #
+    # TS5A23159(TI, VSSOP-10, Ron 1Ω, 1.65〜5.5V, break-before-make)。
+    # ピン番号はデータシート SCDS201H の DGS パッケージ図と照合済み(2026-09-21):
+    #   1=IN1 2=NO1 3=GND 4=NO2 5=IN2 6=COM2 7=NC2 8=VCC 9=NC1 10=COM1
+    #
+    # 真理値表(SCDS201H Table 2):  IN=L → NC-COM が ON  /  IN=H → NO-COM が ON
+    #
+    #   GPIO1 = L(既定。10kΩでプルダウン)  NC側 = コンポジット + コンポーネント
+    #       NC1 = CVBS(黄)  → COM1 → FFC1 → メイン基板 GIN_1 と SOGIN_1
+    #       NC2 = Pr(赤)   → COM2 → FFC3 → メイン基板 RIN_1
+    #       (Pb は青ジャックからスイッチを通らず FFC5 → BIN_1。この位置が
+    #        そのまま **YPbPrコンポーネント入力** になる)
+    #   GPIO1 = H                              NO側 = S端子
+    #       NO1 = S端子Y → COM1 / NO2 = S端子C → COM2
+    #
+    # ★**既定(プルダウン)をコンポジットにした理由**: ビットストリームがこの
+    #   GPIOを駆動しない状態(古いゲートウェアを焼いた、まだ焼いていない)でも
+    #   「黄色いケーブルを挿しただけで映る」ようにしたい。S端子/コンポーネントは
+    #   Viewerで明示的に選ぶ操作を伴うので、そのときにHへ駆動される。
+    #
+    # ★**物理スイッチにしない理由**: 同期タップ(SOGIN_1)はスイッチの出口から
+    #   分岐しているので、映像と同期が必ず一緒に切り替わる。人が触るスイッチだと
+    #   「設定はコンポジットなのにスイッチはS端子側」という食い違いを作れてしまう。
+    #   詳細は docs/TODO.md 10-5。
+    #
+    # ★IN1/IN2 を同じ線に繋いでいる。独立に制御できるようにしても、
+    #   「S端子Y + コンポーネントPr」のような組み合わせに用途が無い。
+    sw = new TI_TS5A23159DGSR_package
+    sw.Vpos ~ p3v3.hv
+    sw.GND ~ gnd
+    c_sw = new C100nF_0603
+    sw.Vpos ~> c_sw ~> gnd
+    sw.NC1 ~ fe_cvbs.output
+    sw.NO1 ~ fe_sv_y.output
+    sw.COM1 ~ ffc.y
+    sw.NC2 ~ fe_pr.output
+    sw.NO2 ~ fe_sv_c.output
+    sw.COM2 ~ ffc.c
+    sw.IN1 ~ ffc.gpio1
+    sw.IN2 ~ ffc.gpio1
+    # 選択線のプルダウン。**浮かせない**(浮いた入力は「無信号」ではなく
+    # 「それらしい信号」を出す。この流儀は docs/design-notes.md にある)
+    r_sel_pd = new R10K_0603
+    ffc.gpio1 ~> r_sel_pd ~> gnd
+
+    # --- Pb(コンポーネント青): スイッチを通らず直結 ---
+    #
+    # 共有相手がいないので切り替えが要らない。**終端もこちらでは行わず、
+    # メイン基板の 75Ω(ch_b1 の r_term)に任せる**(直流結合のまま渡す)。
+    # 能動素子を通らないので、同期先端が負に潜っても害が無い(v0.9.0 の
+    # S端子ヘッダと同じ状況)。
+    j_pb.sig ~ ffc.pb
+
+    # --- 音声(RCA 白/灰 と 赤) ---
+    #
+    # ACカップリングとバイアスはメイン基板の PCM1808 側(AudioAdc の c_in_*)に
+    # あるので、この基板は 10kΩ でGNDへ落として直流を確定させるだけ。
+    # 浮かせるとFFCの10cmでハムを拾う。10kΩなら送り出し(600Ω〜1kΩ級)に対して
+    # -0.5dB 程度の損失で済む。
+    r_aud_l = new R10K_0603
+    r_aud_r = new R10K_0603
+    j_aud_l.sig ~> r_aud_l ~> gnd
+    j_aud_r.sig ~> r_aud_r ~> gnd
+    j_aud_l.sig ~ ffc.audio_l
+    j_aud_r.sig ~ ffc.audio_r
+
+    # --- ステータス表示用シリアルLED ×2 ---
+    #
+    # メイン基板のD1と同じ XL-2020RGBC-WS2812B(MSL3なのでJLCの焼成が不要)。
+    # 用途: LED1 = 映像入力の選択状態(S端子/コンポジット/コンポーネント)、
+    #       LED2 = 音声レベルやリンク状態。**置き場所はジャックの近く**。
+    #
+    # ★**5V + ダイオード降圧**。WS2812系の DIN の入力高レベルは VIH=0.7×VDD で、
+    #   5V直結だと3.5V必要になりFPGAの3.3Vでは規定を満たさない。一方 VDD の定格は
+    #   3.7〜5.3V なので3.3V直結も定格外。ダイオード1個で 4.2〜4.45V に落とすと
+    #   VIH が 2.94〜3.11V になり、全電流域で3.3Vを下回る(メイン基板と同じ設計)。
+    #
+    # ★**2個とも実装すること。** WS2812系は数珠つなぎなので、途中が未実装だと
+    #   その先が光らない(1個だけにしたいなら DO をテストパッドに落とす配線を
+    #   切って LED1 だけにする)。
+    # ★データの直列220Ωは**送り側(メイン基板の r_led_kokame)**にある。
+    #   ここに入れると効果が無い。
+    d_led = new ST_1N4148W_package
+    signal p_led_4v3
+    p5v.hv ~ d_led.A
+    d_led.K ~ p_led_4v3
+    c_led_bulk = new C10uF_0805
+    p_led_4v3 ~> c_led_bulk ~> gnd
+
+    led1 = new XINGLIGHT_XL_2020RGBC_2812B_package
+    led2 = new XINGLIGHT_XL_2020RGBC_2812B_package
+    led1.VDD ~ p_led_4v3
+    led2.VDD ~ p_led_4v3
+    led1.GND ~ gnd
+    led2.GND ~ gnd
+    c_led1 = new C100nF_0603
+    c_led2 = new C100nF_0603
+    led1.VDD ~> c_led1 ~> gnd
+    led2.VDD ~> c_led2 ~> gnd
+    ffc.led_data ~ led1.DI
+    led1.DO ~ led2.DI
+    # 3個目以降を足すときの引き出し口(未実装のテストパッド)
+    tp_led_do = new Tp1Pad
+    led2.DO ~ tp_led_do.pad
+
+    # --- 予備線(GPIO2)をテストパッドへ ---
+    # メイン基板のFPGA空きGPIOに繋がっている。将来この基板で何か制御したくなった
+    # とき(別のスイッチ、シリアル、I2Cなど)に使う。
+    tp_gpio2 = new Tp1Pad
+    ffc.gpio2 ~ tp_gpio2.pad
+
+    # --- 基板固定用ネジ穴 M3 ×5 + フィデューシャル ×3 ---
+    # メイン基板(10x10cm)と同じ外形・同じ穴位置にして、樹脂スペーサで重ねられる
+    # ようにする。★金属スペーサだと論理GNDが筐体に落ちる点はメイン基板と同じ注意。
+    #
+    # **5個にしてメイン基板(H1-H5)と揃えた**(2026-09-21)。メイン基板の穴は
+    # 四隅の3つ + 辺の途中2つ(右辺中央と上辺)という配置で、基板左上を原点にすると
+    #     H1 (5, 5)  H2 (5, 95)  H3 (95, 95)  H4 (95, 41)  H5 (70, 5)
+    # ★重ねて使うなら**同じ座標に開けること**。片方が4個だとスペーサが1本浮く。
+    mount = new MountingHoleM3[5]
+    mount[0].gnd ~ gnd
+    mount[1].gnd ~ gnd
+    mount[2].gnd ~ gnd
+    mount[3].gnd ~ gnd
+    mount[4].gnd ~ gnd
+    fid = new Fiducial[3]
+
+    # =========================================================================
+    # ネット名の明示化(PCBレイアウトでの判別性向上)
+    # =========================================================================
+    gnd.override_net_name = "gnd"
+    # 電源レールは明示命名する(atopileの自動命名は素の "hv" になり、レイアウト時に
+    # どのレールか判別できなくなる)。コネクタの生ピンに付けないと効かない
+    ffc.p3v3.override_net_name = "p3v3"
+    ffc.p5v.override_net_name = "p5v"
+    vbias.override_net_name = "vbias_1v65"
+    p_led_4v3.override_net_name = "p_led_4v3"
+    # ジャック側(終端まで) / 結合後(スイッチ入力) / スイッチ出口 の3段で名前を分ける
+    sv.y.override_net_name = "sv_y_in"
+    sv.c.override_net_name = "sv_c_in"
+    j_cvbs.sig.override_net_name = "cvbs_in"
+    j_pr.sig.override_net_name = "pr_in"
+    j_pb.sig.override_net_name = "pb_out"
+    fe_sv_y.output.override_net_name = "sv_y_ac"
+    fe_sv_c.output.override_net_name = "sv_c_ac"
+    fe_cvbs.output.override_net_name = "cvbs_ac"
+    fe_pr.output.override_net_name = "pr_ac"
+    ffc.y.override_net_name = "y_out"
+    ffc.c.override_net_name = "c_out"
+    ffc.audio_l.override_net_name = "aud_l_out"
+    ffc.audio_r.override_net_name = "aud_r_out"
+    ffc.gpio1.override_net_name = "sw_sel"
+    ffc.gpio2.override_net_name = "gpio2"
+    ffc.led_data.override_net_name = "led_din"
+    esd_cvbs_aud.io4.override_net_name = "esd_spare_nc"   # 4ch品の余り1本(未使用)
+    led1.DO.override_net_name = "led1_dout"
+    tp_led_do.pad.override_net_name = "led2_dout"

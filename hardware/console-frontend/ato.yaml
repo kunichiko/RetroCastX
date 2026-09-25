@@ -1,0 +1,11 @@
+requires-atopile: ^0.14.0
+
+paths:
+  src: ./
+  layout: ./layouts
+
+builds:
+  default:
+    entry: main.ato:App
+    # RetroCastX 小亀基板(コンソール入力基板) v1.0
+    # 成果物: layouts/default/default.kicad_pcb, build/builds/default/default.bom.csv

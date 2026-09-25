@@ -1,0 +1,63 @@
+import Resistor
+import Capacitor
+import is_atomic_part
+import has_part_picked
+import has_designator_prefix
+
+# RetroCastX 小亀基板(コンソール入力基板)で使う受動部品。
+#
+# ★**サイズは 1608(0603インチ)以上にしてある。** メイン基板は 1005(0402)中心だが、
+#   この基板は**手はんだで組めること**を要件にした:
+#     - 部品数が少ない(受動は15個ほど)ので、面積を詰める理由が無い
+#     - コネクタが手実装(ミニDIN4・RCA×5)なので、どうせ人の手が入る
+#     - 1005 はピンセットで拾うのも難しく、片側を温めると反対側が浮く
+#   容量の大きいものは元から 2012(0805)なのでそのまま。
+#
+# ★**メイン基板とは品番が別になる。** 値は同じでもサイズが違うので部品表の行は
+#   増えるが、いずれも JLC Basic(75Ω/10kΩ/100nF)なので実装費は上がらない。
+#
+# 値表示(KiCadの Value フィールド)が {ℝ+}Ω のようになるのを避けるため、
+# 抵抗値・容量値は `=` ではなく `assert ... within` で範囲指定する
+# (atopileの仕様。メイン基板と同じ流儀)。
+
+component R75_0603 from Resistor:
+    """映像入力の75Ω終端(1608 / 0603インチ)。**この基板(ジャック側)に置く。**
+
+    スイッチの手前で終端しておくと、選ばれていない入力も終端されたままになり、
+    送り出しが開放を見て2倍振幅になるのを防げる(スイッチのオフ容量経由の
+    漏れ込みも2倍にならない)。メイン基板側の同じ役目の75Ω(VideoInputChannel の
+    r_term)は、この基板で終端するチャンネル(Y/C)では実装しない。
+    両方に入れると合計37.5Ωで振幅が半分になる。
+
+    100mW品。75Ωに1Vppの映像が載っても 3.3mW なので余裕は十分。
+    """
+    trait is_atomic_part<manufacturer="UNI-ROYAL", partnumber="0603WAF750JT5E", footprint="parts/UNI_ROYAL_0603WAF750JT5E/R0603.kicad_mod", symbol="parts/UNI_ROYAL_0603WAF750JT5E/0603WAF750JT5E.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C4275", manufacturer="UNI-ROYAL", partno="0603WAF750JT5E">
+    trait has_designator_prefix<prefix="R">
+    assert resistance within 74.25ohm to 75.75ohm
+
+component R10K_0603 from Resistor:
+    """10kΩ(1608 / 0603インチ)。中点バイアス・音声のDC確定・スイッチ選択線のプルダウン。"""
+    trait is_atomic_part<manufacturer="UNI-ROYAL", partnumber="0603WAF1002T5E", footprint="parts/UNI_ROYAL_0603WAF1002T5E/R0603.kicad_mod", symbol="parts/UNI_ROYAL_0603WAF1002T5E/0603WAF1002T5E.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C25804", manufacturer="UNI-ROYAL", partno="0603WAF1002T5E">
+    trait has_designator_prefix<prefix="R">
+    assert resistance within 9900.0ohm to 10100.0ohm
+
+component C100nF_0603 from Capacitor:
+    """100nF 50V X7R(1608 / 0603インチ)。映像のACカップリングとICのデカップリング。
+
+    X7R でよい理由: ここの100nFは**結合とバイパス**で、時定数の精度を要求しない
+    (アンチエイリアスの33pFのようにC0Gが要る用途はこの基板に無い)。
+    """
+    trait is_atomic_part<manufacturer="YAGEO", partnumber="CC0603KRX7R9BB104", footprint="parts/YAGEO_CC0603KRX7R9BB104/C0603.kicad_mod", symbol="parts/YAGEO_CC0603KRX7R9BB104/CC0603KRX7R9BB104.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C14663", manufacturer="YAGEO", partno="CC0603KRX7R9BB104">
+    trait has_designator_prefix<prefix="C">
+    assert capacitance within 90nF to 110nF
+
+component C10uF_0805 from Capacitor:
+    """10µF 25V(2012 / 0805インチ)。バイアスレールとLED電源のバルク。
+    元から手はんだしやすいサイズなので変更なし(メイン基板と同一品番)。"""
+    trait is_atomic_part<manufacturer="SAMSUNG", partnumber="CL21A106KAYNNNE", footprint="parts/SAMSUNG_CL21A106KAYNNNE/C0805.kicad_mod", symbol="parts/SAMSUNG_CL21A106KAYNNNE/CL21A106KAYNNNE.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C15850", manufacturer="SAMSUNG", partno="CL21A106KAYNNNE">
+    trait has_designator_prefix<prefix="C">
+    assert capacitance within 9uF to 11uF

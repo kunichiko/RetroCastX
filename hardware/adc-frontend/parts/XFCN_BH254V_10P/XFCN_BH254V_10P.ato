@@ -1,0 +1,25 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component XFCN_BH254V_10P_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C492442", date="2026-09-21T13:08:39.909604+00:00", checksum="ed000030f4d99ecc50e5c2bb1428660dea50442b678b74ea2b253d4fa473328f">
+
+    trait is_atomic_part<manufacturer="XFCN", partnumber="BH254V-10P", footprint="IDC-TH_10P-P2.54-V-R2-C5-S2.54.kicad_mod", symbol="BH254V-10P.kicad_sym", model="IDC-TH_10P-P2.54-V-R2-C5-S2.54.STEP">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C492442", manufacturer="XFCN", partno="BH254V-10P">
+    trait has_designator_prefix<prefix="CN">
+
+    # pins
+    pin 1
+    pin 10
+    pin 3
+    pin 8
+    pin 5
+    pin 6
+    pin 7
+    pin 4
+    pin 9
+    pin 2

@@ -1,0 +1,19 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component UNI_ROYAL_0603WAF750JT5E_package:
+    """75Ω (75R0) ±1%"""
+
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C4275", date="2026-09-21T11:36:09.842863+00:00", checksum="9d08a10200e05a021a6a24e09be06f3566f51e281390269775c6914752e3f8b2">
+
+    trait is_atomic_part<manufacturer="UNI-ROYAL", partnumber="0603WAF750JT5E", footprint="R0603.kicad_mod", symbol="0603WAF750JT5E.kicad_sym", model="R0603.STEP">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C4275", manufacturer="UNI-ROYAL", partno="0603WAF750JT5E">
+    trait has_designator_prefix<prefix="R">
+
+    # pins
+    pin 2
+    pin 1

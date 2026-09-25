@@ -1,0 +1,134 @@
+import is_atomic_part
+import has_designator_prefix
+import has_part_removed
+
+# 小亀基板の機械部品。フットプリントはメイン基板(hardware/adc-frontend/parts/_mech)
+# からコピーしたもので、**同じファイルを2つ持っている**。共有すると相対パスが
+# プロジェクトの外に出て `ato build` のパス解決が壊れるため、意図的に複製している。
+# メイン基板側を直したらこちらにもコピーすること。
+
+component MiniDin4SVideo:
+    """S端子(S-Video)入力: ミニDIN 4ピン(メス、基板取付)。
+    マル信無線電機 **MJ-373/4B**。手実装/DNP(JLC発注除外)。
+
+    入手: 千石電商 / マルツ / モモハラ電機部品など。RoHS2対応品。
+    図面: https://www.mepc.jp/store/pdf/est/drawing/MJ-373-4B.pdf
+    **メイン基板のミニDIN8(MJ-373/8B)と同じハウジング/ランド枠**なので、
+    2枚の基板で外形の扱いを揃えられる。
+
+    ## ピン配置
+
+        1 = GND (Y)    2 = GND (C)    3 = Y(輝度)    4 = C(色)    シェル = GND
+
+    S端子の標準割当そのもの。メーカー図面のPCB穴図のパッド番号 = ミニDIN4の
+    標準ピン番号(図面の Schematic Diagram の並びも 4 2 1 3 で一致)。
+
+    ★**現物が届いたらテスターで「3番がプラグの輝度ピンに導通するか」を確認すること。**
+      ここを取り違えると Y と C が入れ替わり、白黒の絵に色信号の縞が出る
+      (症状が「壊れた」に見えないぶん気付きにくい)。
+
+    ## フットプリント(図面から自作)
+
+    メーカー図面の "T:1.6 Dimensions of PC board holes (Printed-Top view)" どおり。
+    原点は**嵌合面(x=0)と中心線(y=0)の交点**。KiCadのy軸は下が正なので図面のyを反転。
+
+        φ1.2 ×4   x=8.5 列: 2(y=+3.25) 1(-3.25)     ※図面のy(上が正)
+                  x=11.0列: 4(+3.25)   3(-3.25)
+        スロット 2.8×0.8(R0.4) ×3: (4.7, 0)縦 / (5.5, ±6.85)横 → すべてシェル=GND
+        本体は奥行12.7、フランジ 14.0 × 13.0
+
+    ★x=0 が嵌合面。**基板外形をここに合わせる**(コネクタの筒は基板の外へ出す)。
+
+    ## S端子の利点(なぜ C チャンネルまで足したか)
+
+    S端子なら Y/C 分離(コムフィルタ)が不要になり、さらに C チャンネルが独立ゲインで
+    8bitを使い切れる(コンポジットは 140 IRE を輝度と分け合う)ので、クロマ分解能が
+    約4倍になる。コンポジットのドットクロール対策も要らない。
+    """
+    trait is_atomic_part<manufacturer="MARUSHIN", partnumber="MJ-373/4B", footprint="MJ373_4B.kicad_mod", symbol="MJ373_4B.kicad_sym">
+    trait has_designator_prefix<prefix="J">
+    trait has_part_removed  # 手実装/DNP: 基板にFPは載せるがJLC発注しない
+    signal gnd ~ pin 1      # GND (Y)
+    gnd ~ pin 2             # GND (C)
+    signal y ~ pin 3
+    signal c ~ pin 4
+    signal shell ~ pin 5    # 中央のグラウンドコンタクト (4.7, 0)
+    shell ~ pin 6           # 上のシェル脚 (5.5, -6.85)
+    shell ~ pin 7           # 下のシェル脚 (5.5, +6.85)
+
+
+component RcaJack:
+    """RCA(ピンジャック)入力: **RCA-105**(右アングル・基板取付)。手実装/DNP。
+
+    AliExpress 等で**色違いが一式そろう**シリーズ。同じ寸法で黄/白/赤/黒/青などが
+    選べるので、映像=黄、音声L=白、音声R=赤、Pr=赤、Pb=青 を1つの品番で揃えられる
+    (LCSCで在庫があるのは別シリーズ XD-RCA-103 の赤だけで、白が無かった)。
+
+    ## ★端子は2つだけ。両方ともコネクタの軸線上にある
+
+    メーカー図面 "RCA-105 / T:1.6 Dimensions of PC board holes (Printed-bottom view)":
+
+        pad1  スロット 2.30 × 1.50   嵌合面(Reference Plane)から 4.80   → シェル = GND
+        pad2  スロット 1.00 × 2.30   嵌合面から 8.30                    → 中心導体 = 信号
+
+    図面は**裏面視(Printed-bottom view)**だが、2つとも軸線上にあるので
+    **鏡像にしても同じ**=そのまま表面のフットプリントに使える。
+
+    ★**pad1=GND / pad2=信号 の割当は現物で確認すること。** 2端子しかないので
+      取り違えると**映像信号をGNDへ短絡する**。テスターで
+      「筒の外側の金属 ↔ pad1」「中心の穴 ↔ pad2」の導通を見れば10秒で分かる。
+      図面からは2つの根拠で pad1=シェル と読める:
+        - SCHEMATIC の記号がシェル(矩形)から 1 へ直結、ばね接点(V)から 2 へ
+        - 側面図で中心接点のロッドの終端が 8.30 の位置に来ている(=そこが中心導体の足)
+
+    ## 外形(レイアウトで効く寸法)
+
+        フランジ(基板に載る枠)  10.00 幅 × 13.00 高
+        本体の奥行             嵌合面から後ろへ 10.00 ±0.20
+        筒                    φ8.30 ±0.10、嵌合面から**前へ 9.30 張り出す**
+        筒の軸の高さ           基板面から 8.00(フランジ上端から 5.00 下)
+        足の長さ               3.70(t=1.6 の基板なら 2.1 が裏に出る)
+
+    ★**嵌合面(フットプリントの x=0)に基板外形を合わせる。** 筒は基板の外へ
+      9.3mm 出るので、ケースの穴もそこに開ける。
+    ★**隣のジャックとの間隔は 12〜13mm 取る。** 枠が 10.0mm なので物理的には
+      10.5mm で並ぶが、**RCAプラグの握りは φ10〜14mm ある**ので、隣同士に
+      同時に挿せなくなる。AV機器のパネルも 12.5mm 前後。
+    """
+    trait is_atomic_part<manufacturer="", partnumber="RCA-105", footprint="RCA105.kicad_mod", symbol="RCA105.kicad_sym">
+    trait has_designator_prefix<prefix="J">
+    trait has_part_removed  # 手実装/DNP: 基板にFPは載せるがJLC発注しない
+    signal gnd ~ pin 1      # シェル(筒の外側)
+    signal sig ~ pin 2      # 中心導体
+
+
+component MountingHoleM3:
+    """基板固定用ネジ穴 M3(GND接続)。穴径 3.2mm / パッド 6.4mm / 表裏露出。
+
+    メイン基板と同じ寸法・同じ位置に置くこと(重ねて樹脂スペーサで留められる)。
+    穴だけなので実装対象外(JLC発注除外)。
+    """
+    trait is_atomic_part<manufacturer="", partnumber="MountingHole_3.2mm_M3", footprint="MountingHole_3.2mm_M3_Pad.kicad_mod", symbol="MountingHole.kicad_sym">
+    trait has_designator_prefix<prefix="H">
+    trait has_part_removed
+    signal gnd ~ pin 1
+
+
+component Fiducial:
+    """実装機の基準マーク。1mmの銅丸 + 2mmのマスク開口。実装対象外。
+
+    この基板の最小ピッチは 0.5mm(FFCコネクタ と VSSOP-10 のアナログスイッチ)なので
+    メイン基板と同じく3個置く。銅・シルクを周囲1mmに重ねないこと。
+    """
+    trait is_atomic_part<manufacturer="", partnumber="Fiducial_1mm_Mask2mm", footprint="Fiducial_1mm_Mask2mm.kicad_mod", symbol="TestPoint.kicad_sym">
+    trait has_designator_prefix<prefix="FID">
+    trait has_part_removed
+    signal pad ~ pin 1
+
+
+component Tp1Pad:
+    """1穴THテストポイント(プローブ/ワイヤ用)。手実装/DNP。"""
+    trait is_atomic_part<manufacturer="", partnumber="TestPoint_TH1", footprint="TestPoint_TH1.kicad_mod", symbol="TestPoint.kicad_sym">
+    trait has_designator_prefix<prefix="TP">
+    trait has_part_removed
+    signal pad ~ pin 1
