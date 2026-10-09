@@ -19,6 +19,8 @@ windows-sys = { version = "0.61", features = [
     # 受信バッファーを**その場で直す**ための昇格実行(ShellExecuteW の runas)
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
+    # 遊んでいる間のスリープ抑止(src/awake.rs の SetThreadExecutionState)
+    "Win32_System_Power",
 ] }
 
 [target.'cfg(windows)'.build-dependencies]

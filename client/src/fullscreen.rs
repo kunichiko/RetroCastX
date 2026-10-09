@@ -60,7 +60,8 @@ pub fn run(port: u16, bind: String, subscribe_to: Option<String>, target_mac: Op
     let mut app = App { shared: Some((shared, rx)), window: None,
                         size: Arc::new(AtomicU64::new(0)), params,
                         remote: remote_input::RemoteInput::default(),
-                        remote_toggle: Default::default(), remote_mods: Default::default() };
+                        remote_toggle: Default::default(), remote_mods: Default::default(),
+                        awake: crate::awake::KeepAwake::new() };
     event_loop.run_app(&mut app).unwrap();
     std::process::exit(0);
 }
@@ -77,6 +78,9 @@ struct App {
     remote_toggle: remote_input::ToggleDetect,
     /// いまの修飾(⌘ / Shift)。転送ON/OFFの組み合わせ判定に使う
     remote_mods: remote_input::Mods,
+    /// 前面にある間は OS のスリープを止める(awake.rs)。全画面は映像を見るための
+    /// 起動形態なので、受信の有無は見ずにフォーカスだけで決める
+    awake: crate::awake::KeepAwake,
 }
 
 impl ApplicationHandler for App {
@@ -214,6 +218,7 @@ impl ApplicationHandler for App {
                     self.remote_mods = Default::default();
                 }
                 self.remote.update(focused);
+                self.awake.set(focused);
             }
             WindowEvent::Resized(sz) => {
                 self.size

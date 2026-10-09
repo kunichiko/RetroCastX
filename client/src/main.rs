@@ -27,6 +27,7 @@
 
 mod appicon;
 mod assembler;
+mod awake;
 mod audio;
 mod bezel;
 mod claim;
@@ -295,6 +296,7 @@ fn main() -> eframe::Result {
                 no_vsync,
                 decay,
                 interlace_decay,
+                awake: awake::KeepAwake::new(),
             };
             app.restore_windows(&cc.egui_ctx, cc.wgpu_render_state.clone());
             Ok(Box::new(app))
@@ -1058,6 +1060,13 @@ struct Session {
 }
 
 impl Session {
+    /// 映像のフレームが来ているか。受信が途絶えると統計は 200ms の待ちで
+    /// 更新されて fps が 0 に戻るので、ボードを外せば1秒以内に偽になる。
+    /// 音声だけ来ている状態は数えない(スリープ抑止の条件に使うため)
+    fn receiving_video(&self) -> bool {
+        self.shared.stats.lock().unwrap().fps > 1.0
+    }
+
     /// ★**`CreationContext` を受け取らない。** 起動時にしか手に入らないので、
     ///   受け取っていると**実行中にウィンドウを増やせない**。必要なのは
     ///   `egui::Context` と wgpu の描画状態だけで、どちらも後からでも取れる。
@@ -4613,6 +4622,8 @@ struct App {
     no_vsync: bool,
     decay: f32,
     interlace_decay: f32,
+    /// 前面にあって映像を受けている間、OS のスリープを止める(awake.rs)
+    awake: awake::KeepAwake,
 }
 
 impl App {
@@ -4684,8 +4695,11 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // どれかの窓が前面にあり、その窓が映像を受けているか(スリープ抑止の条件)
+        let mut playing_in_front = false;
         // 主ウィンドウ
         if let Some(s) = self.sessions.first_mut() {
+            playing_in_front |= root.ctx().input(|i| i.focused) && s.receiving_video();
             s.ui(root);
         }
         // 追加ウィンドウ。**ここで &mut Ui が降ってくる**ので、主ウィンドウと
@@ -4709,9 +4723,11 @@ impl eframe::App for App {
                     closed.push(s.slot_id);
                     return;
                 }
+                playing_in_front |= ui.ctx().input(|i| i.focused) && s.receiving_video();
                 s.ui(ui);
             });
         }
+        self.awake.set(playing_in_front);
         // セッションからの「窓を増やして」要求を拾う。**描画のあとで処理する** ─
         // 描いている最中に自分の入っている配列を触ることになるため。
         let mut wanted: Vec<Option<[u8; 6]>> = Vec::new();
