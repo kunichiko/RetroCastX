@@ -1,6 +1,12 @@
 {
   "bitstreams": [
     {
+      "name": "v0.9.4",
+      "file": "retrocastx_v0.9.4.bit",
+      "date": "2026-10-09",
+      "note": "gw-v0.9.4: NTSC の安定化と、ボード名/静的IP・MagJack LED\n\n- TVP の RESETB と I2C をレジスタから出す。組合せ出力のグリッチで TVP が\n  部分リセットされ、配置次第で NTSC の絵が揺れたり白黒になったりしていた。\n  X68000 などで10〜20秒に一度乱れていた件も同じ原因の可能性が高い\n- 偽VSYNCで vtotal が化けて絵が乱れるのを止める(フレーム単位の安定判定)。\n  NTSC の 262/263 交互でも成立するよう ±1 を同じとみなす\n- ボード名と静的IPを EEPROM に置けるようにする(複数台を一覧で見分けられる)\n- MagJack の緑/黄 LED を駆動する(リンク判定は MDIO)\n- デジタルRGB の試験信号生成器と入力の測定器(絵にする部分はまだ無い)\n\n\n---\nビルド: seed 6 / oss-cad-suite 2026-09-03 / litex 93c8d230e"
+    },
+    {
       "name": "v0.9.3",
       "file": "retrocastx_v0.9.3.bit",
       "date": "2026-09-08",
