@@ -65,7 +65,8 @@ pub struct Params {
     pub v_size: f32,
     pub v_pos: f32,
     /// 実測した有効映像の外接矩形[サンプル/ライン]。管面の中心と、縦の連動に使う。
-    /// MODEの hactive は送出フレームの幅(常に1024)で有効映像の幅ではないため、
+    /// MODEの hactive はゲートウェアのラインバッファの幅(定数 2048)で有効映像の
+    /// 幅ではないため(docs/protocol-v0.md の MODE の注記)、
     /// 実測値が要る。0 のときは中心を0.5とみなす
     pub act_x: u32,
     pub act_y: u32,

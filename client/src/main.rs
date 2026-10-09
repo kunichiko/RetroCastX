@@ -1923,7 +1923,7 @@ impl Session {
 impl Session {
     fn render_params(&self) -> render::Params {
         let m = self.shared.mode.lock().unwrap().clone();
-        // 実測した有効映像の外接矩形。MODEの hactive は送出フレームの幅(常に1024)で
+        // 実測した有効映像の外接矩形。MODEの hactive はラインバッファの幅(定数 2048)で
         // 有効映像の幅ではないため、管面の中心と縦の連動にはこの実測値を使う
         // 1ラインが何スロットを占めるか(MODEの mflags bit0 = インターレース)
         let slot_k: u32 = match m.as_ref() {
