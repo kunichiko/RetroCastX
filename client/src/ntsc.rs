@@ -66,6 +66,13 @@ const BURST_MIN: f32 = 60.0;
 /// ので、間は大きく空いている。
 const SVIDEO_SNR_MIN: f32 = 6.0;
 
+/// 白黒として出すのに要る同期の深さ(バックポーチ − 同期チップ)[コード]。
+///
+/// バーストが無いときは同期だけが頼りなので、同期が見えていない(無信号、
+/// 横位置が大きくずれている)ときに無理に校正すると、ゲインが暴れて
+/// 雑音を全面に引き伸ばした絵になる。そのときは生のYを残す。
+const MONO_SYNC_MIN: f32 = 10.0;
+
 /// フレームコムの位相ズレ補正で受け付ける ε の上限[度]。
 ///
 /// 実測の |ε| は中央値 4.8°、滑らかに±15°を揺れる程度。これを大きく超える値は
@@ -85,6 +92,9 @@ pub struct Info {
     /// 赤ch(C)にバーストが載っていた = S端子として復調した。
     /// このときコムは一切使わない(Y と C が最初から別々に来ているため)。
     pub svideo: bool,
+    /// バーストが無いので白黒として出した(レベル校正だけ掛けた Y)。
+    /// 白黒のパターンジェネレータなど。テレビのカラーキラーと同じ扱い
+    pub mono: bool,
     /// 1 NTSCフレーム前との副搬送波位相のズレ |ε| の中央値[度]。
     /// これがフレームコムの消し残し(= フレームごとに反転するドットクロール)を
     /// 決める。残留は C·sin(ε/2)。
@@ -249,6 +259,50 @@ fn c_burst_snr(raw: &[u8], w: usize, h: usize, filled: &[bool],
     median(&mut bs) / median(&mut ps).max(1e-6)
 }
 
+/// 同期チップとバックポーチの緑chレベル(中央値)を測る。`use_line(y)` が真の
+/// 受信済みラインだけを使う。使える行が無ければ None。
+fn levels(raw: &[u8], w: usize, h: usize, filled: &[bool], sps: f32,
+          use_line: impl Fn(usize) -> bool) -> Option<(f32, f32)> {
+    let (ta, tb) = win(TIP_US, sps, w);
+    let (pa, pb) = win(PORCH_US, sps, w);
+    let mut tips = Vec::new();
+    let mut porches = Vec::new();
+    for y in 0..h {
+        if !filled.get(y).copied().unwrap_or(false) || !use_line(y) {
+            continue;
+        }
+        let row = &raw[y * w * 2..(y + 1) * w * 2];
+        let mut s = 0.0f32;
+        for n in ta..tb {
+            s += row[n * 2] as f32;
+        }
+        tips.push(s / (tb - ta).max(1) as f32);
+        let mut s = 0.0f32;
+        for n in pa..pb {
+            s += row[n * 2] as f32;
+        }
+        porches.push(s / (pb - pa).max(1) as f32);
+    }
+    if tips.is_empty() {
+        return None;
+    }
+    Some((median(&mut tips), median(&mut porches)))
+}
+
+/// ガンマは256エントリの表にしておく。画素ごとに powf を3回呼ぶと
+/// 28.6 MSa/s では到底間に合わない(1.0 のときは表自体を使わない)。
+fn gamma_lut(adj: Adjust) -> Option<[u8; 256]> {
+    if (adj.gamma - 1.0).abs() <= 1e-3 {
+        return None;
+    }
+    let inv = 1.0 / adj.gamma.max(0.1);
+    let mut t = [0u8; 256];
+    for (i, v) in t.iter_mut().enumerate() {
+        *v = ((i as f32 / 255.0).powf(inv) * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+    }
+    Some(t)
+}
+
 pub fn decode_field(
     raw: &[u8],
     w: usize,
@@ -264,7 +318,7 @@ pub fn decode_field(
     if sps <= 0.0 || bb <= ba + 8 || w < 16 {
         return Info { lines_locked: 0, comb_step: 0, phase_delta_deg: 0.0,
                       code_per_ire: 0.0, lines_3d: 0, motion_frac: 0.0,
-                      svideo: false, phase_drift_deg: 0.0 };
+                      svideo: false, mono: false, phase_drift_deg: 0.0 };
     }
 
     // --- 1. ラインごとのバースト位相 ---
@@ -316,41 +370,61 @@ pub fn decode_field(
         }
     }
     let (comb_step, _, phase_delta) = best;
+    let (aa, ab) = win(ACTIVE_US, sps, w);
     if comb_step == 0 {
         // 180°になるペアが見つからない = バーストが取れていない。
-        // 何もしないで戻る(呼び出し側のグレースケール表示が残る)。
-        return Info { lines_locked: 0, comb_step: 0, phase_delta_deg: 0.0,
-                      code_per_ire: 0.0, lines_3d: 0, motion_frac: 0.0,
-                      svideo: false, phase_drift_deg: 0.0 };
+        //
+        // ★**白黒信号として出す。** 白黒のパターンジェネレータはバーストを
+        //   載せない。以前はここで何もせず戻っていたので生のADC値の
+        //   グレースケールが残り、**黒(0 IRE)が同期より40 IRE上=灰色**に見えた
+        //   (2026-10-09、黒地に白の格子が灰色地になった。テレビでは黒地)。
+        //   テレビもバーストが無ければカラーキラーで色を止め、黒レベルは
+        //   バックポーチで合わせる。レベル校正にバーストは要らない
+        //   (ntsc.py も全ラインで校正している)。
+        let none = Info { lines_locked: 0, comb_step: 0, phase_delta_deg: 0.0,
+                          code_per_ire: 0.0, lines_3d: 0, motion_frac: 0.0,
+                          svideo: false, mono: false, phase_drift_deg: 0.0 };
+        let Some((tip, porch)) = levels(raw, w, h, filled, sps, |_| true) else {
+            return none;
+        };
+        if porch - tip < MONO_SYNC_MIN {
+            // 同期が見えていない。生のYを残す
+            return none;
+        }
+        let code_per_ire = (porch - tip) / 40.0;
+        let inv_100ire = 1.0 / (code_per_ire * 100.0);
+        let lut = gamma_lut(adj);
+        for y in 0..h {
+            if !filled.get(y).copied().unwrap_or(false) {
+                continue;
+            }
+            let o0 = y * w * 4;
+            for n in 0..w {
+                let o = o0 + n * 4;
+                let v = if n >= aa && n < ab {
+                    let yy = (raw[(y * w + n) * 2] as f32 - porch) * inv_100ire
+                        * adj.contrast + adj.brightness * 0.01;
+                    let v = to8(yy);
+                    lut.as_ref().map_or(v, |t| t[v as usize])
+                } else {
+                    // 帰線区間は黒(カラーのときと同じ)
+                    0
+                };
+                fb[o] = v;
+                fb[o + 1] = v;
+                fb[o + 2] = v;
+            }
+        }
+        return Info { mono: true, code_per_ire, ..none };
     }
 
     // --- 3. レベル校正。同期チップ(-40 IRE)とバックポーチ(0 IRE)から求める ---
     //     絵の内容に依存しないのがこの校正の利点。
-    let (ta, tb) = win(TIP_US, sps, w);
-    let (pa, pb) = win(PORCH_US, sps, w);
-    let (aa, ab) = win(ACTIVE_US, sps, w);
-    let mut tips = Vec::new();
-    let mut porches = Vec::new();
-    for y in 0..h {
-        if !filled.get(y).copied().unwrap_or(false) || mag[y] <= BURST_MIN {
-            continue;
-        }
-        let row = &raw[y * w * 2..(y + 1) * w * 2];
-        let mut s = 0.0f32;
-        for n in ta..tb {
-            s += row[n * 2] as f32;
-        }
-        tips.push(s / (tb - ta).max(1) as f32);
-        let mut s = 0.0f32;
-        for n in pa..pb {
-            s += row[n * 2] as f32;
-        }
-        porches.push(s / (pb - pa).max(1) as f32);
-    }
-    let tip = median(&mut tips);
-    let porch = median(&mut porches);
+    let (tip, porch) = levels(raw, w, h, filled, sps, |y| mag[y] > BURST_MIN)
+        .unwrap_or((0.0, 0.0));
     let code_per_ire = ((porch - tip) / 40.0).max(0.05);
     let inv_100ire = 1.0 / (code_per_ire * 100.0);
+    let (pa, pb) = win(PORCH_US, sps, w);
 
     // --- 3b. 1フレーム前との副搬送波位相のズレ ε を測る ---
     //
@@ -421,18 +495,7 @@ pub fn decode_field(
     };
     let inv_100ire_c = 1.0 / (c_per_ire * 100.0);
 
-    // ガンマは256エントリの表にしておく。画素ごとに powf を3回呼ぶと
-    // 28.6 MSa/s では到底間に合わない(1.0 のときは表自体を使わない)。
-    let gamma_lut: Option<[u8; 256]> = if (adj.gamma - 1.0).abs() > 1e-3 {
-        let inv = 1.0 / adj.gamma.max(0.1);
-        let mut t = [0u8; 256];
-        for (i, v) in t.iter_mut().enumerate() {
-            *v = ((i as f32 / 255.0).powf(inv) * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
-        }
-        Some(t)
-    } else {
-        None
-    };
+    let gamma_lut = gamma_lut(adj);
 
     // --- 4. コム → 直交復調 → RGB ---
     let mut u = vec![0.0f32; w];
@@ -658,6 +721,7 @@ pub fn decode_field(
         lines_3d,
         motion_frac: if n3 > 0 { moving as f32 / n3 as f32 } else { 0.0 },
         svideo,
+        mono: false,
         phase_drift_deg,
     }
 }
@@ -785,6 +849,59 @@ mod tests {
             }
         }
         (raw, filled)
+    }
+
+    /// バーストの無い白黒信号は、黒レベルを校正して白黒で出すこと。
+    ///
+    /// ★実機で踏んだ(2026-10-09): 白黒のパターンジェネレータの「黒地に白の格子」が
+    ///   **灰色地**になった。バーストが無いと何もせず戻っていたので、生のADC値
+    ///   (黒が同期より40 IRE上)のグレースケールが残っていた。
+    #[test]
+    fn no_burst_is_shown_as_monochrome_with_black_at_zero() {
+        let (w, h, sps) = (1820usize, 64usize, 28.6362e6f32);
+        let (cpi, porch) = (0.78f32, 158.0f32);
+        let sync_end = (4.7e-6 * sps) as usize;
+        let (aa, ab) = win(ACTIVE_US, sps, w);
+        let mid = (aa + ab) / 2;
+        let mut raw = vec![0u8; w * h * 2];
+        let filled = vec![true; h];
+        for y in 0..h {
+            for n in 0..w {
+                let val = if n < sync_end {
+                    porch - 40.0 * cpi
+                } else if n >= mid && n < ab {
+                    porch + 100.0 * cpi       // 白
+                } else {
+                    porch                     // 黒(バーストは載せない)
+                };
+                raw[(y * w + n) * 2] = val as u8;
+            }
+        }
+        let mut fb = vec![0x55u8; w * h * 4];
+        let info = decode_field(&raw, w, h, &filled, sps as u32, &mut fb, None,
+                                Adjust::default());
+        assert!(info.mono, "バーストが無いのに白黒にならない");
+        assert_eq!(info.comb_step, 0);
+        let px = |n: usize| &fb[(h / 2 * w + n) * 4..(h / 2 * w + n) * 4 + 3];
+        let black = px((aa + mid) / 2);
+        let white = px((mid + ab) / 2);
+        assert!(black.iter().all(|&v| v <= 6), "黒が黒でない: {black:?}");
+        assert!(white.iter().all(|&v| v >= 245), "白が白でない: {white:?}");
+        assert_eq!(px(sync_end / 2), &[0, 0, 0], "帰線区間が黒でない");
+    }
+
+    /// 同期が見えない(無信号で平坦)ときは校正せず、生のYを残すこと。
+    /// 雑音をゲインで引き伸ばした絵にしない。
+    #[test]
+    fn no_sync_leaves_raw_luma_untouched() {
+        let (w, h, sps) = (1820usize, 32usize, 28.6362e6f32);
+        let raw: Vec<u8> = (0..w * h).flat_map(|i| [100 + (i % 3) as u8, 0]).collect();
+        let filled = vec![true; h];
+        let mut fb = vec![0x55u8; w * h * 4];
+        let info = decode_field(&raw, w, h, &filled, sps as u32, &mut fb, None,
+                                Adjust::default());
+        assert!(!info.mono);
+        assert!(fb.iter().all(|&v| v == 0x55), "同期が無いのに fb を書き換えた");
     }
 
     /// 見た目の調整が**期待どおりの向きと量で効くこと**。

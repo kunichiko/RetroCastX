@@ -440,6 +440,8 @@ fn run_headless(
                          s.ntsc_lines_3d, 100.0 * s.ntsc_motion_frac,
                          s.ntsc_phase_drift_deg);
             }
+        } else if s.ntsc_mono {
+            println!("   NTSC: 白黒(バーストなし) 黒レベルのみ校正");
         }
         // 生産側がUIを待った時間。**GUIのときだけパケットが落ちる**を切り分ける
         if s.publish_wait_max_ms > 0.05 {
@@ -5065,6 +5067,11 @@ impl Session {
                                     s.ntsc_lines_3d, 100.0 * s.ntsc_motion_frac,
                                     s.ntsc_phase_drift_deg)
                         },
+                    );
+                } else if s.ntsc_mono {
+                    ui.colored_label(
+                        theme::OK,
+                        "NTSC 白黒(バーストなし) 黒レベルのみ校正",
                     );
                 } else if matches!(self.shared.mode.lock().unwrap().as_ref(),
                                    Some(m) if m.pixfmt == protocol::PIXFMT_YC8) {
