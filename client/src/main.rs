@@ -436,9 +436,10 @@ fn run_headless(
             if s.ntsc_svideo {
                 println!("   S端子(赤chのバーストで判定): コムは使わない/輝度は素通し");
             } else {
-                println!("   3次元コム: {}行  動きと判定 {:.1}%  1フレーム前との位相ズレ {:.1}°",
+                println!("   3次元コム: {}行  動きと判定 {:.1}%  1フレーム前との位相ズレ {:.1}°  \
+                          TBC {:.3}サンプル",
                          s.ntsc_lines_3d, 100.0 * s.ntsc_motion_frac,
-                         s.ntsc_phase_drift_deg);
+                         s.ntsc_phase_drift_deg, s.ntsc_tbc_rms);
             }
         } else if s.ntsc_mono {
             println!("   NTSC: 白黒(バーストなし) 黒レベルのみ校正");
@@ -5124,10 +5125,11 @@ impl Session {
                                     s.ntsc_locked, s.ntsc_comb_step, s.ntsc_phase_deg)
                         } else {
                             format!("NTSC復調 {}行 コム間隔{} 位相差{:.0}°\n\
-                                     3次元コム {}行 動き {:.1}% 位相ズレ{:.1}°",
+                                     3次元コム {}行 動き {:.1}% 位相ズレ{:.1}°\n\
+                                     TBC {:.3}サンプル",
                                     s.ntsc_locked, s.ntsc_comb_step, s.ntsc_phase_deg,
                                     s.ntsc_lines_3d, 100.0 * s.ntsc_motion_frac,
-                                    s.ntsc_phase_drift_deg)
+                                    s.ntsc_phase_drift_deg, s.ntsc_tbc_rms)
                         },
                     );
                 } else if s.ntsc_mono {

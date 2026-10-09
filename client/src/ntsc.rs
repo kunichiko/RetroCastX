@@ -119,6 +119,9 @@ pub struct Info {
     /// バーストが無いので白黒として出した(レベル校正だけ掛けた Y)。
     /// 白黒のパターンジェネレータなど。テレビのカラーキラーと同じ扱い
     pub mono: bool,
+    /// TBC で並べ直した量(行ごとのずれの二乗平均平方根)[サンプル]。
+    /// 取り込み位置の揺れの大きさそのもの。0 なら並べ直していない
+    pub tbc_rms: f32,
     /// 1 NTSCフレーム前との副搬送波位相のズレ |ε| の中央値[度]。
     /// これがフレームコムの消し残し(= フレームごとに反転するドットクロール)を
     /// 決める。残留は C·sin(ε/2)。
@@ -256,6 +259,138 @@ fn burst(row: &[u8], x0: usize, x1: usize, ch: usize) -> (f32, f32, f32) {
     ((ci * ci + si * si).sqrt(), ci, si)
 }
 
+/// `burst` の浮動小数版(TBC で並べ直した行を測る)。
+fn burst_f(row: &[f32], x0: usize, x1: usize) -> (f32, f32, f32) {
+    let mean = row[x0..x1].iter().sum::<f32>() / (x1 - x0) as f32;
+    let (mut ci, mut si) = (0.0f32, 0.0f32);
+    for n in x0..x1 {
+        let v = row[n] - mean;
+        let k = (n - x0) & 7;
+        ci += v * COS8[k];
+        si += v * SIN8[k];
+    }
+    ((ci * ci + si * si).sqrt(), ci, si)
+}
+
+/// TBC(タイムベース補正)で受け付ける1行のずれの上限[サンプル]。
+/// 実測の揺れは標準偏差 0.06〜0.1、最大 0.4 程度。これを大きく超えるのは
+/// バーストの測り損ね(暗い行・欠損)なので、その行は並べ直さない。
+const TBC_MAX_SAMPLES: f32 = 1.0;
+
+/// 緑ch(CVBS)を浮動小数の1面に取り出し、`tbc` なら**行ごとの取り込み位置の
+/// 揺れをバーストの位相で測って並べ直す**。`rows` の行だけを扱う。
+///
+/// ★DATACLK は HSYNC に PLL でロックしているので、行ごとに取り込み位置が
+///   揺れる(実測 2026-10-09: 2フレーム前との横ずれが標準偏差 0.10サンプル、
+///   最大 0.39。隣の行とは相関 0.77、8行離れるとほぼ無相関)。絵そのものが
+///   行ごとに横へ動くので、色の境界では色の混ざり方が変わってちらつく。
+///   ジェネレータの副搬送波は安定しているので、**バーストの位相のずれが
+///   そのまま取り込み位置のずれ**になる(8fsc で 45°/サンプル。絵から測った
+///   ずれとの相関 0.91)。各行を「フィールド内の基準位相」に揃えるように
+///   3次補間でずらすと、2フレーム前との横ずれは 0.10 → 0.042サンプルになった
+///   (録った生信号での試算)。
+///
+///   基準は全行の位相を **180°を法として**平均したもの(2φ の円周平均)。
+///   隣の行は副搬送波が180°反転しているので、行番号の偶奇に頼らずに済む。
+///   行ごとの位相の傾き(副搬送波と fH の比のずれ)は実測 0.01°/行程度で
+///   無視できる。フィールド上部の決まった曲がり(垂直同期の後の PLL の乱れ、
+///   上端で -8.6°)も一緒に直る。
+///
+/// 戻り値は (面, 並べ直した量の二乗平均平方根[サンプル])。
+fn tbc_plane(src: &[u8], w: usize, h: usize, rows: &[bool], ba: usize, bb: usize,
+             step: usize, tbc: bool) -> (Vec<f32>, f32) {
+    let mut out = vec![0.0f32; w * h];
+    let used = |y: usize| rows.get(y).copied().unwrap_or(false);
+    let mut tau = vec![0.0f32; h];
+    let mut has = vec![false; h];
+    if tbc {
+        let mut ph = vec![f32::NAN; h];
+        let (mut c2, mut s2) = (0.0f32, 0.0f32);
+        for y in 0..h {
+            if !used(y) {
+                continue;
+            }
+            let (m, ci, si) = burst(&src[y * w * 2..(y + 1) * w * 2], ba, bb, 0);
+            if m <= BURST_MIN {
+                continue;
+            }
+            let p = si.atan2(ci);
+            ph[y] = p;
+            c2 += (2.0 * p).cos();
+            s2 += (2.0 * p).sin();
+        }
+        let refp = 0.5 * s2.atan2(c2);
+        for y in 0..h {
+            if ph[y].is_nan() {
+                continue;
+            }
+            // (-90°, 90°] に畳む
+            let mut d = ph[y] - refp;
+            let half = std::f32::consts::FRAC_PI_2;
+            while d > half { d -= std::f32::consts::PI; }
+            while d <= -half { d += std::f32::consts::PI; }
+            let t = d / std::f32::consts::FRAC_PI_4;
+            if t.abs() <= TBC_MAX_SAMPLES {
+                tau[y] = t;
+                has[y] = true;
+            }
+        }
+    }
+    let (mut ss, mut nn) = (0.0f32, 0usize);
+    let mut pad: Vec<f32> = Vec::with_capacity(w + 16);
+    for y in 0..h {
+        if !used(y) {
+            continue;
+        }
+        let row = &src[y * w * 2..(y + 1) * w * 2];
+        let o = &mut out[y * w..(y + 1) * w];
+        let t = tau[y];
+        // ★**行の中でもずれは伸びる**(速度誤差)。取り込みクロックの周波数が
+        //   行ごとにわずかに違うので、バーストで揃えた後の残りが行の右へ行くほど
+        //   直線的に増えていた(実測: 13.6µs で 0.019 → 57.6µs で 0.069サンプル)。
+        //   クロックは行をまたいで連続しているので、**時間的に次の行のバースト**が
+        //   この行の終わりのずれを表す。その間を直線で結ぶと右端の残りは 0.043 に
+        //   なった(前後4本の3次補間でも 0.041 で、差は小さいので直線にした)。
+        //   時間的に次の行 = 同じフィールドの隣 = コム間隔 `step` 先の行。
+        let dt = if step > 0 && y + step < h && has[y] && has[y + step] {
+            (tau[y + step] - t) / w as f32
+        } else {
+            0.0
+        };
+        let nb = (ba + bb) as f32 * 0.5;
+        if t == 0.0 && dt == 0.0 {
+            for n in 0..w {
+                o[n] = row[n * 2] as f32;
+            }
+            continue;
+        }
+        ss += t * t;
+        nn += 1;
+        // Catmull-Rom。線形補間だと副搬送波の振幅がずれ量で変わる
+        // (0.5サンプルで 7.6%)ので、行ごとに彩度が揺れてしまう。
+        // 端の処理を内側のループから追い出すため、両端を延ばした行を作る
+        // (ずれは TBC_MAX_SAMPLES と速度ぶんで高々数サンプル)
+        const PAD: usize = 8;
+        pad.clear();
+        pad.extend(std::iter::repeat(row[0] as f32).take(PAD));
+        pad.extend((0..w).map(|n| row[n * 2] as f32));
+        pad.extend(std::iter::repeat(row[(w - 1) * 2] as f32).take(PAD));
+        let lim = (PAD - 2) as f32;
+        for n in 0..w {
+            let sh = (t + dt * (n as f32 - nb)).clamp(-lim, lim);
+            let x = n as f32 + sh;
+            let i = x.floor();
+            let f = x - i;
+            let i = (i as isize + PAD as isize) as usize;
+            let (p0, p1, p2, p3) = (pad[i - 1], pad[i], pad[i + 1], pad[i + 2]);
+            o[n] = p1 + 0.5 * f * (p2 - p0
+                + f * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3
+                + f * (3.0 * (p1 - p2) + p3 - p0)));
+        }
+    }
+    (out, if nn > 0 { (ss / nn as f32).sqrt() } else { 0.0 })
+}
+
 /// 赤ch(C)にバーストが載っているか。バースト区間の fsc 相関を、信号の無い
 /// バックポーチのそれと比べた比で返す。
 ///
@@ -304,8 +439,8 @@ fn line_shift(cur: impl Fn(usize) -> f32, prev: impl Fn(usize) -> f32,
 
 /// 同期チップとバックポーチの緑chレベル(中央値)を測る。`use_line(y)` が真の
 /// 受信済みラインだけを使う。使える行が無ければ None。
-fn levels(raw: &[u8], w: usize, h: usize, filled: &[bool], sps: f32,
-          use_line: impl Fn(usize) -> bool) -> Option<(f32, f32)> {
+fn levels(sample: impl Fn(usize, usize) -> f32, w: usize, h: usize, filled: &[bool],
+          sps: f32, use_line: impl Fn(usize) -> bool) -> Option<(f32, f32)> {
     let (ta, tb) = win(TIP_US, sps, w);
     let (pa, pb) = win(PORCH_US, sps, w);
     let mut tips = Vec::new();
@@ -314,15 +449,14 @@ fn levels(raw: &[u8], w: usize, h: usize, filled: &[bool], sps: f32,
         if !filled.get(y).copied().unwrap_or(false) || !use_line(y) {
             continue;
         }
-        let row = &raw[y * w * 2..(y + 1) * w * 2];
         let mut s = 0.0f32;
         for n in ta..tb {
-            s += row[n * 2] as f32;
+            s += sample(y, n);
         }
         tips.push(s / (tb - ta).max(1) as f32);
         let mut s = 0.0f32;
         for n in pa..pb {
-            s += row[n * 2] as f32;
+            s += sample(y, n);
         }
         porches.push(s / (pb - pa).max(1) as f32);
     }
@@ -361,7 +495,7 @@ pub fn decode_field(
     if sps <= 0.0 || bb <= ba + 8 || w < 16 {
         return Info { lines_locked: 0, comb_step: 0, phase_delta_deg: 0.0,
                       code_per_ire: 0.0, lines_3d: 0, motion_frac: 0.0,
-                      svideo: false, mono: false, phase_drift_deg: 0.0 };
+                      svideo: false, mono: false, tbc_rms: 0.0, phase_drift_deg: 0.0 };
     }
 
     // --- 1. ラインごとのバースト位相 ---
@@ -426,8 +560,9 @@ pub fn decode_field(
         //   (ntsc.py も全ラインで校正している)。
         let none = Info { lines_locked: 0, comb_step: 0, phase_delta_deg: 0.0,
                           code_per_ire: 0.0, lines_3d: 0, motion_frac: 0.0,
-                          svideo: false, mono: false, phase_drift_deg: 0.0 };
-        let Some((tip, porch)) = levels(raw, w, h, filled, sps, |_| true) else {
+                          svideo: false, mono: false, tbc_rms: 0.0, phase_drift_deg: 0.0 };
+        let Some((tip, porch)) =
+            levels(|y, n| raw[(y * w + n) * 2] as f32, w, h, filled, sps, |_| true) else {
             return none;
         };
         if porch - tip < MONO_SYNC_MIN {
@@ -461,9 +596,40 @@ pub fn decode_field(
         return Info { mono: true, code_per_ire, ..none };
     }
 
+    // --- 2b. TBC: 行ごとの取り込み位置の揺れを直す(tbc_plane の注記) ---
+    //
+    // ここから先は生の8bitではなく、並べ直した浮動小数の面を読む。8bitへ
+    // 戻すと丸め誤差(±0.5コード)が乗るため。S端子はコンポジットの経路と
+    // 別なので並べ直さない(面は素通しの写し)。
+    let (cur, tbc_rms) = tbc_plane(raw, w, h, filled, ba, bb, comb_step, !svideo);
+    // 2フレーム前(p4)は動き検出にしか使わないので並べ直さない。行ごとのずれは
+    // 動き検出の側で line_shift が吸収し、速度ぶんの残り(右端で最大 0.07サンプル
+    // ≒ 境界で 1.8コード)は動きと数えない下限(MOTION_CORE_IRE)より小さい。
+    // 並べ直すと復調の時間が 1.5倍になる(実測)。
+    let q2 = match hist.as_ref() {
+        Some(hh) if hh.p2.len() == raw.len() && hh.p4.len() == raw.len() =>
+            Some(tbc_plane(hh.p2, w, h, filled, ba, bb, comb_step, !svideo).0),
+        _ => None,
+    };
+    // 並べ直した行のバースト位相を測り直す(復調の位相基準はこちら)
+    if !svideo {
+        for y in 0..h {
+            if !filled.get(y).copied().unwrap_or(false) {
+                continue;
+            }
+            let (m, ci, si) = burst_f(&cur[y * w..(y + 1) * w], ba, bb);
+            mag[y] = m;
+            phase[y] = si.atan2(ci);
+            let m = m.max(1e-6);
+            cosp[y] = ci / m;
+            sinp[y] = si / m;
+        }
+    }
+
     // --- 3. レベル校正。同期チップ(-40 IRE)とバックポーチ(0 IRE)から求める ---
     //     絵の内容に依存しないのがこの校正の利点。
-    let (tip, porch) = levels(raw, w, h, filled, sps, |y| mag[y] > BURST_MIN)
+    let (tip, porch) = levels(|y, n| cur[y * w + n], w, h, filled, sps,
+                              |y| mag[y] > BURST_MIN)
         .unwrap_or((0.0, 0.0));
     let code_per_ire = ((porch - tip) / 40.0).max(0.05);
     let inv_100ire = 1.0 / (code_per_ire * 100.0);
@@ -497,13 +663,13 @@ pub fn decode_field(
     // 信号の無い区間のノイズ床が 1.45 IRE なので、ここが底。**残りは基板側。**
     let mut tan_half = vec![0.0f32; h];
     let mut drifts = Vec::new();
-    if let Some(hh) = hist.as_ref().filter(|_| !svideo) {
-        if hh.p2.len() == raw.len() {
+    if let Some(q2) = q2.as_ref().filter(|_| !svideo) {
+        {
             for y in 0..h {
                 if !filled.get(y).copied().unwrap_or(false) || mag[y] <= BURST_MIN {
                     continue;
                 }
-                let (m2, ci, si) = burst(&hh.p2[y * w * 2..(y + 1) * w * 2], ba, bb, cch);
+                let (m2, ci, si) = burst_f(&q2[y * w..(y + 1) * w], ba, bb);
                 if m2 <= BURST_MIN {
                     continue;
                 }
@@ -578,7 +744,7 @@ pub fn decode_field(
                 (c0 * h.cos() + s0 * h.sin(), s0 * h.cos() - c0 * h.sin())
             }
         };
-        let px = |i: usize, j: usize| raw[(i * w + j) * 2] as f32;
+        let px = |i: usize, j: usize| cur[i * w + j];
         // S端子では C(赤ch)がそのままクロマ。ミッドレベルクランプなので
         // バックポーチを0点にする
         let c_porch = if svideo {
@@ -594,7 +760,7 @@ pub fn decode_field(
         // **S端子ではコムを一切使わない**(Y と C が最初から別々に来ている)
         let use3d = !svideo && hist.as_ref().map_or(false, |hh| {
             hh.hist_n.get(y).copied().unwrap_or(0) >= 3
-                && hh.p2.len() == raw.len() && hh.p4.len() == raw.len()
+                && q2.is_some()
         });
         if use3d {
             lines_3d += 1;
@@ -626,7 +792,7 @@ pub fn decode_field(
             boxcar(&mut mot, 8);
             // フレームコムのクロマ。位相ズレ ε を 2サンプル遅延で戻す(3b参照)。
             for n in 0..w {
-                c3buf[n] = (px(y, n) - hh.p2[(y * w + n) * 2] as f32) * 0.5;
+                c3buf[n] = (px(y, n) - q2.as_ref().unwrap()[y * w + n]) * 0.5;
             }
             let t = tan_half[y];
             if t != 0.0 {
@@ -807,6 +973,7 @@ pub fn decode_field(
         motion_frac: if n3 > 0 { moving as f32 / n3 as f32 } else { 0.0 },
         svideo,
         mono: false,
+        tbc_rms,
         phase_drift_deg,
     }
 }
@@ -1585,7 +1752,43 @@ mod tests {
                 }
                 s / c.max(1) as f64
             };
-            println!("col {x:5}: Y std {:.2}  B-Y std {:.2}", sd(&acc), sd(&accb));
+            // 連続する(同じ行の)2回の値の相関。-1 に近ければフレームごとに反転
+            let lag1 = |acc: &Vec<Vec<Vec<f32>>>| {
+                let (mut num, mut den) = (0.0f64, 0.0f64);
+                for y in 100..400 {
+                    let v = &acc[k][y];
+                    if v.len() < 48 { continue; }
+                    for dx in 0..24 {
+                        let ser: Vec<f64> =
+                            v.iter().skip(dx).step_by(24).map(|&a| a as f64).collect();
+                        let m = ser.iter().sum::<f64>() / ser.len() as f64;
+                        for i in 1..ser.len() {
+                            num += (ser[i] - m) * (ser[i - 1] - m);
+                        }
+                        den += ser.iter().map(|a| (a - m) * (a - m)).sum::<f64>();
+                    }
+                }
+                num / den.max(1e-9)
+            };
+            if std::env::var("RCX_PROFILE").is_ok() {
+                // 境界の前後 ±12 の1本ずつの、B-Y の平均と標準偏差
+                let mut line = String::new();
+                for dx in 0..24 {
+                    let mut ser = Vec::new();
+                    for y in 100..400 {
+                        let v = &accb[k][y];
+                        if v.len() < 48 { continue; }
+                        ser.extend(v.iter().skip(dx).step_by(24).map(|&a| a as f64));
+                    }
+                    let m = ser.iter().sum::<f64>() / ser.len().max(1) as f64;
+                    let sd = (ser.iter().map(|a| (a - m) * (a - m)).sum::<f64>()
+                        / ser.len().max(1) as f64).sqrt();
+                    line += &format!(" {:+.0}/{:.1}", m, sd);
+                }
+                println!("  B-Y mean/std @{x}:{line}");
+            }
+            println!("col {x:5}: Y std {:.2} ({:+.2})  B-Y std {:.2} ({:+.2})",
+                     sd(&acc), lag1(&acc), sd(&accb), lag1(&accb));
         }
     }
 
@@ -1632,6 +1835,112 @@ mod tests {
             }
         }
         raw
+    }
+
+    /// 取り込み位置の揺れを入れたカラーバー。行 y(同じフィールドの隣は y+1)の
+    /// 頭で `jit[y]` サンプルずれ、行の中で次の行のずれへ直線的に移る
+    /// (クロックが行をまたいで連続していて、周波数が行ごとに違う = 実機の形)。
+    fn synth_bars_jitter(colors: &[(f32, f32, f32)], w: usize, h: usize, sps: f32,
+                         phase_off: f32, jit: &[f32]) -> Vec<u8> {
+        let (ba, bb) = win(BURST_US, sps, w);
+        let nb = (ba + bb) as f32 * 0.5;
+        let (porch, cpi) = (158.0f32, 0.78f32);
+        let sync_end = 4.7e-6 * sps;
+        let (aa, _) = win((9.6, 62.0), sps, w);
+        let per = ((w - aa) / colors.len()) as f32;
+        let yuv = |(r, g, b): (f32, f32, f32)| {
+            let yy = 0.299 * r + 0.587 * g + 0.114 * b;
+            (yy, 0.493 * (b - yy), 0.877 * (r - yy))
+        };
+        let mut raw = vec![0u8; w * h * 2];
+        for y in 0..h {
+            let flip = std::f32::consts::PI * y as f32 + phase_off;
+            let (j0, j1) = (jit[y], jit[(y + 1).min(h - 1)]);
+            for n in 0..w {
+                // サンプル n が実際に取り込んだ時刻
+                let t = n as f32 + j0 + (j1 - j0) * (n as f32 - nb) / w as f32;
+                let psi = 2.0 * std::f32::consts::PI * (t - ba as f32) / 8.0 - flip;
+                let mut val = porch;
+                if t < sync_end {
+                    val = porch - 40.0 * cpi;
+                } else if t >= ba as f32 && t < bb as f32 {
+                    val = porch + 20.0 * cpi * psi.cos();
+                } else if t >= aa as f32 {
+                    let p = (t - aa as f32) / per;
+                    let ci = (p.floor() as usize).min(colors.len() - 1);
+                    let k = ((p - p.floor()) * per - (per - 3.0)).clamp(0.0, 3.0) / 3.0;
+                    let (y0, u0, v0) = yuv(colors[ci]);
+                    let (y1, u1, v1) = yuv(colors[(ci + 1).min(colors.len() - 1)]);
+                    let (yy, uu, vv) = (y0 + (y1 - y0) * k, u0 + (u1 - u0) * k,
+                                        v0 + (v1 - v0) * k);
+                    let c = (-uu * psi.cos() + vv * psi.sin()) * 0.5;
+                    val = porch + (yy * 100.0 + c * 100.0) * cpi;
+                }
+                raw[(y * w + n) * 2] = (val + 0.5).clamp(0.0, 255.0) as u8;
+            }
+        }
+        raw
+    }
+
+    /// **取り込み位置が行ごとに揺れても、静止したカラーバーの色が揺れないこと(TBC)。**
+    ///
+    /// ★実機(2026-10-09): 取り込み位置が行ごとに揺れ(2フレーム前に対して標準偏差
+    ///   0.10サンプル)、しかも**行の中でも伸びる**(右端で頭の 3.6倍)。その結果、
+    ///   赤・マゼンタなど R-Y の大きい色の B が 3〜5コード揺れ、色の境界がちらついた。
+    ///   バーストで行の頭を、次の行のバーストで行の終わりを揃えると消える。
+    #[test]
+    fn tbc_removes_line_jitter() {
+        let sps = 8.0 * 3_579_545.0f32;
+        let (w, h) = (1820usize, 24usize);
+        let pi = std::f32::consts::PI;
+        // 2フレームで別々の揺れ(±0.3サンプル)。決まった擬似乱数で作る
+        let jit = |seed: u32| -> Vec<f32> {
+            let mut st = seed;
+            (0..h).map(|_| {
+                st = st.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((st >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * 0.6
+            }).collect()
+        };
+        let (ja, jb, jc) = (jit(7), jit(11), jit(23));
+        // 75% カラーバー。100% だと青が 0/255 に張り付いて揺れが見えない
+        let bars: Vec<(f32, f32, f32)> =
+            BARS100.iter().map(|&(r, g, b)| (r * 0.75, g * 0.75, b * 0.75)).collect();
+        // 連続する3フレーム。前後2フレームの組で復調するので、2フレームだけで
+        // 比べると (a,b) と (b,a) が対称になり、揺れがあっても必ず一致してしまう
+        let a = synth_bars_jitter(&bars, w, h, sps, 0.0, &ja);
+        let b = synth_bars_jitter(&bars, w, h, sps, pi, &jb);
+        let c = synth_bars_jitter(&bars, w, h, sps, 0.0, &jc);
+        let filled = vec![true; h];
+        let hn = vec![3u8; h];
+        let dec = |cur: &[u8], p2: &[u8]| {
+            let mut fb = vec![0u8; w * h * 4];
+            let info = decode_field(cur, w, h, &filled, sps as u32, &mut fb,
+                                    Some(History { p2, p4: cur, hist_n: &hn }),
+                                    Adjust::default());
+            (fb, info)
+        };
+        let (fa, ia) = dec(&b, &a);
+        let (fbb, _) = dec(&c, &b);
+        assert!(ia.tbc_rms > 0.1, "揺れを測れていない: {:.3}", ia.tbc_rms);
+        // 色帯の中(境界の傾斜を避ける)で、2フレームの青の差の平均
+        let (aa, _) = win((9.6, 62.0), sps, w);
+        let per = (w - aa) / bars.len();
+        let mut worst = 0.0f32;
+        for k in 0..bars.len() {
+            let (x0, x1) = (aa + k * per + 24, aa + (k + 1) * per - 24);
+            let mut sum = 0.0f32;
+            let mut n = 0;
+            for y in 4..h - 4 {
+                for x in x0..x1 {
+                    let i = (y * w + x) * 4 + 2;
+                    sum += (fa[i] as f32 - fbb[i] as f32).abs();
+                    n += 1;
+                }
+            }
+            worst = worst.max(sum / n as f32);
+        }
+        // TBC 無しで 8.9、行の頭だけ揃えると 8.9、行内の速度まで直すと 1.3(実測)
+        assert!(worst < 2.5, "揺れで色帯の青がフレームごとに {worst:.1} コード変わる");
     }
 
     const BARS100: [(f32, f32, f32); 8] = [
