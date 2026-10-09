@@ -721,6 +721,34 @@ struct AutoTune {
 /// 過剰サンプルの実測)。簡易スキャンが1段降りるかどうかもこの1つの数字で決まる。
 const PHASE_SENSITIVE: f32 = 0.85;
 
+/// NTSCの1ライン[µs]と1フレームのライン数。管面の窓を時間とライン数で書くのに使う
+const NTSC_LINE_US: f32 = 63.556;
+const NTSC_LINES: f32 = 525.0;
+
+/// コンポジット/S端子(YC8)の管面を `mon_bands` に置くキー。実在しない帯域番号
+/// (帯域は kHz の値なので重ならない)。設定ファイルには `mon.1000` で残る。
+const MON_KEY_NTSC: u32 = 1000;
+
+/// コンポジット/S端子の管面の初期値 [H幅, H位置, V幅, V位置]。
+///
+/// ★**ビデオデッキの HDMI 出力と同じ範囲を映す**(2026-10-09 実測、白黒の格子
+///   パターン。中央の点と格子を目印に、こちらの受信データと同じ物差しで比べた)。
+///     横: 9.95〜60.87µs(= ntsc::ACTIVE_US)。中心 35.41µs が中央の点に一致
+///     縦: 480ライン。フレームの 35.6〜515.6 行目(中央の点は 272.5 行目)
+///   以前は15kHz帯の管面(RGB用)を共用していて、帰線区間の黒い余白まで映り、
+///   中心も右へずれていた。
+///   位置は「周期の中心からのずれ」で、絵を動かす向きに符号を取る(render.rs)。
+const MON_NTSC: [f32; 4] = {
+    let (h0, h1) = ntsc::ACTIVE_US;
+    let (v0, v1) = (35.6, 515.6);
+    [
+        (h1 - h0) / NTSC_LINE_US,
+        0.5 - (h0 + h1) * 0.5 / NTSC_LINE_US,
+        (v1 - v0) / NTSC_LINES,
+        0.5 - (v0 + v1) * 0.5 / NTSC_LINES,
+    ]
+};
+
 /// 全候補を測り終えたあと、どれを採るかを決める。返り値は (添字, その位相感度)。
 ///
 /// 位相感度(最悪÷最良)がいちばん小さい = 1ドットが1サンプルに載っている点を採る。
@@ -1020,6 +1048,9 @@ struct Session {
     band_pll: std::collections::BTreeMap<u32, [u32; 2]>,
     /// いまの周波数帯[kHz]。0 は未確定
     band_khz: u32,
+    /// `mon_bands` を引くキー。普段は `band_khz` と同じで、コンポジット/S端子
+    /// (YC8)のときだけ `MON_KEY_NTSC` になる。0 は未確定
+    mon_key: u32,
     auto: Option<AutoTune>,
     /// 自動調整の結果表示(完了後に残す)
     auto_done: Option<String>,
@@ -1192,6 +1223,7 @@ impl Session {
             mon_bands: cfg.mon_bands.clone(),
             band_pll: cfg.band_pll.clone(),
             band_khz: 0,
+            mon_key: 0,
             auto: None,
             auto_done: None,
             modes: cfg.modes.clone(),
@@ -1365,7 +1397,7 @@ impl Session {
             undecorated: self.clean_undecorated,
             redecorate: self.clean_undecorated != self.clean_undecorated_applied,
             aspect: cleanout::display_aspect(
-                self.frame_size, self.crop, self.tube_aspect, self.rotate),
+                self.frame_size, self.crop, self.tube_aspect_eff(), self.rotate),
             has_video: self.frame_size.0 > 0,
         };
         let keep = cleanout::show(ctx, &opts, |ui, rect| self.paint_tube(ui, rect));
@@ -1384,9 +1416,11 @@ impl Session {
     }
 
     fn flush_settings(&mut self) {
+        if self.mon_key > 0 {
+            self.mon_bands.insert(self.mon_key, self.mon);
+        }
         if self.band_khz > 0 {
             let k = self.band_khz;
-            self.mon_bands.insert(k, self.mon);
             self.band_pll.insert(k, [self.tune_pll_divide.max(0) as u32,
                                      self.tune_phase as u32]);
         }
@@ -1968,7 +2002,7 @@ impl Session {
         };
         render::Params {
             rotate: self.rotate,
-            tube: self.tube_aspect,
+            tube: self.tube_aspect_eff(),
             filter: self.filter,
             htotal: m.as_ref().map_or(0, |m| m.htotal as u32),
             // 行位置は半ライン単位のスロット。1VSYNC周期に何スロット入るかは
@@ -2332,6 +2366,22 @@ impl Session {
         }
     }
 
+    /// 描画に使う管面の縦横比。
+    ///
+    /// コンポジット/S端子(YC8)は**規格で画素の形が決まっている**ので、管面の
+    /// 設定(4:3 など)ではなく、いま映している窓の大きさから求める。基準は
+    /// 720サンプル(BT.601、53.33µs) × 480ライン = 4:3。ビデオデッキの HDMI 出力も
+    /// この比で、50.9µs × 480ライン を 1.274 で出していた(実測)。管面の設定をそのまま
+    /// 使うと、窓を詰めたぶん横に伸びる(格子の升目が横長になる)。
+    fn tube_aspect_eff(&self) -> f32 {
+        if self.mon_key != MON_KEY_NTSC || !self.tube_time_based {
+            return self.tube_aspect;
+        }
+        let h_us = self.mon[0].max(0.01) * NTSC_LINE_US;
+        let lines = self.mon[2].max(0.01) * NTSC_LINES;
+        4.0 / 3.0 * (h_us / 53.333) * (480.0 / lines)
+    }
+
     /// 周波数帯が変わったら、いまの管面設定を旧帯域へ保存し、新帯域の値を復元する。
     ///
     /// 実機のマルチスキャンモニタは周波数帯ごとに走査速度を切り替えて管面いっぱいに
@@ -2349,12 +2399,25 @@ impl Session {
                 _ => return,
             }
         };
+        // ★コンポジット/S端子は管面を帯域と別に持つ。同じ15kHz帯でも、RGB(MSX・
+        //   X68000)の管面はモニタに合わせて回すつまみで、NTSCの窓は規格と
+        //   ビデオデッキで決まる。共用すると片方を合わせるともう片方がずれる。
+        let mk = if self.pll_locked_by_format() { MON_KEY_NTSC } else { khz };
+        if mk != self.mon_key {
+            if self.mon_key > 0 {
+                self.mon_bands.insert(self.mon_key, self.mon);
+            }
+            let default = if mk == MON_KEY_NTSC { MON_NTSC } else { [1.0, 0.0, 1.0, 0.0] };
+            self.mon = self.mon_bands.get(&mk).copied().unwrap_or(default);
+            self.mon_key = mk;
+            self.mark_settings_dirty();
+            self.want_fit = true;
+        }
         if khz == self.band_khz {
             return;
         }
         if self.band_khz > 0 {
             let old = self.band_khz;
-            self.mon_bands.insert(old, self.mon);
             self.band_pll.insert(old, [self.tune_pll_divide.max(0) as u32,
                                        self.tune_phase as u32]);
         }
@@ -2372,11 +2435,10 @@ impl Session {
                 self.send_cfg(protocol::CFG_KEY_PHASE, ph as u32);
             }
         }
-        // 未知の帯域は「1周期まるごとが管面に出る」から始める。管面の横幅は 1/fH
-        // そのものなので、これで必ず全体が収まる。あとは実機のモニタに合わせて
-        // H幅/V幅を1未満へ詰めていけばよい(帰線の間ビームは戻っているので、
-        // 実際のCRTは 0.85〜0.95 あたりが近い)。
-        self.mon = self.mon_bands.get(&khz).copied().unwrap_or([1.0, 0.0, 1.0, 0.0]);
+        // 未知の帯域の管面は「1周期まるごとが管面に出る」から始める(上で復元済み)。
+        // 管面の横幅は 1/fH そのものなので、これで必ず全体が収まる。あとは実機の
+        // モニタに合わせて H幅/V幅を1未満へ詰めていけばよい(帰線の間ビームは
+        // 戻っているので、実際のCRTは 0.85〜0.95 あたりが近い)。
         self.band_khz = khz;
         // H-PLLのVCOレンジ/チャージポンプはピクセルクロックとpixels per lineで
         // 決まるので、モードが変わったら計算して送り直す
@@ -5271,6 +5333,12 @@ impl Session {
                         self.mark_settings_dirty();
                         self.want_fit = true;
                     }
+                    if self.mon_key == MON_KEY_NTSC && self.tube_time_based {
+                        ui.weak(format!("NTSCは規格の画素比 {:.3}", self.tube_aspect_eff()))
+                            .on_hover_text("コンポジット/S端子は画素の形が規格で決まるので、\n\
+                                            ここの設定ではなく映している窓の大きさから\n\
+                                            縦横比を求める(720サンプル×480ライン = 4:3)");
+                    }
                 });
                 ui.horizontal(|ui| {
                     // モニタの枠。実在モニタのイラストの開口部に管面をはめる。
@@ -5446,7 +5514,7 @@ impl Session {
                 // tube_aspect(4:3など)ではなく開口部の比に従うのが筋。
                 let aspect = match bez {
                     Some(b) => b.screen_aspect(),
-                    None if self.tube_aspect > 0.0 => self.tube_aspect,
+                    None if self.tube_aspect_eff() > 0.0 => self.tube_aspect_eff(),
                     None => cw / ch.max(1.0),
                 };
                 let disp = if self.rotate % 2 == 1 {
@@ -5604,6 +5672,28 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// コンポジットの管面の初期値が、ビデオデッキの窓(1820サンプル/ラインで
+    /// 285〜1743、480ライン)を、デッキと同じ縦横比 1.274 で映すこと。
+    #[test]
+    fn ntsc_tube_matches_vcr_window() {
+        let p = render::Params {
+            htotal: 1820, vtotal: 525.0, time_based: true,
+            h_size: MON_NTSC[0], h_pos: MON_NTSC[1],
+            v_size: MON_NTSC[2], v_pos: MON_NTSC[3],
+            ..Default::default()
+        };
+        let w = p.effective_window();
+        let (x0, x1) = (w[0] * 1820.0, w[1] * 1820.0);
+        assert!((x0 - 285.0).abs() < 1.5 && (x1 - 1743.0).abs() < 1.5, "横 {x0}..{x1}");
+        assert!(((x0 + x1) * 0.5 - 1014.0).abs() < 1.5, "中心が中央の点に来ない");
+        let (y0, y1) = (w[2] * 525.0, w[3] * 525.0);
+        assert!((y0 - 35.6).abs() < 0.5 && (y1 - 515.6).abs() < 0.5, "縦 {y0}..{y1}");
+        let h_us = MON_NTSC[0] * NTSC_LINE_US;
+        let lines = MON_NTSC[2] * NTSC_LINES;
+        let aspect = 4.0 / 3.0 * (h_us / 53.333) * (480.0 / lines);
+        assert!((aspect - 1.274).abs() < 0.005, "縦横比 {aspect}");
+    }
 
     /// ★**繰り返しても縮み続けないこと。** `last_tex` はレターボックス後の
     ///   表示サイズなので、素直に合わせると毎回余白ぶん小さくなる。同期が
