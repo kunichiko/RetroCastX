@@ -68,6 +68,16 @@ const CHROMA_LPF: usize = 16;
 /// 2〜4 IRE。閾値をノイズ床より下にすると常に2次元へ落ちて意味が無くなる。
 const MOTION_IRE: f32 = 8.0;
 
+/// 動き量のうち「動きではない」とみなす分[IRE]。これを超えた分だけで
+/// 2次元へ寄せる(MOTION_IRE で完全に2次元)。
+///
+/// ★以前は `a = 動き量 / MOTION_IRE` で**0から比例**させていたので、雑音だけの
+///   静止部分でも 1〜2割、カラーバーの境界では最大7割ほど2次元が混ざっていた
+///   (実測 2026-10-09)。2次元の輝度は境界でクロマを引き残すので、それが
+///   フレームごとに反転してちらついた。サンプル位置の揺れを補正した後の
+///   静止部分の動き量は 99%点で 1.7コード(≒1.9 IRE)なので、その上に置く。
+const MOTION_CORE_IRE: f32 = 3.0;
+
 /// バーストが取れたと判定する相関の下限。これ未満の行は無彩色にする。
 ///
 /// ★真っ黒な領域では相関が雑音になり、**色相が乱数になる**(実測: 彩度0.03〜0.09の
@@ -271,6 +281,25 @@ fn c_burst_snr(raw: &[u8], w: usize, h: usize, filled: &[bool],
         return 0.0;
     }
     median(&mut bs) / median(&mut ps).max(1e-6)
+}
+
+/// `cur` が `prev` に対して横に何サンプルずれているか(cur(n) ≈ prev(n - s) の s)。
+///
+/// 差を prev の傾きで最小二乗に当てる。ずれが1サンプルより十分小さい前提の
+/// 1次近似なので、大きく外れたら(絵が本当に動いたなど)0 として扱う。
+fn line_shift(cur: impl Fn(usize) -> f32, prev: impl Fn(usize) -> f32,
+              a: usize, b: usize) -> f32 {
+    let (mut dg, mut gg) = (0.0f32, 0.0f32);
+    for n in a..b {
+        let g = (prev(n + 1) - prev(n - 1)) * 0.5;
+        dg += (cur(n) - prev(n)) * g;
+        gg += g * g;
+    }
+    if gg < 1e-3 {
+        return 0.0;
+    }
+    let s = -dg / gg;
+    if s.abs() > 1.0 { 0.0 } else { s }
 }
 
 /// 同期チップとバックポーチの緑chレベル(中央値)を測る。`use_line(y)` が真の
@@ -517,10 +546,14 @@ pub fn decode_field(
     let mut yl = vec![0.0f32; w];
     let mut mot = vec![0.0f32; w];
     let mut c3buf = vec![0.0f32; w];
+    // 画素ごとの「2次元へ落とした割合」(0 = 静止でフレームコム、1 = 2次元)。
+    // 輝度の作り方も同じ割合で切り替えるので残しておく
+    let mut amix = vec![1.0f32; w];
     let mut locked = 0u32;
     let mut lines_3d = 0u32;
     let (mut moving, mut n3) = (0u32, 0u32);
     let motion_th = MOTION_IRE * code_per_ire;
+    let motion_core = MOTION_CORE_IRE * code_per_ire;
     for y in 0..h {
         if !filled.get(y).copied().unwrap_or(false) {
             continue;
@@ -569,8 +602,25 @@ pub fn decode_field(
             // 位相180°でクロマが差に出てしまい、色のある所が全部「動いている」
             // ことになる(実測で副搬送波成分が 388 対 9315)。
             let hh = hist.as_ref().unwrap();
+            // ★**2フレーム前の行を、サンプル位置の揺れの分ずらしてから比べる。**
+            //
+            //   DATACLK は HSYNC に PLL でロックしているので、行ごとに取り込み位置が
+            //   わずかに揺れる(実測 2026-10-09: 2フレーム前との差で標準偏差
+            //   0.10サンプル = 3.6ns、最大0.39。行の左半分と右半分で測ったずれの
+            //   相関は 0.977 で、**行の中ではほぼ一定**)。カラーバーの境界は
+            //   傾きが最大26コード/サンプルあるので、このずれだけで差が10コード
+            //   近くになり、静止しているのに「動いている」と判定されていた。
+            //   ずれを行ごとに最小二乗で求めて線形補間で戻すと、境界の動き量は
+            //   99%点で 4.8 → 1.7コードになった(平坦部と同じ)。
+            let prow = |n: usize| hh.p4[(y * w + n) * 2] as f32;
+            let sh = line_shift(|n| px(y, n), prow, aa.max(1), ab.min(w - 1));
             for n in 0..w {
-                mot[n] = (px(y, n) - hh.p4[(y * w + n) * 2] as f32).abs();
+                let t = n as f32 - sh;
+                let i0 = (t.floor().max(0.0) as usize).min(w - 1);
+                let i1 = (i0 + 1).min(w - 1);
+                let fr = (t - i0 as f32).clamp(0.0, 1.0);
+                let r = prow(i0) * (1.0 - fr) + prow(i1) * fr;
+                mot[n] = (px(y, n) - r).abs();
             }
             // 副搬送波1周期(8サンプル)で平均してノイズを落とす
             boxcar(&mut mot, 8);
@@ -617,6 +667,7 @@ pub fn decode_field(
                 acc += px(i, n);
                 cnt += 1.0;
             }
+            amix[n] = 1.0;
             if cnt == 0.0 {
                 u[n] = 0.0;
                 v[n] = 0.0;
@@ -638,10 +689,12 @@ pub fn decode_field(
             if use3d {
                 let c3 = c3buf[n];
                 // 動き量は mot[] に入れてある(2フレーム前との差を平滑したもの)
-                let a = (mot[n] / motion_th.max(1e-6)).clamp(0.0, 1.0);
+                let a = ((mot[n] - motion_core) / (motion_th - motion_core).max(1e-6))
+                    .clamp(0.0, 1.0);
                 if a >= 0.5 { moving += 1; }
                 n3 += 1;
                 c = (1.0 - a) * c3 + a * c;
+                amix[n] = a;
             }
             let (cos_psi, sin_psi) = psi(n);
             // バーストは -(B-Y) 軸(位相180°)。V の符号は実測で決めた
@@ -684,9 +737,27 @@ pub fn decode_field(
                 yl[n] = px(y, n);
             }
         } else {
+            // ★**静止部分ではフレームコムのクロマ c3 をそのまま引く。**
+            //
+            //   再変調の Ĉ は帯域制限(CHROMA_LPF)したクロマなので、クロマが急に
+            //   変わる所(カラーバーの色の境界)では信号のクロマと合わず、引き残しが
+            //   輝度に出る。その残りは副搬送波なので**フレームごとに符号が反転し、
+            //   30Hz でちらつく縞**になる(実機 2026-10-09。強さはクロマの変化量の
+            //   順で、緑/マゼンタの境界が最大)。
+            //   静止部分の c3 は境界まで正確なクロマで、x - c3 = (x + p2)/2 は
+            //   前後2フレームの平均そのもの。水平にも垂直にも広がらないので、
+            //   上の表の「x - Ĉ」の利点はそのまま残る。動いている所(amix → 1)は
+            //   フレームコムが成立しないので従来どおり Ĉ を引く。
             for n in 0..w {
                 let (cos_psi, sin_psi) = psi(n);
-                yl[n] = px(y, n) - (-u[n] * cos_psi + v[n] * sin_psi);
+                let c_hat = -u[n] * cos_psi + v[n] * sin_psi;
+                let a = amix[n];
+                let c_sub = if use3d && chroma_ok && a < 1.0 {
+                    (1.0 - a) * c3buf[n] + a * c_hat
+                } else {
+                    c_hat
+                };
+                yl[n] = px(y, n) - c_sub;
             }
         }
         // --- 3) YUV → RGB ---
@@ -1330,8 +1401,286 @@ mod tests {
         assert!((d6 - 6.0).abs() < 1.0, "ε を 6° と測れていない: {d6:.1}°");
         // 補正が効いていること。**補正を消すと 0.15 → 2.84 コードに増える**ことを
         // 確認済み(2026-08-15)。ここが緩いと回帰を素通しする。
-        assert!(r6 < r0 + 1.0,
+        //
+        // ★判定は絶対値にしてある。以前は `r6 < r0 + 1.0` だったが、静止部分の
+        //   輝度にフレームコムのクロマを使うようにして(static_color_edges_do_not_flicker)
+        //   r0 が 0.15 → 0.00 に減り、基準ごと動いて落ちた。r6 そのものは変更の
+        //   前後とも約 1.1 で同じ(ε=2.5°/6°で確認、2026-10-09)。
+        let _ = r0;
+        assert!(r6 < 1.5,
                 "位相が6°ずれると輝度の副搬送波が増える: {r0:.2} → {r6:.2} コード");
+    }
+
+    /// 縦の色帯(カラーバー)。全行が同じ色で、境界は1サンプルで切り替わる。
+    fn synth_bars(colors: &[(f32, f32, f32)], w: usize, h: usize, sps: f32,
+                  phase_off: f32) -> Vec<u8> {
+        let (ba, _) = win(BURST_US, sps, w);
+        let (bs, be) = win(BURST_US, sps, w);
+        let (porch, cpi) = (158.0f32, 0.78f32);
+        let sync_end = (4.7e-6 * sps) as usize;
+        let (aa, _) = win((9.6, 62.0), sps, w);
+        let per = (w - aa) / colors.len();
+        let mut raw = vec![0u8; w * h * 2];
+        for y in 0..h {
+            let flip = std::f32::consts::PI * y as f32 + phase_off;
+            for n in 0..w {
+                let psi = 2.0 * std::f32::consts::PI * (n as f32 - ba as f32) / 8.0 - flip;
+                let mut val = porch;
+                if n < sync_end {
+                    val = porch - 40.0 * cpi;
+                } else if n >= bs && n < be {
+                    val = porch + 20.0 * cpi * psi.cos();
+                } else if n >= aa {
+                    let (r, g, b) = colors[((n - aa) / per).min(colors.len() - 1)];
+                    let yy = 0.299 * r + 0.587 * g + 0.114 * b;
+                    let uu = 0.493 * (b - yy);
+                    let vv = 0.877 * (r - yy);
+                    let c = (-uu * psi.cos() + vv * psi.sin()) * 0.5;
+                    val = porch + (yy * 100.0 + c * 100.0) * cpi;
+                }
+                raw[(y * w + n) * 2] = val.clamp(0.0, 255.0) as u8;
+            }
+        }
+        raw
+    }
+
+    /// **静止したカラーバーの色の境界が、フレームごとにちらつかないこと。**
+    ///
+    /// ★実機で踏んだ(2026-10-09、NTSCカラーバー): 黄/シアン・緑/マゼンタ・
+    ///   赤/青の境界に縞が出て、30Hz でちらついた。強さはクロマの変化量の順
+    ///   (緑/マゼンタが最大)だった。輝度を「信号 − 帯域制限したクロマの再変調」
+    ///   で作っていたので、クロマが急に変わる境界では引き残しが出る。その残りは
+    ///   副搬送波なので**フレームごとに符号が反転する**。
+    ///   静止部分はフレームコムでクロマが境界まで正確に取れているので、輝度にも
+    ///   そちらを使えば消える。
+    #[test]
+    fn static_color_edges_do_not_flicker() {
+        let sps = 8.0 * 3_579_545.0f32;
+        let (w, h) = (1820usize, 24usize);
+        // 100% カラーバー(白 黄 シアン 緑 マゼンタ 赤 青 黒)
+        let colors = [(1.0, 1.0, 1.0), (1.0, 1.0, 0.0), (0.0, 1.0, 1.0), (0.0, 1.0, 0.0),
+                      (1.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 0.0)];
+        let pi = std::f32::consts::PI;
+        let filled = vec![true; h];
+        let hn = vec![3u8; h];
+        // 連続する2フレーム。副搬送波の位相は1フレームごとに180°反転する
+        let a0 = synth_bars(&colors, w, h, sps, 0.0);
+        let a1 = synth_bars(&colors, w, h, sps, pi);
+        let dec = |cur: &[u8], p2: &[u8], p4: &[u8]| {
+            let mut fb = vec![0u8; w * h * 4];
+            decode_field(cur, w, h, &filled, sps as u32, &mut fb,
+                         Some(History { p2, p4, hist_n: &hn }), Adjust::default());
+            fb
+        };
+        let f0 = dec(&a0, &a1, &a0);
+        let f1 = dec(&a1, &a0, &a1);
+        let (aa, _) = win((9.6, 62.0), sps, w);
+        let per = (w - aa) / colors.len();
+        let y = h / 2;
+        // 境界ごとに、前後16サンプルで2フレームの差の最大を取る
+        let mut worst = (0usize, 0.0f32);
+        for k in 1..colors.len() {
+            let e = aa + k * per;
+            for n in e - 16..e + 16 {
+                for ch in 0..3 {
+                    let i = (y * w + n) * 4 + ch;
+                    let d = (f0[i] as f32 - f1[i] as f32).abs();
+                    if d > worst.1 {
+                        worst = (k, d);
+                    }
+                }
+            }
+        }
+        assert!(worst.1 <= 3.0,
+                "静止した境界がフレームごとに {:.0} コード変わる(境界{})", worst.1, worst.0);
+    }
+
+    /// 録った生信号を、受信側(assembler)と同じ履歴の回し方で復調し直す。
+    /// 実機を占有せずに復調の変更を比べるための道具。
+    ///
+    ///     RCX_REPLAY=bars.bin cargo test --release replay -- --ignored --nocapture
+    ///
+    /// bars.bin は videoin capture の .npz から作る(u32 w,h,dotclk,nframes の後に
+    /// フレームごとの u32 行数、行ごとの u16 line + w バイト)。
+    /// 出すのは境界ごとの「同じ画素のフレーム間の標準偏差」(Y)。
+    #[test]
+    #[ignore]
+    fn replay() {
+        let Ok(path) = std::env::var("RCX_REPLAY") else { return };
+        let d = std::fs::read(path).unwrap();
+        let rd = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap()) as usize;
+        let (w, h, dotclk, nf) = (rd(0), rd(4), rd(8) as u32, rd(12));
+        let mut o = 16;
+        let mut raw = vec![0u8; w * h * 2];
+        let mut p2 = raw.clone();
+        let mut p4 = raw.clone();
+        let mut hn = vec![0u8; h];
+        let xs: Vec<usize> = std::env::var("RCX_COLS").map(|v| {
+            v.split(',').map(|x| x.parse().unwrap()).collect()
+        }).unwrap_or_else(|_| vec![309, 484, 669, 844, 1028, 1204, 1388, 1567, 610]);
+        // [列][行] ごとの Y の系列
+        let mut acc: Vec<Vec<Vec<f32>>> = vec![vec![Vec::new(); h]; xs.len()];
+        let mut accb: Vec<Vec<Vec<f32>>> = vec![vec![Vec::new(); h]; xs.len()];
+        let mut fb = vec![0u8; w * h * 4];
+        let mut info_last = None;
+        for f in 0..nf {
+            let n = rd(o);
+            o += 4;
+            let mut filled = vec![false; h];
+            for _ in 0..n {
+                let l = u16::from_le_bytes(d[o..o + 2].try_into().unwrap()) as usize;
+                o += 2;
+                let row = &d[o..o + w];
+                o += w;
+                if l >= h { continue; }
+                let (a, b) = (l * w * 2, (l + 1) * w * 2);
+                p4[a..b].copy_from_slice(&p2[a..b]);
+                p2[a..b].copy_from_slice(&raw[a..b]);
+                hn[l] = hn[l].saturating_add(1);
+                for (i, &v) in row.iter().enumerate() {
+                    raw[a + i * 2] = v;
+                    raw[a + i * 2 + 1] = 0;
+                }
+                filled[l] = true;
+            }
+            let info = decode_field(&raw, w, h, &filled, dotclk, &mut fb,
+                                    Some(History { p2: &p2, p4: &p4, hist_n: &hn }),
+                                    Adjust::default());
+            if f < 20 { continue; }
+            for (k, &x) in xs.iter().enumerate() {
+                for y in 100..400 {
+                    if !filled[y] { continue; }
+                    // 境界の前後 ±12 を1本ずつ
+                    for dx in 0..24 {
+                        let i = (y * w + x + dx - 12) * 4;
+                        let yy = 0.299 * fb[i] as f32 + 0.587 * fb[i + 1] as f32
+                            + 0.114 * fb[i + 2] as f32;
+                        acc[k][y].push(yy);
+                        accb[k][y].push(fb[i + 2] as f32 - yy);
+                    }
+                }
+            }
+            info_last = Some(info);
+        }
+        let i = info_last.unwrap();
+        println!("locked {} comb {} 3d {} motion {:.1}% drift {:.1}",
+                 i.lines_locked, i.comb_step, i.lines_3d, 100.0 * i.motion_frac,
+                 i.phase_drift_deg);
+        for (k, &x) in xs.iter().enumerate() {
+            // 行ごと・列ごとの系列(24本が交互に入っている)の標準偏差の平均
+            let sd = |acc: &Vec<Vec<Vec<f32>>>| {
+                let (mut s, mut c) = (0.0f64, 0usize);
+                for y in 100..400 {
+                    let v = &acc[k][y];
+                    if v.len() < 48 { continue; }
+                    for dx in 0..24 {
+                        let ser: Vec<f64> =
+                            v.iter().skip(dx).step_by(24).map(|&a| a as f64).collect();
+                        let m = ser.iter().sum::<f64>() / ser.len() as f64;
+                        let var = ser.iter().map(|a| (a - m) * (a - m)).sum::<f64>()
+                            / ser.len() as f64;
+                        s += var.sqrt();
+                        c += 1;
+                    }
+                }
+                s / c.max(1) as f64
+            };
+            println!("col {x:5}: Y std {:.2}  B-Y std {:.2}", sd(&acc), sd(&accb));
+        }
+    }
+
+    /// カラーバーを `shift` サンプル右へずらして合成する。境界は3サンプルの
+    /// 傾斜にして帯域制限された実信号に寄せる(1サンプルで切り替わる境界は
+    /// サブサンプルのずれを表せない)。同期・バーストも一緒にずれる(実機の
+    /// サンプル位置の揺れと同じ)。
+    fn synth_bars_shift(colors: &[(f32, f32, f32)], w: usize, h: usize, sps: f32,
+                        phase_off: f32, shift: f32) -> Vec<u8> {
+        let (ba, _) = win(BURST_US, sps, w);
+        let (bs, be) = win(BURST_US, sps, w);
+        let (porch, cpi) = (158.0f32, 0.78f32);
+        let sync_end = 4.7e-6 * sps;
+        let (aa, _) = win((9.6, 62.0), sps, w);
+        let per = ((w - aa) / colors.len()) as f32;
+        let yuv = |(r, g, b): (f32, f32, f32)| {
+            let yy = 0.299 * r + 0.587 * g + 0.114 * b;
+            (yy, 0.493 * (b - yy), 0.877 * (r - yy))
+        };
+        let mut raw = vec![0u8; w * h * 2];
+        for y in 0..h {
+            let flip = std::f32::consts::PI * y as f32 + phase_off;
+            for n in 0..w {
+                let t = n as f32 - shift;
+                let psi = 2.0 * std::f32::consts::PI * (t - ba as f32) / 8.0 - flip;
+                let mut val = porch;
+                if t < sync_end {
+                    val = porch - 40.0 * cpi;
+                } else if t >= bs as f32 && t < be as f32 {
+                    val = porch + 20.0 * cpi * psi.cos();
+                } else if t >= aa as f32 {
+                    let p = (t - aa as f32) / per;
+                    let ci = (p.floor() as usize).min(colors.len() - 1);
+                    // 境界の手前3サンプルで次の色へ線形に移る
+                    let k = ((p - p.floor()) * per - (per - 3.0)).clamp(0.0, 3.0) / 3.0;
+                    let (y0, u0, v0) = yuv(colors[ci]);
+                    let (y1, u1, v1) = yuv(colors[(ci + 1).min(colors.len() - 1)]);
+                    let (yy, uu, vv) = (y0 + (y1 - y0) * k, u0 + (u1 - u0) * k,
+                                        v0 + (v1 - v0) * k);
+                    let c = (-uu * psi.cos() + vv * psi.sin()) * 0.5;
+                    val = porch + (yy * 100.0 + c * 100.0) * cpi;
+                }
+                raw[(y * w + n) * 2] = (val + 0.5).clamp(0.0, 255.0) as u8;
+            }
+        }
+        raw
+    }
+
+    const BARS100: [(f32, f32, f32); 8] = [
+        (1.0, 1.0, 1.0), (1.0, 1.0, 0.0), (0.0, 1.0, 1.0), (0.0, 1.0, 0.0),
+        (1.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 0.0)];
+
+    /// **サンプル位置の揺れを「動き」と取り違えないこと。**
+    ///
+    /// ★実機(2026-10-09、カラーバー): 取り込み位置が行ごとに 0.1サンプル
+    ///   (最大0.4)揺れるため、傾きの大きい色の境界で2フレーム前との差が出て、
+    ///   静止しているのに2次元コムが混ざり、境界がちらついた。
+    #[test]
+    fn sampling_jitter_is_not_motion() {
+        let sps = 8.0 * 3_579_545.0f32;
+        let (w, h) = (1820usize, 24usize);
+        let pi = std::f32::consts::PI;
+        let filled = vec![true; h];
+        let hn = vec![3u8; h];
+        let cur = synth_bars_shift(&BARS100, w, h, sps, 0.0, 0.0);
+        let p2 = synth_bars_shift(&BARS100, w, h, sps, pi, 0.0);
+        let p4 = synth_bars_shift(&BARS100, w, h, sps, 0.0, 0.3);
+        let mut fb = vec![0u8; w * h * 4];
+        let info = decode_field(&cur, w, h, &filled, sps as u32, &mut fb,
+                                Some(History { p2: &p2, p4: &p4, hist_n: &hn }),
+                                Adjust::default());
+        assert!(info.motion_frac < 0.005,
+                "0.3サンプルの揺れを動きと判定した: {:.1}%", 100.0 * info.motion_frac);
+    }
+
+    /// 本当に動いた絵は、これまでどおり動きと判定すること(下限を設けても
+    /// 動き検出が死んでいない)。
+    #[test]
+    fn real_motion_is_still_detected() {
+        let sps = 8.0 * 3_579_545.0f32;
+        let (w, h) = (1820usize, 24usize);
+        let pi = std::f32::consts::PI;
+        let filled = vec![true; h];
+        let hn = vec![3u8; h];
+        // 2フレーム前から色帯が20サンプル(0.7µs)動いた
+        let cur = synth_bars_shift(&BARS100, w, h, sps, 0.0, 0.0);
+        let p2 = synth_bars_shift(&BARS100, w, h, sps, pi, 10.0);
+        let p4 = synth_bars_shift(&BARS100, w, h, sps, 0.0, 20.0);
+        let mut fb = vec![0u8; w * h * 4];
+        let info = decode_field(&cur, w, h, &filled, sps as u32, &mut fb,
+                                Some(History { p2: &p2, p4: &p4, hist_n: &hn }),
+                                Adjust::default());
+        // 境界7か所 × 20サンプル前後 ≒ 有効幅の1割
+        assert!(info.motion_frac > 0.05,
+                "動いた色帯を動きと判定しない: {:.1}%", 100.0 * info.motion_frac);
     }
 
     #[test]
