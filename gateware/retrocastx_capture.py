@@ -578,6 +578,33 @@ class TvpCapture(Module):
                     If(low > lowmax_acc, lowmax_acc.eq(low)),
                     low.eq(0),
                 ),
+                # HSOUT を数えて、垂直区間を抜けたら次に備える
+                If(hs_edge,
+                    If(vcnt != 0xFFFF, vcnt.eq(vcnt + 1)),
+                    # ★`vcnt == 32` ではなく `>= 32`。等号だと、何かの拍子に
+                    #   32 を飛び越えたとき v_seen が二度と戻らず、垂直検出が
+                    #   永久に止まる(下の「検出を後ろに置く」の注記)。
+                    If(v_seen & (vcnt[5:] != 0), v_seen.eq(0), is_v.eq(0)),
+                    # 固定窓で lowmax を作り直す。垂直検出が来なくなっても
+                    # ここは回るので、**壊れた状態から自力で復帰できる**。
+                    win.eq(win + 1),
+                    If(win == 511,
+                        lowmax.eq(lowmax_acc), lowmax_acc.eq(0),
+                        # この窓で垂直検出が1度も無ければ「使えない」に倒す
+                        If(~win_v, sog_ok.eq(0)),
+                        win_v.eq(0),
+                    ),
+                ),
+                # ★**垂直検出はこのブロックより後ろに置く。** 検出は vcnt=0 と
+                #   v_seen=1 を書くが、上の「HSOUT で vcnt+1」と同じクロックに
+                #   重なると、Migen では後に書いた代入が勝つ。以前は検出が前に
+                #   あったので、重なると vcnt が戻らずに 33 以上のまま進み、
+                #   v_seen を戻す条件(当時は vcnt==32)を二度と満たさなかった。
+                #   垂直検出が永久に止まり、sog_ok が倒れてフィールド極性が
+                #   判定できなくなる(実機 2026-10-10、PS2 コンポジット: 垂直間隔
+                #   35 / 位相 1419 で凍り、sog_vth を振っても値が動かず、電源を
+                #   入れ直すまで戻らなかった。絵は半ライン上下に震えた)。
+                #   sim_capture_sog.py がライン内の全オフセットで確かめる。
                 # Low期間が閾値を超えた瞬間 = 垂直ブロードパルスの検出。
                 # そのときのライン内位置 x が、HSOUT格子に対する垂直区間の位相。
                 # ブロードパルスは low クロック前に始まっているのでその分戻す。
@@ -603,20 +630,6 @@ class TvpCapture(Module):
                     #   なので、その範囲に入っていることを見る。
                     sog_ok.eq((vcnt > 200) & (vcnt < 600)
                               & (lowmax > 100) & (lowmax < 0x8000)),
-                ),
-                # HSOUT を数えて、垂直区間を抜けたら次に備える
-                If(hs_edge,
-                    If(vcnt != 0xFFFF, vcnt.eq(vcnt + 1)),
-                    If(vcnt == 32, v_seen.eq(0), is_v.eq(0)),
-                    # 固定窓で lowmax を作り直す。垂直検出が来なくなっても
-                    # ここは回るので、**壊れた状態から自力で復帰できる**。
-                    win.eq(win + 1),
-                    If(win == 511,
-                        lowmax.eq(lowmax_acc), lowmax_acc.eq(0),
-                        # この窓で垂直検出が1度も無ければ「使えない」に倒す
-                        If(~win_v, sog_ok.eq(0)),
-                        win_v.eq(0),
-                    ),
                 ),
             ]
             self.specials += MultiReg(hlen, self.stat_sog_hlen, "sys")
