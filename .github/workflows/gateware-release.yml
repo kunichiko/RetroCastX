@@ -83,7 +83,9 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install meson ninja
+          # numpy は sim_stream.py(下の「論理をシミュレーションで確認」)が使う。
+          # その段は gw-v0.9.3 の後に足され、CI で初めて走ったときにここで落ちた
+          pip install meson ninja numpy
           mkdir -p gateware/litex-src
           # litex_setup.py 自体も固定する(gitignore 対象なので毎回取ってくる)
           curl -fsSL "https://raw.githubusercontent.com/enjoy-digital/litex/${LITEX_SHA}/litex_setup.py" \

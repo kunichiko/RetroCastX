@@ -1075,11 +1075,26 @@ class StatusDisplay(Module):
                 NextState("TP_START")))
 
         # --- 実機pad(open-drain SDA/SCL + push-pull RESETB) ---
+        #
+        # ★**ピンへは必ずレジスタから出す。** resetb / scl_low / sda_low は FSM の
+        #   状態を組合せでデコードした値で、状態が変わる瞬間に配線遅延の差で
+        #   一瞬だけ別の値になる(グリッチ)。出るかどうかは配置で決まる。
+        #   2026-10-08、同一の合成結果でシードだけ変えると NTSC で TVP の HSOUT が
+        #   抜ける版と抜けない版に分かれた(seed 12 は正常、2/6/7/11 は壊れる。
+        #   TVP の設定は同一、ノイズも見えない)。ポーリングで状態が回り続けるので、
+        #   RESETB に数ns の Low が入れば TVP が繰り返し部分リセットされる。
+        #   1サイクル(22ns)遅れるだけで、I2C(100kHz)にも RESETB にも影響は無い。
+        # 入力の SDA も非同期なので2段で受ける(ACK/読出しの判定に使うため)。
         if pads is not None:
+            from migen.genlib.cdc import MultiReg
             for sig, low in ((pads.scl, m.scl_low), (pads.sda, m.sda_low)):
                 t = TSTriple(); self.specials += t.get_tristate(sig)
-                self.comb += [t.o.eq(0), t.oe.eq(low)]
+                low_q = Signal()
+                self.sync += low_q.eq(low)
+                self.comb += [t.o.eq(0), t.oe.eq(low_q)]
                 if sig is pads.sda:
-                    self.comb += m.sda_in.eq(t.i)
+                    self.specials += MultiReg(t.i, m.sda_in, reset=1)
             if hasattr(pads, "resetb"):
-                self.comb += pads.resetb.eq(self.resetb)
+                resetb_q = Signal()
+                self.sync += resetb_q.eq(self.resetb)
+                self.comb += pads.resetb.eq(resetb_q)

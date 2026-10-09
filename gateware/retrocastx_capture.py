@@ -315,14 +315,23 @@ class TvpCapture(Module):
         # 変わらないので「3回連続」に3秒かかるうえ、以前の実装はsysクロック
         # ごとに数えていて、新しい値が来た最初のサイクルには既に飽和しており
         # ヒステリシスが全く効いていなかった(単発の異常値が即採用されていた)。
+        #
+        # 「同じ」は ±1 まで許し、候補は大きい方を取る。NTSC(コンポジット/S端子)
+        # はフィールドごとに 262/263 が交互に来るので、完全一致を要求すると一度も
+        # 成立せず、vt_ok が 0 のまま映像が出なくなった(gw-v0.9.3 後の main で実機)。
+        # 大きい方を取るのは下の cfg_vtotal 側と同じ理由(自走の早回りを防ぐ)。
+        # 偽VSYNCで割れたフレーム(例 100+101)は2つしか続かないので通らない。
         VT_HOLD = 3
         vt_cand = Signal(13)
         vt_n    = Signal(max=VT_HOLD + 1)
         vt_ok   = Signal(13)
         vt_same = Signal()
-        self.comb += vt_same.eq(vrow_m == vt_cand)
+        self.comb += vt_same.eq((vrow_m == vt_cand)
+                                | (vrow_m == vt_cand + 1)
+                                | (vrow_m + 1 == vt_cand))
         self.sync.pix += If(vs_meas,
             If(vt_same,
+                If(vrow_m > vt_cand, vt_cand.eq(vrow_m)),
                 If(vt_n != VT_HOLD, vt_n.eq(vt_n + 1)).Else(vt_ok.eq(vt_cand)),
             ).Else(
                 vt_cand.eq(vrow_m), vt_n.eq(0),

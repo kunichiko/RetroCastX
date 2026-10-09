@@ -129,5 +129,49 @@ def main():
     print("\n[OK] 偽VSYNCは通さず、本物のモード変更には追従する")
 
 
+def main_alternating():
+    """NTSC のようにフィールドごとに1行違う(262/263)信号でも vtotal が決まること。
+
+    完全一致を4回求めていた版では、交互に来る値が一度も「連続」にならず
+    meas_vtotal_stable が 0 のまま残り、映像が出なくなった(実機で発覚)。
+    電源投入直後(vt_ok=0)から交互の信号を流して、大きい方に落ち着くことを見る。
+    """
+    dut = Wrap()
+    p = dut.pads
+    cap = dut.cap
+    A, B = VTOTAL + 1, VTOTAL     # 263, 262 の役
+
+    def line():
+        yield p.hs.eq(0); yield
+        yield p.hs.eq(1)
+        for _ in range(LINE_CYCLES - 1):
+            yield
+
+    def frame(nlines):
+        for _ in range(nlines):
+            yield from line()
+        yield p.vs.eq(0); yield
+        yield p.vs.eq(1); yield
+
+    got = {}
+
+    def tb():
+        for _ in range(5):
+            yield
+        for _ in range(8):
+            yield from frame(A)
+            yield from frame(B)
+        got["stable"] = (yield cap.meas_vtotal_stable)
+        got["cfg"] = (yield cap.cfg_vtotal)
+
+    run_simulation(dut, tb(), clocks={"sys": 10, "pix": 10}, vcd_name=None)
+    print(f"  {A}/{B} 交互: cfg_vtotal {got['cfg']}   meas_vtotal_stable {got['stable']}")
+    assert got["stable"] == A, \
+        f"交互の信号で vtotal が決まらない: meas_vtotal_stable={got['stable']} 期待 {A}"
+    assert got["cfg"] == A, f"cfg_vtotal が大きい方に張り付いていない: {got['cfg']}"
+    print("[OK] 1行違いが交互に来る信号でも大きい方に決まる")
+
+
 if __name__ == "__main__":
     main()
+    main_alternating()
