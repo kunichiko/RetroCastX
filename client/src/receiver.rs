@@ -585,6 +585,11 @@ pub struct Shared {
     pub stop: AtomicBool,
     /// 音声再生の統計(再生器が無い場合は既定値のまま)
     pub audio: Mutex<Option<Arc<crate::audio::AudioStats>>>,
+    /// 再生バッファへ積む口。**受信スレッドが直接積む**ために置く
+    /// (組立スレッドの詰まりで音声が枯れないように)。再生器と一緒に差し替わる。
+    pub audio_feed: Mutex<Option<crate::audio::AudioFeed>>,
+    /// 端末へ記録済みの枯渇回数(増えた分だけ1行ずつ出すため)
+    pub logged_underruns: AtomicU64,
     /// 副系統(S/PDIF を混ぜる)の設定。
     /// ★**再生器より長生きさせる。** 出力デバイスやソースを切り替えると
     ///   AudioPlayer は作り直されるので、設定を向こうに置くと消える。
@@ -729,6 +734,22 @@ pub fn spawn(
     Ok(std::thread::spawn(move || run(cfg, sock, shared, repaint)))
 }
 
+/// 受信スレッドで AUDIO パケットを再生バッファへ積む。
+fn push_audio(shared: &Shared, pkt: &[u8]) {
+    let Ok(Packet::Audio(a)) = proto::parse(pkt) else { return };
+    let feed = shared.audio_feed.lock().unwrap();
+    let Some(feed) = feed.as_ref() else { return };
+    if a.source == feed.source {
+        feed.push(a.samples, a.rate_hz);
+    } else if a.source == AUX_SOURCE && shared.aux.on.load(Ordering::Relaxed) {
+        // ★S/PDIF は**主系統を選び直さずに混ぜる**。ボードは
+        //   audio_enable_mask の既定 0b111 で3系統とも送っていて、
+        //   今までは Viewer が2系統を捨てていただけ。
+        feed.stats.aux_rate.store(a.rate_hz as u64, Ordering::Relaxed);
+        feed.push_aux(a.samples, a.rate_hz);
+    }
+}
+
 /// 受信専用スレッド。`recv_from` だけを回して、他は一切やらない。
 ///
 /// 以前は1本のスレッドで「受信 → パース → 画素書き込み → フレーム完成時の
@@ -757,6 +778,13 @@ fn rx_thread(
         let mut buf = spare.pop().unwrap_or_else(|| vec![0u8; 2048]);
         match sock.recv_from(&mut buf) {
             Ok((n, addr)) => {
+                // ★**音声はここで積む。** 組立スレッドへのキューは約0.34秒分あり、
+                //   組立が76ms止まるだけで(1パケットも失われていないのに)音声の
+                //   溜め(約80ms)が尽きる。パケット自体は組立側へも渡す
+                //   (seq は映像と共通なので、渡さないと lost に数えられる)。
+                if n >= 3 && buf[2] == proto::TYPE_AUDIO {
+                    push_audio(&stop, &buf[..n]);
+                }
                 if let Err(e) = tx.try_send((buf, n, addr.ip())) {
                     // キューが満杯 = 組立側が遅れている。捨てて受信を続ける。
                     // ここで待つと受信が止まり、OSのバッファを溢れさせてしまう。
@@ -1252,27 +1280,6 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             }
         }
 
-        // 音声は先に振り分ける(映像は数万パケット/秒来るので、typeバイトだけ見る
-        // 安価な判定で音声を取りこぼさないようにする)
-        if n >= 3 && buf[2] == proto::TYPE_AUDIO {
-            if let Some(player) = &audio {
-                if let Ok(Packet::Audio(a)) = proto::parse(&buf[..n]) {
-                    if a.source == player.source {
-                        player.push(a.samples, a.rate_hz);
-                    } else if a.source == AUX_SOURCE
-                        && shared.aux.on.load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        // ★S/PDIF は**主系統を選び直さずに混ぜる**。ボードは
-                        //   audio_enable_mask の既定 0b111 で3系統とも送っていて、
-                        //   今までは Viewer が2系統を捨てていただけ。
-                        player.stats.aux_rate.store(
-                            a.rate_hz as u64, std::sync::atomic::Ordering::Relaxed);
-                        player.push_aux(a.samples, a.rate_hz);
-                    }
-                }
-            }
-        }
-
         // 発見情報はアセンブラと別に集計(送信元アドレスが正)
         if let Ok(Packet::Announce(a)) = proto::parse(&buf[..n]) {
             let mut boards = shared.boards.lock().unwrap();
@@ -1346,6 +1353,7 @@ fn open_audio(
         p
     });
     *shared.audio.lock().unwrap() = player.as_ref().map(|p| p.stats.clone());
+    *shared.audio_feed.lock().unwrap() = player.as_ref().map(|p| p.feed.clone());
     *shared.audio_now.lock().unwrap() = AudioNow {
         device: player.as_ref().map(|p| p.device_name.clone()).unwrap_or_default(),
         source: player.as_ref().map(|p| p.source),
@@ -1372,6 +1380,22 @@ fn tick_stats(
         return;
     }
     let secs = dt.as_secs_f32();
+    // ★**枯渇は起きたつど端末へ1行残す。** パネルは最後の1回しか見せないので、
+    //   間隔や、その時の lost/qdrop との対応は記録からしか読めない。
+    if let Some(a) = shared.audio.lock().unwrap().as_ref() {
+        let n = a.underruns.load(Ordering::Relaxed);
+        let logged = shared.logged_underruns.swap(n, Ordering::Relaxed);
+        if n > logged {
+            eprintln!(
+                "audio underrun #{n}: 無着 {:.0} ms  gap max {:.1} ms  cb max {} f  \
+                 lost {}  qdrop {}",
+                a.last_underrun_gap_us.load(Ordering::Relaxed) as f64 / 1000.0,
+                a.arrival_gap_max_us.load(Ordering::Relaxed) as f64 / 1000.0,
+                a.cb_frames_max.load(Ordering::Relaxed),
+                asm.stats.lost_packets,
+                shared.queue_drops.load(Ordering::Relaxed));
+        }
+    }
     let mut stats = shared.stats.lock().unwrap();
     *stats = StatsSnapshot {
         packets: asm.stats.packets,
@@ -1543,5 +1567,55 @@ mod tests {
             (ip("172.23.24.193"), None),
         ];
         assert_eq!(pick_targets(ifs.into_iter(), None), vec!["255.255.255.255"]);
+    }
+}
+
+#[cfg(test)]
+mod rx_audio_tests {
+    use super::*;
+    use crate::protocol::testutil::pack_audio;
+
+    /// ★**音声は受信スレッドの時点で再生バッファに積まれること。**
+    ///   組立スレッドを一切回さない(=組立が止まっている状態)で、実際の
+    ///   rx_thread に UDP で AUDIO を送り、積まれるかを見る。以前の経路
+    ///   (組立スレッドで積む)ならここは 0 のまま。パケットは組立側にも
+    ///   渡ること(seq を共通で追うため)も見る。
+    #[test]
+    fn audio_is_pushed_by_rx_thread_even_if_assembly_is_stalled() {
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sock.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+        let addr = sock.local_addr().unwrap();
+        let shared = Arc::new(Shared::default());
+        let feed = crate::audio::AudioFeed::for_test(0);
+        let stats = feed.stats.clone();
+        *shared.audio_feed.lock().unwrap() = Some(feed);
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let (_free_tx, free_rx) = std::sync::mpsc::channel();
+        let sh = shared.clone();
+        let th = std::thread::spawn(move || rx_thread(sock, sh, tx, free_rx));
+
+        let out = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let pcm = vec![0u8; 240 * 4];
+        out.send_to(&pack_audio(1, 0, 48_000, &pcm), addr).unwrap();
+        // 別 source(LINE)は主系統に積まない
+        out.send_to(&pack_audio(2, 1, 48_000, &pcm), addr).unwrap();
+
+        let t0 = Instant::now();
+        while stats.packets.load(Ordering::Relaxed) == 0
+            && t0.elapsed() < Duration::from_secs(2)
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(stats.packets.load(Ordering::Relaxed), 1, "受信スレッドで積まれていない");
+        assert_eq!(stats.buffered.load(Ordering::Relaxed), 240);
+        assert!(stats.last_push_us.load(Ordering::Relaxed) > 0);
+        // 組立側へも2つとも渡っている
+        assert!(rx.recv_timeout(Duration::from_secs(1)).is_ok());
+        assert!(rx.recv_timeout(Duration::from_secs(1)).is_ok());
+
+        shared.stop.store(true, Ordering::Relaxed);
+        th.join().unwrap();
     }
 }

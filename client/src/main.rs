@@ -385,6 +385,24 @@ fn run_headless(
             s.fps, s.mbps, s.frames, s.packets, s.lost_packets, s.queue_drops,
             s.orphan_lines
         );
+        // 音声。**枯渇の切り分け表示を GUI を開かずに読めるように。**
+        if let Some(a) = shared.audio.lock().unwrap().clone() {
+            let ms = |us: u64| us as f64 / 1000.0;
+            let rate = a.device_rate.load(Ordering::Relaxed).max(1);
+            let last = a.last_underrun_us.load(Ordering::Relaxed);
+            println!(
+                "   audio: buffered {} ms  pkts {}  underruns {}  gap max {:.1} ms  cb max {} f{}",
+                a.buffered.load(Ordering::Relaxed) * 1000 / rate,
+                a.packets.load(Ordering::Relaxed),
+                a.underruns.load(Ordering::Relaxed),
+                ms(a.arrival_gap_max_us.load(Ordering::Relaxed)),
+                a.cb_frames_max.load(Ordering::Relaxed),
+                if last > 0 {
+                    format!("  last {:.0}s前 無着 {:.0} ms",
+                            ms(a.now_us() - last) / 1000.0,
+                            ms(a.last_underrun_gap_us.load(Ordering::Relaxed)))
+                } else { String::new() });
+        }
         // 連続フレームを番号付きで落とす。**フレームごとに入れ替わる縞**のような
         // 「1枚では分からない」現象を追うのに要る(実際に必要になった)。
         if let (Some(path), Some(n)) = (dump_frame.as_ref(), dump_seq) {
@@ -1949,6 +1967,25 @@ impl Session {
                     a.underruns.load(Relaxed),
                     a.dropped.load(Relaxed)
                 ));
+                // ★**枯渇の原因を分けるための表示。** 「無着」は枯渇した瞬間に
+                //   最後の到着から何ms経っていたか。溜め(約80ms)以上なら音声が
+                //   届いていない(ネットワーク/受信の停止)、短ければ出力側が一度に
+                //   大きく読んだ(cb がそれを示す)。gap max は枯渇に至らなかった
+                //   分も含めた到着間隔の最大で、どこまで余裕が削られていたかが分かる。
+                let ms = |us: u64| us as f64 / 1000.0;
+                let last = a.last_underrun_us.load(Relaxed);
+                let mut line = format!(
+                    "gap max {:.0} ms  cb max {} f",
+                    ms(a.arrival_gap_max_us.load(Relaxed)),
+                    a.cb_frames_max.load(Relaxed));
+                if last > 0 {
+                    let ago = a.now_us().saturating_sub(last) / 1_000_000;
+                    line += &format!(
+                        "\nlast underrun {}分{}秒前  無着 {:.0} ms",
+                        ago / 60, ago % 60,
+                        ms(a.last_underrun_gap_us.load(Relaxed)));
+                }
+                ui.monospace(line);
             }
             None => {
                 ui.monospace("stopped");

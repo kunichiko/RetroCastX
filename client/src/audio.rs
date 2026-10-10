@@ -71,6 +71,30 @@ pub struct AudioStats {
     pub aux_packets: AtomicU64,
     /// 副系統の実サンプルレート(S/PDIF は 44.1kHz のこともある)
     pub aux_rate: AtomicU64,
+
+    // --- 枯渇の切り分け ---
+    // ★**枯渇は回数だけでは原因が分からない。** 溜めは約80msあり、ボードと
+    //   PC の水晶差(数十ppm)は ASRC が吸収しているので、枯渇するのは
+    //   「音声が76ms以上届かなかった」か「出力側が一度に大きく読んだ」かの
+    //   どちらか。届いていない時間と1回の読み出し量を並べて見れば分けられる。
+    /// 時刻の基準。以下の *_us はここからの経過[µs]
+    pub epoch: std::time::Instant,
+    /// 最後に主系統の音声を積んだ時刻
+    pub last_push_us: AtomicU64,
+    /// 主系統の到着間隔の最大[µs](開いてから)。枯渇しなくても近い所まで来ていたかが分かる
+    pub arrival_gap_max_us: AtomicU64,
+    /// 最後に枯渇した時刻(0=まだ)
+    pub last_underrun_us: AtomicU64,
+    /// 最後に枯渇した瞬間、最後の到着から何µs経っていたか
+    pub last_underrun_gap_us: AtomicU64,
+    /// 出力コールバック1回で要求されたフレーム数の最大
+    pub cb_frames_max: AtomicU64,
+}
+
+impl AudioStats {
+    pub fn now_us(&self) -> u64 {
+        self.epoch.elapsed().as_micros() as u64
+    }
 }
 
 impl Default for AudioStats {
@@ -88,6 +112,12 @@ impl Default for AudioStats {
             aux_underruns: AtomicU64::new(0),
             aux_packets: AtomicU64::new(0),
             aux_rate: AtomicU64::new(0),
+            epoch: std::time::Instant::now(),
+            last_push_us: AtomicU64::new(0),
+            arrival_gap_max_us: AtomicU64::new(0),
+            last_underrun_us: AtomicU64::new(0),
+            last_underrun_gap_us: AtomicU64::new(0),
+            cb_frames_max: AtomicU64::new(0),
         }
     }
 }
@@ -188,10 +218,26 @@ impl Ring {
     }
 }
 
-pub struct AudioPlayer {
+/// 再生バッファへ積む側の口。受信スレッドへ渡すために再生器から切り出してある。
+///
+/// ★**音声は受信スレッドで直接積む。** 以前は映像と同じキュー(約0.34秒分)を
+///   通って組立スレッドで積んでいたので、組立が76ms止まるだけで(パケットは
+///   1つも失われていないのに)音声だけ枯渇した。cpal::Stream は Send とは
+///   限らないので再生器ごとは渡さず、リングと統計だけを持つこれを渡す。
+#[derive(Clone)]
+pub struct AudioFeed {
     ring: Arc<Mutex<Ring>>,
     /// 副系統(S/PDIF)。主系統に混ぜて出す
     aux_ring: Arc<Mutex<Ring>>,
+    pub stats: Arc<AudioStats>,
+    /// 再生するsource(0=RGB端子音声, 1=LINE入力, 2=S/PDIF)
+    pub source: u8,
+    max_frames: usize,
+}
+
+pub struct AudioPlayer {
+    /// 積む側。受信スレッドへはこれの複製を渡す
+    pub feed: AudioFeed,
     /// 副系統の設定。再生器より長生きする(作り直しても設定が消えないように)
     pub aux: Arc<AuxCtl>,
     pub stats: Arc<AudioStats>,
@@ -199,8 +245,6 @@ pub struct AudioPlayer {
     pub device_name: String,
     /// 再生するsource(0=RGB端子音声, 1=LINE入力, 2=S/PDIF)
     pub source: u8,
-    prebuffer_frames: usize,
-    max_frames: usize,
     /// Drop時にストリームを止める。保持するだけでよい。
     _stream: Option<cpal::Stream>,
 }
@@ -306,6 +350,8 @@ impl AudioPlayer {
                     let gain = f32::from_bits(stats_cb.gain_bits.load(Ordering::Relaxed));
                     let aux_gain = f32::from_bits(aux_ctl.gain_bits.load(Ordering::Relaxed));
                     let aux_on = aux_ctl.on.load(Ordering::Relaxed);
+                    stats_cb.cb_frames_max
+                        .fetch_max((out.len() / channels.max(1)) as u64, Ordering::Relaxed);
 
                     // プリバッファに満たない間は無音(頭切れ/断続を防ぐ)。
                     // ★**系統ごとに独立に待つ。** 副系統(S/PDIF)は繋がっていない
@@ -362,6 +408,11 @@ impl AudioPlayer {
                     if m.dry {
                         stats_cb.playing.store(false, Ordering::Relaxed);
                         stats_cb.underruns.fetch_add(1, Ordering::Relaxed);
+                        let now = stats_cb.now_us();
+                        let last = stats_cb.last_push_us.load(Ordering::Relaxed);
+                        stats_cb.last_underrun_gap_us
+                            .store(now.saturating_sub(last), Ordering::Relaxed);
+                        stats_cb.last_underrun_us.store(now.max(1), Ordering::Relaxed);
                     }
                     if x.dry {
                         stats_cb.aux_underruns.fetch_add(1, Ordering::Relaxed);
@@ -378,14 +429,11 @@ impl AudioPlayer {
         stream.play().ok()?;
 
         Some(Self {
-            ring,
-            aux_ring,
+            feed: AudioFeed { ring, aux_ring, stats: stats.clone(), source, max_frames },
             aux,
             stats,
             device_name: dev_name,
             source,
-            prebuffer_frames,
-            max_frames,
             _stream: Some(stream),
         })
     }
@@ -394,10 +442,30 @@ impl AudioPlayer {
     pub fn set_gain(stats: &AudioStats, gain: f32) {
         stats.gain_bits.store(gain.to_bits(), Ordering::Relaxed);
     }
+}
+
+impl AudioFeed {
+    /// デバイスを開かずに積む口だけ作る(試験用)
+    #[cfg(test)]
+    pub fn for_test(source: u8) -> Self {
+        let ring = || Arc::new(Mutex::new(Ring {
+            buf: Default::default(), started: false,
+            a: (0.0, 0.0), b: (0.0, 0.0), frac: 0.0,
+            ratio: 1.0, base_ratio: 1.0, primed: false, dry: false,
+        }));
+        let stats = Arc::new(AudioStats::default());
+        stats.device_rate.store(48_000, Ordering::Relaxed);
+        Self { ring: ring(), aux_ring: ring(), stats, source, max_frames: 48_000 }
+    }
 
     /// AUDIOパケットのペイロード(s16le L/R interleaved)を積む。
     pub fn push(&self, samples: &[u8], rate_hz: u32) {
         self.stats.src_rate.store(rate_hz as u64, Ordering::Relaxed);
+        let now = self.stats.now_us();
+        let prev = self.stats.last_push_us.swap(now, Ordering::Relaxed);
+        if prev != 0 {
+            self.stats.arrival_gap_max_us.fetch_max(now - prev, Ordering::Relaxed);
+        }
         let mut r = self.ring.lock().unwrap();
         r.set_source_rate(rate_hz, self.stats.device_rate.load(Ordering::Relaxed) as u32);
         for c in samples.chunks_exact(2) {
@@ -416,7 +484,6 @@ impl AudioPlayer {
         self.stats
             .buffered
             .store((r.buf.len() / 2) as u64, Ordering::Relaxed);
-        let _ = self.prebuffer_frames;
     }
 
     /// 副系統(S/PDIF)へ積む。主系統とは別のリング・別のレート・別の音量。
@@ -437,7 +504,6 @@ impl AudioPlayer {
         self.stats
             .aux_buffered
             .store((r.buf.len() / 2) as u64, Ordering::Relaxed);
-        let _ = self.prebuffer_frames;
     }
 }
 

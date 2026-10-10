@@ -450,6 +450,21 @@ pub mod testutil {
         p
     }
 
+    /// AUDIO(PCM16)。samples は s16le の L,R インターリーブ
+    pub fn pack_audio(seq: u16, source: u8, rate_hz: u32, samples: &[u8]) -> Vec<u8> {
+        assert_eq!(samples.len() % 4, 0);
+        let mut p = vec![MAGIC, VERSION, TYPE_AUDIO, 0];
+        p.extend_from_slice(&0u16.to_le_bytes());
+        p.extend_from_slice(&seq.to_le_bytes());
+        p.push(source);
+        p.push(AUDIO_FMT_PCM16);
+        p.extend_from_slice(&((samples.len() / 4) as u16).to_le_bytes());
+        p.extend_from_slice(&rate_hz.to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes());
+        p.extend_from_slice(samples);
+        p
+    }
+
     pub fn pack_mode(m: &Mode, frame: u16, seq: u16) -> Vec<u8> {
         let mut p = vec![MAGIC, VERSION, TYPE_MODE, 0];
         p.extend_from_slice(&frame.to_le_bytes());
