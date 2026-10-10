@@ -78,6 +78,12 @@ const MOTION_IRE: f32 = 8.0;
 ///   静止部分の動き量は 99%点で 1.7コード(≒1.9 IRE)なので、その上に置く。
 const MOTION_CORE_IRE: f32 = 3.0;
 
+/// 2次元で輝度から引くクロマを選ぶ「縦の変化」(上下の行の差)[IRE]。
+/// LO 以下なら2次元コムのクロマ(境界まで正確)、HI 以上なら帯域制限した再変調
+/// (横棒を上下に広げない)。間は線形に混ぜる。
+const VDETAIL_LO_IRE: f32 = 3.0;
+const VDETAIL_HI_IRE: f32 = 10.0;
+
 /// バーストが取れたと判定する相関の下限。これ未満の行は無彩色にする。
 ///
 /// ★真っ黒な領域では相関が雑音になり、**色相が乱数になる**(実測: 彩度0.03〜0.09の
@@ -662,6 +668,8 @@ pub fn decode_field(
     //     補正なし 1.57 IRE / 補正あり 1.20 IRE / 符号を逆にすると 2.38 IRE
     // 信号の無い区間のノイズ床が 1.45 IRE なので、ここが底。**残りは基板側。**
     let mut tan_half = vec![0.0f32; h];
+    // フレームコムが成り立つ行(2フィールド前の副搬送波が180°反転している行)
+    let mut frame_ok = vec![false; h];
     let mut drifts = Vec::new();
     if let Some(q2) = q2.as_ref().filter(|_| !svideo) {
         {
@@ -679,6 +687,7 @@ pub fn decode_field(
                 // tan(ε/2) が暴れると3次元の枝ごと壊れる方が高くつく。
                 if e.abs() <= PHASE_FIX_MAX_DEG {
                     tan_half[y] = (e.to_radians() * 0.5).tan();
+                    frame_ok[y] = true;
                 }
             }
         }
@@ -715,6 +724,11 @@ pub fn decode_field(
     // 画素ごとの「2次元へ落とした割合」(0 = 静止でフレームコム、1 = 2次元)。
     // 輝度の作り方も同じ割合で切り替えるので残しておく
     let mut amix = vec![1.0f32; w];
+    // 2次元コムのクロマと、上下の行の差(縦の変化。輝度の作り方を選ぶのに使う)
+    let mut c2buf = vec![0.0f32; w];
+    let mut vdet = vec![f32::INFINITY; w];
+    let vd_lo = VDETAIL_LO_IRE * code_per_ire;
+    let vd_hi = VDETAIL_HI_IRE * code_per_ire;
     let mut locked = 0u32;
     let mut lines_3d = 0u32;
     let (mut moving, mut n3) = (0u32, 0u32);
@@ -758,7 +772,15 @@ pub fn decode_field(
         };
         // この行で3次元が使えるか。履歴が3回以上書かれている行だけ。
         // **S端子ではコムを一切使わない**(Y と C が最初から別々に来ている)
-        let use3d = !svideo && hist.as_ref().map_or(false, |hh| {
+        // ★**2フィールド前が180°反転していない行ではフレームコムを使わない。**
+        //
+        //   プログレッシブ(240p)の NTSC は1フィールド 262行なら 262×227.5 が整数で、
+        //   副搬送波の位相が毎フィールド同じ(263行でも2フィールド前は同位相)。
+        //   フレームコムの差を取るとクロマが消え、色が出ずに輝度へ市松が残った
+        //   (実機 2026-10-10、ジェネレータの「プログレッシブNTSC」。位相ズレ 179.6°)。
+        //   以前は ε が外れた行で位相補正を掛けないだけで、3次元は使い続けていた。
+        //   ε が測れて補正の範囲に入っている行だけを3次元にする。
+        let use3d = !svideo && frame_ok[y] && hist.as_ref().map_or(false, |hh| {
             hh.hist_n.get(y).copied().unwrap_or(0) >= 3
                 && q2.is_some()
         });
@@ -840,6 +862,13 @@ pub fn decode_field(
                 continue;
             }
             let mut c = (px(y, n) - acc / cnt) * 0.5;
+            c2buf[n] = c;
+            // 上下が両方あるときだけ縦の変化を測る。上と下は 2×コム間隔 離れて
+            // いて副搬送波が同位相なので、差ではクロマが打ち消し、縦の変化だけ残る
+            vdet[n] = match (up, dn) {
+                (Some(i), Some(j)) => (px(i, n) - px(j, n)).abs(),
+                _ => f32::INFINITY,
+            };
             // --- 3次元(動き適応フレームコム) ---
             //
             // 静止部分では **フレームコムが原理的に正解**。同じライン番号の
@@ -917,11 +946,25 @@ pub fn decode_field(
             for n in 0..w {
                 let (cos_psi, sin_psi) = psi(n);
                 let c_hat = -u[n] * cos_psi + v[n] * sin_psi;
-                let a = amix[n];
-                let c_sub = if use3d && chroma_ok && a < 1.0 {
-                    (1.0 - a) * c3buf[n] + a * c_hat
+                // ★**2次元でも、縦に変化の無い所は2次元コムのクロマを引く。**
+                //
+                //   上の表のとおり x - C_comb は横棒を上下に広げるが、それは縦の
+                //   変化がある所の話。縦の変化が無い所(カラーバーの色の境界など)
+                //   では C_comb は境界まで正確で、帯域制限した Ĉ を引くと境界に
+                //   引き残しの縞が出る。プログレッシブ(240p)は3次元が使えない
+                //   (progressive_ntsc_keeps_color)ので、インターレースで直した
+                //   縞がそのまま出ていた(実機 2026-10-10)。縦の変化で両者を混ぜる。
+                let c2d = if chroma_ok && vdet[n].is_finite() {
+                    let k = ((vdet[n] - vd_lo) / (vd_hi - vd_lo).max(1e-6)).clamp(0.0, 1.0);
+                    (1.0 - k) * c2buf[n] + k * c_hat
                 } else {
                     c_hat
+                };
+                let a = amix[n];
+                let c_sub = if use3d && chroma_ok && a < 1.0 {
+                    (1.0 - a) * c3buf[n] + a * c2d
+                } else {
+                    c2d
                 };
                 yl[n] = px(y, n) - c_sub;
             }
@@ -1688,6 +1731,8 @@ mod tests {
         // [列][行] ごとの Y の系列
         let mut acc: Vec<Vec<Vec<f32>>> = vec![vec![Vec::new(); h]; xs.len()];
         let mut accb: Vec<Vec<Vec<f32>>> = vec![vec![Vec::new(); h]; xs.len()];
+        // 輝度に残った副搬送波(静止した縞)。|Y(n) - (Y(n-4)+Y(n+4))/2| の平均
+        let mut rip = vec![(0.0f64, 0usize); xs.len()];
         let mut fb = vec![0u8; w * h * 4];
         let mut info_last = None;
         for f in 0..nf {
@@ -1724,6 +1769,14 @@ mod tests {
                             + 0.114 * fb[i + 2] as f32;
                         acc[k][y].push(yy);
                         accb[k][y].push(fb[i + 2] as f32 - yy);
+                        let yat = |n: usize| {
+                            let j = (y * w + n) * 4;
+                            0.299 * fb[j] as f32 + 0.587 * fb[j + 1] as f32
+                                + 0.114 * fb[j + 2] as f32
+                        };
+                        let n = x + dx - 12;
+                        rip[k].0 += (yat(n) - 0.5 * (yat(n - 4) + yat(n + 4))).abs() as f64;
+                        rip[k].1 += 1;
                     }
                 }
             }
@@ -1787,8 +1840,9 @@ mod tests {
                 }
                 println!("  B-Y mean/std @{x}:{line}");
             }
-            println!("col {x:5}: Y std {:.2} ({:+.2})  B-Y std {:.2} ({:+.2})",
-                     sd(&acc), lag1(&acc), sd(&accb), lag1(&accb));
+            println!("col {x:5}: Y std {:.2} ({:+.2})  B-Y std {:.2} ({:+.2})  縞 {:.2}",
+                     sd(&acc), lag1(&acc), sd(&accb), lag1(&accb),
+                     rip[k].0 / rip[k].1.max(1) as f64);
         }
     }
 
@@ -1943,6 +1997,85 @@ mod tests {
         assert!(worst < 2.5, "揺れで色帯の青がフレームごとに {worst:.1} コード変わる");
     }
 
+    /// **プログレッシブ(240p)の NTSC でも色が出ること。**
+    ///
+    /// ★実機(2026-10-10、ジェネレータの「プログレッシブNTSC」カラーバー): 絵が白黒に
+    ///   なり、輝度に市松の網目が乗った。1フィールド 262行だと 262×227.5 が整数で、
+    ///   副搬送波の位相が**毎フィールド同じ**(263行でも2フィールド前は同位相)。
+    ///   フレームコムは「2フィールド前は180°反転」が前提なので、差を取るとクロマが
+    ///   消え(色が出ない)、引かれなかったクロマが輝度に残る。状態表示は「位相ズレ
+    ///   179.6°」だった。この関係が成り立たない行は2次元へ落とす。
+    #[test]
+    fn progressive_ntsc_keeps_color() {
+        let sps = 8.0 * 3_579_545.0f32;
+        let (w, h) = (1820usize, 24usize);
+        let filled = vec![true; h];
+        let hn = vec![3u8; h];
+        let bars: Vec<(f32, f32, f32)> =
+            BARS100.iter().map(|&(r, g, b)| (r * 0.75, g * 0.75, b * 0.75)).collect();
+        // 3フィールドとも同じ位相(プログレッシブ)
+        let cur = synth_bars(&bars, w, h, sps, 0.0);
+        let mut fb = vec![0u8; w * h * 4];
+        let info = decode_field(&cur, w, h, &filled, sps as u32, &mut fb,
+                                Some(History { p2: &cur, p4: &cur, hist_n: &hn }),
+                                Adjust::default());
+        let (aa, _) = win((9.6, 62.0), sps, w);
+        let per = (w - aa) / bars.len();
+        // 赤の帯(6本目)の中央。R が G・B より十分大きいこと
+        let x = aa + 5 * per + per / 2;
+        let i = (h / 2 * w + x) * 4;
+        let (r, g, b) = (fb[i] as i32, fb[i + 1] as i32, fb[i + 2] as i32);
+        assert!(r - g.max(b) > 80,
+                "プログレッシブで赤の帯に色が出ない: RGB=({r},{g},{b}) 位相ズレ {:.0}°",
+                info.phase_drift_deg);
+    }
+
+    /// **プログレッシブでも、色の境界に縞が出ないこと。**
+    ///
+    /// ★実機(2026-10-10): プログレッシブは3次元が使えないので、輝度を
+    ///   「x − 帯域制限した Ĉ」で作っていて、インターレースで直した境界の縞
+    ///   (static_color_edges_do_not_flicker)がそのまま出た。縦に変化の無い所は
+    ///   2次元コムのクロマを引けば消える。インターレース(静止部分はフレームコム)
+    ///   で復調した輝度を正解として比べる。
+    #[test]
+    fn progressive_color_edges_have_no_stripes() {
+        let sps = 8.0 * 3_579_545.0f32;
+        let (w, h) = (1820usize, 24usize);
+        let filled = vec![true; h];
+        let hn = vec![3u8; h];
+        let bars: Vec<(f32, f32, f32)> =
+            BARS100.iter().map(|&(r, g, b)| (r * 0.75, g * 0.75, b * 0.75)).collect();
+        let cur = synth_bars(&bars, w, h, sps, 0.0);
+        let inv = synth_bars(&bars, w, h, sps, std::f32::consts::PI);
+        let dec = |p2: &[u8]| {
+            let mut fb = vec![0u8; w * h * 4];
+            decode_field(&cur, w, h, &filled, sps as u32, &mut fb,
+                         Some(History { p2, p4: &cur, hist_n: &hn }), Adjust::default());
+            fb
+        };
+        let prog = dec(&cur);
+        let intl = dec(&inv);
+        let (aa, _) = win((9.6, 62.0), sps, w);
+        let per = (w - aa) / bars.len();
+        let yat = |fb: &[u8], n: usize| {
+            let i = (h / 2 * w + n) * 4;
+            0.299 * fb[i] as f32 + 0.587 * fb[i + 1] as f32 + 0.114 * fb[i + 2] as f32
+        };
+        let mut worst = (0usize, 0.0f32);
+        for k in 1..bars.len() {
+            let e = aa + k * per;
+            for n in e - 16..e + 16 {
+                let d = (yat(&prog, n) - yat(&intl, n)).abs();
+                if d > worst.1 {
+                    worst = (k, d);
+                }
+            }
+        }
+        assert!(worst.1 < 4.0,
+                "プログレッシブの境界{}で輝度がインターレースと {:.0} コード違う(縞)",
+                worst.0, worst.1);
+    }
+
     const BARS100: [(f32, f32, f32); 8] = [
         (1.0, 1.0, 1.0), (1.0, 1.0, 0.0), (0.0, 1.0, 1.0), (0.0, 1.0, 0.0),
         (1.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 0.0)];
@@ -1979,15 +2112,19 @@ mod tests {
         let pi = std::f32::consts::PI;
         let filled = vec![true; h];
         let hn = vec![3u8; h];
-        // 2フレーム前から色帯が20サンプル(0.7µs)動いた
+        // 2フレーム前から色帯が32サンプル(1.1µs)動いた。
+        // ★ずらす量は8の倍数にする。この合成は同期とバーストごとずらすので、
+        //   半端にずらすとバーストの位相まで変わり、「2フィールド前が180°反転して
+        //   いない」としてフレームコム(と動き判定)の対象から外れてしまう。実際の
+        //   映像では絵が動いてもバーストは動かない
         let cur = synth_bars_shift(&BARS100, w, h, sps, 0.0, 0.0);
-        let p2 = synth_bars_shift(&BARS100, w, h, sps, pi, 10.0);
-        let p4 = synth_bars_shift(&BARS100, w, h, sps, 0.0, 20.0);
+        let p2 = synth_bars_shift(&BARS100, w, h, sps, pi, 16.0);
+        let p4 = synth_bars_shift(&BARS100, w, h, sps, 0.0, 32.0);
         let mut fb = vec![0u8; w * h * 4];
         let info = decode_field(&cur, w, h, &filled, sps as u32, &mut fb,
                                 Some(History { p2: &p2, p4: &p4, hist_n: &hn }),
                                 Adjust::default());
-        // 境界7か所 × 20サンプル前後 ≒ 有効幅の1割
+        // 境界7か所 × 30サンプル前後 ≒ 有効幅の1割以上
         assert!(info.motion_frac > 0.05,
                 "動いた色帯を動きと判定しない: {:.1}%", 100.0 * info.motion_frac);
     }
