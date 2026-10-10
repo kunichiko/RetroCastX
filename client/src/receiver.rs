@@ -144,6 +144,12 @@ pub struct StatsSnapshot {
     /// 赤ch(C)にバーストが載っていた = S端子として復調した。
     /// このときコムは一切使わない(クロスカラーもドットクロールも原理的に無い)
     pub ntsc_svideo: bool,
+    /// バーストが無いので白黒として出した(黒レベルだけ校正)。
+    /// 白黒のパターンジェネレータなど
+    pub ntsc_mono: bool,
+    /// TBC で並べ直した行ごとのずれの二乗平均平方根[サンプル]。取り込み位置の
+    /// 揺れの大きさ(コンポジットのとき)
+    pub ntsc_tbc_rms: f32,
     /// フレーム差し替えでUIを待った時間の、直近区間での合計[ms]と最大[ms]。
     /// **落ちる原因の切り分け用。** ここが長いと生産側が詰まる
     pub publish_wait_ms: f32,
@@ -1394,6 +1400,8 @@ fn tick_stats(
         ntsc_motion_frac: asm.ntsc_info.as_ref().map(|i| i.motion_frac).unwrap_or(0.0),
         ntsc_phase_drift_deg: asm.ntsc_info.as_ref().map(|i| i.phase_drift_deg).unwrap_or(0.0),
         ntsc_svideo: asm.ntsc_info.as_ref().map(|i| i.svideo).unwrap_or(false),
+        ntsc_mono: asm.ntsc_info.as_ref().map(|i| i.mono).unwrap_or(false),
+        ntsc_tbc_rms: asm.ntsc_info.as_ref().map(|i| i.tbc_rms).unwrap_or(0.0),
         publish_wait_ms: *publish_wait_us as f32 / 1000.0,
         publish_wait_max_ms: *publish_wait_max_us as f32 / 1000.0,
         interlace_measured: asm.interlace_measured,

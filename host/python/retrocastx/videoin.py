@@ -155,6 +155,10 @@ _CVBS_TIMING = [
     (proto.CFG_KEY_NO_RAW_PHASE, 1, "★生同期は繋がらない(J5はY/Cのみ)"),
 ]
 
+# コンポジットのクランプ開始(reg 05h)。根拠は MODES["composite"] の注記。
+# ★client/src/profiles.rs にも同じ値がある。変えるときは両方そろえること
+CVBS_CLAMP_START = 200
+
 MODES = {
     "x68k": {
         "label": "X68000 RGB (Rin3/Gin3/Bin3 + HSYNC_A/VSYNC_A)",
@@ -205,7 +209,17 @@ MODES = {
         "roles": ("cvbs", None),
         "regs": _CVBS_TIMING + [
             (proto.CFG_KEY_SOG_THRESH, 0x0B, "CVBSのスライス位置(実機で成立している既定)"),
-            (proto.CFG_KEY_CLAMP_START, 230, "クランプ開始をバーストの後ろへ"),
+            # ★200 にしてある(以前は 230)。230 だとクランプ窓が**映像の頭に食い込み**、
+            #   ラインの頭 0.3µs ほどが半分の明るさになり、窓の終わりが同期の揺れに
+            #   合わせてフレームごとに動くので左端がチラついた(2026-10-09、白黒の格子
+            #   パターン。ビデオデッキは同じ所を真っ白で安定して出していた)。
+            #   実測: 窓の位置は計算(同期の立ち下がり起点で 230〜260 = 8.03〜9.08µs)より
+            #   約32サンプル(1.1µs)後ろで、230 では 262〜292(9.15〜10.2µs)に来ていた。
+            #   start を 170/200/230/250 と振ると、半輝度の区間とチラつく位置が一緒に動き、
+            #   170 と 200 では消えた。200 なら 232〜262(8.1〜9.15µs)でバーストの後ろ・
+            #   映像の手前に収まる(170 はバーストの終わりに掛かる)。
+            (proto.CFG_KEY_CLAMP_START, CVBS_CLAMP_START,
+             "クランプ開始をバーストの後ろへ(映像に掛けない)"),
             (proto.CFG_KEY_CLAMP_WIDTH, 30, "クランプ幅"),
             (proto.CFG_KEY_CLAMP_SEL, 0b010, "Greenだけミッドレベル(バーストを丸ごと入れる)"),
             (proto.CFG_KEY_COARSE_GAIN_GB, 0x07,
@@ -522,7 +536,7 @@ def cmd_synctest(c: Cfg, args) -> int:
     クランプ窓(reg 05h)を動かすと、**クランプした区間が基準レベルに座る**。
     本物の同期パルスがあれば、
 
-        clamp_start=230(バースト後) → バックポーチが基準に座る
+        clamp_start=200(バースト後) → バックポーチが基準に座る
         clamp_start=50 (同期チップ上) → 同期チップが基準に座る
 
     の2条件で「同期チップ域 - バックポーチ域」が 40 IRE ぶん入れ替わる。
@@ -554,7 +568,8 @@ def cmd_synctest(c: Cfg, args) -> int:
     print("クランプ窓を動かして、基準レベルがどう動くかを見る\n")
     print("%-26s %10s %14s %8s" % ("クランプ位置", "同期チップ域", "バックポーチ域", "差"))
     got = {}
-    for start, label in ((230, "バースト後 (230)"), (50, "同期チップ上 (50)")):
+    for start, label in ((CVBS_CLAMP_START, "バースト後 (%d)" % CVBS_CLAMP_START),
+                         (50, "同期チップ上 (50)")):
         # Cfg はポート34600をbindするので、受信の前に手放す
         cfg = Cfg(args.board, args.port, bind=args.bind)
         cfg.set(proto.CFG_KEY_CLAMP_START, start)
@@ -562,14 +577,14 @@ def cmd_synctest(c: Cfg, args) -> int:
         m = measure()
         if m is None:
             print("%-26s 測定できず(LINEが来ない)" % label)
-            Cfg(args.board, args.port, bind=args.bind).set(proto.CFG_KEY_CLAMP_START, 230)
+            Cfg(args.board, args.port, bind=args.bind).set(proto.CFG_KEY_CLAMP_START, CVBS_CLAMP_START)
             return 1
         tip, blank = m
         got[start] = blank - tip
         print("%-26s %10.1f %14.1f %8.1f" % (label, tip, blank, blank - tip))
-    Cfg(args.board, args.port, bind=args.bind).set(proto.CFG_KEY_CLAMP_START, 230)
+    Cfg(args.board, args.port, bind=args.bind).set(proto.CFG_KEY_CLAMP_START, CVBS_CLAMP_START)
 
-    swing = abs(got[230] - got[50])
+    swing = abs(got[CVBS_CLAMP_START] - got[50])
     print("\nクランプ移動による差の入れ替わり = %.1f コード" % swing)
     # 粗ゲイン0.5倍なら 40 IRE = 約37コード。ノイズは数コード。
     if swing < 10:
@@ -858,7 +873,7 @@ def verdict(tip, blank, burst_pp, act_max, code_per_ire, role="cvbs"):
                        "上げられないか(0x5F)を確認" % burst_pp)
         if code_per_ire is None:
             bad.append("同期チップとブランキングの差が無い → クランプ位置(0x1A/0x1B)が"
-                       "同期チップの上にある。230/30 になっているか確認")
+                       "同期チップの上にある。%d/30 になっているか確認" % CVBS_CLAMP_START)
         elif abs(blank - 128) > 40 and burst_pp >= BURST_PP_MIN:
             bad.append("ブランキングが %.0f で128から離れている。ミッドレベルなら128付近、"
                        "ボトムレベルなら60付近になる" % blank)
