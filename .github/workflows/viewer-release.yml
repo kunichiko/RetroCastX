@@ -341,8 +341,17 @@ jobs:
             --key-id "${APPSTORE_KEY_ID}" \
             --issuer "${APPSTORE_ISSUER_ID}" \
             --wait
-          xcrun stapler staple "${APP_PATH}"
-          xcrun stapler validate "${APP_PATH}"
+          # ★staple は公証済みチケットを Apple の CloudKit から取ってくる。ここが
+          #   "The network connection was lost" (Error 68) で落ちることがあり、
+          #   v0.9.0 では2回続けて落ちた(公証そのものは通っている)。間を置いて再試行する
+          for i in 1 2 3 4 5; do
+            if xcrun stapler staple "${APP_PATH}" && xcrun stapler validate "${APP_PATH}"; then
+              break
+            fi
+            if [ "$i" = 5 ]; then exit 1; fi
+            echo "staple failed (try $i), retrying in 30s"
+            sleep 30
+          done
 
       - name: Package zip
         id: package
