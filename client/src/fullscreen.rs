@@ -24,10 +24,17 @@ use crate::receiver;
 use crate::remote_input;
 use crate::render;
 
+/// `vsync`: true なら present をモニタのリフレッシュに合わせる(Fifo)。
+/// 既定(false)は Immediate で、遅延は小さいが画面の途中に継ぎ目(ティアリング)が出る。
+/// 60Hz で present→画面 は Immediate 中央値 4.7ms / vsync 27ms(実測)。
+/// 高リフレッシュのモニタほど vsync の代償は小さい(1リフレッシュ周期に比例)。
 pub fn run(port: u16, bind: String, subscribe_to: Option<String>, target_mac: Option<[u8; 6]>, decay: f32,
            interlace_decay: f32,
-           audio: receiver::AudioOpts, params: render::Params) -> ! {
+           audio: receiver::AudioOpts, params: FsGeom, vsync: bool,
+           return_window: bool) -> ! {
     let shared = Arc::new(receiver::Shared::default());
+    // 受信(=再生器を開く)より前に入れる。後からだと開いた直後に 100% で鳴る
+    *shared.gain.lock().unwrap() = Some(params.gain);
     let subscribe_dest = subscribe_to.clone();
     let (tx, rx): (Sender<()>, Receiver<()>) = std::sync::mpsc::channel();
     receiver::spawn(
@@ -56,21 +63,92 @@ pub fn run(port: u16, bind: String, subscribe_to: Option<String>, target_mac: Op
         }
     }
 
+    // S/PDIF の混ぜ方は再生器より長生きする AuxCtl に置く(作り直しても消えない)
+    shared.aux.set(params.spdif.0, params.spdif.1);
     let event_loop = EventLoop::new().unwrap();
+    let shared_at_exit = shared.clone();
     let mut app = App { shared: Some((shared, rx)), window: None,
-                        size: Arc::new(AtomicU64::new(0)), params,
+                        size: Arc::new(AtomicU64::new(0)), params, vsync,
                         remote: remote_input::RemoteInput::default(),
                         remote_toggle: Default::default(), remote_mods: Default::default(),
                         awake: crate::awake::KeepAwake::new() };
     event_loop.run_app(&mut app).unwrap();
+    // パネルの「低遅延全画面」から来たときは、ウィンドウ表示へ戻す。
+    // 受信中のボードを指定して戻る(戻った先で別のボードを掴まないように)
+    if return_window {
+        let mac = *shared_at_exit.claimed.lock().unwrap();
+        let extra: Vec<String> = mac
+            .map(|m| vec!["--mac".into(), crate::format_mac(&m)])
+            .unwrap_or_default();
+        crate::relaunch(&extra);
+    }
     std::process::exit(0);
+}
+
+/// 全画面の幾何に要る設定。ウィンドウ表示と同じ geometry.rs で Params を作る。
+/// 帯域ごとのモニタ設定はその場のモードで引く(全画面中にモードが変わっても追う)
+#[derive(Clone)]
+pub struct FsGeom {
+    pub rotate: u32,
+    pub tube_aspect: f32,
+    pub time_based: bool,
+    pub filter: u32,
+    pub window: [f32; 4],
+    pub mon_bands: std::collections::BTreeMap<u32, [f32; 4]>,
+    /// コンポジット/S端子の管面の既定(帯域の保存値が無いとき)
+    pub mon_ntsc: [f32; 4],
+    /// 音量(ミュート込み。0.0 で無音)。★**全画面にはパネルが無いので、
+    ///   保存した音量をここで掛ける。** 掛けないと再生器の既定 1.0(100%)で鳴る
+    ///   (パネルから切り替えたら音量がいきなり上がった, 2026-10-13)
+    pub gain: f32,
+    /// S/PDIF を混ぜるか・その音量
+    pub spdif: (bool, f32),
+}
+
+impl FsGeom {
+    /// いまのモードでの Params と管面の縦横比
+    fn params(&self, shared: &receiver::Shared, vt: &mut crate::geometry::VtotalSmoother,
+              frame: (f32, f32)) -> (render::Params, (f32, f32))
+    {
+        use crate::geometry as g;
+        let m = shared.mode.lock().unwrap().clone();
+        let ntsc = m.as_ref().is_some_and(|m| m.pixfmt == crate::protocol::PIXFMT_YC8);
+        let key = match &m {
+            _ if ntsc => g::MON_KEY_NTSC,
+            Some(m) if m.hfreq_mhz_x1000 > 1_000_000 =>
+                g::band_of(m.hfreq_mhz_x1000 as f32 / 1_000_000.0),
+            _ => 0,
+        };
+        let default = if ntsc { self.mon_ntsc } else { [1.0, 0.0, 1.0, 0.0] };
+        let mon = self.mon_bands.get(&key).copied().unwrap_or(default);
+        let tube = g::tube_aspect_eff(self.tube_aspect, ntsc, self.time_based, mon);
+        // 絵の広がりは span_*(明るい画素がある範囲)。無ければ active_*(main.rs と同じ)
+        let act = {
+            let st = shared.stats.lock().unwrap();
+            if st.span_w > 64 {
+                (st.span_x as u32, st.span_y as u32, st.span_w as u32, st.span_h as u32)
+            } else {
+                (st.active_x as u32, st.active_y as u32, st.active_w as u32, st.active_h as u32)
+            }
+        };
+        let vbp = shared.config_state.lock().unwrap()
+            .get(&crate::protocol::CFG_KEY_VBP).copied().unwrap_or(0);
+        let vtotal = vt.update(m.as_ref());
+        let p = g::params(m.as_ref(), vtotal, act, &g::Inputs {
+            rotate: self.rotate, tube, filter: self.filter, window: self.window,
+            time_based: self.time_based, mon, vbp,
+        });
+        (p, g::display_aspect(frame, tube, self.rotate))
+    }
 }
 
 struct App {
     shared: Option<(Arc<receiver::Shared>, Receiver<()>)>,
     window: Option<Arc<Window>>,
     size: Arc<AtomicU64>, // (w<<32)|h — リサイズをrenderスレッドへ伝える
-    params: render::Params,
+    params: FsGeom,
+    /// present をリフレッシュに合わせるか(`--vsync`)
+    vsync: bool,
     /// MimicX へのキー転送。この経路は winit の生イベントを直接見られるので、
     /// テンキーやJIS配列のキー(かな/変換/¥/ろ)も区別して送れる
     /// (通常モードは egui の変換を経るためテンキーが最上段と同じになる)
@@ -125,10 +203,10 @@ impl ApplicationHandler for App {
             .store(((sz.width as u64) << 32) | sz.height as u64, Ordering::Relaxed);
         // サーフェス作成はmacOSではメインスレッド限定なのでここで初期化し、
         // present一式を専用スレッドへ移す
-        let gpu = Gpu::new(window);
+        let gpu = Gpu::new(window, self.vsync);
         let (shared, rx) = self.shared.take().unwrap();
         let size = self.size.clone();
-        let p = self.params;
+        let p = self.params.clone();
         std::thread::spawn(move || render_thread(gpu, shared, rx, size, p));
     }
 
@@ -255,7 +333,7 @@ struct Gpu {
 
 
 impl Gpu {
-    fn new(window: Arc<Window>) -> Self {
+    fn new(window: Arc<Window>, vsync: bool) -> Self {
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(window.clone()).unwrap();
         let adapter =
@@ -269,10 +347,10 @@ impl Gpu {
                 .unwrap();
 
         let caps = surface.get_capabilities(&adapter);
-        // 調査用: RCX_PRESENT_MODE=fifo で vsync に固定する(計測の対照実験用。
-        // vsync なら画面に出る時刻はリフレッシュ格子に乗るはず)
-        let force_fifo = std::env::var("RCX_PRESENT_MODE").ok().as_deref() == Some("fifo");
-        let mode = if force_fifo {
+        // `--vsync` なら Fifo。継ぎ目(ティアリング)を出さない代わりに、次の
+        // リフレッシュまで待つぶん遅れる。計測の対照にもなる(vsync なら画面に出る
+        // 時刻はリフレッシュ格子に乗る)
+        let mode = if vsync {
             wgpu::PresentMode::Fifo
         } else if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
             wgpu::PresentMode::Immediate
@@ -306,7 +384,7 @@ fn render_thread(
     shared: Arc<receiver::Shared>,
     rx: Receiver<()>,
     size: Arc<AtomicU64>,
-    params: render::Params,
+    geom: FsGeom,
 ) {
     let mut texture: Option<(wgpu::Texture, wgpu::BindGroup, u32, u32)> = None;
     let mut fail_count = 0u64;
@@ -314,11 +392,10 @@ fn render_thread(
     let mut last_paint: Option<Instant> = None;
     let mut intervals: Vec<f64> = Vec::new();
     let mut last_log = Instant::now();
-    // 幾何に使う vtotal の平滑値(main.rs の vtotal_smooth と同じ理由)
-    let mut vtotal_smooth = 0.0f32;
-    // 平滑の時定数は**時間**で効かせる。フレーム数で減衰させると、MODEが1秒に
-    // 1〜2回しか更新されないのに毎フレーム呼ぶせいで収束しきり、平均されない
-    let mut vtotal_last_t: Option<std::time::Instant> = None;
+    // 幾何に使う vtotal の平滑(geometry.rs。ウィンドウ表示と同じ)
+    let mut vt = crate::geometry::VtotalSmoother::default();
+    // 画面上の管面の矩形 (x, y, w, h)。比を保って画面いっぱいに置く
+    let mut tube_rect: Option<(f32, f32, f32, f32)> = None;
     // 描画遅延の計測(latency.rs)。macOS では present を自前で行い、
     // 実際に画面に出た時刻(presentedTime)まで測る
     #[cfg(target_os = "macos")]
@@ -355,6 +432,10 @@ fn render_thread(
         Default::default();
 
     loop {
+        // 音量。再生器はデバイスの開き直しで作り直され、そのたびに 1.0 に戻るので毎回掛ける
+        if let Some(a) = shared.audio.lock().unwrap().as_ref() {
+            crate::audio::AudioPlayer::set_gain(a, geom.gain);
+        }
         // 新フレーム到着まで待つ(タイムアウトでハートビート描画: 統計・黒画面維持)
         let _ = rx.recv_timeout(Duration::from_millis(250));
         let generation = shared.frame_gen.load(Ordering::Acquire);
@@ -400,44 +481,12 @@ fn render_thread(
                 {
                     // 幾何は MODE と画枠設定から毎フレーム作り直す。UIが無いので
                     // 受信スレッドが集めた値(config_state)を使う。
-                    let mut p = params;
-                    if let Some(m) = shared.mode.lock().unwrap().as_ref() {
-                        p.htotal = m.htotal as u32;
-                        // vtotal は平滑した値を使う。**262/263 の交互は正常**
-                        // (インターレースは262.5ライン/フィールド)なので、瞬間値を
-                        // 幾何に使うと縦のスケールがフレームごとに0.38%変わり、
-                        // 絵が上下に震える。詳細は main.rs の vtotal_smooth のコメント。
-                        let now = std::time::Instant::now();
-                        let dt = vtotal_last_t
-                            .map_or(1.0 / 60.0, |t| now.duration_since(t).as_secs_f32());
-                        vtotal_last_t = Some(now);
-                        vtotal_smooth = render::smooth_vtotal(
-                            vtotal_smooth, m.vtotal as f32, false, dt);
-                        p.vtotal = vtotal_smooth;
-                        // 管面を時間ベースで決めるのに必要(実CRTと同じ挙動)
-                        p.fh_hz = (m.hfreq_mhz_x1000 / 1000) as u32;
-                        p.hactive = m.hactive as u32;
-                        p.vactive = m.vactive as u32;
-                    }
-                    {
-                        let st = shared.stats.lock().unwrap();
-                        p.act_x = st.active_x as u32;
-                        p.act_y = st.active_y as u32;
-                        p.act_w = st.active_w as u32;
-                        p.act_h = st.active_h as u32;
-                    }
-                    {
-                        let st = shared.config_state.lock().unwrap();
-                        if let Some(v) = st.get(&crate::protocol::CFG_KEY_HS_OFFSET) {
-                            p.hs_offset = *v;
-                        }
-                        if let Some(v) = st.get(&crate::protocol::CFG_KEY_VBP) {
-                            p.vbp = *v;
-                        }
-                    }
-                    gpu.blit.write_uniforms(&gpu.queue, &gpu.uniform, &p, w, h,
-                                            gpu.config.width.max(1) as f32,
-                                            gpu.config.height.max(1) as f32);
+                    let (p, aspect) = geom.params(&shared, &mut vt, (w as f32, h as f32));
+                    let (sw, sh) = (gpu.config.width.max(1) as f32,
+                                    gpu.config.height.max(1) as f32);
+                    let r = crate::geometry::fit_centered(sw, sh, aspect);
+                    tube_rect = Some(r);
+                    gpu.blit.write_uniforms(&gpu.queue, &gpu.uniform, &p, w, h, r.2, r.3);
                 }
                 let (tex, _, _, _) = texture.as_ref().unwrap();
                 gpu.queue.write_texture(
@@ -489,7 +538,7 @@ fn render_thread(
             last_log = Instant::now();
         }
 
-        let Some((_, bind, tw, th)) = texture.as_ref() else { continue };
+        let Some((_, bind, _, _)) = texture.as_ref() else { continue };
 
         // 描画先。macOS は自前で drawable を取る(presentedTime を読むため)
         let t_acq = Instant::now();
@@ -559,12 +608,11 @@ fn render_thread(
                 ..Default::default()
             });
             // レターボックス(可能なら整数拡大)
-            let (sw, sh) = (gpu.config.width as f32, gpu.config.height as f32);
-            let (tw, th) = (*tw as f32, *th as f32);
-            let fit = (sw / tw).min(sh / th);
-            let scale = if fit >= 1.0 { fit.floor() } else { fit };
-            let (vw, vh) = (tw * scale, th * scale);
-            rp.set_viewport((sw - vw) * 0.5, (sh - vh) * 0.5, vw, vh, 0.0, 1.0);
+            // 管面の矩形(geometry.rs で比を保って画面いっぱいに置いたもの)。
+            // シェーダへ渡した dst と同じ大きさにする
+            let (x, y, vw, vh) = tube_rect.unwrap_or((0.0, 0.0,
+                gpu.config.width as f32, gpu.config.height as f32));
+            rp.set_viewport(x, y, vw, vh, 0.0, 1.0);
             rp.set_pipeline(&gpu.blit.pipeline);
             rp.set_bind_group(0, bind, &[]);
             rp.draw(0..3, 0..1);

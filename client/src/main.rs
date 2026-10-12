@@ -33,6 +33,7 @@ mod bezel;
 mod claim;
 mod cleanout;
 mod fullscreen;
+mod geometry;
 mod keytap;
 mod latency;
 #[cfg(target_os = "macos")]
@@ -88,6 +89,8 @@ fn main() -> eframe::Result {
     let mut dump_seq: Option<usize> = None;
     let mut no_vsync = false;
     let mut fullscreen_mode = false;
+    let mut fullscreen_vsync = false;
+    let mut return_window = false;
     let mut rotate: u32 = u32::MAX;   // 未指定なら設定ファイルの値を使う
     let mut target_mac: Option<[u8; 6]> = None;
     let mut decay = 0.8f32;
@@ -143,6 +146,11 @@ fn main() -> eframe::Result {
             "--no-vsync" => no_vsync = true,
             // 低遅延フルスクリーン(専用presentスレッド+Immediate、ソース駆動present)
             "--fullscreen" => fullscreen_mode = true,
+            // 全画面で present をモニタのリフレッシュに合わせる。画面の途中の継ぎ目
+            // (ティアリング)が消える代わりに遅れる(60Hz で +約22ms、120Hz 以上なら小さい)
+            "--vsync" => fullscreen_vsync = true,
+            // 全画面を ESC で抜けたらウィンドウ表示で起動し直す(パネルから入ったとき)
+            "--return-window" => return_window = true,
             // 画面回転(縦画面のゲーム用)。0/90/180/270 度、時計回り
             "--rotate" => {
                 let v: u32 = args.next().expect("--rotate needs 0|90|180|270").parse().unwrap();
@@ -228,16 +236,19 @@ fn main() -> eframe::Result {
     }
     if fullscreen_mode {
         let rot = if rotate == u32::MAX { cfg.rotate } else { rotate };
-        let p = render::Params {
+        let p = fullscreen::FsGeom {
             rotate: rot,
-            tube: cfg.tube_aspect,
+            tube_aspect: cfg.tube_aspect,
+            time_based: cfg.tube_time_based,
             filter: cfg.filter,
             window: cfg.window,
-            time_based: cfg.tube_time_based,
-            h_size: 1.0, h_pos: 0.0, v_size: 1.0, v_pos: 0.0,
-            ..Default::default()
+            mon_bands: cfg.mon_bands.clone(),
+            mon_ntsc: MON_NTSC,
+            gain: if cfg.muted { 0.0 } else { cfg.volume },
+            spdif: (cfg.spdif_mix, cfg.spdif_volume),
         };
-        fullscreen::run(port, bind, subscribe_to, target_mac, decay, interlace_decay, audio, p); // 戻らない
+        fullscreen::run(port, bind, subscribe_to, target_mac, decay, interlace_decay, audio, p,
+                        fullscreen_vsync, return_window); // 戻らない
     }
 
     let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
@@ -347,6 +358,49 @@ fn install_cjk_font(ctx: &egui::Context) {
 }
 
 /// "AA:BB:CC:DD:EE:FF" → [u8; 6](区切りは ':' or '-')。
+/// 起動し直すときの引数。全画面の切り替えに関わるものを除いて `extra` を足す
+fn relaunch_args(orig: impl Iterator<Item = String>, extra: &[String]) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    let mut it = orig;
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--fullscreen" | "--vsync" | "--return-window" => {}
+            "--mac" => { it.next(); }
+            _ => args.push(a),
+        }
+    }
+    args.extend(extra.iter().cloned());
+    args
+}
+
+/// MAC を `--mac` に渡せる形にする(parse_mac の逆)
+fn format_mac(m: &[u8; 6]) -> String {
+    m.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":")
+}
+
+/// このアプリを起動し直す。元の引数から全画面の切り替えに関わるもの
+/// (`--fullscreen` / `--vsync` / `--return-window` / `--mac 値`)を除き、`extra` を足す。
+///
+/// ★**元の引数は引き継ぐ。** `--board` などで起動していたら、戻った先でも同じ
+///   相手に繋がっていないといけない。
+pub fn relaunch(extra: &[String]) -> bool {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("relaunch: 実行ファイルが分からない: {e}");
+            return false;
+        }
+    };
+    let args = relaunch_args(std::env::args().skip(1), extra);
+    match std::process::Command::new(&exe).args(&args).spawn() {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("relaunch: 起動できない {}: {e}", exe.display());
+            false
+        }
+    }
+}
+
 fn parse_mac(s: &str) -> [u8; 6] {
     let parts: Vec<&str> = s.split([':', '-']).collect();
     assert_eq!(parts.len(), 6, "MAC must have 6 octets: {s}");
@@ -749,12 +803,11 @@ struct AutoTune {
 const PHASE_SENSITIVE: f32 = 0.85;
 
 /// NTSCの1ライン[µs]と1フレームのライン数。管面の窓を時間とライン数で書くのに使う
-const NTSC_LINE_US: f32 = 63.556;
-const NTSC_LINES: f32 = 525.0;
+use geometry::{NTSC_LINE_US, NTSC_LINES};
 
 /// コンポジット/S端子(YC8)の管面を `mon_bands` に置くキー。実在しない帯域番号
 /// (帯域は kHz の値なので重ならない)。設定ファイルには `mon.1000` で残る。
-const MON_KEY_NTSC: u32 = 1000;
+use geometry::MON_KEY_NTSC;
 
 /// コンポジット/S端子の管面の初期値 [H幅, H位置, V幅, V位置]。
 ///
@@ -1028,6 +1081,12 @@ struct Session {
     frame_size: (u32, u32),
     render_state: Option<eframe::egui_wgpu::RenderState>,
     seen_gen: u64,
+    /// 低遅延全画面で vsync を使うか(設定に保存)
+    fs_vsync: bool,
+    /// 低遅延全画面への切り替えが押された(App が起動し直す)
+    want_lowlat_fs: bool,
+    /// ウィンドウがこれ1枚か(低遅延全画面は全部を閉じて起動し直すので、1枚のときだけ)
+    only_window: bool,
     /// 描画遅延の集計(ウィンドウ表示では UI が拾うまで。latency.rs)
     latency_meter: latency::LatencyMeter,
     latency_last: std::time::Instant,
@@ -1235,6 +1294,9 @@ impl Session {
             frame_size: (0, 0),
             render_state,
             seen_gen: 0,
+            fs_vsync: cfg.fullscreen_vsync,
+            want_lowlat_fs: false,
+            only_window: true,
             latency_meter: Default::default(),
             latency_last: std::time::Instant::now(),
             latency_logs: 0,
@@ -1505,6 +1567,7 @@ impl Session {
             audio_source: self.audio_source,
             audio_device: self.audio_device_sel.clone(),
             audio_buffer_ms: self.audio_buffer_ms,
+            fullscreen_vsync: self.fs_vsync,
             rotate: self.rotate,
             tube_aspect: self.tube_aspect,
             dot_a_milli: self.dot_a_milli,
@@ -1686,6 +1749,40 @@ impl Session {
     }
 
     /// 配信用クリーン出力の操作。**配信中いちばん触るものなので上に出す。**
+    /// 低遅延全画面への切り替え。
+    ///
+    /// ★**ウィンドウを全画面にしても低遅延にはならない。** ウィンドウは eframe の
+    ///   再描画(60Hz 刻み)と macOS の合成を通る。低遅延全画面(`--fullscreen`)は
+    ///   専用スレッドがフレーム到着で present し、全画面なので合成を素通りする
+    ///   (client/README.md の検証)。eframe と同じプロセスで作り直せないので、
+    ///   **このアプリを全画面モードで起動し直す。** ESC で抜けるとウィンドウに戻る。
+    fn lowlat_fs_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let r = ui.add_enabled(self.only_window, egui::Button::new("低遅延全画面"));
+            let r = if self.only_window {
+                r.on_hover_text(
+                    "映像だけを全画面に出し、遅延を最小にする(画面中央で約1フレーム)。\n\
+                     切り替え時に一瞬途切れる。ESC でこのウィンドウに戻る。\n\
+                     ウィンドウの全画面(緑ボタン)は macOS の合成を通るので遅い")
+            } else {
+                r.on_disabled_hover_text(
+                    "ウィンドウが複数あるときは使えない(全部を閉じて起動し直すため)")
+            };
+            if r.clicked() {
+                self.want_lowlat_fs = true;
+            }
+            if ui.checkbox(&mut self.fs_vsync, "vsync")
+                .on_hover_text(
+                    "モニタのリフレッシュに合わせて出す。画面の途中の継ぎ目\n\
+                     (ティアリング)が消える代わりに遅れる。\n\
+                     60Hz で +約22ms。120Hz 以上のモニタなら差は小さい")
+                .changed()
+            {
+                self.mark_settings_dirty();
+            }
+        });
+    }
+
     fn clean_out_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             // 配信用のクリーン出力。UIもベゼルも無い別ウィンドウを出す。
@@ -2127,34 +2224,15 @@ impl Session {
                  st.active_w as u32, st.active_h as u32)
             }
         };
-        render::Params {
+        geometry::params(m.as_ref(), self.vtotal_smooth.get(), act, &geometry::Inputs {
             rotate: self.rotate,
             tube: self.tube_aspect_eff(),
             filter: self.filter,
-            htotal: m.as_ref().map_or(0, |m| m.htotal as u32),
-            // 行位置は半ライン単位のスロット。1VSYNC周期に何スロット入るかは
-            // 織り込みの有無で変わる:
-            //   プログレッシブ  1ラインが2スロット      → 2*vtotal
-            //   インターレース  折り返して2フィールドが  → vtotal
-            //                   交互に入るので1ラインが1スロット
-            // これを間違えると縦が2倍に引き伸ばされる(実機で絵が上半分に収まった)。
-            vtotal: self.vtotal_smooth.get(),
-            // offset_px はライン内の絶対位置で来るので、ここでずらす必要はない。
-            // pll_divide を変えても絵が動かないのはこのため(hs_offset は取り込み
-            // 窓の設定であって、描画位置とは無関係になった)
-            hs_offset: 0,
-            vbp: self.tune_vbp.max(0) as u32 * slot_k,
             window: self.window,
-            fh_hz: m.as_ref().map_or(0, |m| (m.hfreq_mhz_x1000 / 1000) as u32),
-            hactive: m.as_ref().map_or(0, |m| m.hactive as u32),
-            vactive: m.as_ref().map_or(0, |m| m.vactive as u32),
             time_based: self.tube_time_based,
-            h_size: self.mon[0],
-            h_pos: self.mon[1],
-            v_size: self.mon[2],
-            v_pos: self.mon[3],
-            act_x: act.0, act_y: act.1, act_w: act.2, act_h: act.3,
-        }
+            mon: self.mon,
+            vbp: self.tune_vbp.max(0) as u32,
+        })
     }
 
     /// 実行時に調整できるキーの一覧。読み戻しと表示の同期に使う
@@ -2482,15 +2560,7 @@ impl Session {
     /// 丸めると 24.698kHz が 25 になって呼称とずれる。マルチスキャンモニタの
     /// インジケータと同じ 15 / 24 / 31 に寄せる。範囲外は丸めた値をそのまま使う。
     fn band_of(fh_khz: f32) -> u32 {
-        if fh_khz < 20.0 {
-            15
-        } else if fh_khz < 28.0 {
-            24
-        } else if fh_khz < 40.0 {
-            31
-        } else {
-            fh_khz.round() as u32
-        }
+        geometry::band_of(fh_khz)
     }
 
     /// 描画に使う管面の縦横比。
@@ -2501,12 +2571,8 @@ impl Session {
     /// この比で、50.9µs × 480ライン を 1.274 で出していた(実測)。管面の設定をそのまま
     /// 使うと、窓を詰めたぶん横に伸びる(格子の升目が横長になる)。
     fn tube_aspect_eff(&self) -> f32 {
-        if self.mon_key != MON_KEY_NTSC || !self.tube_time_based {
-            return self.tube_aspect;
-        }
-        let h_us = self.mon[0].max(0.01) * NTSC_LINE_US;
-        let lines = self.mon[2].max(0.01) * NTSC_LINES;
-        4.0 / 3.0 * (h_us / 53.333) * (480.0 / lines)
+        geometry::tube_aspect_eff(self.tube_aspect, self.mon_key == MON_KEY_NTSC,
+                                  self.tube_time_based, self.mon)
     }
 
     /// 周波数帯が変わったら、いまの管面設定を旧帯域へ保存し、新帯域の値を復元する。
@@ -4891,9 +4957,27 @@ impl eframe::App for App {
         // どれかの窓が前面にあり、その窓が映像を受けているか(スリープ抑止の条件)
         let mut playing_in_front = false;
         // 主ウィンドウ
+        let only_window = self.sessions.len() == 1;
         if let Some(s) = self.sessions.first_mut() {
             playing_in_front |= root.ctx().input(|i| i.focused) && s.receiving_video();
+            s.only_window = only_window;
             s.ui(root);
+            if std::mem::take(&mut s.want_lowlat_fs) && only_window {
+                let mac = *s.shared.claimed.lock().unwrap();
+                let mut extra = vec!["--fullscreen".to_string(), "--return-window".to_string()];
+                if s.fs_vsync {
+                    extra.push("--vsync".into());
+                }
+                if let Some(m) = mac {
+                    extra.push("--mac".into());
+                    extra.push(format_mac(&m));
+                }
+                // 設定(vsync の選択を含む)を書いてから渡す
+                s.on_close();
+                if relaunch(&extra) {
+                    root.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
         }
         // 追加ウィンドウ。**ここで &mut Ui が降ってくる**ので、主ウィンドウと
         // まったく同じ描画関数を使える
@@ -5098,6 +5182,8 @@ impl Session {
                 //   いると迷子に見える。
                 self.quick_scan_bar(ui);
                 self.window_bar(ui);
+                // 低遅延全画面も「見せ方を変える道具」なのでここ(配信出力とは別物)
+                self.lowlat_fs_ui(ui);
                 // ★**送れていないことを明示する。** 「何も映らない」だけだと
                 //   受信側の問題と区別できず、原因の切り分けに時間がかかる。
                 if let Some(err) = self.shared.net_error.lock().unwrap().clone() {
@@ -5813,6 +5899,22 @@ impl Drop for Session {
 
 #[cfg(test)]
 mod tests {
+    /// ★**行って戻ると元の起動に戻ること。** 全画面の切り替えの引数が残ると、
+    ///   戻ったつもりで全画面に入り直す(抜けられなくなる)。`--board` などは残す
+    #[test]
+    fn relaunch_round_trip_keeps_user_args() {
+        let v = |x: &[&str]| x.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let orig = v(&["--board", "192.168.10.50", "--mac", "AA:BB:CC:DD:EE:FF"]);
+        let to_fs = relaunch_args(orig.clone().into_iter(),
+            &v(&["--fullscreen", "--return-window", "--vsync", "--mac", "11:22:33:44:55:66"]));
+        assert_eq!(to_fs, v(&["--board", "192.168.10.50", "--fullscreen", "--return-window",
+                              "--vsync", "--mac", "11:22:33:44:55:66"]));
+        let back = relaunch_args(to_fs.into_iter(), &v(&["--mac", "11:22:33:44:55:66"]));
+        assert_eq!(back, v(&["--board", "192.168.10.50", "--mac", "11:22:33:44:55:66"]));
+        assert_eq!(parse_mac(&format_mac(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66])),
+                   [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    }
+
     use super::*;
 
     /// コンポジットの管面の初期値が、ビデオデッキの窓(1820サンプル/ラインで

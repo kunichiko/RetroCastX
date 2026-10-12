@@ -8,6 +8,7 @@ cargo run --release                     # SUBSCRIBEをブロードキャスト�
 cargo run --release -- --board 192.168.10.50   # ボードIP指定
 cargo run --release -- --no-subscribe   # 受け専用(sender_sim相手はこれ)
 cargo run --release -- --fullscreen     # 低遅延フルスクリーン(下記、ESCで終了)
+cargo run --release -- --fullscreen --vsync  # 同、リフレッシュに合わせる(ティアリング無し。60Hzで画面中央 約16ms→約38ms)
 cargo run --release -- --headless 5 --no-subscribe  # GUIなしで受信統計のみ(検証用)
 cargo test                              # プロトコル/アセンブラのユニットテスト
 ```
