@@ -1315,10 +1315,6 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         let edges = if is_line { line_clock.on_line(rx_t, fed.is_some()) } else { None };
         if let Some(mut frame) = fed {
             frames_since += 1;
-            noise.feed(&frame.rgba);
-            abox.feed(&frame.rgba, frame.width, frame.height);
-            tune.feed(&frame.rgba, frame.width, frame.height);
-            weave.feed(&frame.rgba, frame.width, frame.height);
             *shared.mode.lock().unwrap() = asm.mode.clone();
             // 差し替えて、UIが使い終わった前のバッファを組立側へ返す。
             // ロックはUIがテクスチャ転送を終えるまで取れないので、返した時点で
@@ -1333,11 +1329,21 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             let us = t_wait.elapsed().as_micros() as u64;
             publish_wait_us = publish_wait_us.saturating_add(us);
             if us > publish_wait_max_us { publish_wait_max_us = us; }
-            if let Some(old) = old {
-                asm.recycle(old.rgba);
-            }
             shared.frame_gen.fetch_add(1, Ordering::Release);
             repaint();
+            // ★**計測は渡した後に、1つ前のフレームで行う。** 以前は渡す前に新しい
+            //   フレームで計測していた。計測は2〜8フレームに1回ずつ重く(最大約5ms)、
+            //   その回だけ渡すのが遅れて表示の間隔が 12.5ms / 23.5ms に割れた。
+            //   到着は 18.03±0.1ms と正確なのに、60Hz のモニタでは同じ
+            //   リフレッシュに2枚入ったフレームが捨てられていた(全画面で約5%)。
+            //   統計が1フレーム遅れるだけなので、計測の意味は変わらない。
+            if let Some(old) = old {
+                noise.feed(&old.rgba);
+                abox.feed(&old.rgba, old.width, old.height);
+                tune.feed(&old.rgba, old.width, old.height);
+                weave.feed(&old.rgba, old.width, old.height);
+                asm.recycle(old.rgba);
+            }
         }
         // 使い終わったバッファを受信スレッドへ返す。返さないと毎パケット
         // 確保することになり、27000回/秒のアロケーションで元の木阿弥になる。

@@ -339,12 +339,20 @@ fn render_thread(
         .map(std::io::BufWriter::new);
     if let Some(w) = present_csv.as_mut() {
         use std::io::Write;
-        let _ = writeln!(w, "submit_ms,presented_ms");
+        let _ = writeln!(w, "id,fresh,acquire_ms,submit_ms,presented_ms,\
+                             first_ms,last_ms,trigger_ms,published_ms,picked_ms");
     }
-    // present 済みで画面に出るのを待っているフレーム: (id, 時刻, 拾った, present した)
+    // present 済みで画面に出るのを待っているもの:
+    // (id, 新フレームなら(時刻, 拾った), drawable 取得に掛かった時間, present した)。
+    // 新フレームでない present(ハートビート・溜まった起床)も追う: それが新フレームを
+    // 差し替えて「捨てられた」に見せている可能性があるため
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut, unused_variables))]
-    let mut in_flight: std::collections::VecDeque<
-        (u64, crate::latency::FrameStamps, Instant, Instant)> = Default::default();
+    // ★**id で引く。** presented handler は id 順に来るとは限らない。以前は先頭から
+    //   順に突き合わせ、来た id より前のものを黙って捨てていたので、順序が入れ替わる
+    //   と記録が抜け、残った行だけを見て「フレームが届いていない」と誤読した。
+    let mut in_flight: std::collections::HashMap<
+        u64, (Option<(crate::latency::FrameStamps, Instant)>, Duration, Instant)> =
+        Default::default();
 
     loop {
         // 新フレーム到着まで待つ(タイムアウトでハートビート描画: 統計・黒画面維持)
@@ -484,6 +492,7 @@ fn render_thread(
         let Some((_, bind, tw, th)) = texture.as_ref() else { continue };
 
         // 描画先。macOS は自前で drawable を取る(presentedTime を読むため)
+        let t_acq = Instant::now();
         #[cfg(target_os = "macos")]
         let mut acquired = match presenter.as_ref() {
             Some(p) => match p.acquire(&gpu.device, gpu.config.format) {
@@ -534,6 +543,7 @@ fn render_thread(
             Some(f) => f.texture.create_view(&Default::default()),
             None => continue,
         };
+        let t_acq_end = Instant::now();
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         {
             let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -560,12 +570,12 @@ fn render_thread(
             rp.draw(0..3, 0..1);
         }
         gpu.queue.submit([enc.finish()]);
+        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+        let t_acq_dur = t_acq_end.saturating_duration_since(t_acq);
         #[cfg(target_os = "macos")]
         if let (Some(a), Some(p)) = (acquired.take(), presenter.as_mut()) {
             let id = p.present(a);
-            if let Some((st, t_pick)) = picked {
-                in_flight.push_back((id, st, t_pick, Instant::now()));
-            }
+            in_flight.insert(id, (picked, t_acq_dur, Instant::now()));
         }
         if let Some(f) = wgpu_frame {
             f.present();
@@ -578,30 +588,29 @@ fn render_thread(
         #[cfg(target_os = "macos")]
         if let Some(p) = presenter.as_ref() {
             for (id, presented) in p.drain() {
-                while let Some(&(fid, st, t_pick, t_sub)) = in_flight.front() {
-                    if fid > id {
-                        break;
-                    }
-                    in_flight.pop_front();
-                    if fid == id {
-                        if let Some(t) = presented {
-                            meter.add(&st, t_pick, Some(t_sub), Some(t));
-                        }
-                        if let Some(w) = present_csv.as_mut() {
-                            use std::io::Write;
-                            let ms = |x: Instant| x.saturating_duration_since(t_origin)
-                                .as_secs_f64() * 1000.0;
-                            let _ = writeln!(w, "{:.3},{}", ms(t_sub),
-                                presented.map(|t| format!("{:.3}", ms(t)))
-                                    .unwrap_or_else(|| "skipped".into()));
-                        }
-                    }
+                let Some((fresh, acq, t_sub)) = in_flight.remove(&id) else { continue };
+                if let (Some((st, t_pick)), Some(t)) = (fresh, presented) {
+                    meter.add(&st, t_pick, Some(t_sub), Some(t));
+                }
+                if let Some(w) = present_csv.as_mut() {
+                    use std::io::Write;
+                    let ms = |x: Instant| x.saturating_duration_since(t_origin)
+                        .as_secs_f64() * 1000.0;
+                    let stages = fresh.map(|(st, tp)| format!(
+                        "{:.3},{:.3},{:.3},{:.3},{:.3}",
+                        ms(st.first), ms(st.last), ms(st.trigger),
+                        ms(st.published), ms(tp)))
+                        .unwrap_or_else(|| ",,,,".into());
+                    let _ = writeln!(w, "{id},{},{:.3},{:.3},{},{stages}",
+                        fresh.is_some() as u8,
+                        acq.as_secs_f64() * 1000.0, ms(t_sub),
+                        presented.map(|t| format!("{:.3}", ms(t)))
+                            .unwrap_or_else(|| "skipped".into()));
                 }
             }
             // 届かないまま溜まり続けないように(画面が隠れている等)
-            while in_flight.len() > 16 {
-                in_flight.pop_front();
-            }
+            // 1秒たっても届かないものは捨てる
+            in_flight.retain(|_, v| v.2.elapsed() < Duration::from_secs(1));
         }
 
         if fresh {
