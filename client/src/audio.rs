@@ -89,6 +89,11 @@ pub struct AudioStats {
     pub last_underrun_gap_us: AtomicU64,
     /// 出力コールバック1回で要求されたフレーム数の最大
     pub cb_frames_max: AtomicU64,
+    /// 出力側の遅延[µs]: いま書いたサンプルが実際に鳴るまで(デバイスとOSの分)。
+    /// 体感の遅延はおおよそ「溜め + これ」。溜めだけ削っても、ここが大きいと縮まない
+    pub out_latency_us: AtomicU64,
+    /// 実際に頼んだデバイスのバッファ[フレーム](0=デバイス任せ)
+    pub dev_buffer_frames: AtomicU64,
 }
 
 impl AudioStats {
@@ -118,6 +123,8 @@ impl Default for AudioStats {
             last_underrun_us: AtomicU64::new(0),
             last_underrun_gap_us: AtomicU64::new(0),
             cb_frames_max: AtomicU64::new(0),
+            out_latency_us: AtomicU64::new(0),
+            dev_buffer_frames: AtomicU64::new(0),
         }
     }
 }
@@ -266,6 +273,28 @@ pub fn default_output_device_name() -> Option<String> {
     d.description().ok().map(|x| x.name().to_string())
 }
 
+/// 溜め量に見合ったデバイスのバッファ[フレーム]。None ならデバイス任せ。
+///
+/// ★**溜めを削るならデバイスのバッファも削る。** macOS の既定は 512フレーム
+///   (48kHzで10.7ms)で、コールバックはその単位でまとめて読む。溜め20msに
+///   対して1回で10.7ms持っていかれると、パケットの到着(5ms刻み)との兼ね合いで
+///   すぐ底を突く。溜めの1/4程度(2の冪、64..512)にする。溜めが大きいときは
+///   既定のまま(今まで実績のある動作を変えない)。
+fn device_buffer_frames(prebuffer_frames: usize, supported: &cpal::SupportedBufferSize)
+    -> Option<u32>
+{
+    if prebuffer_frames >= 2048 {
+        return None;
+    }
+    let want = ((prebuffer_frames / 4).max(64) as u32).next_power_of_two().min(512);
+    // 2の冪に切り上げると1/4を超えるので、1段下げる
+    let want = if want as usize > prebuffer_frames / 4 && want > 64 { want / 2 } else { want };
+    match supported {
+        cpal::SupportedBufferSize::Range { min, max } => Some(want.clamp(*min, *max)),
+        cpal::SupportedBufferSize::Unknown => Some(want),
+    }
+}
+
 impl AudioPlayer {
     /// 出力デバイスを開いて再生を始める。デバイスが無い/開けない場合も
     /// Err にせず「再生なし」で動作継続できるよう Option を返す。
@@ -340,10 +369,18 @@ impl AudioPlayer {
             );
             return None;
         }
-        let stream = device
-            .build_output_stream(
-                cfg.config(),
-                move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
+        let mut stream_cfg = cfg.config();
+        let dev_buf = device_buffer_frames(prebuffer_frames, cfg.buffer_size());
+        if let Some(n) = dev_buf {
+            stream_cfg.buffer_size = cpal::BufferSize::Fixed(n);
+        }
+        stats.dev_buffer_frames.store(dev_buf.unwrap_or(0) as u64, Ordering::Relaxed);
+        let data_cb =
+                move |out: &mut [f32], info: &cpal::OutputCallbackInfo| {
+                    let ts = info.timestamp();
+                    stats_cb.out_latency_us.store(
+                        ts.playback.duration_since(ts.callback).as_micros() as u64,
+                        Ordering::Relaxed);
                     let mut m = ring_cb.lock().unwrap();
                     let mut x = aux_cb.lock().unwrap();
                     // 音量はコールバックの頭で1回読む(ブロック内で一定にする)
@@ -421,11 +458,19 @@ impl AudioPlayer {
                     stats_cb
                         .aux_buffered
                         .store((x.buf.len() / 2) as u64, Ordering::Relaxed);
-                },
-                err_fn,
-                None,
-            )
-            .ok()?;
+                };
+        // ★**固定バッファを断られたらデバイス任せで開き直す。** 複数出力装置など、
+        //   指定の大きさを受け付けない出力がある。開けないよりは遅延が大きい方がよい。
+        let stream = match device.build_output_stream(stream_cfg.clone(), data_cb.clone(), err_fn, None) {
+            Ok(st) => st,
+            Err(e) if dev_buf.is_some() => {
+                eprintln!("audio: デバイスのバッファ {} フレームを断られたので既定で開きます: {e}",
+                          dev_buf.unwrap());
+                stats.dev_buffer_frames.store(0, Ordering::Relaxed);
+                device.build_output_stream(cfg.config(), data_cb, err_fn, None).ok()?
+            }
+            Err(_) => return None,
+        };
         stream.play().ok()?;
 
         Some(Self {
@@ -698,5 +743,69 @@ mod rate_name_tests {
     #[test]
     fn far_offsets_are_not_snapped() {
         assert_eq!(describe_rate(44_200), "44200 Hz");
+    }
+}
+
+#[cfg(test)]
+mod low_latency_tests {
+    use super::*;
+
+    /// 溜めが大きいときはデバイス任せ(実績のある動作を変えない)、
+    /// 小さいときは溜めの1/4以下の2の冪にする
+    #[test]
+    fn device_buffer_follows_prebuffer() {
+        let any = cpal::SupportedBufferSize::Range { min: 15, max: 4096 };
+        assert_eq!(device_buffer_frames(3840, &any), None);       // 80ms
+        assert_eq!(device_buffer_frames(2880, &any), None);       // 60ms
+        assert_eq!(device_buffer_frames(1920, &any), Some(256));  // 40ms
+        assert_eq!(device_buffer_frames(960, &any), Some(128));   // 20ms
+        assert_eq!(device_buffer_frames(480, &any), Some(64));    // 10ms
+        // デバイスの範囲には従う
+        let narrow = cpal::SupportedBufferSize::Range { min: 256, max: 4096 };
+        assert_eq!(device_buffer_frames(960, &narrow), Some(256));
+    }
+
+    /// ★**実際の届き方で、溜め20msでも枯渇せず目標付近に留まること。**
+    ///   ボードは 240フレーム(5ms)ずつまとめて送り、出力は 128フレームずつ
+    ///   読む。平均だけ見る試験だと、この「のこぎり波」で底を突くのを見逃す。
+    ///   水晶差は実測の約50ppm(PCが速い)に余裕を見て100ppm。
+    #[test]
+    fn small_buffer_survives_packet_granularity() {
+        let pre = 960usize;            // 20ms
+        let pkt = 240usize;            // 5ms/パケット
+        let cb = 128usize;
+        let drift = 100e-6;            // 入力が 100ppm 遅い = PCが速い
+        let mut r = Ring {
+            buf: Default::default(), started: false,
+            a: (0.0, 0.0), b: (0.0, 0.0), frac: 0.0,
+            ratio: 1.0, base_ratio: 1.0, primed: false, dry: false,
+        };
+        let mut next_pkt = 0.0f64;     // 次のパケット到着[出力フレーム時刻]
+        let mut underruns = 0;
+        let (mut lo, mut hi) = (usize::MAX, 0usize);
+        // 10分ぶん
+        let cbs = 48_000 * 600 / cb;
+        for i in 0..cbs {
+            let t = (i * cb) as f64;
+            while next_pkt <= t {
+                for _ in 0..pkt { r.buf.push_back(0); r.buf.push_back(0); }
+                next_pkt += pkt as f64 * (1.0 + drift);
+            }
+            if !r.started && r.buf.len() >= pre * 2 { r.started = true; }
+            if !r.started { continue; }
+            let have = (r.buf.len() / 2) as f64;
+            r.ratio = track_ratio(r.ratio, r.base_ratio, have, pre as f64);
+            r.dry = false;
+            for _ in 0..cb {
+                r.next_frame();
+            }
+            if r.dry { underruns += 1; }
+            if i > cbs / 10 {           // 立ち上がりを除いて溜めの幅を見る
+                lo = lo.min(r.buf.len() / 2);
+                hi = hi.max(r.buf.len() / 2);
+            }
+        }
+        assert_eq!(underruns, 0, "溜め20msで枯渇した");
+        assert!(lo > 0 && hi < pre * 2, "溜めが目標から外れた: {lo}..{hi} フレーム");
     }
 }

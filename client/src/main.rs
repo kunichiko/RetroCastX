@@ -104,6 +104,8 @@ fn main() -> eframe::Result {
     audio.source = cfg.audio_source;
     // 起動時から設定のデバイスで開く(既定デバイスで鳴り始めるのを防ぐ)
     audio.device = cfg.audio_device.clone();
+    audio.prebuffer_ms = cfg.audio_buffer_ms;
+    audio.max_ms = receiver::audio_max_ms(cfg.audio_buffer_ms);
     let mut bind = String::from("0.0.0.0");
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -207,7 +209,8 @@ fn main() -> eframe::Result {
             "--audio-buffer" => {
                 audio.prebuffer_ms =
                     args.next().expect("--audio-buffer needs ms").parse().unwrap();
-                audio.max_ms = audio.prebuffer_ms * 3;
+                audio.max_ms = receiver::audio_max_ms(audio.prebuffer_ms);
+                cfg.audio_buffer_ms = audio.prebuffer_ms;
             }
             other => {
                 eprintln!("unknown arg: {other}");
@@ -391,8 +394,10 @@ fn run_headless(
             let rate = a.device_rate.load(Ordering::Relaxed).max(1);
             let last = a.last_underrun_us.load(Ordering::Relaxed);
             println!(
-                "   audio: buffered {} ms  pkts {}  underruns {}  gap max {:.1} ms  cb max {} f{}",
+                "   audio: buffered {} ms  out {:.1} ms  dev buf {}  pkts {}  underruns {}  gap max {:.1} ms  cb max {} f{}",
                 a.buffered.load(Ordering::Relaxed) * 1000 / rate,
+                ms(a.out_latency_us.load(Ordering::Relaxed)),
+                a.dev_buffer_frames.load(Ordering::Relaxed),
                 a.packets.load(Ordering::Relaxed),
                 a.underruns.load(Ordering::Relaxed),
                 ms(a.arrival_gap_max_us.load(Ordering::Relaxed)),
@@ -861,6 +866,8 @@ struct Session {
     audio_devices: Vec<String>,
     /// UIで選択中のデバイス。None は「システム既定」
     audio_device_sel: Option<String>,
+    /// 音声の溜め[ms]。小さいほど低遅延だが途切れやすい
+    audio_buffer_ms: u32,
     /// 音量(0.0..1.5、1.0=原音)。ミュート時も値は保持してトグルで戻せるようにする
     audio_volume: f32,
     audio_muted: bool,
@@ -1152,6 +1159,7 @@ impl Session {
             audio_source,
             audio_devices: audio::output_devices(),
             audio_device_sel: cfg.audio_device.clone(),
+            audio_buffer_ms: cfg.audio_buffer_ms,
             audio_volume: cfg.volume,
             audio_muted: cfg.muted,
             settings_dirty: None,
@@ -1460,6 +1468,7 @@ impl Session {
             muted: self.audio_muted,
             audio_source: self.audio_source,
             audio_device: self.audio_device_sel.clone(),
+            audio_buffer_ms: self.audio_buffer_ms,
             rotate: self.rotate,
             tube_aspect: self.tube_aspect,
             dot_a_milli: self.dot_a_milli,
@@ -1928,6 +1937,34 @@ impl Session {
             request = Some(receiver::AudioRequest { device: dev, source: self.audio_source });
         }
 
+        // 溜め(遅延)。★**選んだ瞬間に再生器を開き直す。** デバイスのバッファも
+        //   溜めに合わせて変えるので、開き直さないと効かない。開き直しで一瞬
+        //   (溜めの分だけ)無音になるが、ユーザーが選んだときだけなので許す。
+        let mut buf_ms = self.audio_buffer_ms;
+        ui.horizontal(|ui| {
+            ui.label("buffer");
+            egui::ComboBox::from_id_salt("audio_buf")
+                .selected_text(format!("{buf_ms} ms"))
+                .width(80.0)
+                .show_ui(ui, |ui| {
+                    for ms in [10u32, 15, 20, 30, 40, 60, 80, 120] {
+                        ui.selectable_value(&mut buf_ms, ms, format!("{ms} ms"));
+                    }
+                })
+                .response
+                .on_hover_text("小さいほど音の遅れが減るが、途切れやすくなる。\n\
+                                途切れる(underruns が増える)なら1段上げる");
+        });
+        if buf_ms != self.audio_buffer_ms {
+            self.audio_buffer_ms = buf_ms;
+            self.shared.audio_buffer_ms.store(buf_ms, Relaxed);
+            self.mark_settings_dirty();
+            request.get_or_insert(receiver::AudioRequest {
+                device: self.audio_device_sel.clone(),
+                source: self.audio_source,
+            });
+        }
+
         if let Some(req) = request {
             *self.shared.audio_request.lock().unwrap() = Some(req);
         }
@@ -1962,6 +1999,17 @@ impl Session {
                     a.buffered.load(Relaxed) as f64 * 1000.0 / rate as f64,
                     a.packets.load(Relaxed)
                 ));
+                // ★**体感の遅延は溜めだけではない。** 出力側(デバイス+OS)の分を
+                //   足して見せないと、溜めを削っても縮まない理由が分からない。
+                //   複数出力装置や Bluetooth はここが大きい。
+                let out_ms = a.out_latency_us.load(Relaxed) as f64 / 1000.0;
+                let dev_buf = a.dev_buffer_frames.load(Relaxed);
+                ui.monospace(format!(
+                    "遅延 ≈ {:.0} ms (溜め {:.0} + 出力 {:.0})  dev buf {}",
+                    a.buffered.load(Relaxed) as f64 * 1000.0 / rate as f64 + out_ms,
+                    a.buffered.load(Relaxed) as f64 * 1000.0 / rate as f64,
+                    out_ms,
+                    if dev_buf == 0 { "既定".to_string() } else { format!("{dev_buf} f") }));
                 ui.monospace(format!(
                     "underruns {}  dropped {}",
                     a.underruns.load(Relaxed),
@@ -4752,6 +4800,8 @@ impl App {
         let mut audio = receiver::AudioOpts::default();
         audio.source = cfg.audio_source;
         audio.device = cfg.audio_device.clone();
+        audio.prebuffer_ms = cfg.audio_buffer_ms;
+        audio.max_ms = receiver::audio_max_ms(cfg.audio_buffer_ms);
         self.sessions.push(Session::new(
             id, ctx, rs, self.port, Some("255.255.255.255".to_string()), None,
             self.bind.clone(), self.no_vsync, self.decay, self.interlace_decay,

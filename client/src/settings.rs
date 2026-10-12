@@ -83,6 +83,18 @@ impl BoardSel {
 ///   で詰めた値で、前提が崩れた状態での調整だった。
 fn default_dot_a() -> u32 { 200 }
 
+/// 音声の溜めの既定値[ms]。
+///
+/// ★**macOS は 10ms。** 実機(複数出力装置)で 遅延 ≈ 16ms(溜め6〜9 + 出力9.8)、
+///   GUI で聴いて途切れなし・遅れを感じないことを確かめた(2026-10-12)。
+///   80ms では合計約95msで、聞いて分かる遅れがあった。
+///   Windows は WASAPI の出力側の遅延も、小さいデバイスバッファを受け付けるかも
+///   確かめていないので、実績のある 80ms のまま。
+#[cfg(target_os = "macos")]
+pub const DEFAULT_AUDIO_BUFFER_MS: u32 = 10;
+#[cfg(not(target_os = "macos"))]
+pub const DEFAULT_AUDIO_BUFFER_MS: u32 = 80;
+
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub volume: f32,
@@ -91,6 +103,8 @@ pub struct Settings {
     pub audio_source: Option<u8>,
     /// 出力デバイス名。None はシステム既定
     pub audio_device: Option<String>,
+    /// 音声の溜め[ms]。小さいほど低遅延だが途切れやすい
+    pub audio_buffer_ms: u32,
     /// 画枠パラメータ(ボードへCONFIGで送る値)
     pub tune_vbp: i32,
     pub tune_hs_offset: i32,
@@ -226,6 +240,7 @@ impl Default for Settings {
             muted: false,
             audio_source: Some(0),
             audio_device: None,
+            audio_buffer_ms: DEFAULT_AUDIO_BUFFER_MS,
             adj_hue_deg: 0.0,
             adj_saturation: 1.0,
             adj_brightness: 0.0,
@@ -502,6 +517,11 @@ impl Settings {
                 "audio_device" => {
                     s.audio_device = if v.is_empty() { None } else { Some(v.to_string()) };
                 }
+                "audio_buffer_ms" => {
+                    if let Ok(x) = v.parse::<u32>() {
+                        s.audio_buffer_ms = x.clamp(5, 500);
+                    }
+                }
                 _ => {}
             }
         }
@@ -521,6 +541,7 @@ impl Settings {
              muted = {}\n\
              audio_source = {}\n\
              audio_device = {}\n\
+             audio_buffer_ms = {}\n\
              tune_vbp = {}\n\
              tune_hs_offset = {}\n\
              tune_pll_divide = {}\n\
@@ -562,6 +583,7 @@ impl Settings {
             self.muted,
             self.audio_source.map(|v| v.to_string()).unwrap_or_else(|| "off".into()),
             self.audio_device.clone().unwrap_or_default(),
+            self.audio_buffer_ms,
             self.tune_vbp,
             self.tune_hs_offset,
             self.tune_pll_divide,

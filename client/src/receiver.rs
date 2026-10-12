@@ -79,8 +79,9 @@ pub struct AudioOpts {
 
 impl Default for AudioOpts {
     fn default() -> Self {
-        // D-SUB15音声を既定に。80ms貯めて最大240msで頭打ち(GbE LANなら十分小さい)
-        Self { source: Some(0), prebuffer_ms: 80, max_ms: 240, device: None }
+        // D-SUB15音声を既定に。溜めの既定は settings::DEFAULT_AUDIO_BUFFER_MS
+        let ms = crate::settings::DEFAULT_AUDIO_BUFFER_MS;
+        Self { source: Some(0), prebuffer_ms: ms, max_ms: audio_max_ms(ms), device: None }
     }
 }
 
@@ -590,6 +591,9 @@ pub struct Shared {
     pub audio_feed: Mutex<Option<crate::audio::AudioFeed>>,
     /// 端末へ記録済みの枯渇回数(増えた分だけ1行ずつ出すため)
     pub logged_underruns: AtomicU64,
+    /// 音声の溜め[ms](0=起動時の設定のまま)。UIが変えて、再生器を開き直すときに使う。
+    /// ★再生器の側に置かない(作り直すたびに消える。AuxCtl と同じ理由)
+    pub audio_buffer_ms: std::sync::atomic::AtomicU32,
     /// 副系統(S/PDIF を混ぜる)の設定。
     /// ★**再生器より長生きさせる。** 出力デバイスやソースを切り替えると
     ///   AudioPlayer は作り直されるので、設定を向こうに置くと消える。
@@ -1334,6 +1338,14 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     }
 }
 
+/// 溜めの上限[ms]。これを超えたら古い方を捨てる。
+///
+/// 溜めの3倍が基本だが、溜めを小さくしたときに3倍では詰まった後の
+/// まとめ届き(数十ms)を捨ててしまうので、最低でも +40ms は取る。
+pub fn audio_max_ms(prebuffer_ms: u32) -> u32 {
+    (prebuffer_ms * 3).max(prebuffer_ms + 40)
+}
+
 /// 副系統として混ぜる音声ソース(S/PDIF)。
 pub const AUX_SOURCE: u8 = 2;
 
@@ -1345,7 +1357,11 @@ fn open_audio(
     device: Option<&str>,
 ) -> Option<AudioPlayer> {
     let player = source.and_then(|src| {
-        let p = AudioPlayer::new(src, cfg.audio.prebuffer_ms, cfg.audio.max_ms, device,
+        let (pre, max) = match shared.audio_buffer_ms.load(Ordering::Relaxed) {
+            0 => (cfg.audio.prebuffer_ms, cfg.audio.max_ms),
+            ms => (ms, audio_max_ms(ms)),
+        };
+        let p = AudioPlayer::new(src, pre, max, device,
                                  shared.aux.clone());
         if p.is_none() {
             eprintln!("audio: 出力デバイスを開けないため音声再生を無効化します");
