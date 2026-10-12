@@ -37,6 +37,15 @@ midir = "0.11"
 objc2 = "0.6"
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSEvent", "block2"] }
+# フルスクリーンで「実際に画面に出た時刻」(MTLDrawable.presentedTime)を取るため
+# (src/metal_present.rs)。wgpu-hal が使っているのと同じ版に揃える
+objc2-metal = { version = "0.3", default-features = false, features = [
+    "std", "block2", "objc2-core-foundation", "MTLDrawable", "MTLCommandBuffer", "MTLCommandQueue",
+    "MTLTexture", "MTLResource", "MTLAllocation", "MTLTypes",
+] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = [
+    "std", "CALayer", "CAMetalLayer", "objc2-metal",
+] }
 
 [dependencies]
 cpal = "0.18.1"

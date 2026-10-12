@@ -560,6 +560,8 @@ pub struct Shared {
     pub frame: Mutex<Option<CompletedFrame>>,
     /// フレーム更新の世代カウンタ(UIはこれでテクスチャ再アップロードを判定)
     pub frame_gen: AtomicU64,
+    /// 描画遅延の集計(描画側が1秒ごとに書く)。パネル/端末の表示用
+    pub latency: Mutex<crate::latency::LatencySnapshot>,
     pub mode: Mutex<Option<proto::Mode>>,
     pub stats: Mutex<StatsSnapshot>,
     /// 見つかっているボード。**キーはMAC。**
@@ -769,7 +771,7 @@ fn push_audio(shared: &Shared, pkt: &[u8]) {
 fn rx_thread(
     sock: UdpSocket,
     stop: Arc<Shared>,
-    tx: std::sync::mpsc::SyncSender<(Vec<u8>, usize, std::net::IpAddr)>,
+    tx: std::sync::mpsc::SyncSender<(Vec<u8>, usize, std::net::IpAddr, Instant)>,
     free_rx: std::sync::mpsc::Receiver<Vec<u8>>,
 ) {
     // バッファは使い回す。1パケットは MTU 以下なので 2048 で足りる
@@ -782,6 +784,8 @@ fn rx_thread(
         let mut buf = spare.pop().unwrap_or_else(|| vec![0u8; 2048]);
         match sock.recv_from(&mut buf) {
             Ok((n, addr)) => {
+                // 受け取った時刻。描画遅延の基準(latency.rs)。キューで待つ前に取る
+                let rx_t = Instant::now();
                 // ★**音声はここで積む。** 組立スレッドへのキューは約0.34秒分あり、
                 //   組立が76ms止まるだけで(1パケットも失われていないのに)音声の
                 //   溜め(約80ms)が尽きる。パケット自体は組立側へも渡す
@@ -789,7 +793,7 @@ fn rx_thread(
                 if n >= 3 && buf[2] == proto::TYPE_AUDIO {
                     push_audio(&stop, &buf[..n]);
                 }
-                if let Err(e) = tx.try_send((buf, n, addr.ip())) {
+                if let Err(e) = tx.try_send((buf, n, addr.ip(), rx_t)) {
                     // キューが満杯 = 組立側が遅れている。捨てて受信を続ける。
                     // ここで待つと受信が止まり、OSのバッファを溢れさせてしまう。
                     stop.queue_drops.fetch_add(1, Ordering::Relaxed);
@@ -897,7 +901,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     //   吸収できない(「27000/秒に対し0.3秒」と書いてあった)。
     //   実機で、Macを操作している間だけ組立が横取りされてここが溢れた
     //   (queue drops 2007 / orphan lines 54049)。16384段 = 約0.34秒にする。
-    let (tx, rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize, std::net::IpAddr)>(16384);
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize, std::net::IpAddr, Instant)>(16384);
     let (free_tx, free_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     {
         let shared = shared.clone();
@@ -917,6 +921,8 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut audio = open_audio(&cfg, &shared, audio_src, audio_dev.as_deref());
     let mut last_dev_retry = Instant::now();
     let mut asm = FrameAssembler::new();
+    // ラインの到着時刻を追う(描画遅延の基準)
+    let mut line_clock = crate::latency::LineClock::default();
     asm.set_decay(cfg.decay);
     asm.set_interlace_decay(cfg.interlace_decay);
     let mut sub_seq: u16 = 0;
@@ -1200,7 +1206,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
 
         // 受信スレッドから受け取る。ここでパース以降を全部やるが、受信側は
         // 待たされないので取りこぼしにはつながらない。
-        let (buf, n, src_ip) = match rx.recv_timeout(Duration::from_millis(200)) {
+        let (buf, n, src_ip, rx_t) = match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(v) => {
                 got_any = true;
                 v
@@ -1304,7 +1310,10 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             asm.set_adjust(a);
         }
         asm.dot_a_milli = shared.dot_a_milli.load(Ordering::Relaxed);
-        if let Some(frame) = asm.feed(&buf[..n]) {
+        let is_line = n >= 3 && buf[2] == proto::TYPE_LINE;
+        let fed = asm.feed(&buf[..n]);
+        let edges = if is_line { line_clock.on_line(rx_t, fed.is_some()) } else { None };
+        if let Some(mut frame) = fed {
             frames_since += 1;
             noise.feed(&frame.rgba);
             abox.feed(&frame.rgba, frame.width, frame.height);
@@ -1317,6 +1326,9 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             // 生産側がUIを待った時間。**落ちる原因を切り分けるために測る。**
             // ここが長いと、その間フレームを差し替えられず受信側が詰まる。
             let t_wait = Instant::now();
+            frame.stamps = edges.map(|(first, last, trigger)| crate::latency::FrameStamps {
+                first, last, trigger, published: t_wait,
+            });
             let old = shared.frame.lock().unwrap().replace(frame);
             let us = t_wait.elapsed().as_micros() as u64;
             publish_wait_us = publish_wait_us.saturating_add(us);

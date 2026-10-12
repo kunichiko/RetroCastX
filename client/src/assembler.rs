@@ -10,6 +10,8 @@ pub struct CompletedFrame {
     pub height: usize,
     pub rgba: Vec<u8>,
     pub fill_ratio: f32,
+    /// 遅延計測用の時刻。受信側が Shared へ渡す直前に埋める
+    pub stamps: Option<crate::latency::FrameStamps>,
 }
 
 #[derive(Default)]
@@ -625,6 +627,7 @@ impl FrameAssembler {
             height: self.height,
             rgba: out,
             fill_ratio: self.px_filled as f32 / total as f32,
+            stamps: None,
         };
         self.stats.frames += 1;
         self.cur_frame = None;

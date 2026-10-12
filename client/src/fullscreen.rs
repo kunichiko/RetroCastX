@@ -301,6 +301,21 @@ fn render_thread(
     // 平滑の時定数は**時間**で効かせる。フレーム数で減衰させると、MODEが1秒に
     // 1〜2回しか更新されないのに毎フレーム呼ぶせいで収束しきり、平均されない
     let mut vtotal_last_t: Option<std::time::Instant> = None;
+    // 描画遅延の計測(latency.rs)。macOS では present を自前で行い、
+    // 実際に画面に出た時刻(presentedTime)まで測る
+    #[cfg(target_os = "macos")]
+    let mut presenter = crate::metal_present::MetalPresenter::new(&gpu.surface, &gpu.queue);
+    #[cfg(target_os = "macos")]
+    eprintln!("present: {}", if presenter.is_some() {
+        "自前(Metal, presentedTime で画面に出た時刻を測る)"
+    } else {
+        "wgpu(画面に出た時刻は測れない)"
+    });
+    let mut meter = crate::latency::LatencyMeter::default();
+    // present 済みで画面に出るのを待っているフレーム: (id, 時刻, 拾った, present した)
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut, unused_variables))]
+    let mut in_flight: std::collections::VecDeque<
+        (u64, crate::latency::FrameStamps, Instant, Instant)> = Default::default();
 
     loop {
         // 新フレーム到着まで待つ(タイムアウトでハートビート描画: 統計・黒画面維持)
@@ -318,9 +333,12 @@ fn render_thread(
             gpu.surface.configure(&gpu.device, &gpu.config);
         }
 
+        // 今回拾ったフレームの時刻(present したら計測に回す)
+        let mut picked: Option<(crate::latency::FrameStamps, Instant)> = None;
         if fresh {
             let guard = shared.frame.lock().unwrap();
             if let Some(frame) = guard.as_ref() {
+                picked = frame.stamps.map(|st| (st, Instant::now()));
                 let (w, h) = (frame.width as u32, frame.height as u32);
                 if texture.as_ref().map(|t| (t.2, t.3)) != Some((w, h)) {
                     let tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -423,31 +441,70 @@ fn render_thread(
                 );
                 intervals.clear();
             }
+            let snap = meter.take();
+            if snap.frames > 0 {
+                let frame_ms = shared.mode.lock().unwrap().as_ref()
+                    .filter(|m| m.vfreq_mhz_x1000 > 0)
+                    .map(|m| 1.0e6 / m.vfreq_mhz_x1000 as f32);
+                eprintln!("{}", snap.describe(frame_ms));
+            }
+            *shared.latency.lock().unwrap() = snap;
             last_log = Instant::now();
         }
 
         let Some((_, bind, tw, th)) = texture.as_ref() else { continue };
 
-        let frame = match gpu.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-            other => {
-                fail_count += 1;
-                if fail_count <= 5 || fail_count % 256 == 0 {
-                    eprintln!("get_current_texture #{fail_count}: {}",
-                              match other {
-                                  wgpu::CurrentSurfaceTexture::Timeout => "Timeout",
-                                  wgpu::CurrentSurfaceTexture::Occluded => "Occluded",
-                                  wgpu::CurrentSurfaceTexture::Outdated => "Outdated",
-                                  wgpu::CurrentSurfaceTexture::Lost => "Lost",
-                                  _ => "other",
-                              });
+        // 描画先。macOS は自前で drawable を取る(presentedTime を読むため)
+        #[cfg(target_os = "macos")]
+        let mut acquired = match presenter.as_ref() {
+            Some(p) => match p.acquire(&gpu.device, gpu.config.format) {
+                Some(a) => Some(a),
+                None => {
+                    fail_count += 1;
+                    if fail_count <= 5 || fail_count % 256 == 0 {
+                        eprintln!("nextDrawable #{fail_count}: 取れなかった");
+                    }
+                    continue;
                 }
-                gpu.surface.configure(&gpu.device, &gpu.config);
-                continue;
-            }
+            },
+            None => None,
         };
-        let view = frame.texture.create_view(&Default::default());
+        #[cfg(not(target_os = "macos"))]
+        let acquired: Option<()> = None;
+        let mut wgpu_frame = None;
+        if acquired.is_none() {
+            let f = match gpu.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(f)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+                other => {
+                    fail_count += 1;
+                    if fail_count <= 5 || fail_count % 256 == 0 {
+                        eprintln!("get_current_texture #{fail_count}: {}",
+                                  match other {
+                                      wgpu::CurrentSurfaceTexture::Timeout => "Timeout",
+                                      wgpu::CurrentSurfaceTexture::Occluded => "Occluded",
+                                      wgpu::CurrentSurfaceTexture::Outdated => "Outdated",
+                                      wgpu::CurrentSurfaceTexture::Lost => "Lost",
+                                      _ => "other",
+                                  });
+                    }
+                    gpu.surface.configure(&gpu.device, &gpu.config);
+                    continue;
+                }
+            };
+            wgpu_frame = Some(f);
+        }
+        #[cfg(target_os = "macos")]
+        let view = match (&acquired, &wgpu_frame) {
+            (Some(a), _) => a.texture.create_view(&Default::default()),
+            (None, Some(f)) => f.texture.create_view(&Default::default()),
+            (None, None) => continue,
+        };
+        #[cfg(not(target_os = "macos"))]
+        let view = match &wgpu_frame {
+            Some(f) => f.texture.create_view(&Default::default()),
+            None => continue,
+        };
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         {
             let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -474,7 +531,41 @@ fn render_thread(
             rp.draw(0..3, 0..1);
         }
         gpu.queue.submit([enc.finish()]);
-        frame.present();
+        #[cfg(target_os = "macos")]
+        if let (Some(a), Some(p)) = (acquired.take(), presenter.as_mut()) {
+            let id = p.present(a);
+            if let Some((st, t_pick)) = picked {
+                in_flight.push_back((id, st, t_pick, Instant::now()));
+            }
+        }
+        if let Some(f) = wgpu_frame {
+            f.present();
+            // 画面に出た時刻は測れないので present まで
+            if let Some((st, t_pick)) = picked {
+                meter.add(&st, t_pick, Some(Instant::now()), None);
+            }
+        }
+        // 画面に出たものを計測へ回す。出なかった(捨てられた)ものは数えない
+        #[cfg(target_os = "macos")]
+        if let Some(p) = presenter.as_ref() {
+            for (id, presented) in p.drain() {
+                while let Some(&(fid, st, t_pick, t_sub)) = in_flight.front() {
+                    if fid > id {
+                        break;
+                    }
+                    in_flight.pop_front();
+                    if fid == id {
+                        if let Some(t) = presented {
+                            meter.add(&st, t_pick, Some(t_sub), Some(t));
+                        }
+                    }
+                }
+            }
+            // 届かないまま溜まり続けないように(画面が隠れている等)
+            while in_flight.len() > 16 {
+                in_flight.pop_front();
+            }
+        }
 
         if fresh {
             let now = Instant::now();

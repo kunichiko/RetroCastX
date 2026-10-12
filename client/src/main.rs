@@ -34,6 +34,9 @@ mod claim;
 mod cleanout;
 mod fullscreen;
 mod keytap;
+mod latency;
+#[cfg(target_os = "macos")]
+mod metal_present;
 mod netcheck;
 mod ntsc;
 mod profiles;
@@ -1025,6 +1028,11 @@ struct Session {
     frame_size: (u32, u32),
     render_state: Option<eframe::egui_wgpu::RenderState>,
     seen_gen: u64,
+    /// 描画遅延の集計(ウィンドウ表示では UI が拾うまで。latency.rs)
+    latency_meter: latency::LatencyMeter,
+    latency_last: std::time::Instant,
+    /// 端末へ遅延を出した回数(5秒に1回に間引く)
+    latency_logs: u32,
     /// 画面回転 0/1/2/3 = 時計回りに 0/90/180/270 度
     rotate: u32,
     /// 表示する切り出し範囲[画素]。w か h が 0 なら全体を表示
@@ -1225,6 +1233,9 @@ impl Session {
             frame_size: (0, 0),
             render_state,
             seen_gen: 0,
+            latency_meter: Default::default(),
+            latency_last: std::time::Instant::now(),
+            latency_logs: 0,
             rotate: cfg.rotate,
             crop: [cfg.crop_x, cfg.crop_y, cfg.crop_w, cfg.crop_h],
             tube_aspect: cfg.tube_aspect,
@@ -1281,11 +1292,22 @@ impl Session {
     }
 
     fn refresh_texture(&mut self, ctx: &egui::Context) {
+        // 遅延の集計を1秒ごとに Shared へ。フレームが来ない間も回す
+        if self.latency_last.elapsed() >= std::time::Duration::from_secs(1) {
+            self.latency_last = std::time::Instant::now();
+            let snap = self.latency_meter.take();
+            self.latency_logs += 1;
+            if snap.frames > 0 && self.latency_logs % 5 == 0 {
+                eprintln!("{}", snap.describe(self.frame_ms()));
+            }
+            *self.shared.latency.lock().unwrap() = snap;
+        }
         let generation = self.shared.frame_gen.load(Ordering::Acquire);
         if generation == self.seen_gen {
             return;
         }
         self.seen_gen = generation;
+        let picked = std::time::Instant::now();
         self.pace.on_new_frame();
         // ★**ロックの順序が逆だった。** 以前はフレームのロックを持ったまま
         //   `rs.renderer.write()` を取りに行っていた。描画中はレンダラのロックが
@@ -1298,6 +1320,11 @@ impl Session {
             let guard = self.shared.frame.lock().unwrap();
             let Some(frame) = guard.as_ref() else { return };
             self.frame_size = (frame.width as u32, frame.height as u32);
+            // ★ウィンドウ表示は eframe が present するので、測れるのは拾うまで。
+            //   この先にコンポジタと液晶の遅延が乗る(パネルにそう書く)
+            if let Some(st) = frame.stamps.as_ref() {
+                self.latency_meter.add(st, picked, None, None);
+            }
             if let Some(m) = w.callback_resources.get_mut::<render::Blits>() {
                 m.entry(self.slot_id, &rs.device, rs.target_format).upload(
                     &rs.device, &rs.queue, &frame.rgba,
@@ -1314,6 +1341,13 @@ impl Session {
 }
 
 impl Session {
+    /// 1フレームの長さ[ms](遅延をフレーム換算するため)。モード未確定なら None
+    fn frame_ms(&self) -> Option<f32> {
+        self.shared.mode.lock().unwrap().as_ref()
+            .filter(|m| m.vfreq_mhz_x1000 > 0)
+            .map(|m| 1.0e6 / m.vfreq_mhz_x1000 as f32)
+    }
+
     /// いま使う枠。bezel_off なら枠なしとして扱う(選択は保つ)。
     fn active_bezel(&self) -> Option<&'static bezel::Bezel> {
         if self.bezel_off {
@@ -5129,6 +5163,18 @@ impl Session {
                     ui.label(if self.no_vsync { "present: no-vsync" } else { "present: vsync (FIFO)" });
                 }
                 let s = self.shared.stats.lock().unwrap().clone();
+                // 描画遅延。基準は各ラインの受信時刻(≒直結の液晶が受け取る時刻)
+                let lat = *self.shared.latency.lock().unwrap();
+                if lat.frames > 0 {
+                    ui.monospace(lat.describe(self.frame_ms())).on_hover_text(
+                        "信号が届いてからの遅れ。上/中/下は画面のその位置のライン。\n\
+                         液晶は届いたラインをすぐ出すが、こちらはフレームが揃ってから\n\
+                         出すので、上ほど遅れる。\n\
+                         走査: 最初〜最後のライン / 待ち: 次フレームの先頭が来て確定するまで /\n\
+                         組立: 復調など / UI: 描画側が拾うまで(ウィンドウは60Hzで回る)\n\
+                         ウィンドウ表示はここまで。この先に macOS のコンポジタ(通常1フレーム\n\
+                         前後)と液晶自身の遅延が乗る。--fullscreen なら画面に出た時刻まで測る");
+                }
                 if !self.pace.summary.is_empty() {
                     // ★**「53Hz」だけ出すと「12%描画できていない」と読める。**
                     //   実際には publish を取りこぼしても**絵の情報は失われない**
