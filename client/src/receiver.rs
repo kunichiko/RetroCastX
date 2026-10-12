@@ -593,6 +593,10 @@ pub struct Shared {
     pub audio_feed: Mutex<Option<crate::audio::AudioFeed>>,
     /// 端末へ記録済みの枯渇回数(増えた分だけ1行ずつ出すため)
     pub logged_underruns: AtomicU64,
+    /// 音量(ミュート込み)。**再生器を開いた瞬間に掛ける。** 再生器の既定は 1.0
+    /// なので、ここに置かないと開いた直後(と開き直すたび)に一瞬 100% で鳴る。
+    /// None なら再生器の既定のまま(headless など音量を持たない起動)
+    pub gain: Mutex<Option<f32>>,
     /// 音声の溜め[ms](0=起動時の設定のまま)。UIが変えて、再生器を開き直すときに使う。
     /// ★再生器の側に置かない(作り直すたびに消える。AuxCtl と同じ理由)
     pub audio_buffer_ms: std::sync::atomic::AtomicU32,
@@ -1386,6 +1390,11 @@ fn open_audio(
         }
         p
     });
+    if let Some(p) = player.as_ref() {
+        if let Some(g) = *shared.gain.lock().unwrap() {
+            AudioPlayer::set_gain(&p.stats, g);
+        }
+    }
     *shared.audio.lock().unwrap() = player.as_ref().map(|p| p.stats.clone());
     *shared.audio_feed.lock().unwrap() = player.as_ref().map(|p| p.feed.clone());
     *shared.audio_now.lock().unwrap() = AudioNow {

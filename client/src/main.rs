@@ -1154,6 +1154,8 @@ impl Session {
     ) -> Self {
         let audio_source = audio.source;
         let shared = Arc::new(receiver::Shared::default());
+        // 受信(=再生器を開く)より前に保存した音量を入れる(開いた直後に 100% で鳴らさない)
+        *shared.gain.lock().unwrap() = Some(if cfg.muted { 0.0 } else { cfg.volume });
         let ctx = egui_ctx.clone();
         let rx_error = receiver::spawn(
             receiver::Config { port, bind: bind.clone(), subscribe_to: subscribe_to.clone(), target_mac, decay, interlace_decay, audio },
@@ -1936,8 +1938,9 @@ impl Session {
         if self.audio_volume != vol0 || self.audio_muted != mute0 {
             self.mark_settings_dirty();
         }
+        let g = if self.audio_muted { 0.0 } else { self.audio_volume };
+        *self.shared.gain.lock().unwrap() = Some(g);
         if let Some(a) = &astats {
-            let g = if self.audio_muted { 0.0 } else { self.audio_volume };
             audio::AudioPlayer::set_gain(a, g);
         }
 
