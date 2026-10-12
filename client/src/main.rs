@@ -1891,9 +1891,13 @@ impl Session {
                      a.aux_underruns.load(Relaxed))
                 };
                 if rate > 0 {
+                    // ★**レートと計数は別の行に。** レートは1秒窓の計数なので ±1Hz
+                    //   揺れ、`48kHz` と `48kHz (-20ppm)` を行き来する。同じ行だと
+                    //   長さが変わるたびにパネル幅で折り返したりしなかったりして、
+                    //   1行と2行を行き来して読みにくかった
+                    theme::kv(ui, "", audio::describe_rate(rate as u32));
                     theme::kv(ui, "", format!(
-                        "{}  buffered {} ms  underruns {}  pkts {pkts}",
-                        audio::describe_rate(rate as u32),
+                        "buffered {} ms  underruns {}  pkts {pkts}",
                         buffered * 1000 / a.device_rate.load(Relaxed).max(1),
                         underruns));
                 } else if pkts > 0 {
