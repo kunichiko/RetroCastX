@@ -90,7 +90,17 @@ impl ApplicationHandler for App {
         }
         // Borderless(None)は不可視のディスプレイ(TV/キャプチャ等)に開くことが
         // あるためプライマリモニタを明示する
-        let monitor = event_loop.primary_monitor();
+        let mut monitor = event_loop.primary_monitor();
+        // 調査用: RCX_MONITOR=番号 で出すモニタを選ぶ(一覧は起動時に出す)。
+        // スケーリング表示のモニタと等倍のモニタで present の経路を比べるため
+        for (i, m) in event_loop.available_monitors().enumerate() {
+            eprintln!("fullscreen: monitor #{i} {:?} {:?} {:?}mHz scale {}",
+                      m.name().unwrap_or_default(), m.size(),
+                      m.refresh_rate_millihertz(), m.scale_factor());
+        }
+        if let Some(i) = std::env::var("RCX_MONITOR").ok().and_then(|v| v.parse::<usize>().ok()) {
+            monitor = event_loop.available_monitors().nth(i).or(monitor);
+        }
         if let Some(m) = &monitor {
             eprintln!("fullscreen: on monitor {:?}", m.name().unwrap_or_default());
         }
@@ -259,7 +269,12 @@ impl Gpu {
                 .unwrap();
 
         let caps = surface.get_capabilities(&adapter);
-        let mode = if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
+        // 調査用: RCX_PRESENT_MODE=fifo で vsync に固定する(計測の対照実験用。
+        // vsync なら画面に出る時刻はリフレッシュ格子に乗るはず)
+        let force_fifo = std::env::var("RCX_PRESENT_MODE").ok().as_deref() == Some("fifo");
+        let mode = if force_fifo {
+            wgpu::PresentMode::Fifo
+        } else if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
             wgpu::PresentMode::Immediate
         } else if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
             wgpu::PresentMode::Mailbox
@@ -272,10 +287,13 @@ impl Gpu {
             .get_default_config(&adapter, sz.width.max(1), sz.height.max(1))
             .unwrap();
         config.present_mode = mode;
-        config.desired_maximum_frame_latency = 3;
+        // 調査用: RCX_FRAME_LATENCY で drawable の段数(既定3)を変えられる
+        config.desired_maximum_frame_latency = std::env::var("RCX_FRAME_LATENCY").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(3);
         surface.configure(&device, &config);
-        eprintln!("fullscreen: present mode {mode:?}, {}x{}, surface {:?}",
-                  config.width, config.height, config.format);
+        eprintln!("fullscreen: present mode {mode:?}, {}x{}, surface {:?}, frame latency {}",
+                  config.width, config.height, config.format,
+                  config.desired_maximum_frame_latency);
 
         let blit = render::Pipeline::new(&device, config.format);
         let uniform = blit.make_uniform_buffer(&device);
@@ -312,6 +330,17 @@ fn render_thread(
         "wgpu(画面に出た時刻は測れない)"
     });
     let mut meter = crate::latency::LatencyMeter::default();
+    // 調査用: RCX_PRESENT_CSV=パス で、フレームごとの present 呼び出しと画面に出た
+    // 時刻を書き出す(ms, 起動からの経過)。present→画面 の分布や、出る時刻が
+    // モニタのリフレッシュ格子に乗っているか(=vsync待ち/コンポジタ経由)を見る
+    let t_origin = Instant::now();
+    let mut present_csv = std::env::var("RCX_PRESENT_CSV").ok()
+        .and_then(|p| std::fs::File::create(p).ok())
+        .map(std::io::BufWriter::new);
+    if let Some(w) = present_csv.as_mut() {
+        use std::io::Write;
+        let _ = writeln!(w, "submit_ms,presented_ms");
+    }
     // present 済みで画面に出るのを待っているフレーム: (id, 時刻, 拾った, present した)
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut, unused_variables))]
     let mut in_flight: std::collections::VecDeque<
@@ -557,6 +586,14 @@ fn render_thread(
                     if fid == id {
                         if let Some(t) = presented {
                             meter.add(&st, t_pick, Some(t_sub), Some(t));
+                        }
+                        if let Some(w) = present_csv.as_mut() {
+                            use std::io::Write;
+                            let ms = |x: Instant| x.saturating_duration_since(t_origin)
+                                .as_secs_f64() * 1000.0;
+                            let _ = writeln!(w, "{:.3},{}", ms(t_sub),
+                                presented.map(|t| format!("{:.3}", ms(t)))
+                                    .unwrap_or_else(|| "skipped".into()));
                         }
                     }
                 }
