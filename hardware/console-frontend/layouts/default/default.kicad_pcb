@@ -1039,7 +1039,7 @@
 				)
 			)
 		)
-		(attr through_hole exclude_from_pos_files)
+		(attr through_hole exclude_from_pos_files exclude_from_bom)
 		(fp_line
 			(start 0 -7)
 			(end 12.7 -7)
@@ -3975,7 +3975,7 @@
 				)
 			)
 		)
-		(attr through_hole exclude_from_pos_files)
+		(attr through_hole exclude_from_pos_files exclude_from_bom)
 		(fp_line
 			(start 0 -5)
 			(end 10 -5)
@@ -4203,7 +4203,7 @@
 				)
 			)
 		)
-		(attr through_hole exclude_from_pos_files)
+		(attr through_hole exclude_from_pos_files exclude_from_bom)
 		(fp_line
 			(start 0 -5)
 			(end 10 -5)
@@ -4431,7 +4431,7 @@
 				)
 			)
 		)
-		(attr through_hole exclude_from_pos_files)
+		(attr through_hole exclude_from_pos_files exclude_from_bom)
 		(fp_line
 			(start 0 -5)
 			(end 10 -5)
@@ -5150,7 +5150,7 @@
 				)
 			)
 		)
-		(attr through_hole exclude_from_pos_files)
+		(attr through_hole exclude_from_pos_files exclude_from_bom)
 		(fp_line
 			(start 0 -5)
 			(end 10 -5)
@@ -8037,7 +8037,7 @@
 				)
 			)
 		)
-		(attr through_hole exclude_from_pos_files)
+		(attr through_hole exclude_from_pos_files exclude_from_bom)
 		(fp_line
 			(start 0 -5)
 			(end 10 -5)
@@ -10151,7 +10151,7 @@
 				)
 			)
 		)
-		(attr smd exclude_from_bom)
+		(attr smd exclude_from_pos_files exclude_from_bom)
 		(fp_circle
 			(center 0 0)
 			(end 1.25 0)
@@ -10253,7 +10253,7 @@
 				)
 			)
 		)
-		(attr smd exclude_from_bom)
+		(attr smd exclude_from_pos_files exclude_from_bom)
 		(fp_circle
 			(center 0 0)
 			(end 1.25 0)
@@ -10458,7 +10458,7 @@
 				)
 			)
 		)
-		(attr through_hole exclude_from_pos_files)
+		(attr through_hole exclude_from_pos_files exclude_from_bom)
 		(pad "1" thru_hole circle
 			(at 0 0 180)
 			(size 1.6 1.6)
@@ -10641,7 +10641,7 @@
 				)
 			)
 		)
-		(attr through_hole exclude_from_pos_files)
+		(attr through_hole exclude_from_pos_files exclude_from_bom)
 		(pad "1" thru_hole circle
 			(at 0 0 180)
 			(size 1.6 1.6)
@@ -10721,7 +10721,7 @@
 				)
 			)
 		)
-		(attr smd exclude_from_bom)
+		(attr smd exclude_from_pos_files exclude_from_bom)
 		(fp_circle
 			(center 0 0)
 			(end 1.25 0)

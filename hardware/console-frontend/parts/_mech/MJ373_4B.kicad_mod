@@ -63,7 +63,7 @@
 			)
 		)
 	)
-	(attr through_hole exclude_from_pos_files)
+	(attr through_hole exclude_from_pos_files exclude_from_bom)
 	(fp_line
 		(start 0 -7.0)
 		(end 12.7 -7.0)
