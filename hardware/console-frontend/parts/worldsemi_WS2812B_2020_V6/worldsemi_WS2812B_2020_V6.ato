@@ -1,0 +1,19 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component worldsemi_WS2812B_2020_V6_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C52917434", date="2026-10-25T09:17:03.917810+00:00", checksum="f75afd854a2a2d214e8b00f9ab71052c5f82f3939f37c46d5607df3d21a2e89e">
+
+    trait is_atomic_part<manufacturer="worldsemi", partnumber="WS2812B-2020-V6", footprint="LED-SMD_4P-L2.2-W2.0-P1.00_WS2815C-2020-4P.kicad_mod", symbol="WS2812B-2020-V6.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C52917434", manufacturer="worldsemi", partno="WS2812B-2020-V6">
+    trait has_designator_prefix<prefix="LED">
+
+    # pins
+    signal DI ~ pin 3
+    signal DO ~ pin 1
+    signal GND ~ pin 2
+    signal VDD ~ pin 4

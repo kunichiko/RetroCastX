@@ -14,8 +14,7 @@ from "parts/_mech/mech.ato" import MountingHoleM3
 from "parts/_mech/mech.ato" import Fiducial
 from "parts/_mech/mech.ato" import Tp1Pad
 from "parts/TI_TS5A23159DGSR/TI_TS5A23159DGSR.ato" import TI_TS5A23159DGSR_package
-from "parts/XINGLIGHT_XL_2020RGBC_2812B/XINGLIGHT_XL_2020RGBC_2812B.ato" import XINGLIGHT_XL_2020RGBC_2812B_package
-from "parts/ST_1N4148W/ST_1N4148W.ato" import ST_1N4148W_package
+from "parts/worldsemi_WS2812B_2020_V6/worldsemi_WS2812B_2020_V6.ato" import worldsemi_WS2812B_2020_V6_package
 from "passives.ato" import R75_0603
 from "passives.ato" import R10K_0603
 from "passives.ato" import C100nF_0603
@@ -263,7 +262,7 @@ module App:
     #     D2 = esd_cvbs_aud : CVBS / 音声L / 音声R  ← 右の3個(1chあまる)
     #     D3 = esd_sv_comp  : S端子Y / S端子C / Pr / Pb ← 左の3個(S端子は2本)
     #
-    # ★デジグネータは atopile がインスタンス名の辞書順で振る(D1=d_led,
+    # ★デジグネータは atopile がインスタンス名の辞書順で振る(D1=旧 d_led で欠番,
     #   D2=esd_cvbs_aud, D3=esd_sv_comp)。**名前を変えると番号が動く**ので、
     #   名前を付け替えるときは意図した番号になるか `ato build` 後に確認すること。
     esd_cvbs_aud = new EsdArray4
@@ -378,44 +377,59 @@ module App:
     j_aud_l.sig ~ ffc.audio_l
     j_aud_r.sig ~ ffc.audio_r
 
-    # --- ステータス表示用シリアルLED ×2 ---
+    # --- ステータス表示用シリアルLED ×4 ---
     #
-    # メイン基板のD1と同じ XL-2020RGBC-WS2812B(MSL3なのでJLCの焼成が不要)。
-    # 用途: LED1 = 映像入力の選択状態(S端子/コンポジット/コンポーネント)、
-    #       LED2 = 音声レベルやリンク状態。**置き場所はジャックの近く**。
+    # メイン基板の LED1 と同じ Worldsemi WS2812B-2020-V6(C52917434)。
+    # 用途の例: LED1 = 映像入力の選択状態(S端子/コンポジット/コンポーネント)、
+    #           LED2〜4 = 音声レベルやリンク状態など(割り当てはゲートウェア次第)。
+    #   **置き場所はジャックの近く**。
+    # ★**2個から4個に増やした**(v1.0 発注前、2026-10-25)。データは
+    #   LED1→LED2→LED3→LED4 の直列。
     #
-    # ★**5V + ダイオード降圧**。WS2812系の DIN の入力高レベルは VIH=0.7×VDD で、
-    #   5V直結だと3.5V必要になりFPGAの3.3Vでは規定を満たさない。一方 VDD の定格は
-    #   3.7〜5.3V なので3.3V直結も定格外。ダイオード1個で 4.2〜4.45V に落とすと
-    #   VIH が 2.94〜3.11V になり、全電流域で3.3Vを下回る(メイン基板と同じ設計)。
+    # ★**3.3V 直結**(v1.0 発注前に変更、2026-10-25。メイン基板と同じ)。V6 は VDD の
+    #   定格が 3.3〜5.3V、DIN の VIH が 0.55×VDD なので、FPGA の 3.3V 出力で
+    #   余裕をもって駆動できる。旧構成(XL-2020RGBC + 5V から 1N4148W で 4.3V に降圧)の
+    #   ダイオードは外した。
+    #   電源は FFC の p3v3。映像前段・スイッチ・中点バイアスと同じレールなので、
+    #   LEDの電流パルス(1個あたり全白で約36mA、4個で約150mA、PWM 2kHz)を 10µF + 各100nF で
+    #   LED の足元で吸わせる。中点バイアスは 5kΩ×10µF(約3Hz)で切ってあるので
+    #   2kHz のリップルはほぼ通らない。
+    # ★**MSL 5a**。JLCPCB が焼成(追加料金)を要求する。承知のうえで採用した。
     #
-    # ★**2個とも実装すること。** WS2812系は数珠つなぎなので、途中が未実装だと
-    #   その先が光らない(1個だけにしたいなら DO をテストパッドに落とす配線を
-    #   切って LED1 だけにする)。
+    # ★**4個とも実装すること。** WS2812系は数珠つなぎなので、途中が未実装だと
+    #   その先が光らない。
     # ★データの直列220Ωは**送り側(メイン基板の r_led_kokame)**にある。
     #   ここに入れると効果が無い。
-    d_led = new ST_1N4148W_package
-    signal p_led_4v3
-    p5v.hv ~ d_led.A
-    d_led.K ~ p_led_4v3
     c_led_bulk = new C10uF_0805
-    p_led_4v3 ~> c_led_bulk ~> gnd
+    p3v3.hv ~> c_led_bulk ~> gnd
 
-    led1 = new XINGLIGHT_XL_2020RGBC_2812B_package
-    led2 = new XINGLIGHT_XL_2020RGBC_2812B_package
-    led1.VDD ~ p_led_4v3
-    led2.VDD ~ p_led_4v3
+    led1 = new worldsemi_WS2812B_2020_V6_package
+    led2 = new worldsemi_WS2812B_2020_V6_package
+    led3 = new worldsemi_WS2812B_2020_V6_package
+    led4 = new worldsemi_WS2812B_2020_V6_package
+    led1.VDD ~ p3v3.hv
+    led2.VDD ~ p3v3.hv
+    led3.VDD ~ p3v3.hv
+    led4.VDD ~ p3v3.hv
     led1.GND ~ gnd
     led2.GND ~ gnd
+    led3.GND ~ gnd
+    led4.GND ~ gnd
     c_led1 = new C100nF_0603
     c_led2 = new C100nF_0603
+    c_led3 = new C100nF_0603
+    c_led4 = new C100nF_0603
     led1.VDD ~> c_led1 ~> gnd
     led2.VDD ~> c_led2 ~> gnd
+    led3.VDD ~> c_led3 ~> gnd
+    led4.VDD ~> c_led4 ~> gnd
     ffc.led_data ~ led1.DI
     led1.DO ~ led2.DI
-    # 3個目以降を足すときの引き出し口(未実装のテストパッド)
+    led2.DO ~ led3.DI
+    led3.DO ~ led4.DI
+    # 5個目以降を足すときの引き出し口(未実装のテストパッド)
     tp_led_do = new Tp1Pad
-    led2.DO ~ tp_led_do.pad
+    led4.DO ~ tp_led_do.pad
 
     # --- 予備線(GPIO2)をテストパッドへ ---
     # メイン基板のFPGA空きGPIOに繋がっている。将来この基板で何か制御したくなった
@@ -448,7 +462,6 @@ module App:
     ffc.p3v3.override_net_name = "p3v3"
     ffc.p5v.override_net_name = "p5v"
     vbias.override_net_name = "vbias_1v65"
-    p_led_4v3.override_net_name = "p_led_4v3"
     # ジャック側(終端まで) / 結合後(スイッチ入力) / スイッチ出口 の3段で名前を分ける
     sv.y.override_net_name = "sv_y_in"
     sv.c.override_net_name = "sv_c_in"
@@ -468,4 +481,6 @@ module App:
     ffc.led_data.override_net_name = "led_din"
     esd_cvbs_aud.io4.override_net_name = "esd_spare_nc"   # 4ch品の余り1本(未使用)
     led1.DO.override_net_name = "led1_dout"
-    tp_led_do.pad.override_net_name = "led2_dout"
+    led2.DO.override_net_name = "led2_dout"
+    led3.DO.override_net_name = "led3_dout"
+    tp_led_do.pad.override_net_name = "led4_dout"
