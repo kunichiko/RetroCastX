@@ -15,7 +15,7 @@ from "parts/WCH_CH347F/WCH_CH347F.ato" import WCH_CH347F_package
 from "parts/ST_USBLC6_2SC6/ST_USBLC6_2SC6.ato" import ST_USBLC6_2SC6_package
 from "parts/YXC_X32258MSB4SI/YXC_X32258MSB4SI.ato" import YXC_X32258MSB4SI_package
 from "parts/worldsemi_WS2812B_2020_V6/worldsemi_WS2812B_2020_V6.ato" import worldsemi_WS2812B_2020_V6_package
-from "passives.ato" import C22pF_0402, R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, R10K_0402, R12K_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805, C33pF_0402, C33pF_0402_DNP
+from "passives.ato" import C22pF_0402, R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, R10K_0402, R12K_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805, C33pF_0402, C33pF_0603_DNP
 
 # =============================================================================
 # RetroCastX ADC front-end: TVP7002 breakout for Colorlight i5 EXT board
@@ -50,10 +50,12 @@ from "passives.ato" import C22pF_0402, R75_0402, R62_0402, R120_0402, R220_0402,
 component Tvp7002:
     """TI TVP7002 triple 8/10-bit 165/110MSPS video digitizer w/ H-PLL.
 
-    HTQFP-100 (PZP). LCSC: C3824085 / DigiKey: TVP7002PZPR
+    HTQFP-100 (PZP). LCSC: C527698 (TVP7002PZPR = PZP のテープ&リール品)。
+    ★v1.0 発注前に PZP(C3824085)から PZPR に変更(2026-10-25)。中身とパッケージは
+    同じなのでフットプリント(parts/TI_TVP7002PZP)はそのまま。
     """
-    trait is_atomic_part<manufacturer="TI", partnumber="TVP7002PZP", footprint="parts/TI_TVP7002PZP/HTQFP-100_L14.0-W14.0-P0.50-LS16.0-BL-EP6.2.kicad_mod", symbol="parts/TI_TVP7002PZP/TVP7002PZP.kicad_sym">
-    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C3824085", manufacturer="TI", partno="TVP7002PZP">
+    trait is_atomic_part<manufacturer="TI", partnumber="TVP7002PZPR", footprint="parts/TI_TVP7002PZP/HTQFP-100_L14.0-W14.0-P0.50-LS16.0-BL-EP6.2.kicad_mod", symbol="parts/TI_TVP7002PZP/TVP7002PZP.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C527698", manufacturer="TI", partno="TVP7002PZPR">
     trait has_designator_prefix<prefix="U">
 
     # Analog inputs
@@ -402,19 +404,28 @@ component Eeprom24aa025e48:
 
     I2Cアドレス 0b1010_A2A1A0。MAC領域はハードウェア書込み保護済み、
     残り領域(~250B)は個体設定(IP・ボード名等)の保存に使える。
-    SOIC-8。LCSC: C46840。ピン番号は取り込みシンボルと照合済み(2026-08-08)。
+    **SOT-23-6(24AA025E48T-I/OT)。LCSC: C129895。**
+
+    ★v1.0 発注前に SOIC-8(24AA025E48-I/SN, C46840)から替えた(2026-10-25)。
+    SOIC 版は JLC 在庫が 6個(-E/SN の C1353232 でも 32個)しかなく、1枚に2個
+    使うので足りない。SOT-23-6 版は在庫が数千ある。
+    データシート(DS20002124)で確認した 6-lead SOT-23 の違い:
+
+        ピン  1=SCL 2=VSS 3=SDA 4=A1 5=A0 6=VCC(取り込みシンボルと一致)
+        A2    ピンが無く、内部で '0' 扱い → 0x50 / 0x51 の割当はそのまま使える
+              (SOT-23 は同一バスに最大4個)
+        WP    ピンが無い = 常に書込み可。SOIC 版でも WP は GND 固定(書込み許可)
+              だったので動作は同じ。MAC 領域(0xFA-0xFF)はどちらも工場で保護済み
     """
-    trait is_atomic_part<manufacturer="MICROCHIP", partnumber="24AA025E48-I/SN", footprint="parts/MICROCHIP_24AA025E48_I_SN/SOIC-8_L4.9-W3.9-P1.27-LS6.0-BL.kicad_mod", symbol="parts/MICROCHIP_24AA025E48_I_SN/24AA025E48-I_SN.kicad_sym">
-    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C46840", manufacturer="MICROCHIP", partno="24AA025E48-I/SN">
+    trait is_atomic_part<manufacturer="MICROCHIP", partnumber="24AA025E48T-I/OT", footprint="parts/MICROCHIP_24AA025E48T_I_OT/SOT-23-6_L2.9-W1.6-P0.95-LS2.8-BR.kicad_mod", symbol="parts/MICROCHIP_24AA025E48T_I_OT/24AA025E48T-I_OT.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C129895", manufacturer="MICROCHIP", partno="24AA025E48T-I/OT">
     trait has_designator_prefix<prefix="U">
-    signal a0 ~ pin 1
-    signal a1 ~ pin 2
-    signal a2 ~ pin 3
-    signal vss ~ pin 4
-    signal sda ~ pin 5
-    signal scl ~ pin 6
-    signal wp ~ pin 7
-    signal vcc ~ pin 8
+    signal scl ~ pin 1
+    signal vss ~ pin 2
+    signal sda ~ pin 3
+    signal a1 ~ pin 4
+    signal a0 ~ pin 5
+    signal vcc ~ pin 6
 
 
 component BoxHeaderDigitalRgb2x5:
@@ -1340,7 +1351,7 @@ module App:
     # (データシート10pF)との時定数は fc≈72MHz で、検証済みの10〜33MHz帯には
     # 実質効かない。後で33pFを載せればRGBと同じ fc≈16.8MHz になる。
     r_sog3 = new R220_0402
-    c_sog3_aa = new C33pF_0402_DNP
+    c_sog3_aa = new C33pF_0603_DNP
     signal sog3_coupled
     vga.g ~> c_sog3 ~> sog3_coupled
     sog3_coupled ~> r_sog3 ~> tvp.sogin_3
@@ -1430,7 +1441,7 @@ module App:
     # 「The inputs must be ac coupled. The recommended coupling capacitor is 0.1 uF」)
     c_sog2 = new C100nF_0402
     r_sog2 = new R220_0402
-    c_sog2_aa = new C33pF_0402_DNP
+    c_sog2_aa = new C33pF_0603_DNP
     signal sog2_coupled
     csync_div ~> c_sog2 ~> sog2_coupled
     sog2_coupled ~> r_sog2 ~> tvp.sogin_2
@@ -1635,7 +1646,7 @@ module App:
     #   誤トリガするのを防ぐ意味でも既定値のまま使える。
     c_sog1 = new C100nF_0402
     r_sog1 = new R220_0402
-    c_sog1_aa = new C33pF_0402_DNP
+    c_sog1_aa = new C33pF_0603_DNP
     signal sog1_coupled
     ffc.y ~> c_sog1 ~> sog1_coupled
     sog1_coupled ~> r_sog1 ~> tvp.sogin_1
@@ -2067,11 +2078,9 @@ module App:
     eeprom_mac0.vss ~ gnd
     eeprom_mac1.vss ~ gnd
     eeprom_mac0.a1 ~ gnd
-    eeprom_mac0.a2 ~ gnd
     eeprom_mac1.a1 ~ gnd
-    eeprom_mac1.a2 ~ gnd
-    eeprom_mac0.wp ~ gnd            # 設定領域への書込みを許可(MAC領域は保護済み)
-    eeprom_mac1.wp ~ gnd
+    # A2 / WP は SOT-23-6 版にピンが無い(A2 = 0 扱い、WP = 常に書込み可。
+    # 設定領域へ書けるのは SOIC 版で WP を GND に落としていたのと同じ)
     eeprom_mac0.sda ~ tvp.sda
     eeprom_mac0.scl ~ tvp.scl
     eeprom_mac1.sda ~ tvp.sda

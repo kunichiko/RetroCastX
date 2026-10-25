@@ -1,0 +1,21 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component MICROCHIP_24AA025E48T_I_OT_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C129895", date="2026-10-25T13:20:26.524999+00:00", checksum="9cfb53f4cd7ddc35750c51606afe00a920a1988fb5c1999d42c94221e2917e78">
+
+    trait is_atomic_part<manufacturer="MICROCHIP", partnumber="24AA025E48T-I/OT", footprint="SOT-23-6_L2.9-W1.6-P0.95-LS2.8-BR.kicad_mod", symbol="24AA025E48T-I_OT.kicad_sym", model="SOT-23-6_L2.9-W1.6-H1.5-LS2.8-P0.95.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C129895", manufacturer="MICROCHIP", partno="24AA025E48T-I/OT">
+    trait has_designator_prefix<prefix="U">
+
+    # pins
+    signal A0 ~ pin 5
+    signal A1 ~ pin 4
+    signal SCL ~ pin 1
+    signal SDA ~ pin 3
+    signal VCC ~ pin 6
+    signal VSS ~ pin 2
