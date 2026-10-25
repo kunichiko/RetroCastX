@@ -299,7 +299,7 @@
 	)
 	(model "${KIPRJMOD}/../../parts/XFCN_BH254V_10P/IDC-TH_10P-P2.54-V-R2-C5-S2.54.STEP"
 		(offset
-			(xyz 0 0.1 0)
+			(xyz 0 0.1 4.5)
 		)
 		(scale
 			(xyz 1 1 1)

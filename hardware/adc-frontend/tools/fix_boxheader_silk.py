@@ -16,6 +16,14 @@ pcbnew では F.SilkS が目立つので「ボックスヘッダにしては小�
 (v0.9.0 の J4 で使っていた自作 `parts/_mech/BoxHeader_2x5_P2.54mm.kicad_mod` は
  16.16 x 9.74mm で、長さが 4.2mm 足りずパッドに対して非対称だった。こちらも同罪。)
 
+## 3Dモデルの Z オフセット (2026-09-26 追加)
+
+取り込んだ STEP は**原点が基板面に無い**ので、そのままだと本体が基板へめり込む。
+`(model ... (offset (xyz 0 0.1 4.5)))` の **Z=4.5mm** で座面に乗る
+(実機の3Dビューで合わせた値)。X/Y の 0 / 0.1 は取り込み時のまま。
+
+★**ここも再取り込みで 0 に戻る。** シルクと同じ理由でこのスクリプトが面倒を見る。
+
 ## 直したもの
 
     外形     x ±10.175 / y ±4.45(= 20.35 x 8.9mm)の連続した矩形
@@ -40,6 +48,7 @@ FP = pathlib.Path(__file__).resolve().parent.parent / \
 HX, HY = 20.35 / 2, 8.9 / 2      # 本体の半寸
 KEY = 4.5 / 2                    # キー溝の半幅(長辺 +y 側の中央)
 CY = 0.25                        # コートヤードの余白
+MODEL_OFFSET = (0, 0.1, 4.5)     # 3Dモデルの (x, y, z)。z=4.5 で座面に乗る
 
 def line(x1, y1, x2, y2, layer, width, uid):
     return (f'\t(fp_line\n\t\t(start {x1} {y1})\n\t\t(end {x2} {y2})\n'
@@ -86,6 +95,16 @@ def main():
 
     i = s.index('\t(pad "')
     s = s[:i] + g + s[i:]
+
+    # 3Dモデルのオフセット(取り込み直すと z=0 に戻る)
+    mx, my, mz = MODEL_OFFSET
+    s, n = re.subn(r'(\(model [\s\S]*?\(offset\s*\n\s*\(xyz )[-\d.]+ [-\d.]+ [-\d.]+(\))',
+                   rf'\g<1>{mx} {my} {mz}\g<2>', s, count=1)
+    if n:
+        print(f"{FP.name}: 3Dモデルの offset を (xyz {mx} {my} {mz}) にした")
+    else:
+        print(f"★{FP.name}: model ブロックが見つからない。3Dオフセットは手で入れること")
+
     FP.write_text(s)
     print(f"{FP.name}: F.SilkS を {before_silk} 本 → 本体実寸 20.35 x 8.9mm に描き直した")
     print("  ★PCBへ反映するには、j_drgb のフットプリントブロックを消して ato build を2回")

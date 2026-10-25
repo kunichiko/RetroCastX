@@ -3,9 +3,9 @@
 	(generator "pcbnew")
 	(generator_version "9.0")
 	(layer "F.Cu")
-	(descr "Everlight PLR135/T10 TOSLINK optical receiver (Akizuki 109597). Through-hole, hand-soldered / not JLC-assembled. Dims per datasheet DPL-0000031_Rev.4: 3 signal pins (Vcc/GND/Vout) 2.54mm pitch phi0.8, 2 mounting posts phi1.1 at 5.08mm, offset 2.63mm.")
+	(descr "Everlight PLR135/T10 TOSLINK optical receiver. Through-hole, hand-soldered / not JLC-assembled. Origin = pin 1. Body 9.70 x 13.50mm. 3 signal pins (1=Vcc 2=GND 3=Vout) on 2.54mm pitch, drill 0.9 (datasheet phi0.80). 2 mounting posts phi1.15 at 5.08mm spacing, 2.62mm from the signal row. ***The mounting posts sit BETWEEN the signal row and the optical opening.*** Looking from the pin row towards +Y: signal row at Y=0, mounting row at Y=+2.62, body front face (opening) at Y=+11.11; only 2.39mm of body sits behind the signal row. Cross-checked against the Kepler X board (X68k-KeplerX-PCB, U15 x68000-ext:XDCR_PLT133_T10W), which uses the same land pattern. The barrel is meant to overhang the board edge.")
 	(property "Reference" "REF**"
-		(at 2.54 -5 0)
+		(at 2.54 -3.6 0)
 		(layer "F.SilkS")
 		(uuid "caa5d05d-7e5d-40a2-b7cd-1cdc88241f32")
 		(effects
@@ -16,7 +16,7 @@
 		)
 	)
 	(property "Value" "PLR135_T10"
-		(at 2.54 12 0)
+		(at 2.54 12.6 0)
 		(layer "F.Fab")
 		(uuid "15fb8f74-b605-4115-85e3-ce90753fb94e")
 		(effects
@@ -51,7 +51,7 @@
 		)
 	)
 	(property "hand_solder" "true"
-		(at 2.54 -5 0)
+		(at 2.54 -3.6 0)
 		(layer "F.Fab")
 		(hide yes)
 		(uuid "ad594f87-2090-44c7-a25a-f5e016e99491")
@@ -64,18 +64,8 @@
 	)
 	(attr through_hole exclude_from_pos_files)
 	(fp_line
-		(start -1.75 -3.85)
-		(end -1.75 9.65)
-		(stroke
-			(width 0.12)
-			(type solid)
-		)
-		(layer "F.SilkS")
-		(uuid "d1420259-c517-41db-a1d8-9bf025ea5aed")
-	)
-	(fp_line
-		(start -1.75 -3.85)
-		(end 6.85 -3.85)
+		(start -2.31 -2.39)
+		(end 7.39 -2.39)
 		(stroke
 			(width 0.12)
 			(type solid)
@@ -84,18 +74,18 @@
 		(uuid "8af4d794-793b-4582-b6d2-795ed6bf4a1c")
 	)
 	(fp_line
-		(start -1.75 9.65)
-		(end 6.85 9.65)
+		(start -2.31 -2.39)
+		(end -2.31 11.11)
 		(stroke
 			(width 0.12)
 			(type solid)
 		)
 		(layer "F.SilkS")
-		(uuid "42da6fb8-cb3e-46af-9964-e09b51847674")
+		(uuid "d1420259-c517-41db-a1d8-9bf025ea5aed")
 	)
 	(fp_line
-		(start 6.85 -3.85)
-		(end 6.85 9.65)
+		(start 7.39 -2.39)
+		(end 7.39 11.11)
 		(stroke
 			(width 0.12)
 			(type solid)
@@ -104,18 +94,69 @@
 		(uuid "dbf69abd-2bd0-4839-b5dc-004fc5c0a129")
 	)
 	(fp_line
-		(start -2.2 -4.3)
-		(end -2.2 10.1)
+		(start -2.31 11.11)
+		(end 7.39 11.11)
 		(stroke
-			(width 0.05)
+			(width 0.12)
 			(type solid)
 		)
-		(layer "F.CrtYd")
-		(uuid "d16c7218-02c2-45ff-b6b3-2c76c9099de1")
+		(layer "F.SilkS")
+		(uuid "42da6fb8-cb3e-46af-9964-e09b51847674")
+	)
+	(fp_circle
+		(center -2.86 0)
+		(end -2.66 0)
+		(stroke
+			(width 0.2)
+			(type solid)
+		)
+		(fill none)
+		(layer "F.SilkS")
+		(uuid "3a6f1e02-6d1b-4b7a-9a2b-4f4e7a5c9101")
 	)
 	(fp_line
-		(start -2.2 -4.3)
-		(end 7.3 -4.3)
+		(start -2.31 -2.39)
+		(end 7.39 -2.39)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "2f1a7d45-91cc-4f0e-9f41-6a1de2f0c001")
+	)
+	(fp_line
+		(start -2.31 -2.39)
+		(end -2.31 11.11)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "2f1a7d45-91cc-4f0e-9f41-6a1de2f0c002")
+	)
+	(fp_line
+		(start 7.39 -2.39)
+		(end 7.39 11.11)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "2f1a7d45-91cc-4f0e-9f41-6a1de2f0c003")
+	)
+	(fp_line
+		(start -2.31 11.11)
+		(end 7.39 11.11)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "2f1a7d45-91cc-4f0e-9f41-6a1de2f0c004")
+	)
+	(fp_line
+		(start -2.56 -2.64)
+		(end 7.64 -2.64)
 		(stroke
 			(width 0.05)
 			(type solid)
@@ -124,18 +165,18 @@
 		(uuid "7efd813c-6832-415c-86f1-6df589582f39")
 	)
 	(fp_line
-		(start -2.2 10.1)
-		(end 7.3 10.1)
+		(start -2.56 -2.64)
+		(end -2.56 11.36)
 		(stroke
 			(width 0.05)
 			(type solid)
 		)
 		(layer "F.CrtYd")
-		(uuid "6f27512a-6e11-46ac-9b22-a68fb745fed2")
+		(uuid "d16c7218-02c2-45ff-b6b3-2c76c9099de1")
 	)
 	(fp_line
-		(start 7.3 -4.3)
-		(end 7.3 10.1)
+		(start 7.64 -2.64)
+		(end 7.64 11.36)
 		(stroke
 			(width 0.05)
 			(type solid)
@@ -143,10 +184,31 @@
 		(layer "F.CrtYd")
 		(uuid "c1be3a45-59ba-4236-9411-f16959b5648f")
 	)
+	(fp_line
+		(start -2.56 11.36)
+		(end 7.64 11.36)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "6f27512a-6e11-46ac-9b22-a68fb745fed2")
+	)
 	(fp_text user "hand-solder"
-		(at 2.54 6.5 0)
-		(layer "F.SilkS")
+		(at 2.54 5.2 0)
+		(layer "F.Fab")
 		(uuid "4cddb0c7-c8eb-4f13-a0f2-ca5b264fbd0a")
+		(effects
+			(font
+				(size 0.8 0.8)
+				(thickness 0.15)
+			)
+		)
+	)
+	(fp_text user "opening ->"
+		(at 2.54 8.6 0)
+		(layer "F.Fab")
+		(uuid "4cddb0c7-c8eb-4f13-a0f2-ca5b264fbd0b")
 		(effects
 			(font
 				(size 0.8 0.8)
@@ -179,7 +241,7 @@
 		(uuid "971e74c4-99a0-49c3-82ff-46a7adbe6779")
 	)
 	(pad "4" thru_hole circle
-		(at 0 -2.63)
+		(at 0 2.62)
 		(size 1.7 1.7)
 		(drill 1.15)
 		(layers "*.Cu" "*.Mask")
@@ -187,7 +249,7 @@
 		(uuid "c08d7fd2-3a13-4ec5-a12b-82de38722dbb")
 	)
 	(pad "5" thru_hole circle
-		(at 5.08 -2.63)
+		(at 5.08 2.62)
 		(size 1.7 1.7)
 		(drill 1.15)
 		(layers "*.Cu" "*.Mask")

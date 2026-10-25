@@ -1624,18 +1624,24 @@ class RetroCastXStream(SoCMini):
 
         # Ethernet PHY (RGMII) + hardware UDP/IP core
         #
-        # ★**litex の index とコネクタ表記 ETH1/ETH2 は入れ替わっている**。
+        # ★**litex の index と i5モジュールの印刷 ETH1/ETH2 は入れ替わっている**。
         #   litex_boards の colorlight_i5.py に明記されている:
         #     "The order of the two PHYs is swapped with the naming of the
         #      connectors on the board so to match with the configuration of
         #      their PHYA[0] pins."
-        #   したがって:
-        #     eth 0 (G1/G2)   = コネクタ ETH2 = SO-DIMM eth2_* = v0.9.0 の J11
-        #     eth 1 (U19/U20) = コネクタ ETH1 = SO-DIMM eth1_* = v0.9.0 の J12
+        #   つまり index は **PHYA[0] ストラップで決まる PHY アドレス**に
+        #   合わせてあり、シルクの数字ではない。したがって:
+        #     eth 0 (G1/G2)   = i5のETH2 = SO-DIMM eth2_* = 基板の LAN0 = J11
+        #     eth 1 (U19/U20) = i5のETH1 = SO-DIMM eth1_* = 基板の LAN1 = J12
         #
-        #   以前ここには「eth 1 = ETH2側PHY」と書いてあったが**逆だった**
-        #   (2026-09-02 修正)。手組み試作機が動いていたのは index=1 = ETH1側で、
-        #   v0.9.0 でそこに繋がるのは J12。J11 で使うには index=0 にする。
+        #   ★**RetroCastX の基板は LAN0 / LAN1 と刷ってある**(v1.0)。番号は
+        #     litex の index と同じなので、シルクの数字をそのまま --eth-phy に
+        #     渡せる。ETH1/ETH2 という呼び方はこちらの資料では使わない。
+        #     i5モジュールの印刷を指すときだけ「i5のETH1」と明示する。
+        #
+        #   以前ここには「eth 1 = i5のETH2側PHY」と書いてあったが**逆だった**
+        #   (2026-09-02 修正)。手組み試作機が動いていたのは index=1 = i5のETH1側で、
+        #   v0.9.0 でそこに繋がるのは J12 = LAN1。LAN0 で使うには index=0 にする。
         #
         #   既定は 1 (=J12) のまま。2026-09-02 の v0.9.0 実機確認で、J12 の
         #   はんだ不良を直したところ index=1 のまま ping/発見/ストリームが
@@ -1811,11 +1817,11 @@ class RetroCastXStream(SoCMini):
         # ★index とコネクタ表記は入れ替わっている(上の LiteEthPHYRGMII の
         #   コメント参照)。ここでも litex の index に合わせて並べてある。
         _eth_led_io = [
-            ("eth_led", 0,                      # = コネクタ ETH2 = J11
+            ("eth_led", 0,                      # = LAN0 = J11(i5のETH2側)
                 Subsignal("green",  Pins("R1")),    # SO-DIMM 42
                 Subsignal("yellow", Pins("T1")),    # 44
                 IOStandard("LVCMOS33")),
-            ("eth_led", 1,                      # = コネクタ ETH1 = J12(既定)
+            ("eth_led", 1,                      # = LAN1 = J12(既定。i5のETH1側)
                 Subsignal("green",  Pins("U1")),    # 46
                 Subsignal("yellow", Pins("Y2")),    # 48
                 IOStandard("LVCMOS33")),
@@ -2333,8 +2339,8 @@ def main():
                          "ラインの頭から取り込むのと同じ方針で、垂直位置は管面の"
                          "V位置で決める。0以外にすると上が切れるモードが出る")
     ap.add_argument("--eth-phy", type=int, default=1, choices=(0, 1),
-                    help="litex の eth index。1=コネクタETH1=v0.9.0のJ12(既定), "
-                         "0=コネクタETH2=v0.9.0のJ11。J11で使うにはシード探索が要る "
+                    help="litex の eth index。基板シルクの LAN 番号と同じ数字。"
+                         "1=LAN1=J12(既定), 0=LAN0=J11。LAN0 で使うにはシード探索が要る "
                          "(seed 3 では eth_rx 122.55MHz で閉じない)")
     ap.add_argument("--no-mclk-out", action="store_true",
                     help="P3 147のMCLK出力を0固定にする(音声は止まる)。ノイズ切り分け用")
