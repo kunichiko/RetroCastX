@@ -43,6 +43,10 @@ v0.9.0(2026-08-19 発注、実機動作確認済み)からの差分。**電気�
 - **ステータスLED(LED1)を WS2812B-2020-V6(C52917434)の 3.3V 直結に変更**。
   V6 は VDD 3.3〜5.3V・VIH 0.55×VDD なので、5V + 1N4148W の降圧が不要になった
   (D7 は欠番)。**MSL 5a のため JLCPCB の焼成料金がかかる**(承知のうえで採用)
+- **ESDアレイを onsemi NZQA6V8AXV5T1G(C895163)に差し替え**。EMZT6.8ET2R(C510333)が
+  JLCPCB で在庫 0 になったため。SOT-553 は EMD5 と同寸でリード番号も同じ(リード2 = 共通
+  アノード)なので、**フットプリントと配線はそのまま**。VBR は同じ 6.47〜7.14V、Ct は
+  7pF → 12pF typ に増えるが、映像(37.5Ω 系で極 約350MHz)にも TTL にも実害は無い
 
 ### ソフト側に必要な追随(v1.0 基板を使うとき)
 
@@ -258,7 +262,7 @@ ESD が PESD5V0U4BW → 実際は EMZT6.8ET2R など)。値・在庫は LCSC 品
 
 | Ref | 部品 | メーカー | LCSC | 回路上の位置 |
 |---|---|---|---|---|
-| D1, D2, D3, D5, D6, D8, D10, D11, D12 | EMZT6.8ET2R | ROHM | C510333 | `esd_rgb, esd_sync2, esd_sync, drgb.esd[0], drgb.esd[1], esd_audio, esd_din8, esd_ffc, esd_audio2` |
+| D1, D2, D3, D5, D6, D8, D10, D11, D12 | NZQA6V8AXV5T1G | onsemi | C895163 | `esd_rgb, esd_sync2, esd_sync, drgb.esd[0], drgb.esd[1], esd_audio, esd_din8, esd_ffc, esd_audio2` |
 | D9 | USBLC6-2SC6 | STMICROELECTRONICS | C7519 | `esd_usb` |
 | FB1, FB2, FB3, FB4 | MPZ1608S221ATA00 | TDK | C76815 | `fb_avdd, fb_pll, fb_audio, fb_spdif` |
 | H1, H2, H3, H4, H5 | MountingHole_3.2mm_M3_Pad | — | — | `mount[0], mount[1], mount[2], mount[3], mount[4]` |

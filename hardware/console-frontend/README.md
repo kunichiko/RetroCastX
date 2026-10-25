@@ -98,7 +98,7 @@ Pb だけはスイッチを通らないので直流結合のまま渡し、終�
 | RCA ×5 | **RCA-105**(色違い) | — (手実装) | AliExpress等。黄/白/赤/黒/青が同寸法で揃う。**2端子・両方とも軸線上** |
 | FFCコネクタ | HDGC 0.5K-1.5-**20**PWB | C2919559 | 下接点・フリップロック・右アングル |
 | アナログスイッチ | TI TS5A23159DGSR | C42751 | 2ch SPDT, Ron 1Ω, break-before-make |
-| ESD ×2 | ROHM EMZT6.8ET2R | C510333 | メイン基板と同じ(5パッド版フットプリント) |
+| ESD ×2 | onsemi NZQA6V8AXV5T1G | C895163 | メイン基板と同じ。旧 EMZT6.8ET2R(C510333)が JLC 在庫切れのため v1.0 発注前に差し替え。ピン互換(SOT-553 = EMD5 同寸、リード2が共通アノード)で、フットプリントは旧品の5パッド版をそのまま使う |
 | シリアルLED ×4 | Worldsemi WS2812B-2020-V6 | C52917434 | 3.3V直結、LED1→LED4 の直列(v1.0 発注前に2個から4個へ)。**MSL 5a(JLCの焼成料金がかかる)**。D1(旧 1N4148W)は欠番 |
 
 ミニDIN4はLCSCに無いので**フットプリントをメーカー図面から自作**した
@@ -132,7 +132,7 @@ ato build                               # ネットリスト/PCB/BOM を生成
 ~/.local/share/uv/tools/atopile/bin/python tools/ingest_parts.py C2939342 ...
 ```
 
-★**ESDアレイ(EMZT6.8ET2R)を取り込み直したら `tools/fix_esd_land.py` を必ず走らせる**
+★**ESDアレイのフットプリント(ROHM_EMZT6_8ET2R。現行の NZQA6V8AXV5T1G もこれを使う)を取り込み直したら `tools/fix_esd_land.py` を必ず走らせる**
 (取り込み時のフットプリントはリードの無い裸パッドを含む6パッド版で、パッド幅も
 0.28mmしかない)。いまリポジトリに入っているのはメイン基板で修正した5パッド版。
 

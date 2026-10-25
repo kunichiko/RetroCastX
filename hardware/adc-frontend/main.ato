@@ -246,9 +246,29 @@ component FerriteBead:
 
 
 component EsdArray4:
-    """ROHM EMZT6.8ET2R コモンアノード 4ch ESDアレイ。LCSC: C510333
+    """onsemi NZQA6V8AXV5T1G コモンアノード 4ch ESDアレイ。LCSC: C895163
+    (旧: ROHM EMZT6.8ET2R / C510333。下の経緯は旧品のもの)
 
     4ラインESD保護(4 I/O + 共通アノード)。映像/同期/音声入力の保護に使用。
+
+    ## ★v1.0 発注前に onsemi NZQA6V8AXV5T1G(C895163)へ差し替えた (2026-10-25)
+
+    EMZT6.8ET2R(C510333)が JLCPCB で在庫 0 になったため。ピン互換の代替:
+
+        パッケージ  SOT-553 (CASE 463B) 1.6x1.2mm、リード 0.22mm、ピッチ 0.5mm
+                    = EMD5 と同寸。リード番号の並びも同じ(1/2/3 下段、4 上段右、5 上段左)
+        構造        リード2 = 共通アノード、1/3/4/5 = カソード(4ch 単方向)
+        VBR         6.47/6.8/7.14V @1mA  (EMZT: Vz 6.47〜7.14V @5mA と同じ帯)
+        VRWM        4.3V(IR 1µA max)
+        Ct          12pF typ / 15pF max @0V  ← EMZT の 7.0pF より大きい
+
+    Ct が 5pF ほど増えるが、75Ω 終端の映像線(源と終端の並列 37.5Ω)で極は
+    約 350MHz、5V TTL のデジタル RGB/同期は 10k プルダウンとケーブル容量の方が
+    支配的なので実害は無い。
+    **フットプリントは下記の ROHM 推奨5パッドランドをそのまま使う**(パッド番号 =
+    リード番号が一致するので配線もそのまま)。EasyEDA の C895163 ランドも pad1 が
+    下段左で旧品と同じ向きなので、JLC の配置回転も変わらないはず。
+    ディレクトリ名の ROHM_EMZT6_8ET2R は配線を保つために変えていない。
 
     ## パッケージは6ピンではなく**5ピン** (2026-08-18 データシートで確認)
 
@@ -283,8 +303,8 @@ component EsdArray4:
 
     4chとも等価なのでI/O割当順は任意。
     """
-    trait is_atomic_part<manufacturer="ROHM", partnumber="EMZT6.8ET2R", footprint="parts/ROHM_EMZT6_8ET2R/EMT6_L1.6-W1.2-P0.50-LS1.6-BL.kicad_mod", symbol="parts/ROHM_EMZT6_8ET2R/EMZT6.8ET2R.kicad_sym">
-    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C510333", manufacturer="ROHM", partno="EMZT6.8ET2R">
+    trait is_atomic_part<manufacturer="onsemi", partnumber="NZQA6V8AXV5T1G", footprint="parts/ROHM_EMZT6_8ET2R/EMT6_L1.6-W1.2-P0.50-LS1.6-BL.kicad_mod", symbol="parts/ROHM_EMZT6_8ET2R/EMZT6.8ET2R.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C895163", manufacturer="onsemi", partno="NZQA6V8AXV5T1G">
     trait has_designator_prefix<prefix="D">
     signal io1 ~ pin 1
     signal io2 ~ pin 3

@@ -18,7 +18,8 @@
 |---|---|---|
 | `HR911130A_HanRun_MagJack.pdf` | HanRun HR911130A(1000BASE-T MagJack、トランス・チョーク・Bob-Smith内蔵RJ45) | LCSC [C54408](https://www.lcsc.com/product-detail/C54408.html) |
 | `PJ-327C-4A_HOOYA_3.5mmJack.pdf` | PJ-327C-4A(3.5mm ステレオジャック、SMD 4P) | LCSC [C145813](https://www.lcsc.com/product-detail/C145813.html) |
-| `emzt6.8e.pdf` | ROHM EMZT6.8ET2R(4ch コモンアノード ESDアレイ、EMD5 / SC-75A)。D1〜D6, D8 | LCSC [C510333](https://www.lcsc.com/product-detail/C510333.html) / ROHM 製品ページで型番検索 |
+| `nzqa6v8axv5.pdf` | onsemi NZQA6V8AXV5T1G(4ch コモンアノード ESDアレイ、SOT-553)。v1.0 で EMZT6.8ET2R から差し替え。D1〜D3, D5, D6, D8, D10〜D12 | LCSC [C895163](https://www.lcsc.com/product-detail/C895163.html) |
+| `emzt6.8e.pdf` | ROHM EMZT6.8ET2R(旧品。JLC 在庫切れで v1.0 では不使用。フットプリントはこの推奨ランドを流用) | LCSC [C510333](https://www.lcsc.com/product-detail/C510333.html) / ROHM 製品ページで型番検索 |
 | `MJ-373-8B_Marushin_MiniDIN8.pdf` | マル信無線電機 MJ-373/8B(ミニDIN 8ピンジャック、基板取付)。J13。**このPDFのPCB穴図から `parts/_mech/MJ373_8B.kicad_mod` を自作した** | モモハラ電機部品 [図面PDF](https://www.mepc.jp/store/pdf/est/drawing/MJ-373-8B.pdf) / 千石電商・マルツの商品ページ |
 | `plr135-t.pdf` | Everlight PLR135/T(TOSLINK 光受信モジュール)。J8。文書番号 DPL-0000018_Rev.4 | 秋月電子 [109595](https://akizukidenshi.com/catalog/g/g109595/) |
 

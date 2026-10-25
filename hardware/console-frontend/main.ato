@@ -140,17 +140,22 @@ component FfcMain20:
 
 
 component EsdArray4:
-    """ROHM EMZT6.8ET2R コモンアノード 4ch ESDアレイ。LCSC: C510333
+    """onsemi NZQA6V8AXV5T1G コモンアノード 4ch ESDアレイ。LCSC: C895163
+
+    ★v1.0 発注前に ROHM EMZT6.8ET2R(C510333、JLC 在庫 0)から差し替えた(2026-10-25)。
+    SOT-553 で EMD5 と同寸・同じリード番号、リード2 が共通アノード、VBR 6.47〜7.14V。
+    Ct は 12pF typ(旧 7pF)。理由と確認内容は hardware/adc-frontend/main.ato の
+    同名コンポーネントの docstring 参照。以下は旧品の経緯(フットプリントは流用)。
 
     **メイン基板と同一部品**。パッケージは6ピンではなく**5ピン**(EMD5/SC-75A)で、
     共通アノードはリード2。フットプリントはメイン基板で ROHM 推奨ランドに作り直した
     ものをコピーしてある(取り込み時の汎用6パッド版はリードの無い裸パッドがあり、
     パッド幅0.28mmでフィレットが実質ゼロだった)。経緯は
     hardware/adc-frontend/main.ato の同名コンポーネントの docstring 参照。
-    Vz 6.47〜7.14V / Ct 7.0pF typ。4chとも等価なのでI/O割当順は任意。
+    (旧品 Vz 6.47〜7.14V / Ct 7.0pF typ)。4chとも等価なのでI/O割当順は任意。
     """
-    trait is_atomic_part<manufacturer="ROHM", partnumber="EMZT6.8ET2R", footprint="parts/ROHM_EMZT6_8ET2R/EMT6_L1.6-W1.2-P0.50-LS1.6-BL.kicad_mod", symbol="parts/ROHM_EMZT6_8ET2R/EMZT6.8ET2R.kicad_sym">
-    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C510333", manufacturer="ROHM", partno="EMZT6.8ET2R">
+    trait is_atomic_part<manufacturer="onsemi", partnumber="NZQA6V8AXV5T1G", footprint="parts/ROHM_EMZT6_8ET2R/EMT6_L1.6-W1.2-P0.50-LS1.6-BL.kicad_mod", symbol="parts/ROHM_EMZT6_8ET2R/EMZT6.8ET2R.kicad_sym">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C895163", manufacturer="onsemi", partno="NZQA6V8AXV5T1G">
     trait has_designator_prefix<prefix="D">
     signal io1 ~ pin 1
     signal io2 ~ pin 3
