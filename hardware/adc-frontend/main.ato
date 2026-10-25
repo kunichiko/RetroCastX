@@ -14,8 +14,7 @@ from "parts/RICHTEK_RT9013_18GB/RICHTEK_RT9013_18GB.ato" import RICHTEK_RT9013_1
 from "parts/WCH_CH347F/WCH_CH347F.ato" import WCH_CH347F_package
 from "parts/ST_USBLC6_2SC6/ST_USBLC6_2SC6.ato" import ST_USBLC6_2SC6_package
 from "parts/YXC_X32258MSB4SI/YXC_X32258MSB4SI.ato" import YXC_X32258MSB4SI_package
-from "parts/XINGLIGHT_XL_2020RGBC_2812B/XINGLIGHT_XL_2020RGBC_2812B.ato" import XINGLIGHT_XL_2020RGBC_2812B_package
-from "parts/ST_1N4148W/ST_1N4148W.ato" import ST_1N4148W_package
+from "parts/worldsemi_WS2812B_2020_V6/worldsemi_WS2812B_2020_V6.ato" import worldsemi_WS2812B_2020_V6_package
 from "passives.ato" import C22pF_0402, R75_0402, R62_0402, R120_0402, R220_0402, R1K5_0402, R2K2_0402, R5K1_0402, R10K_0402, R12K_0402, C100nF_0402, C100nF_0805, C1nF_0402, C10nF_0402, C4nF7_0402, C4nF7_1812_2kV, C1uF_0603, C10uF_0805, C33pF_0402, C33pF_0402_DNP
 
 # =============================================================================
@@ -1808,46 +1807,34 @@ module App:
     j_dbg.dbg19 ~ sodimm.io_h16   # pin92  H16
     j_dbg.dbg20 ~ sodimm.io_f18   # pin94  F18
 
-    # --- ステータス表示用フルカラーLED (XINGLIGHT XL-2020RGBC-WS2812B) ---
+    # --- ステータス表示用フルカラーLED (Worldsemi WS2812B-2020-V6) ---
     #
-    # 2.0×2.0mm のシリアル制御RGB。800kHz の1本線プロトコル(24bit GRB)で
+    # 2.2×2.0mm のシリアル制御RGB。800kHz の1本線プロトコル(24bit GRB)で
     # ゲートウェアから任意の色を出せる。リンク状態・モード・エラーの表示に使う。
     #
-    # ★5V給電 + ダイオード降圧にしてある。理由:
-    #   WS2812B の DIN の入力高レベルは **VIH = 0.7 × VDD**。5V直結だと3.5V必要で、
-    #   i5のGPIOは3.3Vなので規定を満たさない(動くこともあるが個体差・温度で不安定)。
-    #   一方 VDD の定格は 3.7〜5.3V なので 3.3V 直結も定格外(WS2812B-2020 も同じ)。
-    #   ダイオード1個で 5V → 4.2〜4.45V に落とすと:
-    #     消灯時(約1mA)  Vf≈0.55V → VDD 4.45V → VIH 3.11V  < 3.3V ✓
-    #     全白時(約60mA) Vf≈0.80V → VDD 4.20V → VIH 2.94V  < 3.3V ✓
-    #   VDDは定格内に収まり、VIHは全電流域で3.3Vを下回る。
-    #   ※MimicX(atari-joystick)は3.3V直結だが、データシート上は定格外。
+    # ★3.3V 直結(v1.0.0 発注前に変更、2026-10-25)。理由:
+    #   V6 は VDD の定格が **3.3〜5.3V** に広がり、DIN の入力高レベルも
+    #   **VIH = 0.55 × VDD** に下がった(旧 WS2812B / XL-2020RGBC は 0.7×VDD、
+    #   VDD 3.7〜5.3V)。3.3V給電なら VIH 1.82V で、i5 の 3.3V GPIO に対して余裕が大きい。
+    #   旧構成の「5V + 1N4148W で 4.2〜4.45V に降圧」は不要になったので外した
+    #   (旧 d_led = D7 は欠番)。
     #
-    # 電源は power_5v(USB VBUS)から取る。音声用の p5v_audio(フェライト分離後)は
-    # 使わない — LEDの電流パルス(最大60mA)を音声レールに乗せたくないため。
+    # 電源は p3v3_io(AZ1117H、デジタル系)から取る。p3v3_a(アナログ)は
+    # TVP7002 のアナログ系なので、LEDの電流パルス(全白で約36mA)を乗せない。
     #
-    # ★Worldsemi WS2812B-2020(C965555) から XINGLIGHT XL-2020RGBC-WS2812B(C5349955)
-    #   へ変更した (2026-08-19)。理由は**吸湿性ランク(MSL)**:
-    #
-    #     WS2812B-2020 (C965555)   MSL 5a  → JLCPCB が48時間の焼成を要求し追加料金
-    #     XL-2020RGBC  (C5349955)  MSL 3   → 焼成不要
-    #
-    #   JLCPCB は MSL5以上の部品に焼成(60℃ 48時間)を要求する。加えて LCSC 在庫も
-    #   35,115個 → 175,745個 と5倍あり、単価差は $0.074 → $0.093 と2セントだけ。
-    #   WS2812B 互換の1本線プロトコルで、信号割り当ても DI=3/DO=1/GND=2/VDD=4 と同一。
-    #   ★ランドは微妙に違う(パッドが x 方向に ±0.92 → ±0.68 と内寄り)ので
-    #     フットプリントは差し替えてある。
-    led_status = new XINGLIGHT_XL_2020RGBC_2812B_package
-    d_led = new ST_1N4148W_package
-    signal p_led_4v3
-    power_5v.hv ~ d_led.A
-    d_led.K ~ p_led_4v3
-    led_status.VDD ~ p_led_4v3
+    # ★**MSL 5a**。JLCPCB が焼成(追加料金)を要求する。8月に XINGLIGHT
+    #   XL-2020RGBC-WS2812B(C5349955, MSL 3)へ替えたのはこれを避けるためだったが、
+    #   3.3V 直結とダイオード削除を優先して焼成料金を受け入れた。
+    #   旧 Worldsemi WS2812B-2020(C965555)も V6 も MSL 5a で、ここは変わらない。
+    # ピン割り当ては DO=1/GND=2/DI=3/VDD=4 で XL-2020RGBC と同一。ただし
+    # ランドは別物(パッド x=±0.87、0.8×0.8)で、ピン1の位置が180°反対になる。
+    led_status = new worldsemi_WS2812B_2020_V6_package
+    led_status.VDD ~ p3v3_io.hv
     led_status.GND ~ gnd
     # データシート推奨の100nF。この基板はアナログ映像を扱うので、LEDの電流パルスを
-    # 5Vレールへ戻さないためにも入れる(MimicXには無い)
+    # 3.3Vレールへ戻さないためにも入れる(MimicXには無い)
     c_led = new C100nF_0402
-    p_led_4v3 ~> c_led ~> gnd
+    p3v3_io.hv ~> c_led ~> gnd
 
     # データ線は **デバッグ端子の dbg01(io_m1, pin54)と共用**。
     # ★dbg01 に外部から何かを繋いで駆動すると、このLEDのデータ線と衝突する。
@@ -1872,8 +1859,8 @@ module App:
     # 220Ω は源端整合(反射制動)とESD緩衝。**SO-DIMM側に寄せて配置すること**
     # (送り側に置かないと効果が出ない)。FFCで10cm伸ばすぶん、こちらは
     # メイン基板のD1より反射が乗りやすいので、この抵抗は必須。
-    # LEDの電源は FFC の +5V(pin16)。小亀側でダイオード1個落として 4.2〜4.45V に
-    # するので、3.3V CMOS の DIN で VIH(0.7×VDD)を満たす(D1と同じ設計)。
+    # 小亀のLEDもメイン基板の LED1 と同じ WS2812B-2020-V6 で、電源は FFC の +3.3V
+    # 直結(VIH = 0.55×VDD なので 3.3V CMOS で余裕をもって駆動できる)。
     r_led_kokame = new R220_0402
     sodimm.io_a2 ~> r_led_kokame ~> ffc.led_data   # pin154 (A2)
 
@@ -2170,7 +2157,6 @@ module App:
     # YS(D-SUB15 pin7 → TP1)。自動命名だと素の "pad" になり追跡できない。
     # 意図的に「コネクタとテストパッドの2点だけ」のネット(未使用・保護なし)。
     tp_ys.pad.override_net_name = "ys"
-    p_led_4v3.override_net_name = "p_led_4v3"
     led_status.DI.override_net_name = "led_din"
     tp_led_do.pad.override_net_name = "led_dout"
     vs_delayed.override_net_name = "vsync_delayed"

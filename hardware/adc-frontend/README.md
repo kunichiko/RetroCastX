@@ -40,6 +40,9 @@ v0.9.0(2026-08-19 発注、実機動作確認済み)からの差分。**電気�
   だったが、**FPGAのJTAGへ届く経路はモジュール底面のパッド = ポゴピンしか無い**ので、
   ポゴピンが届かない場合の保険にはならない(CH347Fが壊れた場合にしか効かない)。
   J3 は欠番のまま(`tools/lock_designators.py` が番号の再利用を防ぐ)
+- **ステータスLED(LED1)を WS2812B-2020-V6(C52917434)の 3.3V 直結に変更**。
+  V6 は VDD 3.3〜5.3V・VIH 0.55×VDD なので、5V + 1N4148W の降圧が不要になった
+  (D7 は欠番)。**MSL 5a のため JLCPCB の焼成料金がかかる**(承知のうえで採用)
 
 ### ソフト側に必要な追随(v1.0 基板を使うとき)
 
@@ -256,7 +259,6 @@ ESD が PESD5V0U4BW → 実際は EMZT6.8ET2R など)。値・在庫は LCSC 品
 | Ref | 部品 | メーカー | LCSC | 回路上の位置 |
 |---|---|---|---|---|
 | D1, D2, D3, D5, D6, D8, D10, D11, D12 | EMZT6.8ET2R | ROHM | C510333 | `esd_rgb, esd_sync2, esd_sync, drgb.esd[0], drgb.esd[1], esd_audio, esd_din8, esd_ffc, esd_audio2` |
-| D7 | 1N4148W | ST(Semtech) | C81598 | `d_led` |
 | D9 | USBLC6-2SC6 | STMICROELECTRONICS | C7519 | `esd_usb` |
 | FB1, FB2, FB3, FB4 | MPZ1608S221ATA00 | TDK | C76815 | `fb_avdd, fb_pll, fb_audio, fb_spdif` |
 | H1, H2, H3, H4, H5 | MountingHole_3.2mm_M3_Pad | — | — | `mount[0], mount[1], mount[2], mount[3], mount[4]` |
@@ -266,12 +268,12 @@ ESD が PESD5V0U4BW → 実際は EMZT6.8ET2R など)。値・在庫は LCSC 品
 | J7 | Header_2x15_P2.54mm | — | — | `j_dbg` |
 | J8 | PLR135_T10 | — | — | `spdif` |
 | J9, J10 | Header_1x4_P2.54mm | — | — | `j11_argus, j_oled` |
-| J11, J12 | HR911130A | HANRUN | C54408 | `eth.jack, eth.jack2` |
+| J11, J12 | HR911130A | HANRUN | C54408 | `eth.lan0, eth.lan1` |
 | J13 | MJ373_8B | — | — | `din8` |
 | J14 | Header_1x3_P2.54mm | — | — | `hdr_sync` |
 | J15 | 0.5K-1.5-20PWB | HDGC | C2919559 | `ffc` |
 | JP1 | SolderJumper_2_Bridged | — | — | `sj_ext5v` |
-| LED1 | XL-2020RGBC-2812B | XINGLIGHT | C5349955 | `led_status` |
+| LED1 | WS2812B-2020-V6 | worldsemi | C52917434 | `led_status` |
 | PG1, PG2, PG3, PG4 | PogoPin_D1.0mm | — | — | `pogo_tck, pogo_tms, pogo_tdi, pogo_tdo` |
 | TP1, TP2 | TestPoint_TH1 | — | — | `tp_ys, tp_led_do` |
 | U1 | TVP7002PZP | TI | C3824085 | `tvp` |
