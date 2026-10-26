@@ -3,7 +3,7 @@
 	(generator "manual")
 	(generator_version "9.0")
 	(layer "F.Cu")
-	(descr "RCA (phono) jack RCA-105, right-angle PCB mount, hand-soldered (not JLC-assembled). Land pattern per the manufacturer drawing \"RCA-105 / T:1.6 Dimensions of PC board holes, tolerance +-0.1 (Printed-bottom view)\": TWO slots, both on the connector axis: pad1 2.30x1.50 at 4.80 behind the reference plane, pad2 1.00x2.30 at 8.30 behind the reference plane. pad1 = shell/GND, pad2 = centre conductor (signal). Both pads sit on the axis, so the bottom-view drawing needs no mirroring. Origin = reference plane (x=0, put the board edge here) on the barrel axis (y=0). Frame 10.00 wide x 13.00 high, body 10.00+-0.20 deep behind the reference plane; barrel phi8.30+-0.10 protrudes 9.30 IN FRONT of the reference plane (overhangs the board edge); barrel axis sits 8.00 above the PCB surface (5.00 below the top of the frame); legs 3.70 long.")
+	(descr "RCA (phono) jack RCA-105, right-angle PCB mount, hand-soldered (not JLC-assembled). Land pattern per the manufacturer drawing \"RCA-105 / T:1.6 Dimensions of PC board holes, tolerance +-0.1 (Printed-bottom view)\": TWO slots, both on the connector axis: pad1 at 4.80 behind the reference plane, slot 1.50 along the axis x 2.30 across (the bent front leg is a flat tab across the axis), pad2 at 8.30, slot 2.30 along the axis x 1.00 across. The drawing gives slots as width x height in its bottom view, where the axis runs vertically. pad1 = shell/GND, pad2 = centre conductor (signal). Both pads sit on the axis, so the bottom-view drawing needs no mirroring. Origin = reference plane (x=0, put the board edge here) on the barrel axis (y=0). Frame 10.00 wide x 13.00 high, body 10.00+-0.20 deep behind the reference plane; barrel phi8.30+-0.10 protrudes 9.30 IN FRONT of the reference plane (overhangs the board edge); barrel axis sits 8.00 above the PCB surface (5.00 below the top of the frame); legs 3.70 long.")
 	(tags "rca phono jack RCA-105 right-angle")
 	(property "Reference" "REF**"
 		(at 5.0 -6.6 0)
@@ -75,14 +75,24 @@
 		(uuid "c105a001-0000-4000-8000-000000000010")
 	)
 	(fp_line
-		(start 10.0 -5.0)
-		(end 10.0 5.0)
+		(start 10 -5)
+		(end 10 -1.35)
 		(stroke
 			(width 0.12)
 			(type solid)
 		)
 		(layer "F.SilkS")
 		(uuid "c105a001-0000-4000-8000-000000000011")
+	)
+	(fp_line
+		(start 10 1.35)
+		(end 10 5)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "c105a001-0000-4000-8000-000000000014")
 	)
 	(fp_line
 		(start 10.0 5.0)
@@ -218,16 +228,16 @@
 	)
 	(pad "1" thru_hole oval
 		(at 4.8 0)
-		(size 3.3 2.5)
-		(drill oval 2.3 1.5)
+		(size 2.5 3.3)
+		(drill oval 1.5 2.3)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(uuid "c105a001-0000-4000-8000-000000000101")
 	)
 	(pad "2" thru_hole oval
 		(at 8.3 0)
-		(size 2.0 3.3)
-		(drill oval 1.0 2.3)
+		(size 3.3 2.0)
+		(drill oval 2.3 1.0)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(uuid "c105a001-0000-4000-8000-000000000102")
