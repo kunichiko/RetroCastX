@@ -13,8 +13,9 @@
 
     黒の塗り        基板(ソルダーマスク黒)
     明るい灰の線    基板外形(角R3)。角の外は中間の灰
+    金色の輪        ネジ穴の GND パッド φ6.4mm(レジストなしの金メッキ。シルクは載らない)
     中間の灰の塗り  ネジ穴 3.2mm(穴なので基板の外と同じ色)
-    赤の破線        シルクを置かない範囲(外形から 0.5mm 内側 / 穴の縁から 0.5mm)
+    赤の破線        シルクを置かない範囲(外形から 0.5mm 内側 / パッドの縁から 0.5mm)
     水色の破線      M3 なべ小ねじの頭(φ5.5mm)。この内側のシルクはねじで隠れる
     暗い灰の線      10mm グリッドと中心線
 
@@ -38,7 +39,8 @@ DPI = 600
 W_MM = H_MM = 100.0
 R_MM = 3.0             # 角R
 HOLE_MM = 3.2
-KEEPOUT_MM = 0.5       # 外形・穴の縁からシルクを離す量
+PAD_MM = 6.4           # ネジ穴の GND パッド(gen_panels.py の MountingHole_3.2mm_M3_Pad)
+KEEPOUT_MM = 0.5       # 外形・パッドの縁からシルクを離す量
 HEAD_MM = 5.5          # M3 なべ小ねじの頭径
 GRID_MM = 10.0
 
@@ -87,6 +89,7 @@ def make(name):
     edge = (200, 200, 200)
     keepout = (255, 70, 70)
     head = (80, 200, 255)
+    pad = (200, 160, 60)
     img = Image.new("RGB", (PX, PX), board)
     d = ImageDraw.Draw(img)
 
@@ -108,9 +111,11 @@ def make(name):
 
     for (x, y) in holes(name):
         cx, cy = px(x), px(y)
+        rp = px(PAD_MM / 2)
+        d.ellipse([cx - rp, cy - rp, cx + rp, cy + rp], fill=pad)
         r = px(HOLE_MM / 2)
         d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=outside, outline=edge, width=3)
-        dashed_circle(d, cx, cy, px(HOLE_MM / 2 + KEEPOUT_MM), keepout, 3)
+        dashed_circle(d, cx, cy, px(PAD_MM / 2 + KEEPOUT_MM), keepout, 3)
         dashed_circle(d, cx, cy, px(HEAD_MM / 2), head, 3)
 
     out = ROOT / "layouts" / name / "artwork" / f"{name}_template.png"

@@ -14,13 +14,21 @@
     layouts/panel_console/  小亀基板側のパネル(console-frontend の穴を反転)
     layouts/panel_main/     メイン基板側のパネル(adc-frontend の穴を反転)
 
-外形は 100x100mm、角R3(メイン基板と同じ)。どちらも (100,50)-(200,150) に置く。
-穴は M3 用 3.2mm の**非メッキ穴**(銅なし)。シルクのイラストは KiCad 上で描き足す。
+外形は 100x100mm、角R3(メイン基板と同じ)、板厚 1.0mm。どちらも (100,50)-(200,150) に置く。
+
+## シールド
+
+穴は M3 用の**メッキ穴 + φ6.4 パッド**(メイン基板・小亀基板の取付穴と同じ)で GND。
+表裏とも GND で全面を塗りつぶす(外形から 0.5mm 引く)。金属スペーサーと金属ネジで
+基板の取付穴(GND パッド)とつなぐと、パネル2枚が基板を挟む GND 面になる。
+銅は表裏同じにして反りの釣り合いを取る。
+
+シルクの絵は tools/png_to_silk.py で入れる(このスクリプトの後に流し直せばよい)。
 
 ## ★再実行すると上書きする
 
-パネルの .kicad_pcb を作り直すので、**シルクを描き始めたら再実行しないこと**。
-穴だけ合わせ直したいときは KiCad 上で動かす。
+パネルの .kicad_pcb を作り直す。KiCad 上で足したもの(絵以外)は消えるので、
+再実行したら png_to_silk.py で絵を流し直し、KiCad で足したものは手で戻す。
 
 ## 使い方 (KiCad 同梱の python で、adc-frontend から)
 
@@ -34,9 +42,11 @@ import pcbnew
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 HW = ROOT.parent
 FP_LIB = "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints/MountingHole.pretty"
-HOLE_FP = "MountingHole_3.2mm_M3"   # 非メッキ 3.2mm(銅なし)
+HOLE_FP = "MountingHole_3.2mm_M3_Pad"   # メッキ穴 3.2mm + φ6.4 パッド(基板側と同じ)
 
 X0, Y0, W, H, R = 100.0, 50.0, 100.0, 100.0, 3.0
+THICKNESS = 1.0
+NET = "GND"
 
 PANELS = [
     # (名前, 穴を読む基板, タイトル)
@@ -97,6 +107,23 @@ def outline(b):
     arc(b, x1 + R, y2 - R, x1 + R, y2, 90)
 
 
+def gnd_zone(b, net, layer):
+    """外形と同じ四角の GND ゾーン。外形からの逃げ(0.5mm)は DRC 設定の
+    min_copper_edge_clearance に任せ、角R も塗りつぶしで外形に沿う。"""
+    z = pcbnew.ZONE(b)
+    z.SetLayer(layer)
+    z.SetNet(net)
+    ol = z.Outline()
+    ol.NewOutline()
+    for x, y in [(X0, Y0), (X0 + W, Y0), (X0 + W, Y0 + H), (X0, Y0 + H)]:
+        ol.Append(mm(x), mm(y))
+    z.SetPadConnection(pcbnew.ZONE_CONNECTION_FULL)
+    z.SetLocalClearance(mm(0.5))
+    z.SetMinThickness(mm(0.25))
+    b.Add(z)
+    return z
+
+
 def make(name, src, title):
     d = ROOT / "layouts" / name
     d.mkdir(parents=True, exist_ok=True)
@@ -104,6 +131,9 @@ def make(name, src, title):
 
     b = pcbnew.CreateEmptyBoard()
     b.SetCopperLayerCount(2)
+    b.GetDesignSettings().SetBoardThickness(mm(THICKNESS))
+    net = pcbnew.NETINFO_ITEM(b, NET)
+    b.Add(net)
     tb = b.GetTitleBlock()
     tb.SetTitle(title)
     tb.SetRevision("v1.0.0")
@@ -116,13 +146,23 @@ def make(name, src, title):
         f.Reference().SetVisible(False)
         f.Value().SetVisible(False)
         f.SetPosition(pcbnew.VECTOR2I(mm(x), mm(y)))
+        for p in f.Pads():
+            p.SetNet(net)
         b.Add(f)
+    gnd_zone(b, net, pcbnew.F_Cu)
+    gnd_zone(b, net, pcbnew.B_Cu)
     b.Save(str(pcb))
 
     pro = json.loads(PRO_TEMPLATE.read_text())
     pro["board"]["design_settings"]["drc_exclusions"] = []
     pro["meta"]["filename"] = f"{name}.kicad_pro"
     (d / f"{name}.kicad_pro").write_text(json.dumps(pro, indent=2, ensure_ascii=False) + "\n")
+
+    # 塗りつぶしは読み込み直してから(CreateEmptyBoard の基板のままだと落ちる。
+    # 外形からの逃げも .kicad_pro の設定を読んでから効く)
+    b = pcbnew.LoadBoard(str(pcb))
+    pcbnew.ZONE_FILLER(b).Fill(b.Zones())
+    b.Save(str(pcb))
 
     print(f"{pcb.relative_to(ROOT)}  ({title})")
     for ref, x, y in holes:
