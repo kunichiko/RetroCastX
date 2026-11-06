@@ -159,7 +159,7 @@ struct Ring {
     ///
     /// ★**ここを 1.0 決め打ちにしてはいけない。** 追従は ±0.1% しか動かないので、
     ///   レートが本当に違う入力(S/PDIF は 44.1kHz のことがある)では
-    ///   追いつかず、バッファが片方向に溢れるか枯れる。アナログ2系統は
+    ///   追いつかず、バッファが片方向に溢れるか枯れる。アナログ系統は
     ///   PCM1808 の 48kHz 固定なので今まで表面化しなかっただけ。
     base_ratio: f64,
     /// a,b を読み込んだか(枯渇後は読み直す)
@@ -237,7 +237,7 @@ pub struct AudioFeed {
     /// 副系統(S/PDIF)。主系統に混ぜて出す
     aux_ring: Arc<Mutex<Ring>>,
     pub stats: Arc<AudioStats>,
-    /// 再生するsource(0=RGB端子音声, 1=LINE入力, 2=S/PDIF)
+    /// 再生するsource(0=RGB端子音声, 1=MSX(ミニDIN8), 2=S/PDIF, 3=コンポジット)
     pub source: u8,
     max_frames: usize,
 }
@@ -250,7 +250,7 @@ pub struct AudioPlayer {
     pub stats: Arc<AudioStats>,
     /// 実際に開いたデバイス名(UI表示用)
     pub device_name: String,
-    /// 再生するsource(0=RGB端子音声, 1=LINE入力, 2=S/PDIF)
+    /// 再生するsource(0=RGB端子音声, 1=MSX(ミニDIN8), 2=S/PDIF, 3=コンポジット)
     pub source: u8,
     /// Drop時にストリームを止める。保持するだけでよい。
     _stream: Option<cpal::Stream>,
@@ -640,7 +640,7 @@ mod rate_tests {
     /// ★**44.1kHz の入力を 48kHz のデバイスへ出せること。**
     ///   追従は基準比の ±0.1% しか動かないので、基準比を入れずに 1.0 のままだと
     ///   1秒あたり 3900 フレームぶん食い違い、バッファが片方向に振り切れる。
-    ///   S/PDIF を混ぜる以上ここは避けて通れない(アナログ2系統は 48kHz 固定
+    ///   S/PDIF を混ぜる以上ここは避けて通れない(アナログ系統は 48kHz 固定
     ///   だったので今まで表面化していなかった)。
     #[test]
     fn base_ratio_follows_the_source_rate() {

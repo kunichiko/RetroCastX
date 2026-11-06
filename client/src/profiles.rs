@@ -83,11 +83,13 @@ pub struct Profile {
     /// htotal の粒度。X68000のCRTCは水平トータルを8ドット単位で持つので、
     /// 正解は必ず8の倍数になる。この制約が候補をさらに絞る
     pub htotal_multiple: i32,
-    /// この映像入力と組になる音声入力(0=RGB端子 / 1=LINE / 2=S/PDIF)。
+    /// この映像入力と組になる音声入力(0=RGB端子 / 1=MSX(ミニDIN8) / 2=S/PDIF /
+    /// 3=コンポジット(小亀基板))。
     ///
-    /// ★**基板の音声入力は3系統しかなく、どれと組になるかは配線で決まっている。**
-    ///   RGB端子(J10)は X68000 式の2列DA-15 で、ピン10/11 に音声が来る。だから
-    ///   X68000 だけが 0 で、それ以外は音声が別配線になるので LINE 入力(1)。
+    /// ★**v1.0 基板はアナログ音声の ADC を映像の系統ごとに持っている。**
+    ///   RGB端子(D-SUB15)のピン10/11 → U13、ミニDIN8 → U14、小亀基板の RCA → U17。
+    ///   だから**映像が来るコネクタの音声**がそのまま組になる。入力レジスタを
+    ///   書かないプロファイル(VGA/PC-98)は既定の D-SUB15 から映像を取るので 0。
     ///   S/PDIF は「その機種はこれ」と言えるものではないので既定にはしない。
     ///
     ///   これは**既定であって固定ではない**。音声を「自動」にしているときだけ
@@ -118,6 +120,10 @@ pub struct Profile {
 ///                 aux.r/g/b -> rin_2/gin_2/bin_2
 ///                 aux.csync -> 75Ω終端 -> 1/2分圧 -> sogin_2
 ///     3番系統 … D-SUB(X68000)  vin_r/g/b -> rin_3/gin_3/bin_3, sogin_3
+///
+///   v1.0 も系統は同じで、コネクタだけが 1番=小亀基板(FFC J15)、
+///   2番=ミニDIN8(J13)に変わった。音声の ADC もこの系統ごとに分かれている
+///   (`audio_src` 参照)。
 const MUX_ALL3: u32 = 0xAA; // SOG/R/G/B すべて _3 … D-SUB(X68000)
 const MUX_ALL2: u32 = 0x55; // SOG/R/G/B すべて _2 … 2x5ヘッダ(MSX/2台目)
 const MUX_ALL1: u32 = 0x00; // SOG/R/G/B すべて _1 … S端子/コンポジット(J5)
@@ -405,7 +411,7 @@ pub const PROFILES: &[Profile] = &[
             Clock { name: "28.322MHz", hz: 28.322e6, dividers: &[1, 2] },
         ],
         htotal_multiple: 1,
-        audio_src: Some(1),
+        audio_src: Some(0),
         verified: false,
     },
     Profile {
@@ -418,7 +424,7 @@ pub const PROFILES: &[Profile] = &[
             Clock { name: "25.175MHz", hz: 25.175e6, dividers: &[1, 2] },
         ],
         htotal_multiple: 1,
-        audio_src: Some(1),
+        audio_src: Some(0),
         verified: false,
     },
     // --- ここから下は「配線の方式」で決まる映像ソース。選ぶと入力設定を書く ---
@@ -438,7 +444,7 @@ pub const PROFILES: &[Profile] = &[
             dividers: &[1],
         }],
         htotal_multiple: 1,
-        audio_src: Some(1),
+        audio_src: Some(3),
         verified: true,
     },
     Profile {
@@ -452,10 +458,28 @@ pub const PROFILES: &[Profile] = &[
             dividers: &[1],
         }],
         htotal_multiple: 1,
-        audio_src: Some(1),
+        audio_src: Some(3),
         verified: false,
     },
 ];
+
+/// 入力MUX(19h)の値から、その系統と組になる音声入力を決める。
+///
+/// 映像ソースが「自動」のときはプロファイルが決まらないので、**ボードが実際に
+/// 見ている系統**から音声を選ぶ。fH から推定した機種では駄目で、VGA/PC-98 の
+/// ように入力レジスタを持たない推定もあるうえ、同じ機種でもどのコネクタに
+/// 挿したかは fH に現れない。
+///
+/// 映像の本体が来る G(Y)の選択 [3:2] で決める。SOG だけ別系統を指す設定
+/// (手組み機の名残)でも、絵と音が同じコネクタに揃う。
+pub fn audio_src_for_mux(mux: u32) -> Option<u8> {
+    match (mux >> 2) & 3 {
+        0b10 => Some(0), // _3: D-SUB15 → U13
+        0b01 => Some(1), // _2: ミニDIN8 → U14
+        0b00 => Some(3), // _1: 小亀基板 → U17
+        _ => None,       // 11 は予約
+    }
+}
 
 impl Profile {
     /// この映像ソースが要求する伝送形式。`input_regs` が持っていなければ None。
@@ -951,6 +975,31 @@ mod tests {
                     "{key} の 19h が系統ごとにばらけている(v0.9.0 では全ビット同じ)"
                 );
             }
+        }
+    }
+
+    /// 音声の既定が、映像を取る系統の ADC を指していること(v1.0)。
+    ///
+    /// 映像は 19h で系統を選び、音声は系統ごとの ADC の source を選ぶので、
+    /// 片方だけ直すと「絵は出るが音は隣のコネクタ」になる。
+    #[test]
+    fn audio_src_follows_video_input_v100() {
+        for p in PROFILES {
+            let mux = p
+                .input_regs
+                .iter()
+                .find(|(k, _, _)| *k == proto::CFG_KEY_IN_MUX1)
+                .map(|(_, v, _)| *v)
+                .unwrap_or(MUX_ALL3); // 書かないなら既定の D-SUB
+            let want = match mux {
+                MUX_ALL3 => 0, // U13: D-SUB15 ピン10/11
+                MUX_ALL2 => 1, // U14: ミニDIN8
+                MUX_ALL1 => 3, // U17: 小亀基板の RCA
+                _ => panic!("{} の 19h が未知の値 {mux:#x}", p.key),
+            };
+            assert_eq!(p.audio_src, Some(want), "{} の音声が映像の系統と違う", p.key);
+            // 「自動」で 19h から引いたときも同じ答えになること
+            assert_eq!(audio_src_for_mux(mux), Some(want), "{} の 19h からの逆引き", p.key);
         }
     }
 

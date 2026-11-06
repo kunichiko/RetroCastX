@@ -167,10 +167,10 @@ fn main() -> eframe::Result {
             "--decay" => {
                 decay = args.next().expect("--decay needs a value (e.g. 0.8)").parse().unwrap()
             }
-            // 音声: 再生するsource(0=RGB端子音声, 1=LINE入力, 2=S/PDIF)
+            // 音声: 再生するsource(0=RGB端子音声, 1=MSX(ミニDIN8), 2=S/PDIF, 3=コンポジット)
             "--audio" => {
                 audio.source =
-                    Some(args.next().expect("--audio needs 0|1|2").parse().unwrap());
+                    Some(args.next().expect("--audio needs 0|1|2|3").parse().unwrap());
                 cfg.audio_source = audio.source;
             }
             // MimicX への経路だけを確かめて終了する(GUIは起動しない)。
@@ -979,6 +979,8 @@ struct Session {
     tune_pending: std::collections::HashMap<u16, (u32, std::time::Instant)>,
     /// 次に現在値を問い合わせる時刻。全キーが揃うまで繰り返す
     tune_get_at: Option<std::time::Instant>,
+    /// 次に入力MUX(19h)を問い合わせる時刻。映像も音声も「自動」のときに使う
+    input_mux_get_at: Option<std::time::Instant>,
     /// 「ボード」欄の編集中テキスト。**ボードの値を直接いじらない** ─
     /// 1文字打つたびにCONFIGが飛ぶと、打ちかけの名前が基板に載る。
     /// None は「まだ編集を始めていない(ボードの値をそのまま出す)」。
@@ -1256,6 +1258,7 @@ impl Session {
             source_profile: cfg.source_profile.clone(),
             tune_pending: Default::default(),
             tune_get_at: None,
+            input_mux_get_at: None,
             ident_name_edit: None,
             ident_ip_edit: None,
             ident_get_at: None,
@@ -1843,13 +1846,15 @@ impl Session {
         self.mark_settings_dirty();
     }
 
-    /// 音声入力の呼び名。0=RGB端子(D-SUB15) / 1=LINE入力 / 2=S/PDIF。
+    /// 音声入力の呼び名。0=RGB端子(D-SUB15) / 1=MSX(ミニDIN8) / 2=S/PDIF /
+    /// 3=コンポジット(小亀基板)。番号はプロトコルの source 値で、並び順ではない。
     fn audio_src_name(src: Option<u8>) -> String {
         match src {
             None => "off".into(),
-            Some(0) => "0 RGB".into(),
-            Some(1) => "1 LINE".into(),
-            Some(2) => "2 S/PDIF".into(),
+            Some(0) => "RGB".into(),
+            Some(1) => "MSX".into(),
+            Some(2) => "S/PDIF".into(),
+            Some(3) => "コンポジット".into(),
             Some(n) => n.to_string(),
         }
     }
@@ -1869,18 +1874,58 @@ impl Session {
 
     /// 映像ソースに対応する音声入力へ合わせる。
     ///
-    /// ★**入力を切り替えたら音声も付いてくるべき。** 基板の音声入力は3系統しか
-    ///   なく、どれと組になるかは配線で決まっている(RGB端子は X68000 式の
-    ///   2列DA-15 で、ピン10/11 に音声が来る)。映像と音声を別々に選ばせるのは、
+    /// ★**入力を切り替えたら音声も付いてくるべき。** v1.0 基板はアナログ音声の
+    ///   ADC を映像の系統ごとに持っている(RGB端子 / ミニDIN8 / 小亀基板)ので、
+    ///   どれと組になるかは配線で決まっている。映像と音声を別々に選ばせるのは、
     ///   その決まっている対応を毎回人間に思い出させているだけだった。
     ///
     ///   対応表は profiles.rs の `audio_src`。「自動」を外せば従来どおり手で選べる。
+    ///
+    ///   映像ソースも「自動」のときは、ボードの入力MUX(19h)から決める
+    ///   (`follow_board_input_audio`)。
     fn apply_auto_audio(&mut self) {
         if !self.audio_auto {
             return;
         }
-        if let Some(want) = profiles::by_key(&self.source_profile).and_then(|p| p.audio_src) {
+        if self.source_profile.is_empty() {
+            self.follow_board_input_audio();
+        } else if let Some(want) =
+            profiles::by_key(&self.source_profile).and_then(|p| p.audio_src)
+        {
             self.set_audio_source(Some(want));
+        }
+    }
+
+    /// 映像も音声も「自動」のとき、ボードがいま見ている系統の音声に合わせる。
+    ///
+    /// 毎フレーム呼ぶ。19h はボードの電源やボードの切り替え、他の Viewer からの
+    /// 書き込みで変わるので、一度読んで終わりにはしない。値が無いうちは
+    /// 2秒おきに問い合わせ、応答(`config_state`)が来たら合わせる。
+    /// `set_audio_source` は同じ値なら何もしないので、再生器を開き直すことはない。
+    fn follow_board_input_audio(&mut self) {
+        if !self.audio_auto || !self.source_profile.is_empty() {
+            return;
+        }
+        let mux = self
+            .shared
+            .config_state
+            .lock()
+            .unwrap()
+            .get(&protocol::CFG_KEY_IN_MUX1)
+            .copied();
+        match mux.and_then(profiles::audio_src_for_mux) {
+            Some(want) => self.set_audio_source(Some(want)),
+            None => {
+                let now = std::time::Instant::now();
+                if self.input_mux_get_at.map_or(true, |t| now >= t) {
+                    self.input_mux_get_at = Some(now + std::time::Duration::from_secs(2));
+                    self.shared
+                        .config_get_queue
+                        .lock()
+                        .unwrap()
+                        .push(protocol::CFG_KEY_IN_MUX1);
+                }
+            }
         }
     }
 
@@ -1903,9 +1948,10 @@ impl Session {
                     }
                     for (v, name) in [
                         (None, "off"),
-                        (Some(0u8), "0 RGB (D-SUB15)"),
-                        (Some(1), "1 LINE in"),
-                        (Some(2), "2 S/PDIF"),
+                        (Some(0u8), "RGB (D-SUB15)"),
+                        (Some(1), "MSX (ミニDIN8)"),
+                        (Some(3), "コンポジット/S端子"),
+                        (Some(2), "S/PDIF"),
                     ] {
                         if ui.selectable_label(!auto && src == v, name).clicked() {
                             auto = false;
@@ -1917,8 +1963,10 @@ impl Session {
                 .on_hover_text(
                     "映像ソースと組になる音声入力。\n\
                      「自動」なら映像を切り替えたときに一緒に切り替わります\n\
-                     (RGB端子のピン10/11 に音声が来るのは X68000 式のコネクタだけ\n\
-                      なので、それ以外は LINE 入力になります)");
+                     (RGB端子 / ミニDIN8 / コンポジット・S端子は、それぞれの\n\
+                      コネクタの音声が対応します)。\n\
+                     映像ソースも「自動」なら、ボードがいま取り込んでいる\n\
+                     入力の音声になります");
         });
         if auto != self.audio_auto {
             self.audio_auto = auto;
@@ -1932,8 +1980,8 @@ impl Session {
 
     /// S/PDIF(デジタル音声入力)を主系統へ混ぜる。
     ///
-    /// ★**主系統の選択とは独立**。ボードは3系統とも常に送ってきている
-    ///   (audio_enable_mask の既定が 0b111)ので、混ぜるのは再生側の話でしかない。
+    /// ★**主系統の選択とは独立**。ボードは全系統を常に送ってきている
+    ///   (audio_enable_mask の既定が 0b1111)ので、混ぜるのは再生側の話でしかない。
     ///   音量を別に持つのは、S/PDIF が別機材の音であることが多く、レベルが
     ///   アナログ入力と揃っている保証が無いため。
     fn spdif_ui(&mut self, ui: &mut egui::Ui) {
@@ -5115,6 +5163,8 @@ impl Session {
         // ★パネルの外に置く。Tab で隠していても全画面でも、電源を入れ直したあとに
         //   入力設定が入り直さないと「選んであるのに映らない」ままになる。
         self.autowrite_input_regs();
+        // 同じくパネルの外。映像が「自動」のときの音声はボードの入力系統に従う
+        self.follow_board_input_audio();
 
         // Tab で操作パネルを出し入れする。隠すと戻すUIが無くなるので、
         // キーだけは常に効くようにしておく(テキスト入力中は除く)。

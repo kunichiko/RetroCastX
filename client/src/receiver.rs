@@ -64,7 +64,7 @@ pub struct Config {
 // device に String を持つので Copy は外す(構築は起動時の一度きり)
 #[derive(Clone)]
 pub struct AudioOpts {
-    /// 再生するsource(0=RGB端子音声, 1=LINE入力, 2=S/PDIF)。None なら再生しない。
+    /// 再生するsource(0=RGB端子音声, 1=MSX(ミニDIN8), 2=S/PDIF, 3=コンポジット)。None なら再生しない。
     pub source: Option<u8>,
     /// プリバッファ[ms]。小さいほど低遅延だが枯渇しやすい。
     pub prebuffer_ms: u32,
@@ -753,8 +753,8 @@ fn push_audio(shared: &Shared, pkt: &[u8]) {
         feed.push(a.samples, a.rate_hz);
     } else if a.source == AUX_SOURCE && shared.aux.on.load(Ordering::Relaxed) {
         // ★S/PDIF は**主系統を選び直さずに混ぜる**。ボードは
-        //   audio_enable_mask の既定 0b111 で3系統とも送っていて、
-        //   今までは Viewer が2系統を捨てていただけ。
+        //   audio_enable_mask の既定 0b1111 で全系統を送っていて、
+        //   今までは Viewer が主系統以外を捨てていただけ。
         feed.stats.aux_rate.store(a.rate_hz as u64, Ordering::Relaxed);
         feed.push_aux(a.samples, a.rate_hz);
     }
@@ -1641,7 +1641,7 @@ mod rx_audio_tests {
         let out = UdpSocket::bind("127.0.0.1:0").unwrap();
         let pcm = vec![0u8; 240 * 4];
         out.send_to(&pack_audio(1, 0, 48_000, &pcm), addr).unwrap();
-        // 別 source(LINE)は主系統に積まない
+        // 別 source(MSX)は主系統に積まない
         out.send_to(&pack_audio(2, 1, 48_000, &pcm), addr).unwrap();
 
         let t0 = Instant::now();

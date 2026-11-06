@@ -70,7 +70,7 @@ pub struct Line<'a> {
 /// ドットクロックカウンタ(A/V同期用)。
 #[derive(Debug)]
 pub struct Audio<'a> {
-    pub source: u8,          // 0=RGB端子音声, 1=LINE入力, 2=S/PDIF
+    pub source: u8,          // 0=RGB端子音声, 1=MSX(ミニDIN8), 2=S/PDIF, 3=コンポジット
     pub format: u8,          // 0=PCM16
     pub nsamples: u16,       // サンプルフレーム数(L+Rで1)
     pub rate_hz: u32,
