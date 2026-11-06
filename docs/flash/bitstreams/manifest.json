@@ -1,6 +1,12 @@
 {
   "bitstreams": [
     {
+      "name": "v1.0.0",
+      "file": "retrocastx_v1.0.0.bit",
+      "date": "2026-11-06",
+      "note": "gw-v1.0.0: v1.0 基板の音声3系統に対応\n\n- v1.0 基板で増えた3つ目の音声 ADC(小亀基板=コンポジット/S端子の音声)を\n  取り込み、AUDIO の source 3 として送る\n- 音声の source は 0=RGB(D-SUB15) / 1=MSX(ミニDIN8) / 2=S/PDIF /\n  3=コンポジット。v0.9.0 基板の LINE 入力(1)は無くなった\n- 既定で4系統すべてを送る(audio_enable_mask = 0b1111)\n- Viewer は 0.11.0 以降を使うこと(それ以前はコンポジットの音声を選べない)\n\n\n---\nビルド: seed 4 / oss-cad-suite 2026-09-03 / litex 93c8d230e"
+    },
+    {
       "name": "v0.9.5",
       "file": "retrocastx_v0.9.5.bit",
       "date": "2026-10-10",
