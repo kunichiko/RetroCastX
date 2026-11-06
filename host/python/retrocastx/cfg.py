@@ -43,7 +43,7 @@ from . import protocol as proto
 # 実行時に振れるキー(gateware/retrocastx_stream.py の cfg_* と対応)。
 # ここに無いキーも --board 指定で送れる(数値を直接渡せばよい)。
 KNOWN = [
-    (0x0001, "audio_enable_mask", "bit0=RGB音声 bit1=LINE bit2=S/PDIF"),
+    (0x0001, "audio_enable_mask", "bit0=RGB音声 bit1=MSX bit2=S/PDIF bit3=コンポジット"),
     (0x0002, "spdif_rate_hz", "S/PDIFの実測レート[Hz]。0=デコーダが出していない(RO)"),
     (0x0003, "spdif_fifo_level", "S/PDIF送出FIFOの滞留。レートが出ているのに0なら後段(RO)"),
     (0x0004, "spdif_ui", "S/PDIFのUI長×16。45MHzなら48kHz≒117 / 44.1kHz≒128(RO)"),

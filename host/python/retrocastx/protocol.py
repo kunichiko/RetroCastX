@@ -18,9 +18,10 @@ TYPE_SUBSCRIBE = 4  # アプリ→ボード: 映像の送り先を自分に向�
 TYPE_CONFIG = 5     # アプリ→ボード: 設定読み書き(ボードはREPLYを返す)
 
 # AUDIO sources / formats
-AUDIO_SRC_RGB = 0    # D-SUB15(RGB端子)の音声
-AUDIO_SRC_LINE = 1   # 基板上のLINE入力
-AUDIO_SRC_SPDIF = 2  # 光デジタル
+AUDIO_SRC_RGB = 0        # D-SUB15(RGB端子)の音声
+AUDIO_SRC_MSX = 1        # ミニDIN8(MSX/第2入力)の音声
+AUDIO_SRC_SPDIF = 2      # 光デジタル
+AUDIO_SRC_COMPOSITE = 3  # 小亀基板(コンポジット/S端子)の音声
 AUDIO_FMT_PCM16 = 0  # s16le 2ch インターリーブ
 
 # CONFIG

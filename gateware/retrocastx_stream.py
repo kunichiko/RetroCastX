@@ -229,7 +229,8 @@ class RetroCastXStreamer(LiteXModule):
                 my_mac_hi.eq(Cat(b[4], b[5])),
             ]
         # audio_sources: [(stream.Endpoint(AUDIO_LAYOUT/sysドメイン), rate_hz), ...]
-        #   インデックスがプロトコルのsource値(0=RGB端子音声,1=LINE,2=S/PDIF)。
+        #   インデックスがプロトコルのsource値(0=RGB端子音声,1=MSX(ミニDIN8),
+        #   2=S/PDIF,3=コンポジット(小亀基板))。
         #   rate_hz は int 定数(水晶由来)または Signal(32)(S/PDIF実測)
         audio_srcs = audio_sources or []
         n_aud = len(audio_srcs)
@@ -666,7 +667,7 @@ class RetroCastXStreamer(LiteXModule):
         self.cfg_hs_probe_row = Signal(13)
         self.stat_hs_raw    = Signal(16)
         self.stat_hs_tvp    = Signal(16)
-        audio_mask = Signal(3, reset=0b111)      # key 0x0001: 音声ソース有効マスク
+        audio_mask = Signal(4, reset=0b1111)     # key 0x0001: 音声ソース有効マスク
         argus_reg = Signal(32)                   # target=1(ArgusX)の仮レジスタ
                                                  # (実機step4でI2C書き込みに置換)
         self.sync += [
@@ -714,7 +715,7 @@ class RetroCastXStreamer(LiteXModule):
                 cfg_port.eq(rx_src_port),
                 If(cfg_op == 0,
                     If((cfg_target == 0) & (cfg_key == 1),
-                        audio_mask.eq(rx.data[:3]),
+                        audio_mask.eq(rx.data[:4]),
                     ),
                     If((cfg_target == 0) & (cfg_key == 0x10),
                         self.cfg_vbp.eq(rx.data[:13]),
@@ -1579,7 +1580,7 @@ _capture_io = [
 # hardware/adc-frontend のピン割当。ADC側の信号はP3に集約(139-147)、
 # S/PDIFとXO入力のみP4(128/130)。
 # XOは専用クロックピン F1=PCLKC6_1 で受けて aud ドメインを駆動し、その clock を
-# D2(P3 147)から出して両PCM1808のSCKIへ配る。P3のクロック対応ボールはE2=151のみで
+# D2(P3 147)から出して3個のPCM1808のSCKIへ配る。P3のクロック対応ボールはE2=151のみで
 # DATACLKが使用中のため、XOを直接P3で受けることはできない。
 #
 # I2Sの出力(mclk_out/bck/lrck)は SLEWRATE=SLOW + DRIVE=4mA にする。試作配線では
@@ -1590,14 +1591,15 @@ _capture_io = [
 _audio_io = [
     ("audio", 0,
         Subsignal("mclk",      Pins("F1")),   # ← 12.288MHz XO(PCLKC6_1, P4 pin130)
-        Subsignal("mclk_out",  Pins("D2"),    # → PCM1808×2 SCKI(P3 pin147, バッファ)
+        Subsignal("mclk_out",  Pins("D2"),    # → PCM1808×3 SCKI(P3 pin147, バッファ)
                   Misc("SLEWRATE=SLOW"), Misc("DRIVE=4")),
-        Subsignal("bck",       Pins("B1"),    # → PCM1808×2(64fs, P3 pin143)
+        Subsignal("bck",       Pins("B1"),    # → PCM1808×3(64fs, P3 pin143)
                   Misc("SLEWRATE=SLOW"), Misc("DRIVE=4")),
-        Subsignal("lrck",      Pins("C1"),    # → PCM1808×2(fs, P3 pin145)
+        Subsignal("lrck",      Pins("C1"),    # → PCM1808×3(fs, P3 pin145)
                   Misc("SLEWRATE=SLOW"), Misc("DRIVE=4")),
-        Subsignal("dout_dsub", Pins("C2")),   # ← U1(D-SUB15音声, P3 pin141)
-        Subsignal("dout_line", Pins("A3")),   # ← U2(LINE入力, P3 pin139)
+        Subsignal("dout_dsub", Pins("C2")),   # ← U13(D-SUB15音声, P3 pin141)
+        Subsignal("dout_din8", Pins("A3")),   # ← U14(ミニDIN8音声, P3 pin139)
+        Subsignal("dout_kokame", Pins("D3")), # ← U17(小亀基板の音声, P3 pin129)
         Subsignal("spdif",     Pins("E4")),   # ← TOSLINK受信モジュール(P4 pin128)
         IOStandard("LVCMOS33")),
 ]
@@ -1758,7 +1760,7 @@ class RetroCastXStream(SoCMini):
         self.comb += self.cd_aud.clk.eq(audio_pads.mclk)
         self.specials += AsyncResetSynchronizer(self.cd_aud, ResetSignal("sys"))
         platform.add_period_constraint(audio_pads.mclk, 1e9 / 12.288e6)
-        # XO入力をそのまま出し直して両PCM1808のSCKIへ配る(P3 147)。ADCはスレーブで
+        # XO入力をそのまま出し直して3個のPCM1808のSCKIへ配る(P3 147)。ADCはスレーブで
         # SCKIは過サンプリング用、実データはFPGAが出すBCK/LRCKに従うので、出力段で
         # 数nsの遅延が付いても問題にならない。
         # mclk_out=False なら0固定にする: 試作配線ではこの12.288MHzがアナログRGBを
@@ -1769,7 +1771,8 @@ class RetroCastXStream(SoCMini):
         else:
             self.comb += audio_pads.mclk_out.eq(0)
         self.i2s = I2sCapture(audio_pads.bck, audio_pads.lrck,
-                              [audio_pads.dout_dsub, audio_pads.dout_line])
+                              [audio_pads.dout_dsub, audio_pads.dout_din8,
+                               audio_pads.dout_kokame])
         self.spdif = SpdifDecoder(audio_pads.spdif, sys_clk_freq)
 
         # --- ステータス表示 + TVP7002 I2C (共有バス) ---
@@ -2099,7 +2102,9 @@ class RetroCastXStream(SoCMini):
             caps=Cat(self.status.mac_valid, C(0, 15)),
             audio_sources=[(self.i2s.sources[0], 48000),
                            (self.i2s.sources[1], 48000),
-                           (self.spdif.source, self.spdif.rate_hz)],
+                           (self.spdif.source, self.spdif.rate_hz),
+                           # S/PDIF の 2 を動かさずに後ろへ足す(v1.0 で増えた系統)
+                           (self.i2s.sources[2], 48000)],
             capture=capture_obj,
             cfg_vbp=vbp, cfg_hs_offset=hs_offset, cfg_pll_divide=pll_divide,
             # reg 19h の初期値。retrocastx_i2c.py の MUX1 と同じ式にする

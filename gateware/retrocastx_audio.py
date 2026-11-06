@@ -1,8 +1,8 @@
-"""RetroCastX 音声キャプチャ: I2S(PCM1808×2) + S/PDIF(TOSLINK)。
+"""RetroCastX 音声キャプチャ: I2S(PCM1808×3) + S/PDIF(TOSLINK)。
 
 基板仕様(hardware/adc-frontend):
-- 12.288MHz XO(=256fs@48kHz)が両ADCのSCKIとFPGA(F1)へ入る → "aud"クロックドメイン
-- FPGAはMCLKを分周して BCK(64fs)/LRCK(fs) を両ADCへ共通供給、DOUTのみ個別
+- 12.288MHz XO(=256fs@48kHz)はFPGA(F1)へ入り、FPGAが出し直したMCLKが各ADCのSCKIへ → "aud"クロックドメイン
+- FPGAはMCLKを分周して BCK(64fs)/LRCK(fs) を全ADCへ共通供給、DOUTのみ個別
 - S/PDIFはTOSLINK受信モジュールのビットストリームがE19に直結 → sysドメインで
   オーバーサンプリングしてBMC(バイフェーズマーク)復号
 

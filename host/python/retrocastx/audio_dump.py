@@ -4,7 +4,7 @@ Usage:
     python3 -m retrocastx.audio_dump [--board 192.168.10.50] [--seconds 5]
         [--source 0] [--out out.wav]
 
-source: 0=D-SUB15音声(PCM1808 #1), 1=LINE入力(PCM1808 #2), 2=S/PDIF
+source: 0=D-SUB15音声(U13), 1=ミニDIN8音声(U14), 2=S/PDIF, 3=小亀基板音声(U17)
 
 タイムスタンプ順に並べ、欠落分は無音で埋めるので、パケットロスがあっても
 再生時間がずれない。書き出し後に統計(実効サンプルレート・ピーク・欠落)を表示する。
@@ -18,9 +18,10 @@ import wave
 from . import netutil
 from . import protocol as proto
 
-SRC_NAMES = {0: "D-SUB15 audio (PCM1808 #1)",
-             1: "LINE in (PCM1808 #2)",
-             2: "S/PDIF"}
+SRC_NAMES = {0: "D-SUB15 audio (U13)",
+             1: "mini-DIN8 audio (U14)",
+             2: "S/PDIF",
+             3: "composite board audio (U17)"}
 
 
 def main():
@@ -34,7 +35,7 @@ def main():
                     help="送出に使うNICのIP(複数NICで1つに絞りたいとき)")
     ap.add_argument("--port", type=int, default=proto.DEFAULT_PORT)
     ap.add_argument("--seconds", type=float, default=5.0)
-    ap.add_argument("--source", type=int, default=0, choices=(0, 1, 2))
+    ap.add_argument("--source", type=int, default=0, choices=(0, 1, 2, 3))
     ap.add_argument("--out", default=None, help="既定: audio_src<N>.wav")
     args = ap.parse_args()
     out = args.out or f"audio_src{args.source}.wav"

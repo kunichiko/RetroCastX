@@ -57,7 +57,7 @@ class DUT(Module):
     def __init__(self, fps, mtu_payload, interlace, n_audio=0, audio_nsamples=16):
         self.port = _FakeUDPPort()
         self.audio_eps = [stream.Endpoint([("data", 32)]) for _ in range(n_audio)]
-        self.audio_rates = [48000, 44100, 32000][:n_audio]
+        self.audio_rates = [48000, 44100, 32000, 48000][:n_audio]
         self.submodules.streamer = RetroCastXStreamer(
             self.port, SYS, width=W, height=H, fps=fps,
             announce_period=ANN_PERIOD, mode_period=MODE_PERIOD,
@@ -314,12 +314,13 @@ def scenario_c():
                                   *STRANGER)
         for _ in range(300):
             yield
-        # src1(bit1)を無効化(src0のみ残す)
+        # src1/src2 を無効化(src0 と v1.0 で足した src3 を残す)。
+        # bit3 が4bit目まで届いていることもここで確かめる
         yield from _send_datagram(dut.port.source,
                                   proto.pack_config(10, proto.CFG_TARGET_BOARD,
                                                     proto.CFG_OP_SET,
                                                     proto.CFG_KEY_AUDIO_ENABLE,
-                                                    0b001, mac=BOARD_MAC),
+                                                    0b1001, mac=BOARD_MAC),
                                   *CONFIGURER)
         for _ in range(3000):
             yield
@@ -338,12 +339,13 @@ def scenario_c():
                                                     mac=proto.WILDCARD_MAC),
                                   *CONFIGURER)
 
-    datagrams = run_dut(fps, 1472, False, n_cycles, n_audio=2,
+    # v1.0 基板と同じ4系統(アナログ3 + S/PDIF)
+    datagrams = run_dut(fps, 1472, False, n_cycles, n_audio=4,
                         audio_nsamples=NSAMP,
-                        extra_gens=(audio_pusher(0, 25), audio_pusher(1, 25),
+                        extra_gens=(*(audio_pusher(k, 25) for k in range(4)),
                                     config_sender))
 
-    audio = {0: [], 1: []}
+    audio = {0: [], 1: [], 2: [], 3: []}
     replies = []
     asm = FrameAssembler()
     for start, ip, port, payload in datagrams:
@@ -357,11 +359,11 @@ def scenario_c():
         asm.feed(payload)
 
     # AUDIOパケットの構造とペイロード連続性(FIFO経由でサンプル欠落なし)
-    for k in (0, 1):
+    for k in range(4):
         assert audio[k], "no AUDIO packets for source %d" % k
         first = audio[k][0][1]
         assert first.nsamples == NSAMP and first.format == proto.AUDIO_FMT_PCM16
-        assert first.rate_hz == (48000, 44100)[k]
+        assert first.rate_hz == (48000, 44100, 32000, 48000)[k]
         seqs = []
         for _, pkt in audio[k]:
             for i in range(pkt.nsamples):
@@ -374,19 +376,22 @@ def scenario_c():
         assert seqs == [s & 0xFFF for s in expect], \
             "source %d sample continuity broken" % k
 
-    # マスク変更後: src1のAUDIOは止まり、src0は続く
+    # マスク変更後: src1/src2 のAUDIOは止まり、src0/src3 は続く
     slack = 2500  # 変更前に溜まった分+送出中の1パケット
-    last1 = max(start for start, _ in audio[1])
-    assert last1 < MASK_SET_AT + slack, "src1 still streaming after mask change"
-    assert max(start for start, _ in audio[0]) > MASK_SET_AT + slack, \
-        "src0 stopped unexpectedly"
+    for k in (1, 2):
+        last = max(start for start, _ in audio[k])
+        assert last < MASK_SET_AT + slack, \
+            "src%d still streaming after mask change" % k
+    for k in (0, 3):
+        assert max(start for start, _ in audio[k]) > MASK_SET_AT + slack, \
+            "src%d stopped unexpectedly" % k
 
     # CONFIG応答: 値・エコー・REPLYフラグ・応答元MAC。
     # 他ボード宛(OTHER_MAC)は応答なし=3件のみ。ワイルドカードには応答する
     assert len(replies) == 3, "expected 3 CONFIG replies, got %d" % len(replies)
     vals = [(p.target, p.op, p.key, p.value, p.is_reply) for _, p in replies]
     assert vals[0] == (proto.CFG_TARGET_BOARD, proto.CFG_OP_SET,
-                       proto.CFG_KEY_AUDIO_ENABLE, 0b001, True)
+                       proto.CFG_KEY_AUDIO_ENABLE, 0b1001, True)
     assert vals[1] == (proto.CFG_TARGET_ARGUSX, proto.CFG_OP_SET,
                        proto.CFG_KEY_ARGUSX_INPUT, 0x1234, True)
     assert vals[2] == (proto.CFG_TARGET_ARGUSX, proto.CFG_OP_GET,
@@ -395,9 +400,9 @@ def scenario_c():
         "CONFIG reply must carry the board's own MAC"
 
     assert asm.lost_packets == 0, "phantom loss with audio: %d" % asm.lost_packets
-    print("C(audio+config): OK — %d/%d AUDIO pkts (src0/src1), samples "
+    print("C(audio+config): OK — %s AUDIO pkts (src0..3), samples "
           "contiguous, 3 CONFIG replies verified" % (
-              len(audio[0]), len(audio[1])))
+              "/".join(str(len(audio[k])) for k in range(4))))
 
 
 def main():
