@@ -434,6 +434,14 @@ class RetroCastXStreamer(LiteXModule):
         sub_timer = Signal(max=max(int(sys_clk_freq * sub_timeout), 2))
         sub_valid = Signal()
         self.comb += sub_valid.eq(sub_timer != 0)
+        # 状態LED用: 本購読中か / 10秒以内に Viewer から何か来たか
+        host_timer = Signal(max=max(int(sys_clk_freq * sub_timeout), 2))
+        self.stat_streaming = Signal()
+        self.stat_host_seen = Signal()
+        self.comb += [
+            self.stat_streaming.eq(sub_valid),
+            self.stat_host_seen.eq(host_timer != 0),
+        ]
 
         # --- RX: SUBSCRIBE(16B=4ワード) / CONFIG(24B=6ワード)。いずれも
         #     w2/w3に宛先MACを含み、自MACかFF×6(ワイルドカード)のみ受理する ---
@@ -465,6 +473,20 @@ class RetroCastXStreamer(LiteXModule):
         sub_hit = sub_hit_any & ~rx_flags[0]     # flags bit0 = ANNOUNCE_ONLY
         cfg_done = (rx.valid & rx.last & in_pkt & (rx_type == 5) &
                     (rx_widx == 5) & cfg_mac_ok)
+
+        # --- 外側のモジュールへ CONFIG の SET をそのまま渡す口 ---
+        # extra_cfg は「キー1つ=レジスタ1本」なので、表(LEDのキーフレーム)のように
+        # キーの範囲で書く相手には使えない。SET の1回ごとにパルスを出し、
+        # 範囲キーの GET 応答は外から cfg_range_reply で返してもらう。
+        self.cfg_wr_stb = Signal()
+        self.cfg_wr_key = Signal(16)
+        self.cfg_wr_val = Signal(32)
+        self.cfg_range_reply = Signal(32)   # キー 0x0400〜0x07FF の応答値
+        self.comb += [
+            self.cfg_wr_key.eq(cfg_key),
+            self.cfg_wr_val.eq(rx.data),
+            self.cfg_wr_stb.eq(cfg_done & (cfg_op == 0) & (cfg_target == 0)),
+        ]
 
         # --- 個体設定(ボード名 / 静的IP)---
         #
@@ -708,6 +730,12 @@ class RetroCastXStreamer(LiteXModule):
                 sub_timer.eq(int(sys_clk_freq * sub_timeout) - 1),
             ).Elif(sub_timer != 0,
                 sub_timer.eq(sub_timer - 1),
+            ),
+            # Viewer が居るか(状態LEDの橙)。発見だけの SUBSCRIBE や CONFIG でも立てる
+            If(sub_hit_any | cfg_done,
+                host_timer.eq(int(sys_clk_freq * sub_timeout) - 1),
+            ).Elif(host_timer != 0,
+                host_timer.eq(host_timer - 1),
             ),
             # CONFIG受理: SET適用(w5=valueは最終ビートで直接読む) + 応答先ラッチ
             If(cfg_done,
@@ -958,6 +986,10 @@ class RetroCastXStreamer(LiteXModule):
             })
         _add_reply({k: reply_mux.eq(sig) for k, sig in (extra_stats or {}).items()})
         _add_reply({k: reply_mux.eq(sig) for k, sig in (extra_cfg or {}).items()})
+        assert not any(0x0400 <= k < 0x0800 for k in reply_cases), \
+            "0x0400〜0x07FF は cfg_range_reply 用に空けておく"
+        reply_cases["default"] = If(cfg_key[10:16] == 1,
+                                    reply_mux.eq(self.cfg_range_reply))
         self.comb += Case(cfg_key, reply_cases)
         self.sync += cfg_reply_val.eq(Mux(cfg_target == 1, argus_reg, reply_mux))
 
@@ -1803,8 +1835,9 @@ class RetroCastXStream(SoCMini):
                 Subsignal("vs", Pins("F3")),   # 132
                 IOStandard("LVCMOS33")),
             # デバッグ端子 J4 の dbg1〜dbg6(ヘッダ pin3〜8)
+            # ★**dbg1(M1)は v1.0 で状態LEDのデータ線と共用になったので外した。**
+            #   試験信号の R はもう外へ出ない(デバッグ端子 J4 は v1.0 では未実装)
             ("dbg_out", 0,
-                Subsignal("r",  Pins("M1")),   # dbg1 / header pin3
                 Subsignal("g",  Pins("N2")),   # dbg2 / pin4
                 Subsignal("b",  Pins("N3")),   # dbg3 / pin5
                 Subsignal("i",  Pins("T2")),   # dbg4 / pin6
@@ -2011,13 +2044,23 @@ class RetroCastXStream(SoCMini):
         ]
         self.drgb = DigitalRgbProbe(drgb_pads, sys_clk_freq)
         self.comb += [
-            dbg_pads.r.eq(self.drgb_gen.r),
             dbg_pads.g.eq(self.drgb_gen.g),
             dbg_pads.b.eq(self.drgb_gen.b),
             dbg_pads.i.eq(self.drgb_gen.i),
             dbg_pads.hs.eq(self.drgb_gen.hs),
             dbg_pads.vs.eq(self.drgb_gen.vs),
         ]
+        # --- シリアルLED(WS2812 互換)---
+        # 状態LED(メイン基板 D1)と小亀基板のLED。それぞれ別のピンの独立チェーン。
+        # 色の決め方とキーフレーム表の形式は retrocastx_led.py 冒頭
+        from retrocastx_led import StatusLed, KeyframeLeds
+        platform.add_extension([
+            ("led_status", 0, Pins("M1"), IOStandard("LVCMOS33")),   # SO-DIMM 54
+            ("led_kokame", 0, Pins("A2"), IOStandard("LVCMOS33")),   # SO-DIMM 154
+        ])
+        self.led_status = StatusLed(platform.request("led_status"), sys_clk_freq)
+        self.led_kokame = KeyframeLeds(platform.request("led_kokame"), sys_clk_freq)
+
         # I2Cは100kHz(長い手配線+弱プルアップでも読出しの取りこぼしを避ける)
         self.status = StatusDisplay(platform.request("tvp_oled_i2c"), sys_clk_freq,
                                     i2c_freq=100e3, green_input=green_input,
@@ -2123,6 +2166,12 @@ class RetroCastXStream(SoCMini):
                 0x7E: self.eth_led_force,
                 # MDIO: [4:0]PHYAD [12:8]REGAD [19:16]リンクのビット位置
                 0x6C: self.cfg_mdio_sel,
+                # シリアルLED(0x0090〜)。表そのものは 0x0400〜(下で配線)
+                0x90: self.led_kokame.n_led,
+                0x91: self.led_kokame.frames,
+                0x92: self.led_kokame.bank,
+                0x93: self.led_kokame.bright,
+                0x94: self.led_status.bright,
             },
             extra_stats={
                 # デジタルRGB の測定値(読み取り専用)
@@ -2146,8 +2195,23 @@ class RetroCastXStream(SoCMini):
                 0x43: learner.last_ip,
                 0x44: learner.last_mac[:32],
                 0x45: learner.last_mac[32:],
+                # 状態LEDの状態(0=赤 1=橙 2=青)
+                0x95: self.led_status.state,
             },
             )
+        # 状態LEDの入力と、キーフレーム表の書き込み/読み返し(キー 0x0400〜0x05FF)
+        kled = self.led_kokame
+        self.comb += [
+            # TVP の設定は CONFIG でしか変わらないので、SET が来たときだけ書き直す
+            self.status.cfg_touched.eq(self.streamer.cfg_wr_stb),
+            self.led_status.host_seen.eq(self.streamer.stat_host_seen),
+            self.led_status.streaming.eq(self.streamer.stat_streaming),
+            kled.tbl_adr.eq(self.streamer.cfg_wr_key[0:9]),
+            kled.tbl_dat_w.eq(self.streamer.cfg_wr_val),
+            kled.tbl_we.eq(self.streamer.cfg_wr_stb &
+                           (self.streamer.cfg_wr_key[9:16] == 0x0400 >> 9)),
+            self.streamer.cfg_range_reply.eq(kled.tbl_dat_r),
+        ]
 
         if capture:
             # CONFIGで書き換わる画枠パラメータをキャプチャ/TVPへ配る。

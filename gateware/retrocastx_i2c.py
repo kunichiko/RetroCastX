@@ -543,6 +543,42 @@ class StatusDisplay(Module):
               ).Else(subsec.eq(subsec+1)),
         ]
 
+        # --- バスを動かす頻度 ---
+        #
+        # ★**SDA(U16)は i5 の緑LEDと同じピン。** 以前は毎周すべての TVP レジスタを
+        #   書き、OLED の全画面(1024バイト、100kHz で約92ms)を送っていたので、
+        #   バスがほぼ休まず、緑LEDが常に高速点滅していた。必要なときだけ動かす:
+        #
+        #   - TVP への書き込み … CONFIG で何か書かれたとき(`cfg_touched`)と、
+        #     2秒ごとの書き直し。TVP の値は CONFIG でしか変わらないので、変化を
+        #     見逃すことはない。書き直しは TVP がリセットやグリッチで既定に
+        #     戻ったときの保険(以前の毎周書きが担っていた役目)
+        #   - TVP の読み出し … 毎周(100ms ごと)。キャプチャがライン数と
+        #     インターレース判定に使っているので減らさない(以前の約7回/秒より多い)
+        #   - OLED の全画面 … 5秒ごと(診断用の表示なので遅れても困らない)
+        #
+        #   ★**緑LEDの点滅は消し切れない。** 読み出しのたびに SDA が動くので、
+        #     点滅の速さは変わらず暗くなるだけ(実機 2026-11-07)。1秒ごとに
+        #     減らす案もあったが、モード切替への追従を優先して見送った。
+        #     完全に消すにはLEDを外すか、次の基板で SDA を U16 以外へ移す
+        self.cfg_touched = Signal()
+        wr_req   = Signal(reset=1)       # 次の周で TVP へ書く(起動直後は必ず書く)
+        oled_req = Signal(reset=1)       # 次の周で OLED を描き直す
+        wr_take   = Signal()
+        oled_take = Signal()
+        oled_sec = Signal(3)
+        tick_1s = Signal()
+        self.comb += tick_1s.eq(subsec == int(sys_clk_freq)-1)
+        self.sync += [
+            If(tick_1s, oled_sec.eq(Mux(oled_sec == 4, 0, oled_sec + 1))),
+            If(self.cfg_touched | (tick_1s & sec[0]),                  # 2秒ごと
+                wr_req.eq(1),
+            ).Elif(wr_take, wr_req.eq(0)),
+            If(tick_1s & (oled_sec == 4),                              # 5秒ごと
+                oled_req.eq(1),
+            ).Elif(oled_take, oled_req.eq(0)),
+        ]
+
         # --- I2C op 発行ヘルパ(pumpパターン) ---
         sent = Signal()
         def issue(op, data=0, nack=0):
@@ -974,7 +1010,11 @@ class StatusDisplay(Module):
         ]
         fsm.act("FMT", self.resetb.eq(1),
             twr.adr.eq(faddr), twr.dat_w.eq(fchar), twr.we.eq(1),
-            If(fi == NFMT - 1, NextState("OD_START")).Else(NextValue(fi, fi+1)))
+            If(fi == NFMT - 1,
+                If(oled_req,
+                    oled_take.eq(1), NextState("OD_START"),
+                ).Else(NextValue(rst_cnt, 0), NextState("DWELL")),
+            ).Else(NextValue(fi, fi+1)))
 
         # 5) OLED data フレーム: START,0x78,0x40,<1024>,STOP
         fsm.act("OD_START", self.resetb.eq(1), *issue(OP_START),
@@ -998,18 +1038,22 @@ class StatusDisplay(Module):
         )
         fsm.act("OD_STOP", self.resetb.eq(1), *issue(OP_STOP),
             If(m.done, NextValue(rst_cnt,0), NextState("DWELL")))
-        # 6) 次周まで少し待つ(~30fps)
+        # 6) 次周まで待つ(100ms)。書き込みが要るかどうかはここで決める
         #
         # ★**EEPROMへの書込みはここに割り込ませる。** I2Cバスは TVP と OLED と
-        #   共有なので、表示ループの合間でしか触れない。1周(~33ms)以内に始まる。
+        #   共有なので、表示ループの合間でしか触れない。1周(100ms)以内に始まる。
         dwell = Signal(24)
         fsm.act("DWELL", self.resetb.eq(1),
             NextValue(dwell, dwell+1),
-            If(dwell == int(sys_clk_freq/30), NextValue(dwell,0),
+            If(dwell == int(sys_clk_freq/10), NextValue(dwell,0),
                 If(save_pending,
                     NextValue(cp_i, 0), NextValue(cp_sum, 0),
                     NextState("CW_SUM"),
-                ).Else(NextState("TP_START"))))
+                ).Else(
+                    # 書かない周は読み出しのステップから始める
+                    wr_take.eq(1),
+                    NextValue(step, Mux(wr_req, 0, NWRITE)),
+                    NextState("TP_START"))))
 
         # 7) 個体設定ページを EEPROM へ書く。
         #

@@ -135,5 +135,66 @@ def main():
     print("\n[OK] 共有I2C: TVP ACK + reg 0x11/0x22 読出、OLED init/data フレーム、TVP読出トランザクション 全て確認")
 
 
+def bus_rate():
+    """バスを動かす頻度(SDA = i5 の緑LED なので、必要なときだけ動かす)。
+
+    起動時の OLED 全画面が終わってから CONFIG の書き込み(`cfg_touched`)を1回
+    入れ、その直後の周だけが TVP へ書き、あとは読み出しだけの周が続くことを
+    確かめる。OLED の全画面は起動時の1回だけ(次は5秒後)。
+
+    ★このシミュレーションでは I2C がシステムクロックの1/4と速く、バイトごとの
+      固定の手間が効いて、OLED の全画面に2秒前後かかる(実機は約92ms)。
+      だから CONFIG を入れる時刻は「全画面が終わってから」で決める。
+    """
+    clk = 40000            # 1秒 = 40000 サイクル。I2C は 10kHz(1ビット4サイクル)
+    dut = StatusDisplay(pads=None, sys_clk_freq=clk, i2c_freq=10000)
+    log = []
+    marks = {}
+
+    def tb():
+        bus = I2CBus()
+        n_frames = 0
+        touch_at = None
+        for cyc in range(5 * clk):
+            if touch_at is None and "oled_end" in marks:
+                touch_at = cyc + int(0.35 * clk)
+            if cyc == touch_at:
+                marks["touch"] = cyc / clk
+                yield dut.cfg_touched.eq(1)
+            elif touch_at is not None and cyc == touch_at + 1:
+                yield dut.cfg_touched.eq(0)
+            if touch_at is not None and cyc == touch_at + int(0.9 * clk):
+                break
+            scl = 0 if (yield dut.scl_low) else 1
+            m_sda = 0 if (yield dut.sda_low) else 1
+            line = bus.step(scl, m_sda)
+            yield dut.m.sda_in.eq(line)
+            if len(bus.frames) != n_frames:
+                for f in bus.frames[n_frames:]:
+                    log.append((cyc / clk, f))
+                    if f[:2] == [0x78, 0x40]:
+                        marks["oled_end"] = cyc / clk
+                n_frames = len(bus.frames)
+            yield
+
+    run_simulation(dut, tb())
+    writes = [t for t, f in log if f[:2] == [0xB8, 0x19]]
+    reads = [t for t, f in log if f[:2] == [0xB8, 0x37]]
+    oled = [t for t, f in log if f[:2] == [0x78, 0x40]]
+    t = marks["touch"]
+    print(f"bus_rate: OLED全画面 {['%.2fs' % x for x in oled]} / CONFIG {t:.2f}s / "
+          f"0x19 書込 {['%.2fs' % x for x in writes]}")
+    after = [w for w in writes if w > t]
+    assert after and after[0] < t + 0.25, f"CONFIG の直後に書いていない: {writes}"
+    quiet = [w for w in after[1:]]
+    assert not quiet, f"CONFIG 後に余計な書き込みがある: {quiet}"
+    reads_after = [r for r in reads if r > after[0]]
+    assert len(reads_after) >= 4, f"読み出しが毎周続いていない: {len(reads_after)}回"
+    assert len(oled) == 1, f"OLED の全画面が多すぎる: {oled}"
+    print(f"[OK] バスの頻度: 書込は必要なときだけ、読出は毎周({len(reads_after)}回)、"
+          "OLEDは起動時の1回")
+
+
 if __name__ == "__main__":
     main()
+    bus_rate()
