@@ -207,6 +207,8 @@ pub fn parse(d: &[u8]) -> Result<Packet<'_>, &'static str> {
 }
 
 pub const CFG_FLAG_REPLY: u8 = 0x01;
+pub const CFG_OP_SET: u8 = 0;
+pub const CFG_OP_GET: u8 = 1;
 
 /// 全ボードに向けるワイルドカード宛先MAC(発見用/単一ボードLAN専用)。
 pub const WILDCARD_MAC: [u8; 6] = [0xFF; 6];

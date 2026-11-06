@@ -36,6 +36,7 @@ mod fullscreen;
 mod geometry;
 mod keytap;
 mod latency;
+mod leds;
 #[cfg(target_os = "macos")]
 mod metal_present;
 mod netcheck;
@@ -1120,6 +1121,11 @@ struct Session {
     spdif_mix: bool,
     /// S/PDIF の音量(主系統とは独立)
     spdif_volume: f32,
+    /// ボードのLEDを Viewer から設定するか(false ならボードの既定のまま)
+    led_control: bool,
+    leds: leds::LedSettings,
+    /// LED の送信スレッドへの要求。書き換えると送り直す
+    led_req: Arc<std::sync::Mutex<leds::LedRequest>>,
     /// 実際にウィンドウへ適用済みの値。設定変更を1回だけ送るために持つ
     clean_size_applied: [f32; 2],
     clean_undecorated_applied: bool,
@@ -1316,6 +1322,9 @@ impl Session {
             audio_auto: cfg.audio_auto,
             spdif_mix: cfg.spdif_mix,
             spdif_volume: cfg.spdif_volume,
+            led_control: cfg.led_control,
+            leds: cfg.leds.clone(),
+            led_req: Default::default(),
             clean_size_applied: cfg.clean_size,
             clean_undecorated_applied: cfg.clean_undecorated,
             bezel_tex: None,
@@ -1355,6 +1364,9 @@ impl Session {
         // ★パネルを一度も開かなくても効くように、起動時に一度入れておく。
         //   UI の描画に依存させると「閉じたまま起動 → S/PDIF が鳴らない」になる。
         app.shared.aux.set(app.spdif_mix, app.spdif_volume);
+        // ボードのLED。送り先は受信スレッドが掴んだボード(claimed)
+        app.push_led_request();
+        leds::spawn(app.shared.clone(), port, app.led_req.clone());
         app
     }
 
@@ -1585,6 +1597,8 @@ impl Session {
             audio_auto: self.audio_auto,
             spdif_mix: self.spdif_mix,
             spdif_volume: self.spdif_volume,
+            led_control: self.led_control,
+            leds: self.leds.clone(),
             filter: self.filter,
             interlace_decay: self.interlace_decay,
             adj_hue_deg: self.adjust.hue_deg,
@@ -1975,6 +1989,80 @@ impl Session {
         }
         if !auto {
             self.set_audio_source(src);
+        }
+    }
+
+    /// LED の送信スレッドへいまの設定を渡す(同じなら何も起きない)。
+    fn push_led_request(&mut self) {
+        let want = self.led_control.then(|| self.leds.clone());
+        self.led_req.lock().unwrap().want = want;
+    }
+
+    /// ボードのLED(小亀基板のLED列と、メイン基板の状態LED)。
+    ///
+    /// ★**状態LEDの色はボードが決める**(赤=Viewer無し / 橙=見つけているが
+    ///   受信していない / 青=送信中)。Viewer から変えるのは明るさだけ。
+    ///   Viewer が居ないときにこそ意味のある表示なので、Viewer に握らせない。
+    fn led_ui(&mut self, ui: &mut egui::Ui) {
+        let before = (self.led_control, self.leds.clone());
+        ui.checkbox(&mut self.led_control, "Viewer から設定する")
+            .on_hover_text(
+                "外すと、ボードの既定(ゆっくりしたレインボー)のままにします。\n\
+                 設定はボードに残らないので、電源を入れ直すたびに送り直します");
+        ui.add_enabled_ui(self.led_control, |ui| {
+            let l = &mut self.leds;
+            ui.horizontal(|ui| {
+                theme::label_col(ui, "効果");
+                egui::ComboBox::from_id_salt("led_effect")
+                    .selected_text(l.effect.label())
+                    .width(120.0)
+                    .show_ui(ui, |ui| {
+                        for e in leds::Effect::ALL {
+                            ui.selectable_value(&mut l.effect, e, e.label());
+                        }
+                    });
+                if l.effect.uses_color() {
+                    ui.color_edit_button_srgb(&mut l.color);
+                }
+            });
+            if l.effect.uses_period() {
+                ui.horizontal(|ui| {
+                    theme::label_col(ui, "周期");
+                    ui.add(egui::Slider::new(&mut l.period_ms, 200..=20_000)
+                        .logarithmic(true).suffix(" ms"));
+                });
+            }
+            if l.effect == leds::Effect::Rainbow {
+                ui.horizontal(|ui| {
+                    theme::label_col(ui, "色のずれ");
+                    ui.add(egui::Slider::new(&mut l.spread_pct, 0..=100).suffix(" %"))
+                        .on_hover_text("0% で全部同じ色、100% で並び全体に虹が1周");
+                });
+            }
+            ui.horizontal(|ui| {
+                theme::label_col(ui, "明るさ");
+                ui.add(egui::Slider::new(&mut l.bright, 0..=255));
+            });
+            ui.horizontal(|ui| {
+                theme::label_col(ui, "LEDの数");
+                ui.add(egui::Slider::new(&mut l.count, 1..=leds::MAX_LEDS))
+                    .on_hover_text("小亀基板に載っている LED の個数");
+            });
+            ui.horizontal(|ui| {
+                theme::label_col(ui, "状態LED");
+                ui.add(egui::Slider::new(&mut l.status_bright, 0..=255))
+                    .on_hover_text(
+                        "メイン基板の状態LEDの明るさ。色はボードが決めます\n\
+                         (赤=Viewer無し / 橙=見つけているが受信していない / 青=送信中)");
+            });
+        });
+        let status = self.led_req.lock().unwrap().status.clone();
+        if self.led_control && !status.is_empty() {
+            ui.weak(status);
+        }
+        if (self.led_control, self.leds.clone()) != before {
+            self.mark_settings_dirty();
+            self.push_led_request();
         }
     }
 
@@ -5261,6 +5349,10 @@ impl Session {
 
                 Self::section(ui, "配信出力");
                 self.clean_out_ui(ui);
+                ui.separator();
+
+                Self::section(ui, "LED");
+                self.led_ui(ui);
                 ui.separator();
 
                 Self::section(ui, "Mode");

@@ -220,6 +220,11 @@ pub struct Settings {
     pub spdif_volume: f32,
     /// 低遅延全画面で present をリフレッシュに合わせるか(`--vsync`)
     pub fullscreen_vsync: bool,
+    /// ボードのLEDを Viewer から設定するか。false ならボードの既定に任せる
+    pub led_control: bool,
+    /// ボードのLEDの設定。**ボードには残らない**(電源で既定に戻る)ので、
+    /// 繋ぐたびに Viewer が送り直す
+    pub leds: crate::leds::LedSettings,
     /// 音声入力を映像ソースに追従させるか。
     /// 既定は on(入力を切り替えたら音声も付いてくるのが自然なので)。
     pub audio_auto: bool,
@@ -277,6 +282,8 @@ impl Default for Settings {
             spdif_mix: false,
             spdif_volume: 1.0,
             fullscreen_vsync: false,
+            led_control: true,
+            leds: Default::default(),
             filter: 2,
             dot_a_milli: default_dot_a(),
             interlace_decay: 1.0,
@@ -479,6 +486,10 @@ impl Settings {
                 "audio_auto" => s.audio_auto = v != "false",
                 "spdif_mix" => s.spdif_mix = v == "true",
                 "fullscreen_vsync" => s.fullscreen_vsync = v == "true",
+                "led_control" => s.led_control = v != "false",
+                "leds" => {
+                    if let Some(l) = crate::leds::LedSettings::parse(v) { s.leds = l }
+                }
                 "spdif_volume" => {
                     if let Ok(x) = v.parse::<f32>() { s.spdif_volume = x.clamp(0.0, 1.5) }
                 }
@@ -583,7 +594,9 @@ impl Settings {
              audio_auto = {}\n\
              spdif_mix = {}\n\
              spdif_volume = {:.3}\n\
-             fullscreen_vsync = {}\n",
+             fullscreen_vsync = {}\n\
+             led_control = {}\n\
+             leds = {}\n",
             self.volume,
             self.muted,
             self.audio_source.map(|v| v.to_string()).unwrap_or_else(|| "off".into()),
@@ -630,6 +643,8 @@ impl Settings {
             self.spdif_mix,
             self.spdif_volume,
             self.fullscreen_vsync,
+            self.led_control,
+            self.leds.format(),
         );
         let mut body = body;
         for (khz, v) in &self.band_pll {
