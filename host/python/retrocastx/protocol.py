@@ -259,6 +259,7 @@ class Announce:
     caps: int
     name: str
     seq: int = 0
+    flags: int = 0       # ANN_FLAG_*(送り先の状態)
 
     def pack(self, seq: int) -> bytes:
         import socket as _s
@@ -330,18 +331,26 @@ def pack_config(seq: int, target: int, op: int, key: int, value: int = 0,
 
 # SUBSCRIBE flags
 SUB_FLAG_ANNOUNCE_ONLY = 0x01  # 発見のみ(ストリーム送り先は変更しない)
+SUB_FLAG_RENEW = 0x02          # 延長専用(いまの送り先から来たときだけ効く。奪わない)
+
+# ANNOUNCE の共通ヘッダ flags。送り先の状態を、ANNOUNCE の宛先から見て返す
+ANN_FLAG_OWNER_INFO = 0x01     # 下の2ビットが有効(古いゲートウェアは 0)
+ANN_FLAG_STREAMING = 0x02      # 映像をどこかへ送っている(購読が生きている)
+ANN_FLAG_YOURS = 0x04          # その送り先が、この ANNOUNCE の宛先
 
 
 def pack_subscribe(seq: int, announce_only: bool = False,
-                   mac: bytes = WILDCARD_MAC) -> bytes:
+                   mac: bytes = WILDCARD_MAC, renew: bool = False) -> bytes:
     """アプリ→ボード。ブロードキャスト可。
 
     macで宛先ボードを指名する(WILDCARD_MACで全ボード)。一致したボードは
     ANNOUNCEを送信元へユニキャストで返し、announce_only=False なら
     以後の映像ストリームの送り先もこのパケットの送信元に切り替える。
     ワイルドカードでの本購読は単一ボードLAN専用(全ボードがストリームを向けてくる)。
+    renew=True は延長専用で、送信元がいまの送り先のときだけ効く(奪わない)。
     """
-    flags = SUB_FLAG_ANNOUNCE_ONLY if announce_only else 0
+    flags = (SUB_FLAG_ANNOUNCE_ONLY if announce_only else 0) | \
+        (SUB_FLAG_RENEW if renew else 0)
     return (_COMMON.pack(MAGIC, VERSION, TYPE_SUBSCRIBE, flags, 0, seq & 0xFFFF)
             + _SUB.pack(mac))
 
@@ -386,7 +395,8 @@ def parse(datagram: bytes) -> Tuple[int, object]:
         import socket as _s
         mac, ip4, port, fw, caps, name = _INFO.unpack_from(body, 0)
         return ptype, Announce(mac, _s.inet_ntoa(ip4), port, fw, caps,
-                               name.rstrip(b"\0").decode("ascii", "replace"), seq=seq)
+                               name.rstrip(b"\0").decode("ascii", "replace"), seq=seq,
+                               flags=flags)
     if ptype == TYPE_AUDIO:
         if len(body) < AUDIO_HDR_SIZE:
             raise ValueError("short AUDIO packet")

@@ -10,6 +10,10 @@ A) プログレッシブ + ライン断片化(小MTU):
      LAST_FRAGMENT は最終断片のみ、断片タイムスタンプ = ライン先頭 + offset
    - 再構成フレームが pattern.make_frame と(RGB555量子化を除き)ビット一致
    - 購読タイムアウトでストリーム停止
+D) 送り先の後勝ち(RENEW):
+   - 後から来た通常 SUBSCRIBE が送り先を奪う
+   - 奪われた側の RENEW では奪い返せず、ANNOUNCE で「送信中・宛先は別」と返る
+   - 送り先の RENEW には「宛先はあなた」と返る
 B) インターレース:
    - MODE mflags bit0、vactive=フルフレーム行数
    - frame=フィールド毎+1、FIELD_ODD=フィールド極性、行番号の偶奇=極性
@@ -132,10 +136,10 @@ def collector(dut, out, n_cycles):
 
 
 def run_dut(fps, mtu_payload, interlace, n_cycles, n_audio=0,
-            audio_nsamples=16, extra_gens=()):
+            audio_nsamples=16, extra_gens=(), drv=driver):
     dut = DUT(fps, mtu_payload, interlace, n_audio, audio_nsamples)
     datagrams = []
-    gens = [driver(dut), collector(dut, datagrams, n_cycles)]
+    gens = [drv(dut), collector(dut, datagrams, n_cycles)]
     gens += [g(dut) for g in extra_gens]
     run_simulation(dut, gens)
     return datagrams
@@ -405,10 +409,67 @@ def scenario_c():
               "/".join(str(len(audio[k])) for k in range(4))))
 
 
+VIEWER_A = (convert_ip("192.168.10.3"), 50001)
+VIEWER_B = (convert_ip("192.168.10.4"), 50002)
+TAKE_A, TAKE_B, RENEW_A, RENEW_B = 100, 1500, 3000, 4500
+
+
+def scenario_d():
+    """2つの Viewer: 後勝ちで奪え、奪われた側の延長(RENEW)では奪い返せない。"""
+    fps, mtu, n_cycles = 300.0, 60, 6_500
+    done = {}
+
+    def drv(dut):
+        steps = [(TAKE_A, False, VIEWER_A), (TAKE_B, False, VIEWER_B),
+                 (RENEW_A, True, VIEWER_A), (RENEW_B, True, VIEWER_B)]
+        t = 0
+        for i, (at, renew, who) in enumerate(steps):
+            while t < at:
+                yield
+                t += 1
+            yield from _send_datagram(
+                dut.port.source,
+                proto.pack_subscribe(i, mac=BOARD_MAC, renew=renew), *who)
+            t += 5
+            done[at] = t
+
+    datagrams = run_dut(fps, mtu, False, n_cycles, drv=drv)
+    stream_types = (proto.TYPE_MODE, proto.TYPE_LINE)
+    to_a = [s for s, ip, port, p in datagrams
+            if (ip, port) == VIEWER_A and proto.parse(p)[0] in stream_types]
+    to_b = [s for s, ip, port, p in datagrams
+            if (ip, port) == VIEWER_B and proto.parse(p)[0] in stream_types]
+    assert to_a and min(to_a) < TAKE_B, "A never got the stream"
+    # B の SUBSCRIBE 以降は A に流れない(送出中だった1パケットの分だけ余裕を見る)
+    late_a = [s for s in to_a if s > done[TAKE_B] + 40]
+    assert not late_a, "stream still went to A after B took over: %s" % late_a[:5]
+    # A の RENEW のあとも B に流れ続ける(奪い返していない)
+    assert any(s > done[RENEW_A] + 200 for s in to_b), "A's RENEW stole the stream back"
+
+    def first_ann(who, after):
+        for s, ip, port, p in datagrams:
+            if s > after and (ip, port) == who:
+                ptype, pkt = proto.parse(p)
+                if ptype == proto.TYPE_INFO:
+                    return pkt.flags
+        raise AssertionError("no ANNOUNCE to %r after %d" % (who, after))
+
+    f_a = first_ann(VIEWER_A, done[RENEW_A])
+    assert f_a == proto.ANN_FLAG_OWNER_INFO | proto.ANN_FLAG_STREAMING, hex(f_a)
+    f_b = first_ann(VIEWER_B, done[RENEW_B])
+    assert f_b == (proto.ANN_FLAG_OWNER_INFO | proto.ANN_FLAG_STREAMING
+                   | proto.ANN_FLAG_YOURS), hex(f_b)
+    f_take = first_ann(VIEWER_A, done[TAKE_A])
+    assert f_take & proto.ANN_FLAG_YOURS, "reply to A's SUBSCRIBE lacks YOURS"
+    print("D(take-over): OK — later SUBSCRIBE wins, RENEW does not steal back "
+          "(A=%#x, B=%#x)" % (f_a, f_b))
+
+
 def main():
     scenario_a()
     scenario_b()
     scenario_c()
+    scenario_d()
     print("all scenarios passed")
 
 

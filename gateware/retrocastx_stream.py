@@ -6,7 +6,9 @@
 - ANNOUNCE(TYPE_INFO): 毎秒送出 + SUBSCRIBE受信時に送信元へ即時返信
 - SUBSCRIBE(type=4)受信: flags bit0(ANNOUNCE_ONLY)=0 なら映像ストリームの
   送り先をそのパケットの送信元(IP/ポート)に切替。最後のSUBSCRIBEから
-  10秒で購読失効(PC側 receiver --subscribe が定期再送する)
+  10秒で購読失効(PC側 receiver --subscribe が定期再送する)。
+  flags bit1(RENEW)=1 なら、いまの送り先から来たときだけ延長する(奪わない)
+- ANNOUNCE の flags: bit0=送り先の情報あり / bit1=送信中 / bit2=宛先が送り先
 - MODE(type=1): 購読開始時に即時 + 毎秒再送
 - LINE(type=0): テストパターン(host/python の pattern.make_frame と同一の
   カラーバー+スイープライン+白枠)を RGB555 で1ライン=1パケット送出
@@ -451,6 +453,14 @@ class RetroCastXStreamer(LiteXModule):
         sub_timer = Signal(max=max(int(sys_clk_freq * sub_timeout), 2))
         sub_valid = Signal()
         self.comb += sub_valid.eq(sub_timer != 0)
+        # ANNOUNCE の宛先がいまの映像の送り先か。Viewer はこれで「奪われた」と
+        # 「ボードが消えた」を見分ける(どちらも映像が止まるだけでは区別できない)。
+        # 比較はレジスタに落とす。1サイクル遅れるので、SUBSCRIBE への即答は
+        # sub_hit_any_d で1サイクル待ってから出す
+        ann_yours = Signal()
+        sub_hit_any_d = Signal()
+        self.sync += ann_yours.eq(sub_valid & (ann_ip == sub_ip) &
+                                  (ann_port == sub_port))
         # 状態LED用: 本購読中か / 10秒以内に Viewer から何か来たか
         host_timer = Signal(max=max(int(sys_clk_freq * sub_timeout), 2))
         self.stat_streaming = Signal()
@@ -474,6 +484,7 @@ class RetroCastXStreamer(LiteXModule):
         rx_widx = Signal(3)                      # 先頭以降のワード番号(1..7飽和)
         rx_src_ip = Signal(32)
         rx_src_port = Signal(16)
+        rx_is_sub = Signal()                     # 送信元 = いまの映像の送り先
         rx_mac_lo = Signal(32)
         cfg_target = Signal(8)
         cfg_op = Signal(8)
@@ -487,7 +498,13 @@ class RetroCastXStreamer(LiteXModule):
         sub_mac_ok = (((rx_mac_lo == my_mac_lo) & (rx.data[0:16] == my_mac_hi)) |
                       ((rx_mac_lo == 0xFFFFFFFF) & (rx.data[0:16] == 0xFFFF)))
         sub_hit_any = sub_done & sub_mac_ok
-        sub_hit = sub_hit_any & ~rx_flags[0]     # flags bit0 = ANNOUNCE_ONLY
+        self.sync += sub_hit_any_d.eq(sub_hit_any)
+        # flags bit0 = ANNOUNCE_ONLY。bit1 = RENEW は延長専用で、いまの送り先から
+        # 来たときだけ受け付ける。
+        # ★**Viewer の定期送信で送り先を奪い返させない。** 以前は延長も通常の
+        #   SUBSCRIBE だったので、2つの Viewer が2秒ごとに送り先を交互に奪い合った。
+        #   奪うのは起動時や接続操作の通常 SUBSCRIBE だけにして、後勝ちにする。
+        sub_hit = sub_hit_any & ~rx_flags[0] & (~rx_flags[1] | rx_is_sub)
         cfg_done = (rx.valid & rx.last & in_pkt & (rx_type == 5) &
                     (rx_widx == 5) & cfg_mac_ok)
 
@@ -724,6 +741,11 @@ class RetroCastXStreamer(LiteXModule):
                 ).Else(
                     If(rx_widx != 7, rx_widx.eq(rx_widx + 1)),
                     If(in_pkt & (rx_widx == 2), rx_mac_lo.eq(rx.data)),
+                    # 送信元の比較は w1 で済ませておく(判定する w3 の組合せ路を短く)
+                    If(in_pkt & (rx_widx == 1),
+                        rx_is_sub.eq((rx_src_ip == sub_ip) &
+                                     (rx_src_port == sub_port)),
+                    ),
                     If(in_pkt & (rx_widx == 3),
                         cfg_mac_ok.eq(
                             ((rx_mac_lo == my_mac_lo) &
@@ -1079,7 +1101,7 @@ class RetroCastXStreamer(LiteXModule):
             # クリアより後に書く=セット優先
             If(ann_clr, ann_pending.eq(0)),
             If(mode_clr, mode_pending.eq(0)),
-            If((ann_cnt == 0) | sub_hit_any, ann_pending.eq(1)),
+            If((ann_cnt == 0) | sub_hit_any_d, ann_pending.eq(1)),
             If((sub_valid & (mode_cnt == 0)) | sub_hit, mode_pending.eq(1)),
         ]
         if cap_mode:
@@ -1205,7 +1227,10 @@ class RetroCastXStreamer(LiteXModule):
             #     ままだと複数台を一覧で見分けられない。
             _T_ANN: Case(word_idx, dict(
                 [(i, hdr.eq(ann_words[i]))
-                 for i in range(n_ann_words) if i not in (1, 2, 3, 4, 5, 6, 7, 8, 9)]
+                 for i in range(n_ann_words) if i not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)]
+                # ワード0 = magic,ver,type + flags(送り先の状態)
+                + [(0, hdr.eq(Cat(C(ann_words[0] & 0xFFFFFF, 24),
+                                  C(1, 1), sub_valid, ann_yours, C(0, 5))))]
                 + [(6 + i, hdr.eq(self.stat_name[32 * i:32 * i + 32]))
                    for i in range(4)]
                 + [(2, hdr.eq(my_mac_lo)),
