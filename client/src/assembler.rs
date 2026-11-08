@@ -79,6 +79,13 @@ pub struct FrameAssembler {
     /// 合っていればオーバーシュート(輪郭のリンギング)は出ない。
     /// 高域が 1/(1-a) 倍に持ち上がるぶん雑音も増えるが、実測 noise 0.4% なら問題ない。
     pub dot_a_milli: u32,
+    /// RGB888 の3チャンネルが **Pr/Y/Pb**(コンポーネント)か。
+    ///
+    /// TVP7002 は YPbPr→RGB の色空間変換を持たない(RGB→YCbCr の向きだけ)ので、
+    /// ボードは赤ch=Pr / 緑ch=Y / 青ch=Pb をそのまま RGB888 の枠で送ってくる。
+    /// ここで BT.601 のスタジオレンジ(Y 16〜235 / 色差 128±112)として RGB に直す。
+    /// レベルの根拠は profiles.rs の REGS_COMPONENT(粗ゲイン1.2倍・粗オフセット+16)。
+    pub ycbcr: bool,
     /// 行ごとの「直前に書いた生の値」と「その次のx」。断片化したラインで
     /// v[n-1] を跨いで繋ぐために持つ。**復元後ではなく生の値**を保つこと。
     last_raw: Vec<[u8; 3]>,
@@ -130,6 +137,7 @@ impl FrameAssembler {
             parity_alt: 0,
             interlace_measured: false,
             dot_a_milli: 0,
+            ycbcr: false,
             last_raw: Vec::new(),
             last_x: Vec::new(),
             decay: 0.8,
@@ -379,8 +387,13 @@ impl FrameAssembler {
                             };
                         for (i, px) in l.pixels.chunks_exact(3).enumerate().take(fit) {
                             let o = base + i * 4;
+                            let px = if self.ycbcr {
+                                ypbpr_to_rgb(px[1], px[2], px[0])
+                            } else {
+                                [px[0], px[1], px[2]]
+                            };
                             if a == 0 {
-                                self.fb[o..o + 3].copy_from_slice(px);
+                                self.fb[o..o + 3].copy_from_slice(&px);
                             } else {
                                 let raw = [px[0] as i32, px[1] as i32, px[2] as i32];
                                 // d[n] = (v[n] - a·v[n-1]) / (1-a)
@@ -636,6 +649,20 @@ impl FrameAssembler {
     }
 }
 
+/// BT.601 スタジオレンジの Y/Cb/Cr(8bit)を RGB に直す。
+///
+/// 係数は ITU-R BT.601 の逆変換を 256 倍した整数(Y 16〜235 → 0〜255、
+/// 色差 16〜240 → ±0.5)。SDTV/EDTV(240p/480i/480p)は全部 601 の行列で良い。
+fn ypbpr_to_rgb(y: u8, cb: u8, cr: u8) -> [u8; 3] {
+    let y = 298 * (y as i32 - 16);
+    let cb = cb as i32 - 128;
+    let cr = cr as i32 - 128;
+    let r = (y + 409 * cr + 128) >> 8;
+    let g = (y - 100 * cb - 208 * cr + 128) >> 8;
+    let b = (y + 516 * cb + 128) >> 8;
+    [r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -724,5 +751,18 @@ mod tests {
             assert_eq!(&f.rgba[x * 4..x * 4 + 3], &[y, y, y],
                        "x={x} は Y をそのまま3成分に置く");
         }
+    }
+
+    /// コンポーネントの基準色が RGB の基準色に戻ること(BT.601 の75%カラーバー)
+    #[test]
+    fn ypbpr_bars_map_to_rgb() {
+        use super::ypbpr_to_rgb;
+        let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| (*x as i32 - y as i32).abs() <= 2);
+        assert_eq!(ypbpr_to_rgb(16, 128, 128), [0, 0, 0]);
+        assert_eq!(ypbpr_to_rgb(235, 128, 128), [255, 255, 255]);
+        // 75% 赤 / 緑 / 青(Y, Cb, Cr は BT.601 の表の値)
+        assert!(near(ypbpr_to_rgb(65, 100, 212), [191, 0, 0]), "{:?}", ypbpr_to_rgb(65, 100, 212));
+        assert!(near(ypbpr_to_rgb(112, 72, 58), [0, 191, 0]), "{:?}", ypbpr_to_rgb(112, 72, 58));
+        assert!(near(ypbpr_to_rgb(35, 212, 114), [0, 0, 191]), "{:?}", ypbpr_to_rgb(35, 212, 114));
     }
 }

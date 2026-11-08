@@ -1698,13 +1698,9 @@ impl Session {
                     //   YC8 が要るソース(コンポジット/S端子)や、ボードが
                     //   別種の形式で止まっている場合は上書きする(救済が要る)。
                     let have = self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt);
-                    let is_rgb = |f: u8| matches!(f, protocol::PIXFMT_RGB888
-                                                    | protocol::PIXFMT_RGB555
-                                                    | protocol::PIXFMT_RGB565);
-                    let keep_fmt = match (p.pixfmt(), have) {
-                        (Some(want), Some(h)) if want != protocol::PIXFMT_YC8 => is_rgb(h),
-                        _ => false,
-                    };
+                    let keep_fmt = !p.needs_exact_pixfmt()
+                        && p.pixfmt().is_some()
+                        && have.is_some_and(|h| p.pixfmt_ok(h));
                     let mut n = 0;
                     let mut wrote: Vec<(u16, u32)> = Vec::new();
                     for (k, v, _) in p.input_regs {
@@ -1742,15 +1738,7 @@ impl Session {
                 p.pixfmt(),
                 self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt),
             ) {
-                let is_rgb = |f: u8| matches!(f, protocol::PIXFMT_RGB888
-                                                | protocol::PIXFMT_RGB555
-                                                | protocol::PIXFMT_RGB565);
-                let ok = if want == protocol::PIXFMT_YC8 {
-                    have == protocol::PIXFMT_YC8
-                } else {
-                    is_rgb(have)
-                };
-                if !ok {
+                if !p.pixfmt_ok(have) {
                     ui.colored_label(
                         theme::AMBER,
                         format!(
@@ -2510,10 +2498,7 @@ impl Session {
         //
         //   なので**選んでいる映像ソースが YC8 を要求するか**も見る。こちらは
         //   ボードの応答を待たずに決まるので、書き込みと復元の順序に依存しない。
-        if profiles::by_key(&self.source_profile)
-            .and_then(|p| p.pixfmt())
-            .is_some_and(|f| f == protocol::PIXFMT_YC8)
-        {
+        if profiles::by_key(&self.source_profile).is_some_and(|p| p.pll_fixed()) {
             return true;
         }
         matches!(self.shared.mode.lock().unwrap().as_ref(),
@@ -2604,26 +2589,16 @@ impl Session {
         if p.input_regs.is_empty() {
             return;
         }
-        let Some(want) = p.pixfmt() else {
+        if p.pixfmt().is_none() {
             return;
-        };
+        }
         // MODE が来ていないうちは判定できない。ボードが落ちたら掛け金も外す
         // (次に上がってきたときが「新しい電源投入」なので、また1回書く)
         let Some(have) = self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt) else {
             self.input_regs_autowritten = false;
             return;
         };
-        let is_rgb = |f: u8| {
-            matches!(f, protocol::PIXFMT_RGB888
-                        | protocol::PIXFMT_RGB555
-                        | protocol::PIXFMT_RGB565)
-        };
-        let ok = if want == protocol::PIXFMT_YC8 {
-            have == protocol::PIXFMT_YC8
-        } else {
-            is_rgb(have)
-        };
-        if ok {
+        if p.pixfmt_ok(have) {
             self.input_regs_autowritten = false;
             return;
         }
@@ -5195,6 +5170,11 @@ impl Session {
         // 毎フレームの store は Relaxed で十分に安い。
         self.shared.dot_a_milli.store(
             self.dot_a_milli,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        // コンポーネントなら RGB888 の3チャンネルを Pr/Y/Pb として RGB に直させる
+        self.shared.ycbcr.store(
+            profiles::by_key(&self.source_profile).is_some_and(|p| p.ycbcr),
             std::sync::atomic::Ordering::Relaxed,
         );
         let t_tex = std::time::Instant::now();
