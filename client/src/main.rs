@@ -43,6 +43,7 @@ mod ios_scene;
 mod keytap;
 mod latency;
 mod leds;
+mod letterbox;
 #[cfg(target_os = "macos")]
 mod metal_present;
 mod netcheck;
@@ -1136,6 +1137,9 @@ fn quick_pick(probes: &[(u8, f32, f32)]) -> (usize, f32) {
     (j, min_rel)
 }
 
+/// 操作パネル(管面の上に重ねるサイドメニュー)の幅[point]
+const PANEL_WIDTH: f32 = 360.0;
+
 const AUTO_PLL_MIN: u32 = 200;
 const AUTO_PLL_MAX: u32 = 2304;
 
@@ -1291,9 +1295,7 @@ struct Session {
     /// 中央の描画領域と画のサイズ。ウィンドウを等倍に合わせるのに使う
     last_avail: egui::Vec2,
     last_tex: egui::Vec2,
-    /// 起動後に一度だけ自動で等倍に合わせたか
-    did_autofit: bool,
-    /// 次のフレームでウィンドウを等倍に合わせる
+    /// 次のフレームでウィンドウを画に合わせる(「画に合わせる」ボタンだけが立てる)
     want_fit: bool,
     /// 切り替わりかけているモードと、それを最初に見た時刻。
     ///
@@ -1302,12 +1304,6 @@ struct Session {
     ///   切り出しと回転をリセットしていたため、**絵が飛んでいた**
     ///   (2026-09-10。ボード側で vactive が 568→372 に飛ぶ現象を実測)。
     pending_mode: Option<(String, std::time::Instant)>,
-    /// 最後にウィンドウを合わせたときの「絵の大きさを決める要素」。
-    ///
-    /// ★**モードキーとは別に持つ。** モードキーは fh/htotal/vtotal で作るので、
-    ///   映像が乱れて同期がふらつくと**絵の大きさは変わっていないのに**変化する。
-    ///   それでウィンドウを合わせ直していたため、乱れるたびに窓が縮んでいった。
-    fitted_sig: Option<(u16, u16, u32, [u32; 4])>,
     /// 直前に OS へ要求した内寸。次のフレームで実際の内寸と突き合わせる。
     ///
     /// ★**要求どおりにならない環境がある。** `fit_target` は
@@ -1349,6 +1345,8 @@ struct Session {
     /// 枠を一時的に隠す。プルダウンの選択(bezel)は保ったまま切り替えたいので、
     /// 「なし」を選ぶのとは別に持つ。B キーで切り替える。
     bezel_off: bool,
+    /// 管面の外(余白)の描き方
+    letterbox: letterbox::Style,
     /// 配信用クリーン出力ウィンドウ(OBS のウィンドウキャプチャ用)
     clean_open: bool,
     clean_size: [f32; 2],
@@ -1545,10 +1543,8 @@ impl Session {
             board_sel: cfg.board_sel,
             last_avail: egui::Vec2::ZERO,
             last_tex: egui::Vec2::ZERO,
-            did_autofit: false,
             want_fit: false,
             pending_mode: None,
-            fitted_sig: None,
             fit_requested: None,
             // モバイルの窓は画面そのもので、大きさを変えられない
             fit_disabled: MOBILE,
@@ -1567,6 +1563,8 @@ impl Session {
             show_panel: cfg.show_panel,
             bezel: cfg.bezel.clone(),
             bezel_off: cfg.bezel_off,
+            letterbox: letterbox::Style::from_key(&cfg.letterbox)
+                .unwrap_or(letterbox::Style::Hatch),
             clean_open: cfg.clean_open,
             clean_size: cfg.clean_size,
             clean_undecorated: cfg.clean_undecorated,
@@ -1686,6 +1684,33 @@ impl Session {
             None
         } else {
             bezel::by_key(&self.bezel)
+        }
+    }
+
+    /// 余白の計測帯に出す情報。`dots` は管面に映している範囲の画素数(回転前)。
+    fn letterbox_info(&self, area: egui::Rect, tube: egui::Rect,
+                      dots: Option<(f32, f32)>, ppp: f32) -> letterbox::Info {
+        let win = format!("窓 {:.0}×{:.0}pt", area.width(), area.height());
+        let mode = self.shared.mode.lock().unwrap().as_ref().map(|m| {
+            let i = if m.mflags & 1 != 0 { "i" } else { "" };
+            format!("{}×{}{i}  {:.2} kHz  {:.2} Hz",
+                    m.hactive, m.vactive,
+                    m.hfreq_mhz_x1000 as f32 / 1.0e6, m.vfreq_mhz_x1000 as f32 / 1.0e3)
+        });
+        let Some((cw, ch)) = dots.filter(|_| mode.is_some()) else {
+            return letterbox::Info { dots: None, mode: None, lines: vec![win] };
+        };
+        // 画面上の横・縦に並ぶ画素数(90°/270°なら入れ替わる)
+        let d = if self.rotate % 2 == 1 { egui::vec2(ch, cw) } else { egui::vec2(cw, ch) };
+        let px = tube.size() * ppp;
+        letterbox::Info {
+            dots: Some(d),
+            mode,
+            lines: vec![
+                format!("管面 {:.0}×{:.0} → {:.0}×{:.0}px", d.x, d.y, px.x, px.y),
+                format!("倍率 横 {:.2}  縦 {:.2}", px.x / d.x.max(1.0), px.y / d.y.max(1.0)),
+                win,
+            ],
         }
     }
 
@@ -1844,6 +1869,7 @@ impl Session {
             board_ip: self.board_ip.clone(),
             bezel: self.bezel.clone(),
             bezel_off: self.bezel_off,
+            letterbox: self.letterbox.key().into(),
             clean_open: self.clean_open,
             clean_size: self.clean_size,
             clean_undecorated: self.clean_undecorated,
@@ -2705,17 +2731,6 @@ impl Session {
         }
         self.mode_key = key;
         self.mark_settings_dirty();
-        // ★**絵の大きさが変わったときだけ合わせ直す。** 同期がふらついただけで
-        //   窓を動かさない(乱れるたびに窓が動くのは実害が大きい)。
-        if self.display_sig() != self.fitted_sig {
-            self.want_fit = true;
-        }
-    }
-
-    /// 絵の見た目の大きさを決める要素だけを拾った署名。
-    fn display_sig(&self) -> Option<(u16, u16, u32, [u32; 4])> {
-        let m = self.shared.mode.lock().unwrap();
-        m.as_ref().map(|m| (m.hactive, m.vactive, self.rotate, self.crop))
     }
 
     /// pll_divide を変える。hs_offset を同じ比で追従させて絵が動かないようにする。
@@ -3115,7 +3130,6 @@ impl Session {
             self.mon = self.mon_bands.get(&mk).copied().unwrap_or(default);
             self.mon_key = mk;
             self.mark_settings_dirty();
-            self.want_fit = true;
         }
         if khz == self.band_khz {
             return;
@@ -3158,7 +3172,6 @@ impl Session {
         let v = Self::pll_ctl_for(ht as f64 * Self::FH_MAX_HZ, ht);
         self.send_cfg(protocol::CFG_KEY_PLL_CTL, v as u32);
         self.mark_settings_dirty();
-        self.want_fit = true;
     }
 
     fn sync_tune_from_board(&mut self) {
@@ -3698,7 +3711,6 @@ impl Session {
                     self.auto_done = Some(format!(
                         "{how}: pll_div {} / 位相 {} で完了({judge}: 最悪の位相は {:.0}%){detail}",
                         pll, best.0, rel * 100.0));
-                    self.want_fit = true;
                 }
             }
         }
@@ -5725,10 +5737,8 @@ impl Session {
 
         // Tab で操作パネルを出し入れする。隠すと戻すUIが無くなるので、
         // キーだけは常に効くようにしておく(テキスト入力中は除く)。
-        // トグルでウィンドウサイズは変えない。切り替えた直後の last_avail /
-        // last_tex は「切り替わる前のレイアウト」の値なので、それで合わせると
-        // 毎回ずれ、出し入れを繰り返すとウィンドウが縮み続ける(実際そうなった)。
-        // 大きさを合わせたいときは「画に合わせる」を押す。
+        // パネルは管面の上に重なるだけなので、出し入れしても管面もウィンドウも
+        // 大きさは変わらない。
         //
         // MimicX への転送中はここへ来ない。raw_input_hook が先にイベントを
         // 取り除いているので、Tab も B も X68000 のキーとして送られる
@@ -5774,16 +5784,31 @@ impl Session {
         if MOBILE {
             safe_area_spacers(root);
         }
+        // ★**操作パネルは管面の上に重ねる。** 以前は右パネルとして管面の領域を
+        //   押しのけていたので、出し入れするたびに管面の大きさが変わり、それに
+        //   ウィンドウを合わせ直すと窓が縮んでいった。ウィンドウの大きさは
+        //   ユーザーが決めたものから動かさず、管面はその中に最大で収め、パネルは
+        //   サイドメニューとして上に被せる。
+        //
         // ★**狭い画面(スマホの縦持ち)ではパネルを画面幅いっぱいにする。** 横に
         //   並べるとパネルが画面からはみ出し、映像も切手大に潰れる。映像とは
         //   切り替えて見る(先頭の「映像に戻る」、映像のタップで行き来する)。
         let panel_full = MOBILE && self.show_panel && root.available_width() < 720.0;
         if self.show_panel {
-        let mut panel = egui::Panel::right(egui::Id::new("info"));
-        if panel_full {
-            panel = panel.exact_size(root.available_width());
-        }
-        panel.show(root, |ui| {
+        // モバイルの安全領域(safe_area_spacers が取った残り)の内側に置く
+        let screen = root.available_rect_before_wrap();
+        let w = if panel_full { screen.width() } else { PANEL_WIDTH.min(screen.width()) };
+        egui::Area::new(egui::Id::new("info"))
+            .order(egui::Order::Middle)
+            .fixed_pos(egui::pos2(screen.right() - w, screen.top()))
+            .show(&ctx, |ui| {
+            let frame = egui::Frame::side_top_panel(ui.style())
+                .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                .shadow(ui.visuals().window_shadow);
+            let inner = egui::vec2(w, screen.height()) - frame.total_margin().sum();
+            frame.show(ui, |ui| {
+            ui.set_min_size(inner);
+            ui.set_max_size(inner);
             // 項目が増えて下が操作できなくなるので縦スクロールにする。
             // auto_shrink=false でパネル幅いっぱいを使い、内容が短いときも
             // 幅が縮まないようにする。
@@ -6192,7 +6217,6 @@ impl Session {
                     if rot != self.rotate {
                         self.rotate = rot;
                         self.mark_settings_dirty();
-                        self.want_fit = true;
                     }
                 });
                 ui.horizontal(|ui| {
@@ -6221,7 +6245,6 @@ impl Session {
                     if sel != cur {
                         self.tube_aspect = sel;
                         self.mark_settings_dirty();
-                        self.want_fit = true;
                     }
                     if self.mon_key == MON_KEY_NTSC && self.tube_time_based {
                         ui.weak(format!("NTSCは規格の画素比 {:.3}", self.tube_aspect_eff()))
@@ -6255,7 +6278,6 @@ impl Session {
                         self.bezel = sel;
                         self.bezel_tex = None;   // 幅が同じでも作り直す
                         self.mark_settings_dirty();
-                        self.want_fit = true;
                     }
                     // 選択は保ったまま出し入れする。機種を選び直さずに見比べられる
                     let mut on = !self.bezel_off;
@@ -6264,6 +6286,28 @@ impl Session {
                         .changed()
                     {
                         self.bezel_off = !on;
+                        self.mark_settings_dirty();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    // 管面の外(窓と管面の縦横比が違うと余る領域)の描き方
+                    ui.monospace("余白");
+                    let mut sel = self.letterbox;
+                    egui::ComboBox::from_id_salt("letterbox")
+                        .width(96.0)
+                        .selected_text(sel.label())
+                        .show_ui(ui, |ui| {
+                            for s in letterbox::Style::ALL {
+                                ui.selectable_value(&mut sel, s, s.label());
+                            }
+                        })
+                        .response
+                        .on_hover_text("管面の外に描くもの。\n\
+                                        斜線: 映像ではない場所であることだけを示す\n\
+                                        計測帯: 管面の辺にドット座標の目盛りを打ち、\n\
+                                        空いた帯にモードと表示倍率を出す");
+                    if sel != self.letterbox {
+                        self.letterbox = sel;
                         self.mark_settings_dirty();
                     }
                 });
@@ -6384,14 +6428,13 @@ impl Session {
                     self.mark_settings_dirty();
                 }
                 });
+            });
         });
         }   // if self.show_panel
 
-        // 管面の外側は黒。実CRTと同じで、掃引が届かない場所には何も出ない。
-        // 以前は「capture border(赤い枠)」と「outside(外側の色)」で画枠の位置を
-        // 見えるようにしていたが、幾何がGPU側へ移ってどちらもキャプチャ範囲では
-        // なく管面の外周を指すようになったので撤去した。管面の位置は H位置/H幅
-        // のスライダーで直接合わせる。
+        // 管面の外(余白)は letterbox が描く。管面の中は実CRTと同じで、掃引が
+        // 届かない場所・信号が無いときは黒。余白まで黒にすると両者の区別が
+        // つかないので、余白には別の地を敷く。
         let central = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(root, |ui| {
@@ -6403,14 +6446,9 @@ impl Session {
                 // 映像が無くても枠は描く。実機のCRTは映像が無くても筐体があるので、
                 // 待機中に枠だけ消えるのは不自然。開口部は黒にして待機表示を中に出す。
                 let has_video = self.frame_size.0 > 0;
-                if !has_video && self.active_bezel().is_none() {
-                    ui.centered_and_justified(|ui| {
-                        ui.weak("waiting for stream...");
-                    });
-                    return;
-                }
                 let tex_size = egui::vec2(self.frame_size.0 as f32, self.frame_size.1 as f32);
                 let avail = ui.available_size();
+                let (area, _r) = ui.allocate_exact_size(avail, egui::Sense::hover());
                 // 有効映像(切り出し)を「管面」いっぱいに引き伸ばして表示する。
                 // 実際のCRTと同じ考え方で、ドット数ではなく管面の形が表示を決める。
                 let (cw, ch) = if self.crop[2] > 0 && self.crop[3] > 0 {
@@ -6421,10 +6459,12 @@ impl Session {
                 let bez = self.active_bezel();
                 // 枠ありなら管面の形は開口部が決める。枠は実在モニタの寸法なので、
                 // tube_aspect(4:3など)ではなく開口部の比に従うのが筋。
+                // 映像が無く管面の比も「そのまま」なら形が決まらないので 4:3 で待つ。
                 let aspect = match bez {
                     Some(b) => b.screen_aspect(),
                     None if self.tube_aspect_eff() > 0.0 => self.tube_aspect_eff(),
-                    None => cw / ch.max(1.0),
+                    None if has_video => cw / ch.max(1.0),
+                    None => 4.0 / 3.0,
                 };
                 let disp = if self.rotate % 2 == 1 {
                     egui::vec2(1.0, aspect)
@@ -6432,20 +6472,15 @@ impl Session {
                     egui::vec2(aspect, 1.0)
                 };
                 self.last_avail = avail;
-                if !self.did_autofit {
-                    self.did_autofit = true;
-                }
-                match bez {
+                // hole: 余白を描かない範囲(枠ありなら枠全体) / tube: 管面
+                let (hole, tube) = match bez {
                     // --- 枠なし: 管面を領域いっぱいに ---
                     None => {
                         let fit = (avail.x / disp.x).min(avail.y / disp.y);
                         let size = disp * fit;
                         self.last_tex = size;
-                        ui.centered_and_justified(|ui| {
-                            let (rect, _r) =
-                                ui.allocate_exact_size(size, egui::Sense::hover());
-                            self.paint_tube(ui, rect);
-                        });
+                        let t = egui::Rect::from_center_size(area.center(), size);
+                        (t, t)
                     }
                     // --- 枠あり: 枠全体を領域に収め、その中の開口部に管面を置く ---
                     Some(b) => {
@@ -6471,9 +6506,8 @@ impl Session {
                                 self.bezel_tex = Some((tex, want_w));
                             }
                         }
-                        let (rect, _r) = ui.allocate_exact_size(avail, egui::Sense::hover());
                         // 枠を領域の中央に置く
-                        let brect = egui::Rect::from_center_size(rect.center(), bsize);
+                        let brect = egui::Rect::from_center_size(area.center(), bsize);
                         // 開口部を枠の座標から実座標へ写す
                         let sx = bsize.x / b.view.0;
                         let sy = bsize.y / b.view.1;
@@ -6481,28 +6515,36 @@ impl Session {
                             brect.min + egui::vec2(b.screen[0] * sx, b.screen[1] * sy),
                             egui::vec2(b.screen[2] * sx, b.screen[3] * sy),
                         );
-                        // 管面 → 枠。枠は開口部が抜けているので後から重ねる
-                        if has_video {
-                            self.paint_tube(ui, srect);
-                        } else {
-                            ui.painter().rect_filled(srect, 0.0, egui::Color32::BLACK);
-                        }
-                        if let Some((tex, _)) = self.bezel_tex.as_ref() {
-                            ui.painter().image(
-                                tex.id(), brect,
-                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0),
-                                                         egui::pos2(1.0, 1.0)),
-                                egui::Color32::WHITE,
-                            );
-                        }
-                        if !has_video {
-                            ui.painter().text(
-                                srect.center(), egui::Align2::CENTER_CENTER,
-                                "waiting for stream...",
-                                egui::FontId::proportional(14.0),
-                                egui::Color32::from_gray(90));
-                        }
+                        (brect, srect)
                     }
+                };
+                // 余白。枠ありなら目盛りは枠に重なるので打たない
+                let info = self.letterbox_info(area, tube, has_video.then_some((cw, ch)),
+                                               ui.ctx().pixels_per_point());
+                letterbox::paint(ui.painter(), area, hole, bez.is_none().then_some(tube),
+                                 self.letterbox, &info);
+                // 管面 → 枠。枠は開口部が抜けているので後から重ねる
+                if has_video {
+                    self.paint_tube(ui, tube);
+                } else {
+                    ui.painter().rect_filled(tube, 0.0, egui::Color32::BLACK);
+                }
+                if bez.is_some() {
+                    if let Some((tex, _)) = self.bezel_tex.as_ref() {
+                        ui.painter().image(
+                            tex.id(), hole,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0),
+                                                     egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    }
+                }
+                if !has_video {
+                    ui.painter().text(
+                        tube.center(), egui::Align2::CENTER_CENTER,
+                        "waiting for stream...",
+                        egui::FontId::proportional(14.0),
+                        egui::Color32::from_gray(90));
                 }
             });
         // モバイルには Tab キーが無いので、映像のタップでパネルを出し入れする。
@@ -6525,7 +6567,6 @@ impl Session {
         }
         if self.want_fit && self.last_tex.x > 0.0 && self.last_avail.x > 0.0 {
             self.want_fit = false;
-            self.fitted_sig = self.display_sig();
             // ★答え合わせは実寸を測っている側でやる(fit_requested)。通らない
             //   環境と分かったら fit_disabled が立ち、以後は手を出さない。
             let mon = ctx.input(|i| i.viewport().monitor_size);
