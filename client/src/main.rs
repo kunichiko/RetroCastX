@@ -334,7 +334,6 @@ fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> efra
             // アイコンは実行時に設定しないとタスクバー/タイトルバーに出ない
             // (exeへの埋め込みはExplorerのファイル用。appicon.rs 参照)
             let mut vp = egui::ViewportBuilder::default()
-                .with_inner_size([cfg.window_w, cfg.window_h])
                 .with_title(if slot_id == 0 {
                     "RetroCast X".to_string()
                 } else {
@@ -342,10 +341,16 @@ fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> efra
                     //   触っているのか分からなくなる
                     format!("RetroCast X #{}", slot_id)
                 });
-            // ★**位置も戻す。** 大きさだけでは並びが戻らない(3画面筐体では
-            //   横に並べた配置そのものが設定)。
-            if let (Some(x), Some(y)) = (cfg.window_x, cfg.window_y) {
-                vp = vp.with_position([x, y]);
+            // ★**モバイルでは大きさも位置も指定しない。** 窓は画面そのもので、
+            //   前回の内寸(safe area を除いた大きさ)を指定すると、iOS では
+            //   2回目以降の起動で画面が真っ黒になった(UI も映像も出ない)。
+            if !MOBILE {
+                vp = vp.with_inner_size([cfg.window_w, cfg.window_h]);
+                // ★**位置も戻す。** 大きさだけでは並びが戻らない(3画面筐体では
+                //   横に並べた配置そのものが設定)。
+                if let (Some(x), Some(y)) = (cfg.window_x, cfg.window_y) {
+                    vp = vp.with_position([x, y]);
+                }
             }
             if let Some(icon) = appicon::egui_icon() {
                 vp = vp.with_icon(icon);
@@ -5450,7 +5455,8 @@ impl Session {
         self.pace.note_upload(t_tex.elapsed());
         // ウィンドウ内寸を覚えておき、次回起動時に復元する
         let (inner, outer) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().outer_rect));
-        if let Some(r) = inner {
+        // モバイルの窓は画面そのものなので覚えない(上の run_gui のコメント)
+        if let Some(r) = inner.filter(|_| !MOBILE) {
             let sz = r.size();
             if (sz - self.window_size).length() > 1.0 {
                 self.window_size = sz;
@@ -5479,7 +5485,7 @@ impl Session {
         // ★**位置は外枠(`outer_rect`)で覚える。** `with_position` が指すのは
         //   外枠なので、内枠(`inner_rect`)を渡すと**毎回タイトルバーの高さだけ
         //   下へずれる**。ウィンドウが画面の下へ歩いていって張り付いた。
-        if let Some(r) = outer.or(inner) {
+        if let Some(r) = outer.or(inner).filter(|_| !MOBILE) {
             if self.window_pos.map_or(true, |p| (r.min - p).length() > 1.0) {
                 self.window_pos = Some(r.min);
                 self.mark_settings_dirty();
