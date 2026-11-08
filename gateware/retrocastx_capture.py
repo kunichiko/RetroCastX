@@ -111,14 +111,17 @@ class TvpCapture(Module):
         # 間引かないので、同じ受信キューを共有している音声の取りこぼしも減る。
         # 間引くのは push の段階なので、メタFIFOにも面にも載らず、
         # ボード側の仕事そのものが減る。
-        self.cfg_frame_skip     = Signal(4)          # key 0x35 bit3:0
-        # key 0x35 bit4: 対モード。インターレースで**2フィールドを1単位として**間引く。
+        # key 0x35。bit3:0 = 間引き数、bit4 = 対モード。
+        # 対モード: インターレースで**2フィールドを1単位として**間引く。
         # フィールドごとに数えると、1/2 で片方の極性のフィールドしか届かず、
         # もう片方は古いまま残って織り込みが崩れる(480i など、フィールドごとに
         # VSYNC が来る信号)。1回のVSYNCに2フィールド入る信号(il_frame)は、もともと
         # 1単位がフレーム全体なので無視する。どの順の2フィールドでも受信側は位置
         # (半ライン単位)で織り込むので、対の始まりの極性は揃えない。
-        self.cfg_frame_skip_pair = Signal()          # key 0x35 bit4
+        # ★**1本の5bitレジスタで持つ。** bit4 を別の信号にして書込/読出の経路を
+        #   増やしたら、配置が変わって sys と eth_rx のタイミングが全シードで
+        #   閉じなくなった(足した論理はわずか)。
+        self.cfg_frame_skip     = Signal(5)          # key 0x35
         self.cfg_span_probe_row = Signal(row_bits)   # key 0x31
         self.stat_span_probe    = Signal(32)         # key 0x32: {any, hi, lo}
         # FIFO出口で pop した瞬間の {row, x_hi, x_lo}。同じエントリの値が揃って
@@ -280,6 +283,7 @@ class TvpCapture(Module):
         skip_cnt = Signal(4)
         send_frame = Signal(reset=1)              # 間引きで落とすフレームでは 0
         pair_2nd = Signal()                       # 次のフィールドは対の2枚目
+        pair_on  = Signal()                       # 対モードが効く(下で毎クロック更新)
         pair_lo = Signal(32)                      # 偶数xピクセル保持(32bitスロット)
 
         # VSYNCエッジ行数ガード: 前回受理VSYNCからの経過行数(vrow)が vs_min_rows 以上の
@@ -991,12 +995,15 @@ class TvpCapture(Module):
             # 飛ばして1回送る。0 なら常に送る。
             # 対モードでフィールドごとにVSYNCが来るインターレースなら、対の
             # 2枚目は1枚目と同じ判定を引き継ぎ、数えるのは対の1枚目だけにする。
+            # 対モードが効く条件はレジスタに落としてから使う(モード切替時にしか
+            # 変わらないので1クロック遅れは無害。frame_start の経路を伸ばさない)
+            pair_on.eq(self.cfg_frame_skip[4] & il_det & ~il_frame),
             If(frame_start,
                 If(pair_2nd,
                     pair_2nd.eq(0),
                 ).Else(
-                    pair_2nd.eq(self.cfg_frame_skip_pair & il_det & ~il_frame),
-                    If(skip_cnt >= self.cfg_frame_skip,
+                    pair_2nd.eq(pair_on),
+                    If(skip_cnt >= self.cfg_frame_skip[:4],
                         skip_cnt.eq(0), send_frame.eq(1),
                     ).Else(
                         skip_cnt.eq(skip_cnt + 1), send_frame.eq(0),

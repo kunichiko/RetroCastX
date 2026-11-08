@@ -60,8 +60,7 @@ def run(skip, pair, interlace, il_frame=False):
         #   il_frame ← 生同期が無いSIMでは cfg_lpf_tvp との比較で決まる
         #              (cfg_vtotal*1.5 > LPF ならフレーム単位)。vtotal=0 の
         #              ままなら LPF=1 でフィールド単位、LPF=0 ならフレーム単位
-        yield cap.cfg_frame_skip.eq(skip)
-        yield cap.cfg_frame_skip_pair.eq(pair)
+        yield cap.cfg_frame_skip.eq(skip | (0x10 if pair else 0))
         yield cap.cfg_il_detect.eq(1 if interlace else 0)
         yield cap.cfg_lpf_tvp.eq(0 if il_frame else 1)
         for _ in range(8):
