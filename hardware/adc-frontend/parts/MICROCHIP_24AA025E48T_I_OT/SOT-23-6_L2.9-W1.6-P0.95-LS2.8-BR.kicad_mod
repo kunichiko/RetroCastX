@@ -1,0 +1,136 @@
+(footprint "MICROCHIP_24AA025E48T_I_OT:SOT-23-6_L2.9-W1.6-P0.95-LS2.8-BR"
+	(version 20241229)
+	(generator "faebryk_convert")
+	(generator_version "v5")
+	(layer "F.Cu")
+	(tedit "5DC5F6A4")
+	(uuid "4da5ecf6-6bff-4f20-974a-a7f664ca97f8")
+	(property "Reference" "REF**"
+		(at 0 -4.95)
+		(layer "F.SilkS")
+		(uuid "03f0281c-ee6f-4fae-a587-17b8293658be")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "SOT-23-6_L2.9-W1.6-P0.95-LS2.8-BR"
+		(at 0 4.95)
+		(layer "F.Fab")
+		(uuid "aca7a71e-f46c-450b-b138-6d31d87d1baf")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_circle
+		(center 1.4 1.45)
+		(end 1.43 1.45)
+		(stroke
+			(width 0.06)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(locked no)
+		(uuid "11a0de64-fa44-4fac-b44a-2af1128646fc")
+	)
+	(fp_circle
+		(center 1.4 0.95)
+		(end 1.5 0.95)
+		(stroke
+			(width 0.2)
+			(type solid)
+		)
+		(layer "Cmts.User")
+		(locked no)
+		(uuid "6390d4ef-681b-4772-919f-dd1a4b4d0019")
+	)
+	(fp_circle
+		(center 1.4 1.65)
+		(end 1.53 1.65)
+		(stroke
+			(width 0.25)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(locked no)
+		(uuid "a59b97f4-5f6d-489e-bf31-57b927ffbf52")
+	)
+	(fp_line
+		(start -0.9 -1.55)
+		(end 0.9 -1.55)
+		(stroke
+			(width 0.25)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(layers "F.SilkS")
+		(locked no)
+		(uuid "3475d0b2-6f5d-4970-b5b3-dd6156ea0815")
+	)
+	(fp_line
+		(start -0.9 1.55)
+		(end 0.9 1.55)
+		(stroke
+			(width 0.25)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(layers "F.SilkS")
+		(locked no)
+		(uuid "59ab8a4b-fc6f-470c-a629-2669cacc21fe")
+	)
+	(pad "3" smd rect
+		(at 1.35 -0.95 0)
+		(size 1.1 0.6)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(uuid "dba47595-ba94-4c5b-9423-813eb133a5c5")
+	)
+	(pad "2" smd rect
+		(at 1.35 0 0)
+		(size 1.1 0.6)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(uuid "f260fe6b-8053-4795-80d9-2e919e0fb242")
+	)
+	(pad "1" smd rect
+		(at 1.35 0.95 0)
+		(size 1.1 0.6)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(uuid "d1e0b30b-e16f-4392-be30-c01a3f91523b")
+	)
+	(pad "6" smd rect
+		(at -1.35 0.95 0)
+		(size 1.1 0.6)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(uuid "67616d8c-2cb9-4230-a90f-69aa2ff5e55f")
+	)
+	(pad "5" smd rect
+		(at -1.35 0 0)
+		(size 1.1 0.6)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(uuid "9e5420da-085a-4ece-af94-cfbf38ad68ee")
+	)
+	(pad "4" smd rect
+		(at -1.35 -0.95 0)
+		(size 1.1 0.6)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+		(uuid "bfb6a5f1-19f4-478d-a5a5-1e9fa0a7d752")
+	)
+	(model "${KIPRJMOD}/../../parts/MICROCHIP_24AA025E48T_I_OT/SOT-23-6_L2.9-W1.6-H1.5-LS2.8-P0.95.step"
+		(offset
+			(xyz 0 0 -0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 180)
+		)
+	)
+	(embedded_fonts no)
+)

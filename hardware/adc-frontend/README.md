@@ -40,6 +40,22 @@ v0.9.0(2026-08-19 発注、実機動作確認済み)からの差分。**電気�
   だったが、**FPGAのJTAGへ届く経路はモジュール底面のパッド = ポゴピンしか無い**ので、
   ポゴピンが届かない場合の保険にはならない(CH347Fが壊れた場合にしか効かない)。
   J3 は欠番のまま(`tools/lock_designators.py` が番号の再利用を防ぐ)
+- **ステータスLED(LED1)を WS2812B-2020-V6(C52917434)の 3.3V 直結に変更**。
+  V6 は VDD 3.3〜5.3V・VIH 0.55×VDD なので、5V + 1N4148W の降圧が不要になった
+  (D7 は欠番)。**MSL 5a のため JLCPCB の焼成料金がかかる**(承知のうえで採用)
+- **ESDアレイを onsemi NZQA6V8AXV5T1G(C895163)に差し替え**。EMZT6.8ET2R(C510333)が
+  JLCPCB で在庫 0 になったため。SOT-553 は EMD5 と同寸でリード番号も同じ(リード2 = 共通
+  アノード)なので、**フットプリントと配線はそのまま**。VBR は同じ 6.47〜7.14V、Ct は
+  7pF → 12pF typ に増えるが、映像(37.5Ω 系で極 約350MHz)にも TTL にも実害は無い
+- **TVP7002 を PZPR(C527698、テープ&リール品)に変更**。中身とフットプリントは PZP と同じ
+- **MAC EEPROM を SOT-23-6 の 24AA025E48T-I/OT(C129895)に変更**。SOIC 版は JLC 在庫が
+  足りなかった(-I/SN 6個 / -E/SN 32個、1枚に2個使う)。A2 と WP のピンが無いが、A2 は内部で 0、
+  WP は元々 GND 固定(書込み許可)なので 0x50 / 0x51 の割当も動作も同じ
+- **手ハンダ部品(J7-J10, J13, J14, PG1-PG4, TP1, TP2)を BOM から除外**(フットプリントに
+  exclude_from_bom)。JLC の BOM で「型番なし」の警告が出ないようにするため
+- **SOG シャントの未実装 33pF(C32/C40/C52)を 0402 → 0603 に変更**。必要になったら手ハンダで
+  載せるため。専用フットプリント `parts/_mech/C0603_DNP`(DNP・BOM/座標ファイル除外)にした。
+  0402 版は BOM に型番なしで残り、JLCPCB が勝手に C162097 を割り当てていた
 
 ### ソフト側に必要な追随(v1.0 基板を使うとき)
 
@@ -257,8 +273,7 @@ ESD が PESD5V0U4BW → 実際は EMZT6.8ET2R など)。値・在庫は LCSC 品
 
 | Ref | 部品 | メーカー | LCSC | 回路上の位置 |
 |---|---|---|---|---|
-| D1, D2, D3, D5, D6, D8, D10, D11, D12 | EMZT6.8ET2R | ROHM | C510333 | `esd_rgb, esd_sync2, esd_sync, drgb.esd[0], drgb.esd[1], esd_audio, esd_din8, esd_ffc, esd_audio2` |
-| D7 | 1N4148W | ST(Semtech) | C81598 | `d_led` |
+| D1, D2, D3, D5, D6, D8, D10, D11, D12 | NZQA6V8AXV5T1G | onsemi | C895163 | `esd_rgb, esd_sync2, esd_sync, drgb.esd[0], drgb.esd[1], esd_audio, esd_din8, esd_ffc, esd_audio2` |
 | D9 | USBLC6-2SC6 | STMICROELECTRONICS | C7519 | `esd_usb` |
 | FB1, FB2, FB3, FB4 | MPZ1608S221ATA00 | TDK | C76815 | `fb_avdd, fb_pll, fb_audio, fb_spdif` |
 | H1, H2, H3, H4, H5 | MountingHole_3.2mm_M3_Pad | — | — | `mount[0], mount[1], mount[2], mount[3], mount[4]` |
@@ -268,15 +283,15 @@ ESD が PESD5V0U4BW → 実際は EMZT6.8ET2R など)。値・在庫は LCSC 品
 | J7 | Header_2x15_P2.54mm | — | — | `j_dbg` |
 | J8 | PLR135_T10 | — | — | `spdif` |
 | J9, J10 | Header_1x4_P2.54mm | — | — | `j11_argus, j_oled` |
-| J11, J12 | HR911130A | HANRUN | C54408 | `eth.jack, eth.jack2` |
+| J11, J12 | HR911130A | HANRUN | C54408 | `eth.lan0, eth.lan1` |
 | J13 | MJ373_8B | — | — | `din8` |
 | J14 | Header_1x3_P2.54mm | — | — | `hdr_sync` |
 | J15 | 0.5K-1.5-20PWB | HDGC | C2919559 | `ffc` |
 | JP1 | SolderJumper_2_Bridged | — | — | `sj_ext5v` |
-| LED1 | XL-2020RGBC-2812B | XINGLIGHT | C5349955 | `led_status` |
+| LED1 | WS2812B-2020-V6 | worldsemi | C52917434 | `led_status` |
 | PG1, PG2, PG3, PG4 | PogoPin_D1.0mm | — | — | `pogo_tck, pogo_tms, pogo_tdi, pogo_tdo` |
 | TP1, TP2 | TestPoint_TH1 | — | — | `tp_ys, tp_led_do` |
-| U1 | TVP7002PZP | TI | C3824085 | `tvp` |
+| U1 | TVP7002PZPR | TI | C527698 | `tvp` |
 | U2, U8, U10, U11, U12 | SN74LVC2G17DBVR | TI | C10429 | `buf_sync, buf_sync2, drgb.buf[0], drgb.buf[1], drgb.buf[2]` |
 | U3, U4 | AZ1117H-3.3TRE1 | DIODES | C92517 | `supply.ldo_io, supply.ldo_a33` |
 | U5 | RT9013-18GB | RICHTEK | C59969 | `supply.ldo_a19` |
@@ -284,7 +299,7 @@ ESD が PESD5V0U4BW → 実際は EMZT6.8ET2R など)。値・在庫は LCSC 品
 | U7 | CH347F | WCH | C18221627 | `ft2232.ch` |
 | U9 | 1473005-4 | TE Connectivity | C428482 | `sodimm` |
 | U13, U14, U17 | PCM1808PWR | TI | C55513 | `adc_dsub.adc, adc_aux.adc, adc_kokame.adc` |
-| U15, U16 | 24AA025E48-I/SN | MICROCHIP | C46840 | `eeprom_mac0, eeprom_mac1` |
+| U15, U16 | 24AA025E48T-I/OT | MICROCHIP | C129895 | `eeprom_mac0, eeprom_mac1` |
 | X1 | OT322527MJBA4SL | YXC | C725995 | `osc` |
 | X2 | X32258MSB4SI | YXC | C2682774 | `ft2232.xtal` |
 | X3 | OT2JI-111-12.288M | YXC | C20617595 | `xo_audio` |
@@ -854,6 +869,30 @@ PCより長いので、既定の広い窓(開始50・幅32)の方が有利だっ
 | 0x19 | 03h PLL(VCOレンジ+チャージポンプ) |
 | 0x1A | 05h クランプ開始位置 |
 | 0x1B | 06h クランプ幅 |
+
+## ケース代わりのパネル基板(layouts/panel_console, layouts/panel_main)
+
+メイン基板と小亀基板を重ねたものを、外側から2枚のパネル基板で挟んでケースの代わりにする。
+パネルは**配線なし**で、M3 用のネジ穴(H1-H5)、表裏全面の GND ベタ、シルクのイラストだけ。
+
+    パネル(小亀側) | 小亀基板 | メイン基板 | パネル(メイン側)
+    panel_console                            panel_main
+
+- 外形は 100x100mm、角R3(メイン基板と同じ)。KiCad 上では (100,50)-(200,150) に置いてある
+- 部品は2枚の基板の内側(向かい合う面)にあるので、パネルの表(外側)から見た穴位置は
+  **相手の基板の左右反転**になる。`tools/gen_panels.py` が基板側の穴を読んで反転して置く
+- ★`tools/gen_panels.py` は .kicad_pcb を作り直すので、**シルクを描き始めたら再実行しない**
+- ato のビルド対象ではない(回路が無い)。KiCad で直接開いて編集する
+- 板厚 1.0mm(カバーだけなので薄くしている。JLC の注文でも 1.0mm を選ぶ)
+- **シールドを兼ねる**(v1.0.0 の注文後に追加。v1.0.0 で注文したパネルは銅箔なし・非メッキ穴):
+  ネジ穴はメッキ穴 + φ6.4 の GND パッド、表裏とも GND ベタ。メイン基板・小亀基板の取付穴も
+  GND パッドなので、**金属スペーサーと金属ネジ**で組むとパネル2枚が基板を挟む GND 面になる。
+  側面(端子のある辺)は開いているので完全な箱ではないが、表裏の面からの放射と、パネルに
+  触れたときのノイズ・静電気が GND へ逃げる
+- シルクの絵は Affinity で描く(`artwork/*.af`)。下絵は `tools/gen_panel_templates.py` が作る
+  `artwork/panel_*_template.png`(100mm 角 / 600dpi)。**背景を透明にして** PNG で書き出し、
+  `tools/png_to_silk.py` でパネルの F.Silkscreen に流し込む(フットプリント ART1 を差し替え)
+- 端子のラベルは基板の呼び名に合わせる(LAN0 = J11 が下、LAN1 = J12 が上)
 
 ## ★`ato build` の後に必ず実行すること
 

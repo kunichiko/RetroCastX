@@ -371,4 +371,18 @@
 		(options "")
 		(descr "atopile: part lib: HDGC_0_5K_1_5_20PWB")
 	)
+	(lib
+		(name "worldsemi_WS2812B_2020_V6")
+		(type "KiCad")
+		(uri "${KIPRJMOD}/../../parts/worldsemi_WS2812B_2020_V6")
+		(options "")
+		(descr "atopile: part lib: worldsemi_WS2812B_2020_V6")
+	)
+	(lib
+		(name "MICROCHIP_24AA025E48T_I_OT")
+		(type "KiCad")
+		(uri "${KIPRJMOD}/../../parts/MICROCHIP_24AA025E48T_I_OT")
+		(options "")
+		(descr "atopile: part lib: MICROCHIP_24AA025E48T_I_OT")
+	)
 )

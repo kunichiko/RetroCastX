@@ -59,7 +59,13 @@ hardware/*/datasheets/*.jpg
 _autosave-*.kicad_pcb
 
 # Fabrication Toolkit のタイムスタンプ付きバックアップ(zip本体を追跡するので不要)
-hardware/adc-frontend/layouts/default/production/backups/
+hardware/*/layouts/*/production/backups/
+
+# KiCad が保存のたびに作る自動バックアップ(<名前>-backups/ に zip が溜まる)
+hardware/*/layouts/*/*-backups/
+
+# KiCad のフットプリント一覧キャッシュ(ライブラリから再生成される)
+fp-info-cache
 
 # Excel/Office が開いている間だけ作るロックファイル
 ~$*

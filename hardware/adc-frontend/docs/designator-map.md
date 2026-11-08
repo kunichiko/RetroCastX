@@ -109,7 +109,6 @@ atopile は `keep_designators`(既定 true)のとき、`.kicad_pcb` の Referenc
 |  | **C48** | `ch_y.c_aa` | 33pF ±5% |
 |  | **C47** | `ch_y.c_ac` | 100nF ±10% |
 |  | **R24** | `ch_y.r_aa` | 220Ω ±1% |
-| D7 | **D7** | `d_led` | — |
 | C25 | **C11** | `dec_caps[0]` | 100nF ±10% |
 | C35 | **C21** | `dec_caps[10]` | 100nF ±10% |
 | C36 | **C22** | `dec_caps[11]` | 100nF ±10% |
@@ -157,8 +156,8 @@ atopile は `keep_designators`(既定 true)のとき、`.kicad_pcb` の Referenc
 | C62 | **C85** | `eth.bridge_caps[3]` | 4.7nF ±10% |
 | C43 | **C80** | `eth.ct_caps[0]` | 100nF ±10% |
 | C44 | **C81** | `eth.ct_caps[1]` | 100nF ±10% |
-| J2 | **J11** | `eth.jack` | — |
-| J11 | **J12** | `eth.jack2` | — |
+|  | **J11** | `eth.lan0` | — |
+|  | **J12** | `eth.lan1` | — |
 | R16 | **R43** | `eth.r_led_g` | 220Ω ±1% |
 | R18 | **R45** | `eth.r_led_g2` | 220Ω ±1% |
 | R17 | **R44** | `eth.r_led_y` | 220Ω ±1% |
