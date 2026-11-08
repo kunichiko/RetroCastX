@@ -1852,7 +1852,9 @@ impl Session {
         //   CONFIG で入れ直す必要がある。以前は毎回
         //   `python3 -m retrocastx.videoin apply composite` を叩いていた。
         //   同じ選択を選び直してもコンボは反応しないので、書き直しボタンも要る。
-        ui.horizontal(|ui| {
+        // 狭い画面(縦持ちのスマホ)では書き込みボタンを次の行へ折り返す。横に並べた
+        // ままだとパネルの幅をはみ出し、それ以降の節の見出しまで右へ伸びていた
+        ui.horizontal_wrapped(|ui| {
             theme::label_col(ui, "映像ソース");
             let cur = self.source_profile.clone();
             let mut sel = cur.clone();
@@ -5552,7 +5554,26 @@ impl eframe::App for App {
         // スクロールのつもりの縦スワイプがスライダーを動かさないよう、egui に
         // 渡す前に身振りを決める
         if MOBILE {
-            self.touch.filter(&mut raw_input.events);
+            self.touch.filter(&mut raw_input.events, raw_input.time.unwrap_or_default());
+            // 慣性で滑っている間は、指が離れていても描き続けて進める
+            if self.touch.flinging() {
+                ctx.request_repaint();
+            }
+            // ★**パネルは「戻る」の身振りで閉じる。** iOS は左端からのエッジ
+            //   スワイプ(touch.rs が判定)、Android は「戻る」(ジェスチャー
+            //   ナビゲーションの左端スワイプも OS が「戻る」キーにして渡してくる)。
+            //   パネルが閉じているときの「戻る」は何もしない(アプリは閉じない)
+            let back = raw_input.events.iter().any(|e| {
+                matches!(e, egui::Event::Key { key: egui::Key::BrowserBack, pressed: true, .. })
+            });
+            if self.touch.take_edge_swipe() || back {
+                // モバイルは窓が1枚なので、最初のセッションのパネル
+                if let Some(s) = self.sessions.first_mut().filter(|s| s.show_panel) {
+                    s.show_panel = false;
+                    s.mark_settings_dirty();
+                    ctx.request_repaint();
+                }
+            }
         }
         if let Some(s) = self.sessions.first_mut() {
             s.remote_step(ctx, raw_input);
@@ -5803,15 +5824,13 @@ impl Session {
             // 項目が増えて下が操作できなくなるので縦スクロールにする。
             // auto_shrink=false でパネル幅いっぱいを使い、内容が短いときも
             // 幅が縮まないようにする。
-            // ★**全幅のときは横にもスクロールさせる。** 行によっては画面幅
-            //   (縦持ちのスマホで約410pt)より広く、縦だけのスクロールでは
-            //   中身の幅がパネルを押し広げる。egui は右パネルを右端基準で
-            //   切り詰めるので、はみ出した分だけ左端が画面の外へ消えていた。
-            let scroll = if panel_full {
-                egui::ScrollArea::both()
-            } else {
-                egui::ScrollArea::vertical()
-            };
+            // ★**横にはスクロールさせない。** 以前は全幅(縦持ちのスマホ)のときに
+            //   横スクロールも付けていた。右パネルだったころは、画面幅より広い行が
+            //   パネルを押し広げ、左端が画面の外へ消えたため。いまのパネルは幅を
+            //   固定して重ねているので押し広げられず、横スクロールは指の縦の動きの
+            //   わずかな横ずれで左右に揺れるだけだった(iPhone / Pixel)。広い行は
+            //   パネルの幅で折り返す
+            let scroll = egui::ScrollArea::vertical();
             scroll
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -6349,7 +6368,8 @@ impl Session {
                         self.send_cfg(protocol::CFG_KEY_PIXFMT, f as u32);
                     }
                 });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    // 狭い画面では右の説明を次の行へ折り返す(縦持ちのスマホで切れていた)
                     // ★**ドット復元(1タップ逆フィルタ)。**
                     //   X68000 768x512 では本体の出力段で既に1ドットのパルスが
                     //   立ち切っておらず、実測で 1ドット=白の64% / 2ドット=82% /
