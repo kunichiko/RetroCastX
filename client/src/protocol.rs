@@ -105,6 +105,8 @@ pub const AUDIO_FMT_PCM16: u8 = 0;
 
 #[derive(Debug, Clone)]
 pub struct Announce {
+    /// 共通ヘッダの flags(ANN_FLAG_*)。送り先の状態を、この ANNOUNCE の宛先から見て返す
+    pub flags: u8,
     pub mac: [u8; 6],
     pub udp_port: u16,
     pub fw_version: u16,
@@ -216,6 +218,7 @@ pub fn parse(d: &[u8]) -> Result<Packet<'_>, &'static str> {
             let name_raw = &body[16..32];
             let name_end = name_raw.iter().position(|&b| b == 0).unwrap_or(16);
             Ok(Packet::Announce(Announce {
+                flags,
                 mac,
                 udp_port: u16le(body, 10),
                 fw_version: u16le(body, 12),
@@ -447,14 +450,33 @@ pub const CFG_KEY_SOG_VTH: u16 = 0x0064;
 /// **入力方式の切替に必須**(手組み機では「SOGだけ_2」= 0x6A が要った)
 pub const CFG_KEY_IN_MUX1: u16 = 0x0069;
 
+/// SUBSCRIBE flags bit1: 延長専用。送信元がいまの送り先のときだけ効く(奪わない)。
+pub const SUB_FLAG_RENEW: u8 = 0x02;
+
+/// ANNOUNCE の flags。下の2ビットが有効(古いゲートウェアは 0 を返す)。
+pub const ANN_FLAG_OWNER_INFO: u8 = 0x01;
+/// 映像をどこかへ送っている(購読が生きている)。
+pub const ANN_FLAG_STREAMING: u8 = 0x02;
+/// その送り先が、この ANNOUNCE の宛先。
+pub const ANN_FLAG_YOURS: u8 = 0x04;
+
 /// SUBSCRIBE(16B): 共通ヘッダ8B + 宛先MAC 6B + 予約2B。
 /// mac で宛先ボードを指名する(WILDCARD_MAC で全ボード)。
 pub fn pack_subscribe(seq: u16, announce_only: bool, mac: &[u8; 6]) -> [u8; 16] {
+    pack_subscribe_flags(seq, if announce_only { 1 } else { 0 }, mac)
+}
+
+/// 延長専用の SUBSCRIBE(RENEW)。奪われた後に出しても奪い返さない。
+pub fn pack_renew(seq: u16, mac: &[u8; 6]) -> [u8; 16] {
+    pack_subscribe_flags(seq, SUB_FLAG_RENEW, mac)
+}
+
+fn pack_subscribe_flags(seq: u16, flags: u8, mac: &[u8; 6]) -> [u8; 16] {
     let mut p = [0u8; 16];
     p[0] = MAGIC;
     p[1] = VERSION;
     p[2] = TYPE_SUBSCRIBE;
-    p[3] = if announce_only { 1 } else { 0 };
+    p[3] = flags;
     p[6..8].copy_from_slice(&seq.to_le_bytes());
     p[8..14].copy_from_slice(mac);
     p
@@ -532,6 +554,7 @@ mod tests {
         // ワイルドカードも parse できる形であること(受信側では自身は判定しないが)
         let w = pack_subscribe(0, false, &WILDCARD_MAC);
         assert_eq!(&w[8..14], &[0xFF; 6]);
+        assert_eq!(pack_renew(3, &mac)[3], SUB_FLAG_RENEW);
     }
 
     #[test]

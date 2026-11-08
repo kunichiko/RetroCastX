@@ -609,6 +609,10 @@ pub struct Shared {
     pub claimed: Mutex<Option<[u8; 6]>>,
     /// 他のウィンドウが使用中のボード。UI の表示用。
     pub busy_boards: Mutex<std::collections::HashSet<[u8; 6]>>,
+    /// ボードとのつながり(受信スレッドが書く。UI の表示用)。
+    pub link: Mutex<crate::link::State>,
+    /// UI →受信スレッド: 「接続」が押された。奪われていても奪い返す。
+    pub reconnect: AtomicBool,
     pub stop: AtomicBool,
     /// 音声再生の統計(再生器が無い場合は既定値のまま)
     pub audio: Mutex<Option<Arc<crate::audio::AudioStats>>>,
@@ -912,6 +916,22 @@ fn pick_targets(
     out
 }
 
+/// 画面を黒にする(切断・奪われたとき)。
+///
+/// ★**フレームを消すのではなく黒で上書きする。** 描画側は新しいフレームが来た
+///   ときだけテクスチャを差し替えるので、None にしても最後の絵が残る。
+fn blank_screen(shared: &Shared, repaint: &impl Fn()) {
+    if let Some(f) = shared.frame.lock().unwrap().as_mut() {
+        for px in f.rgba.chunks_exact_mut(4) {
+            px.copy_from_slice(&[0, 0, 0, 255]);
+        }
+        f.stamps = None;
+    }
+    *shared.mode.lock().unwrap() = None;
+    shared.frame_gen.fetch_add(1, Ordering::Release);
+    repaint();
+}
+
 /// 宛先すべてへ送り、成功した数を返す。0 なら1つも出せていない。
 /// SUBSCRIBE が1つも出せなかったときの案内。原因が OS ごとに違う
 #[cfg(not(target_os = "ios"))]
@@ -982,7 +1002,9 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     asm.set_decay(cfg.decay);
     asm.set_interlace_decay(cfg.interlace_decay);
     let mut sub_seq: u16 = 0;
-    let mut last_subscribe: Option<Instant> = None;
+    // 奪う/延長する/止まるの判断(link.rs)。送るのはここ
+    let mut link = crate::link::Link::default();
+    let mut linked_mac: Option<[u8; 6]> = None;
     // 発見用の問いかけ(ワイルドカード+ANNOUNCE_ONLY)
     let mut last_probe: Option<Instant> = None;
     // 掴んでいるボード。**落とすとロックが外れる**ので持ち続ける
@@ -1055,7 +1077,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             dest = Some(broadcast.clone());
             fell_back = true;
             *shared.sub_dest.lock().unwrap() = broadcast.clone();
-            last_subscribe = None;   // すぐ送り直す
+            link.retake();   // すぐ送り直す
         }
         let extra = shared.extra_dest.lock().unwrap().clone();
         if !targets.is_empty() || extra.is_some() {
@@ -1063,11 +1085,23 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             //   いたので、**LANに2枚あると両方が同時に映像を送ってきて**どちらも
             //   組み立てられず、2つ目のウィンドウを開くと1枚を奪い合った。
             //   発見は下の ANNOUNCE_ONLY が担うので、ここは指名だけでよい。
-            let due = last_subscribe.map_or(true, |t| t.elapsed() >= Duration::from_secs(2))
-                && claim.is_some();
-            if due {
-                let mac = claim.as_ref().map(|c| c.mac).unwrap_or(proto::WILDCARD_MAC);
-                let pkt = proto::pack_subscribe(sub_seq, false, &mac);
+            //
+            // ★**奪うのは起動時・選び直し・「接続」だけ。** 定期の延長は RENEW で、
+            //   奪われた後に出しても奪い返さない(link.rs)。
+            if shared.reconnect.swap(false, Ordering::Relaxed) {
+                link.connect(Instant::now());
+            }
+            let (action, blank) = link.tick(Instant::now());
+            if blank {
+                blank_screen(&shared, &repaint);
+            }
+            if let (Some(c), true) = (claim.as_ref(), action != crate::link::Action::None) {
+                let mac = c.mac;
+                let pkt = if action == crate::link::Action::Take {
+                    proto::pack_subscribe(sub_seq, false, &mac)
+                } else {
+                    proto::pack_renew(sub_seq, &mac)
+                };
                 // ★**送信失敗を黙って捨てない。** 以前は `let _ =` で捨てていたので、
                 //   VPNで送れないときの症状が「何も映らない」だけになり、原因を
                 //   突き止めるのに何度も時間を使った。1つも出せていないなら言う。
@@ -1079,7 +1113,6 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                     None
                 };
                 sub_seq = sub_seq.wrapping_add(1);
-                last_subscribe = Some(Instant::now());
             }
 
             // ★**指名すると他のボードが見えなくなる。** 指名した SUBSCRIBE は
@@ -1149,9 +1182,8 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                             break;
                         }
                     }
-                    // 掴めたら次の購読をすぐ出す
+                    // 掴めたら次の購読をすぐ出す(下の on_claim)
                     if claim.is_some() {
-                        last_subscribe = None;
                         waiting = false;
                     } else if !macs.is_empty()
                         && sel != crate::settings::BoardSel::None
@@ -1176,6 +1208,13 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                     }
                 }
                 let own = claim.as_ref().map(|c| c.mac);
+                if own != linked_mac {
+                    linked_mac = own;
+                    match own {
+                        Some(m) => link.on_claim(m, Instant::now()),
+                        None => link.on_release(),
+                    }
+                }
                 *shared.claimed.lock().unwrap() = own;
                 *shared.busy_boards.lock().unwrap() = macs
                     .into_iter()
@@ -1184,11 +1223,23 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             }
         }
 
+        {
+            // 移り変わりを端末に残す(切断・奪われたが後から追えるように)
+            let mut cur = shared.link.lock().unwrap();
+            if *cur != link.state {
+                eprintln!("link: {:?} → {:?}", *cur, link.state);
+                *cur = link.state;
+            }
+        }
+        // ★**奪われている間はボードの設定を触らない。** いま見ている相手の
+        //   画面が変わってしまう。
+        let quiet = link.state == crate::link::State::Taken;
+
         // UIからのCONFIG要求をボードへ送る(画枠パラメータの実行時調整)
         {
             let mut q = shared.config_queue.lock().unwrap();
             if !q.is_empty() {
-                if targets.is_empty() && extra.is_none() {
+                if (targets.is_empty() && extra.is_none()) || quiet {
                     q.clear();
                 } else {
                     let mac = claim.as_ref().map(|c| c.mac).unwrap_or(proto::WILDCARD_MAC);
@@ -1223,7 +1274,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         {
             let mut q = shared.config_get_queue.lock().unwrap();
             if !q.is_empty() {
-                if targets.is_empty() && extra.is_none() {
+                if (targets.is_empty() && extra.is_none()) || quiet {
                     q.clear();
                 } else {
                     let mac = claim.as_ref().map(|c| c.mac).unwrap_or(proto::WILDCARD_MAC);
@@ -1348,8 +1399,23 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
 
         // 発見情報はアセンブラと別に集計(送信元アドレスが正)
         if let Ok(Packet::Announce(a)) = proto::parse(&buf[..n]) {
-            let mut boards = shared.boards.lock().unwrap();
-            upsert_board(&mut boards, &src_ip.to_string(), &a, Instant::now());
+            {
+                let mut boards = shared.boards.lock().unwrap();
+                upsert_board(&mut boards, &src_ip.to_string(), &a, Instant::now());
+            }
+            if link.on_announce(a.mac, a.flags, Instant::now()) {
+                eprintln!("他の Viewer がこのボードに接続したので停止します");
+                blank_screen(&shared, &repaint);
+            }
+        }
+        // 映像の流れは送り先にしか来ない。来ている間はつながっている
+        if n >= 3 && matches!(buf[2], proto::TYPE_LINE | proto::TYPE_MODE | proto::TYPE_AUDIO) {
+            link.on_stream(Instant::now());
+        }
+        // ★**奪われた後に届いた残りは描かない。** 消した画面に古い絵が戻る。
+        if link.state == crate::link::State::Taken {
+            let _ = free_tx.send(buf);
+            continue;
         }
 
         // UIから残光が変わっていたら取り込む(フレーム完成時だけで十分)
@@ -1565,6 +1631,7 @@ mod tests {
 
     fn ann(mac: [u8; 6], name: &str) -> proto::Announce {
         proto::Announce {
+            flags: 0,
             mac,
             udp_port: 34600,
             fw_version: 0x0243,

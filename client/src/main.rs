@@ -44,6 +44,7 @@ mod keytap;
 mod latency;
 mod leds;
 mod letterbox;
+mod link;
 #[cfg(target_os = "macos")]
 mod metal_present;
 mod netcheck;
@@ -4719,6 +4720,25 @@ impl Session {
             self.set_board_sel(settings::BoardSel::Mac(m));
         }
 
+        // つながりの状態。奪われたら押すまで止まっているので、ここでも繋ぎ直せる
+        let state = *self.shared.link.lock().unwrap();
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "状態");
+            let (text, col) = match state {
+                link::State::Idle => ("未接続", theme::AMBER),
+                link::State::Connecting => ("接続中…", theme::AMBER),
+                link::State::Live => ("受信中", theme::ACCENT),
+                link::State::Lost => ("途絶(戻れば再接続)", theme::AMBER),
+                link::State::Taken => ("他の Viewer が使用中", theme::AMBER),
+            };
+            ui.label(egui::RichText::new(text).size(11.0).color(col));
+            if matches!(state, link::State::Taken | link::State::Lost)
+                && ui.small_button("接続").on_hover_text("いま掴んでいるボードへ繋ぎ直す(後勝ち)").clicked()
+            {
+                self.shared.reconnect.store(true, Ordering::Relaxed);
+            }
+        });
+
         self.sub_dest_ui(ui);
 
         // 設定を触れるのは掴んでいるボードだけ
@@ -5370,6 +5390,46 @@ impl Session {
     /// これ自体がボタンで、押すと転送をやめる。**キーに頼らない抜け道**を必ず
     /// 用意するため(キーボードによっては打ちにくい・そのキーが無いことがあり、
     /// パネルを隠しているとキー以外の手段が無くなる)。
+    /// 切断・奪われたときの案内を映像の上に出す。
+    ///
+    /// ★**黙って黒くしない。** 黒い画面だけだと、入力が無いのか、ボードが
+    ///   落ちたのか、他の Viewer に移ったのか見分けが付かない。奪われたときは
+    ///   押すまで繋ぎ直さないので、繋ぎ直す手段もここに出す。
+    fn link_overlay(&mut self, ctx: &egui::Context) {
+        let state = *self.shared.link.lock().unwrap();
+        let (msg, button) = match state {
+            link::State::Taken => ("他の Viewer がこのボードに接続しました", true),
+            link::State::Lost => ("ボードからの映像が途絶えました(戻れば自動で再接続します)", false),
+            _ => return,
+        };
+        let mut connect = false;
+        egui::Area::new(egui::Id::new("link_overlay"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::NONE
+                    .fill(egui::Color32::from_rgba_unmultiplied(30, 30, 30, 220))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::same(14))
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.label(egui::RichText::new(msg).size(14.0)
+                                .color(egui::Color32::WHITE));
+                            if button {
+                                ui.add_space(6.0);
+                                connect = ui.button("接続する")
+                                    .on_hover_text("このウィンドウに映像を取り戻します
+(相手の Viewer は停止します)")
+                                    .clicked();
+                            }
+                        });
+                    });
+            });
+        if connect {
+            self.shared.reconnect.store(true, Ordering::Relaxed);
+        }
+    }
+
     fn remote_badge(&mut self, ctx: &egui::Context) {
         if !self.remote.active() {
             return;
@@ -6568,6 +6628,7 @@ impl Session {
         }
 
         self.remote_badge(&ctx);
+        self.link_overlay(&ctx);
         self.toasts.show(&ctx);
         self.netcheck_modal(&ctx);
         self.netcheck_restart_modal(&ctx);
