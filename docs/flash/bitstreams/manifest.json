@@ -1,6 +1,12 @@
 {
   "bitstreams": [
     {
+      "name": "v1.3.0",
+      "file": "retrocastx_v1.3.0.bit",
+      "date": "2026-11-08",
+      "note": "gw-v1.3.0: 映像の送り先を後勝ちに\n\n- **映像の送り先を後勝ちにした。** あとから接続した Viewer が映像を受け取る。\n  これまでは2秒ごとの延長でも毎回送り先を奪っていたので、2つの Viewer が\n  同じボードを見ると交互に奪い合い、どちらもまともに映らなかった\n- SUBSCRIBE の flags bit1 = RENEW(延長)。送信元がいまの送り先のときだけ\n  延長し、送り先は奪わない\n- ANNOUNCE の flags に送り先の状態を載せる(bit0 = 情報あり / bit1 = 送信中 /\n  bit2 = 宛先が送り先)。Viewer は「奪われた」と「ボードが消えた」をこれで\n  見分ける\n\nViewer 0.14.0 以降で効く。古い Viewer でも以前どおり映る(延長のたびに奪う\n動きのまま)。\n\n\n---\nビルド: seed 4 / oss-cad-suite 2026-09-03 / litex 93c8d230e"
+    },
+    {
       "name": "v1.2.0",
       "file": "retrocastx_v1.2.0.bit",
       "date": "2026-11-08",
