@@ -27,6 +27,7 @@
 
 mod appicon;
 mod assembler;
+mod auto_skip;
 mod decode_worker;
 mod awake;
 mod audio;
@@ -949,6 +950,10 @@ struct Session {
     tune_frame_skip: u8,
     /// 間引きをフィールド単位にする(settings::Settings::frame_skip_fields)
     frame_skip_fields: bool,
+    /// 取りこぼしが続いたので間引きを自動で 1/2 にしている(auto_skip.rs)。
+    /// 自動では戻さない。手で間引きを変えると外れる。設定には保存しない
+    auto_skipped: bool,
+    auto_skip: auto_skip::Detector,
     /// コンポジットの3次元コム(settings::Settings::ntsc_comb3d)
     ntsc_comb3d: bool,
     /// 間引きを書いた相手のボード。**掴んだボードが変わったら書き直す**
@@ -1263,6 +1268,8 @@ impl Session {
             tune_full_line: cfg.tune_full_line,
             tune_frame_skip: cfg.tune_frame_skip,
             frame_skip_fields: cfg.frame_skip_fields,
+            auto_skipped: false,
+            auto_skip: auto_skip::Detector::default(),
             ntsc_comb3d: cfg.ntsc_comb3d,
             skip_applied_to: None,
             win_applied: None,
@@ -2552,7 +2559,39 @@ impl Session {
     /// プログレッシブでは無視するので、フィールド単位を選んでいない限り常に立てる
     fn frame_skip_cfg(&self) -> u32 {
         let pair = if self.frame_skip_fields { 0 } else { 0x10 };
-        self.tune_frame_skip as u32 | pair
+        self.frame_skip() as u32 | pair
+    }
+
+    /// 実際に使う間引き数。自動で落としているときは 1/2(auto_skip.rs)
+    fn frame_skip(&self) -> u8 {
+        if self.auto_skipped && self.tune_frame_skip == 0 { 1 } else { self.tune_frame_skip }
+    }
+
+    /// 取りこぼしが続いたら間引きを 1/2 にする(auto_skip.rs)。
+    ///
+    /// 手で間引きを入れているとき、ボードを掴んでいないとき、映像が来ていない
+    /// ときは見ない
+    fn watch_auto_skip(&mut self) {
+        let up = self.shared.mode.lock().unwrap().is_some();
+        if self.auto_skipped || self.tune_frame_skip > 0 || !up || self.claimed().is_none() {
+            self.auto_skip.reset();
+            return;
+        }
+        let c = {
+            let s = self.shared.stats.lock().unwrap();
+            auto_skip::Counts {
+                packets: s.packets,
+                lost: s.lost_packets,
+                fields: s.frames,
+                skipped: s.decode_skipped,
+            }
+        };
+        if self.auto_skip.feed(std::time::Instant::now(), c) {
+            self.auto_skipped = true;
+            eprintln!("auto-skip: 取りこぼしが続いたので間引きを 1/2 にします");
+            self.toasts.notice("取りこぼしが続いたので、映像の間引きを自動で 1/2 にしました");
+            self.send_cfg(protocol::CFG_KEY_FRAME_SKIP, self.frame_skip_cfg());
+        }
     }
 
     /// いま受けている映像がインターレースか(MODE の mflags bit0)
@@ -2570,7 +2609,7 @@ impl Session {
     /// 間引きの表示。インターレースの対モードでは、届くのが「2フィールドの組」で
     /// あることが分かるようにする
     fn frame_skip_label(&self) -> String {
-        let n = self.tune_frame_skip as u32;
+        let n = self.frame_skip() as u32;
         if n == 0 {
             return "毎フレーム".to_string();
         }
@@ -3800,7 +3839,7 @@ impl Session {
             // 映像だけを間引き、音声は間引かないので、音の途切れが減る。
             ui.horizontal(|ui| {
                 ui.monospace("間引き");
-                let mut n = self.tune_frame_skip as i32;
+                let mut n = self.frame_skip() as i32;
                 if ui.add(egui::DragValue::new(&mut n).range(0..=7))
                     .on_hover_text("映像を何フレームに1回にするか。0=毎フレーム、\n\
                                     1=2フレームに1回(帯域とfpsが半分)。\n\
@@ -3810,13 +3849,18 @@ impl Session {
                                     ボードを掴むたびに書き込みます")
                     .changed()
                 {
+                    // 手で変えたら自動は外す(0 に戻したら、また取りこぼせば落とす)
+                    self.auto_skipped = false;
                     self.tune_frame_skip = n as u8;
                     send.push((protocol::CFG_KEY_FRAME_SKIP, self.frame_skip_cfg()));
                 }
                 ui.monospace(self.frame_skip_label());
+                if self.auto_skipped {
+                    ui.label(egui::RichText::new("自動").color(theme::AMBER));
+                }
             });
             // インターレースのときだけ、対(2フィールドずつ)かフィールド単位かを選ぶ
-            if self.tune_frame_skip > 0 && self.interlaced() {
+            if self.frame_skip() > 0 && self.interlaced() {
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
                     let mut pairs = !self.frame_skip_fields;
@@ -5399,6 +5443,7 @@ impl Session {
         self.autowrite_input_regs();
         // 間引きはこの Viewer の設定。掴んだボードへ書く(パネルの外。隠していても効く)
         self.apply_frame_skip();
+        self.watch_auto_skip();
         // コンポーネントは送出範囲を固定して1ラインを1パケットに収める
         self.apply_send_window();
         // 同じくパネルの外。映像が「自動」のときの音声はボードの入力系統に従う
@@ -5589,6 +5634,15 @@ impl Session {
                     }
                 }
                 theme::kv(ui, "rate", format!("{:.1} fps  {:.1} Mbps", s.fps, s.mbps));
+                // ★自動では戻さないので、落としていることは常に見えるようにする
+                if self.auto_skipped {
+                    ui.colored_label(theme::AMBER, format!("自動で間引き中 {}", self.frame_skip_label()))
+                        .on_hover_text("パケットの取りこぼしや復調の遅れが続いたので、\n\
+                                        映像を自動で 1/2 にしています(音声は間引きません)。\n\
+                                        自動では戻しません。端末が熱いときやバッテリーが\n\
+                                        少ないときに起きやすいので、落ち着いたら\n\
+                                        Tune の「間引き」を 0 に戻してください");
+                }
                 if self.show_advanced {
                     theme::kv(ui, "frames", format!("{}", s.frames));
                     // 復調(コンポジット)が追いつかず、飛ばしたフィールドの数
