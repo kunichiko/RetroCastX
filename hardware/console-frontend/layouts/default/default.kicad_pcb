@@ -729,7 +729,7 @@
 			)
 		)
 	)
-	(footprint "YAGEO_CC0603KRX7R9BB104:C0603"
+	(footprint "SAMSUNG_CL10A106KP8NNNC:C0603"
 		(layer "F.Cu")
 		(uuid "0e6490b8-67ae-4a0f-adb7-84be4642524b")
 		(at 118.2 63.75)
@@ -744,7 +744,7 @@
 				)
 			)
 		)
-		(property "Value" "100nF ±10%"
+		(property "Value" "10µF ±10%"
 			(at 0 4 0)
 			(layer "F.Fab")
 			(uuid "557249e2-ee92-41a5-92cb-3d1374d3dc30")
@@ -779,7 +779,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C14663"
+		(property "LCSC" "C19702"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -791,7 +791,7 @@
 				)
 			)
 		)
-		(property "Manufacturer" "YAGEO"
+		(property "Manufacturer" "SAMSUNG"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -803,7 +803,7 @@
 				)
 			)
 		)
-		(property "Partnumber" "CC0603KRX7R9BB104"
+		(property "Partnumber" "CL10A106KP8NNNC"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -815,7 +815,7 @@
 				)
 			)
 		)
-		(property "capacitance" "100nF ±10%"
+		(property "capacitance" "10µF ±10%"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -851,7 +851,7 @@
 				)
 			)
 		)
-		(property "lcsc_id" "C14663"
+		(property "lcsc_id" "C19702"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -1016,7 +1016,7 @@
 			(uuid "13a52996-8ccc-4f9a-8f6c-0103ea37987d")
 		)
 		(embedded_fonts no)
-		(model "${KIPRJMOD}/../../parts/YAGEO_CC0603KRX7R9BB104/C0603_L1.6-W0.8-H0.8.step"
+		(model "${KIPRJMOD}/../../parts/SAMSUNG_CL10A106KP8NNNC/C0603_L1.6-W0.8-H0.8.step"
 			(offset
 				(xyz 0 0 -0)
 			)
@@ -7386,7 +7386,7 @@
 			)
 		)
 	)
-	(footprint "YAGEO_CC0603KRX7R9BB104:C0603"
+	(footprint "SAMSUNG_CL10A106KP8NNNC:C0603"
 		(layer "F.Cu")
 		(uuid "8709492b-4ae5-4e39-b0b1-37ca4642524b")
 		(at 118.2 83)
@@ -7401,7 +7401,7 @@
 				)
 			)
 		)
-		(property "Value" "100nF ±10%"
+		(property "Value" "10µF ±10%"
 			(at 0 4 0)
 			(layer "F.Fab")
 			(uuid "17c3e03a-fa9c-4302-a867-dd9a6a4f06db")
@@ -7436,7 +7436,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C14663"
+		(property "LCSC" "C19702"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -7448,7 +7448,7 @@
 				)
 			)
 		)
-		(property "Manufacturer" "YAGEO"
+		(property "Manufacturer" "SAMSUNG"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -7460,7 +7460,7 @@
 				)
 			)
 		)
-		(property "Partnumber" "CC0603KRX7R9BB104"
+		(property "Partnumber" "CL10A106KP8NNNC"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -7472,7 +7472,7 @@
 				)
 			)
 		)
-		(property "capacitance" "100nF ±10%"
+		(property "capacitance" "10µF ±10%"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -7508,7 +7508,7 @@
 				)
 			)
 		)
-		(property "lcsc_id" "C14663"
+		(property "lcsc_id" "C19702"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -7673,7 +7673,7 @@
 			(uuid "84075e65-a0b5-4eec-a16a-a1dcac078777")
 		)
 		(embedded_fonts no)
-		(model "${KIPRJMOD}/../../parts/YAGEO_CC0603KRX7R9BB104/C0603_L1.6-W0.8-H0.8.step"
+		(model "${KIPRJMOD}/../../parts/SAMSUNG_CL10A106KP8NNNC/C0603_L1.6-W0.8-H0.8.step"
 			(offset
 				(xyz 0 0 -0)
 			)
@@ -10227,7 +10227,7 @@
 			)
 		)
 	)
-	(footprint "YAGEO_CC0603KRX7R9BB104:C0603"
+	(footprint "SAMSUNG_CL10A106KP8NNNC:C0603"
 		(layer "F.Cu")
 		(uuid "d8ea1389-8b3a-437c-a6b6-46e54642524b")
 		(at 118.2 70.25)
@@ -10243,7 +10243,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "100nF ±10%"
+		(property "Value" "10µF ±10%"
 			(at 0 4 0)
 			(layer "F.Fab")
 			(uuid "5cd49baa-2bee-4c0a-b4cb-49b06229bda5")
@@ -10278,7 +10278,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C14663"
+		(property "LCSC" "C19702"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -10290,7 +10290,7 @@
 				)
 			)
 		)
-		(property "Manufacturer" "YAGEO"
+		(property "Manufacturer" "SAMSUNG"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -10302,7 +10302,7 @@
 				)
 			)
 		)
-		(property "Partnumber" "CC0603KRX7R9BB104"
+		(property "Partnumber" "CL10A106KP8NNNC"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -10314,7 +10314,7 @@
 				)
 			)
 		)
-		(property "capacitance" "100nF ±10%"
+		(property "capacitance" "10µF ±10%"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -10350,7 +10350,7 @@
 				)
 			)
 		)
-		(property "lcsc_id" "C14663"
+		(property "lcsc_id" "C19702"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -10515,7 +10515,7 @@
 			(uuid "6968d394-6c04-4463-b80c-461dd47e5b2c")
 		)
 		(embedded_fonts no)
-		(model "${KIPRJMOD}/../../parts/YAGEO_CC0603KRX7R9BB104/C0603_L1.6-W0.8-H0.8.step"
+		(model "${KIPRJMOD}/../../parts/SAMSUNG_CL10A106KP8NNNC/C0603_L1.6-W0.8-H0.8.step"
 			(offset
 				(xyz 0 0 -0)
 			)
@@ -10527,7 +10527,7 @@
 			)
 		)
 	)
-	(footprint "YAGEO_CC0603KRX7R9BB104:C0603"
+	(footprint "SAMSUNG_CL10A106KP8NNNC:C0603"
 		(layer "F.Cu")
 		(uuid "e6e0a9c5-eb46-4206-918e-19a44642524b")
 		(at 118.2 109)
@@ -10542,7 +10542,7 @@
 				)
 			)
 		)
-		(property "Value" "100nF ±10%"
+		(property "Value" "10µF ±10%"
 			(at 0 4 0)
 			(layer "F.Fab")
 			(uuid "a644dab4-fc20-47f2-b13a-65aa029ccf6b")
@@ -10577,7 +10577,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C14663"
+		(property "LCSC" "C19702"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -10589,7 +10589,7 @@
 				)
 			)
 		)
-		(property "Manufacturer" "YAGEO"
+		(property "Manufacturer" "SAMSUNG"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -10601,7 +10601,7 @@
 				)
 			)
 		)
-		(property "Partnumber" "CC0603KRX7R9BB104"
+		(property "Partnumber" "CL10A106KP8NNNC"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -10613,7 +10613,7 @@
 				)
 			)
 		)
-		(property "capacitance" "100nF ±10%"
+		(property "capacitance" "10µF ±10%"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -10649,7 +10649,7 @@
 				)
 			)
 		)
-		(property "lcsc_id" "C14663"
+		(property "lcsc_id" "C19702"
 			(at 0 0 0)
 			(layer "User.9")
 			(hide yes)
@@ -10814,7 +10814,7 @@
 			(uuid "39396617-8a02-4f05-9a01-4aea9e9891dd")
 		)
 		(embedded_fonts no)
-		(model "${KIPRJMOD}/../../parts/YAGEO_CC0603KRX7R9BB104/C0603_L1.6-W0.8-H0.8.step"
+		(model "${KIPRJMOD}/../../parts/SAMSUNG_CL10A106KP8NNNC/C0603_L1.6-W0.8-H0.8.step"
 			(offset
 				(xyz 0 0 -0)
 			)

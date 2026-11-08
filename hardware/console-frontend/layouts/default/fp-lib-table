@@ -77,4 +77,11 @@
 		(options "")
 		(descr "atopile: part lib: worldsemi_WS2812B_2020_V6")
 	)
+	(lib
+		(name "SAMSUNG_CL10A106KP8NNNC")
+		(type "KiCad")
+		(uri "${KIPRJMOD}/../../parts/SAMSUNG_CL10A106KP8NNNC")
+		(options "")
+		(descr "atopile: part lib: SAMSUNG_CL10A106KP8NNNC")
+	)
 )
