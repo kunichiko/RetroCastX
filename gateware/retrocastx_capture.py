@@ -365,6 +365,13 @@ class TvpCapture(Module):
         self.cfg_raw_yc = Signal()          # 1 = YC8(生8bit) / 0 = RGB555
         raw_yc = Signal()                   # pixドメインへ同期した版
         self.specials += MultiReg(self.cfg_raw_yc, raw_yc, "pix")
+        # CVBS8(1B/px、コンポジットの CVBS だけ): 1エントリ(2スロット)に4画素の
+        # 緑chを {G0 G1 0 0 | G2 G3 0 0} と詰める。送出側は YC8 と同じ式で語を作り、
+        # 1語=4画素として数える。YC8 の赤ch(S端子の C)はコンポジットでは未接続で
+        # ほぼ0なので、捨てれば帯域が半分になり、1ラインが3パケット→2パケットに減る
+        self.cfg_cvbs8 = Signal()
+        cvbs8 = Signal()
+        self.specials += MultiReg(self.cfg_cvbs8, cvbs8, "pix")
         # ★バッファには**変換せず8bitのまま**入れる(byte0=R byte1=G byte2=B)。
         #   YC8 だけは「下位=緑ch / 上位=赤ch」という別の意味を持つ形式なので、
         #   ここで詰め替えておく(復調に8bitの生値が要るのは元から同じ)。
@@ -834,9 +841,16 @@ class TvpCapture(Module):
         self.comb += [
             xpix.eq(x - self.cfg_hs_offset),
             active.eq((x >= self.cfg_hs_offset) & (xpix < width) & row_ok),
-            pix_we.eq(active & xpix[0]),          # 奇数pxが揃った時に1ペア書込
-            pix_adr.eq(xpix[1:1 + entry_bits]),
+            # 奇数pxが揃った時に1ペア書込(CVBS8 は4画素揃った時に1エントリ)
+            pix_we.eq(active & Mux(cvbs8, xpix[0:2] == 3, xpix[0])),
+            pix_adr.eq(Mux(cvbs8, xpix[2:2 + entry_bits], xpix[1:1 + entry_bits])),
         ]
+        # CVBS8 の4画素分の緑ch。0〜2画素目を保持し、3画素目と一緒に書く
+        q0 = Signal(8); q1 = Signal(8); q2 = Signal(8)
+        self.sync.pix += If(active,
+            Case(xpix[0:2], {0: q0.eq(g), 1: q1.eq(g), 2: q2.eq(g)}))
+        quad = Signal(64)
+        self.comb += quad.eq(Cat(q0, q1, C(0, 16), q2, g, C(0, 16)))
 
         # --- ライン内の「黒でない範囲」を entry 単位で記録する ---
         # 送るのはこの範囲だけにする。ライン全体(ブランキング込み)を送ると帯域が
@@ -899,7 +913,8 @@ class TvpCapture(Module):
             wr.adr.eq(Cat(clr_adr[:entry_bits], face)), wr.dat_w.eq(0), wr.we.eq(1),
         ).Else(
             wr.adr.eq(Cat(pix_adr, face)),
-            wr.dat_w.eq(Cat(pair_lo, pixw)),   # {奇数px, 偶数px}
+            # {奇数px, 偶数px}。CVBS8 は4画素の緑ch
+            wr.dat_w.eq(Mux(cvbs8, quad, Cat(pair_lo, pixw))),
             wr.we.eq(pix_we),
         )
 
