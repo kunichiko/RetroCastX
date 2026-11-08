@@ -450,6 +450,9 @@ impl FrameAssembler {
                 if self.cur_frame.is_none() {
                     self.cur_frame = Some(l.frame);
                 }
+                // 前のフレームを閉じてから、このラインの形式に生サンプルの置き場を合わせる
+                // (先に合わせると、閉じるフレームを新しい形式で扱ってしまう)
+                self.match_raw_to(l.pixfmt == proto::PIXFMT_YC8);
                 if l.line >= vactive {
                     return completed; // 行がモードの範囲外
                 }
@@ -764,14 +767,46 @@ impl FrameAssembler {
     /// 常駐スレッドの復調が終わっていれば、そのフレームを返す。
     pub fn take_decoded(&mut self) -> Option<CompletedFrame> {
         let done = self.worker.as_mut()?.try_take()?;
-        self.ntsc_info = Some(done.info);
-        self.unfilled_rows = done.unfilled_rows;
         if let Some(wk) = self.worker.as_mut() {
             wk.free = done.job;
         }
+        // 復調している間に入力を切り替えた(もうコンポジットではない、解像度が
+        // 変わった)なら、切り替え前の絵なので出さない。出すと RGB の絵の間に
+        // 古いコンポジットの絵が1枚挟まる
+        if self.raw.is_empty() || done.frame.width != self.width
+            || done.frame.height != self.height
+        {
+            return None;
+        }
+        self.ntsc_info = Some(done.info);
+        self.unfilled_rows = done.unfilled_rows;
         // 待っていた分があればすぐ渡す
         self.dispatch();
         Some(done.frame)
+    }
+
+    /// 生サンプルの置き場(復調用)を、届いているラインの形式に合わせる。
+    ///
+    /// ★**MODE ではなくラインで決める。** ボードの mode_id は固定(1)で、MODE は
+    ///   1秒ごと。入力を切り替えると、解像度の変わった MODE が伝送形式の変更より
+    ///   先に届くことがあり、そのあと形式が変わっても解像度は同じなので MODE を
+    ///   手掛かりに作り直す機会が無い。MODE の形式で決めていたときは:
+    ///     X68000 → コンポジット  置き場が無いまま輝度だけを書き、白黒のまま
+    ///     コンポジット → RGB     置き場が残り、フレームを閉じるたびに古い生サンプルを
+    ///                            復調して RGB の絵を上書きする
+    ///   になった。ラインは常にいまの形式で届くので、こちらが正しい
+    fn match_raw_to(&mut self, yc8: bool) {
+        let need = if yc8 { self.width * self.height * 2 } else { 0 };
+        if self.raw.len() == need {
+            return;
+        }
+        self.raw = vec![0u8; need];
+        self.raw_p2 = vec![0u8; need];
+        self.raw_p4 = vec![0u8; need];
+        self.hist_n = vec![0u8; if need > 0 { self.height } else { 0 }];
+        self.ntsc_info = None;
+        // 前の形式のまま渡せていないフィールドは捨てる
+        self.pending = None;
     }
 
     /// 溜めたフィールドを、スレッドが空いていれば材料を写して渡す。
@@ -1113,6 +1148,36 @@ mod tests {
         }
     }
 
+    /// 試験用のコンポジット1行(YC8、2B/px)。ntsc.rs の試験と同じ合成: 同期・
+    /// バースト・2色の帯。隣の行と、フレームごと(=1 NTSCフレームおき)に副搬送波を
+    /// 180°反転させる。帯の境目をフレームごとにずらして、3次元コムの動き検出にも
+    /// 差を出す
+    fn composite_yc8(dotclk_hz: u32, frame: u16, line: u16) -> Vec<u8> {
+        let sps = dotclk_hz as f32;
+        let at = |us: f32| (us * 1e-6 * sps) as usize;
+        let (cpi, porch) = (0.78f32, 158.0f32);
+        let flip = std::f32::consts::PI * (line as f32 + (frame / 2) as f32);
+        let mut px = Vec::new();
+        for n in 0..1820usize {
+            let psi = 2.0 * std::f32::consts::PI * (n as f32 - at(5.4) as f32) / 8.0 - flip;
+            let val = if n < at(4.7) {
+                porch - 40.0 * cpi
+            } else if (at(5.4)..at(7.7)).contains(&n) {
+                porch + 20.0 * cpi * psi.cos()
+            } else if n >= at(9.6) {
+                let red = (n + frame as usize * 16) % 600 < 300;
+                let (r, g, b) = if red { (0.8f32, 0.2, 0.2) } else { (0.2, 0.3, 0.8) };
+                let yy = 0.299 * r + 0.587 * g + 0.114 * b;
+                let c = (-0.493 * (b - yy) * psi.cos() + 0.877 * (r - yy) * psi.sin()) * 0.5;
+                porch + (yy * 100.0 + c * 100.0) * cpi
+            } else {
+                porch
+            };
+            px.extend_from_slice(&[val.clamp(0.0, 255.0) as u8, 0]);
+        }
+        px
+    }
+
     /// 常駐スレッドで復調しても、組立側で復調したときと同じ絵になる。
     /// 欠けた行(減衰・前の結果の保持)と3次元コムの履歴も含めて比べる
     #[test]
@@ -1124,34 +1189,7 @@ mod tests {
         m.htotal = 1820;
         m.vactive = 24;
         m.dotclk_hz = 28_636_364; // 8fsc
-        // ntsc.rs の試験と同じ合成: 同期・バースト・2色の帯。隣の行と、
-        // フレームごと(=1 NTSCフレームおき)に副搬送波を180°反転させる。
-        // 帯の境目をフレームごとにずらして、3次元コムの動き検出にも差を出す
-        let line_px = |frame: u16, line: u16| {
-            let sps = m.dotclk_hz as f32;
-            let at = |us: f32| (us * 1e-6 * sps) as usize;
-            let (cpi, porch) = (0.78f32, 158.0f32);
-            let flip = std::f32::consts::PI * (line as f32 + (frame / 2) as f32);
-            let mut px = Vec::new();
-            for n in 0..1820usize {
-                let psi = 2.0 * std::f32::consts::PI * (n as f32 - at(5.4) as f32) / 8.0 - flip;
-                let val = if n < at(4.7) {
-                    porch - 40.0 * cpi
-                } else if (at(5.4)..at(7.7)).contains(&n) {
-                    porch + 20.0 * cpi * psi.cos()
-                } else if n >= at(9.6) {
-                    let red = (n + frame as usize * 16) % 600 < 300;
-                    let (r, g, b) = if red { (0.8f32, 0.2, 0.2) } else { (0.2, 0.3, 0.8) };
-                    let yy = 0.299 * r + 0.587 * g + 0.114 * b;
-                    let c = (-0.493 * (b - yy) * psi.cos() + 0.877 * (r - yy) * psi.sin()) * 0.5;
-                    porch + (yy * 100.0 + c * 100.0) * cpi
-                } else {
-                    porch
-                };
-                px.extend_from_slice(&[val.clamp(0.0, 255.0) as u8, 0]);
-            }
-            px
-        };
+        let line_px = |frame: u16, line: u16| composite_yc8(m.dotclk_hz, frame, line);
         let run = |worker: bool| {
             let mut asm = FrameAssembler::new();
             asm.set_decay(0.5);
@@ -1196,5 +1234,87 @@ mod tests {
         for (i, (x, y)) in a.iter().zip(&b).enumerate() {
             assert!(x == y, "フレーム {i} が違う");
         }
+    }
+
+    /// ★**入力を切り替えたとき、MODE の伝送形式が遅れても復調する。** ボードの
+    ///   mode_id は固定(1)で、MODE は1秒ごと。入力を切り替えると、解像度の
+    ///   変わった MODE が伝送形式の変更より先に届くことがある。以前は解像度が
+    ///   変わった瞬間の MODE の形式だけで生サンプルの置き場を決めていたので、
+    ///   X68000(RGB)→ コンポジットで置き場が無いまま白黒になった
+    #[test]
+    fn composite_after_rgb_decodes_even_if_mode_pixfmt_lags() {
+        use crate::protocol::{PIXFMT_CVBS8, PIXFMT_RGB555};
+        let mut asm = FrameAssembler::new();
+        let mut m = test_mode();
+        m.pixfmt = PIXFMT_RGB555;
+        m.hactive = 768;
+        m.htotal = 768;
+        m.vactive = 24;
+        assert!(asm.feed(&pack_mode(&m, 0, 0)).is_none());
+        let rgb = vec![0x55u8; 768 * 2];
+        let mut seq = 0u16;
+        for frame in 0..3u16 {
+            for line in 0..24u16 {
+                seq += 1;
+                asm.feed(&pack_line(frame, seq, line, 0, PIXFMT_RGB555, 1, 0, &rgb));
+            }
+        }
+        // 入力を切り替えた: 解像度は新しいが、伝送形式はまだ RGB555 の MODE
+        let mut c = m.clone();
+        c.hactive = 1820;
+        c.htotal = 1820;
+        c.dotclk_hz = 28_636_364;
+        assert!(asm.feed(&pack_mode(&c, 0, 0)).is_none());
+        // 伝送形式が CVBS8 に変わってラインが届く(MODE はまだ来ない)
+        for frame in 3..9u16 {
+            for line in 0..24u16 {
+                seq += 1;
+                let px: Vec<u8> = composite_yc8(c.dotclk_hz, frame, line)
+                    .chunks_exact(2).map(|p| p[0]).collect();
+                asm.feed(&pack_line(frame, seq, line, 0, PIXFMT_CVBS8, 1, 0, &px));
+            }
+        }
+        let locked = asm.ntsc_info.as_ref().map_or(0, |i| i.lines_locked);
+        assert!(locked > 0, "復調していない(白黒のまま)");
+    }
+
+    /// 逆向き(コンポジット → RGB)。解像度が同じまま形式だけ変わっても、
+    /// RGB のフレームを古い生サンプルの復調で上書きしない
+    #[test]
+    fn rgb_after_composite_is_not_overwritten_by_decode() {
+        use crate::protocol::{PIXFMT_CVBS8, PIXFMT_RGB555};
+        let mut asm = FrameAssembler::new();
+        let mut c = test_mode();
+        c.pixfmt = PIXFMT_CVBS8;
+        c.hactive = 1820;
+        c.htotal = 1820;
+        c.vactive = 24;
+        c.dotclk_hz = 28_636_364;
+        assert!(asm.feed(&pack_mode(&c, 0, 0)).is_none());
+        let mut seq = 0u16;
+        for frame in 0..4u16 {
+            for line in 0..24u16 {
+                seq += 1;
+                let px: Vec<u8> = composite_yc8(c.dotclk_hz, frame, line)
+                    .chunks_exact(2).map(|p| p[0]).collect();
+                asm.feed(&pack_line(frame, seq, line, 0, PIXFMT_CVBS8, 1, 0, &px));
+            }
+        }
+        assert!(asm.ntsc_info.as_ref().is_some_and(|i| i.lines_locked > 0));
+        let red = rgb555(248, 0, 0);
+        let rgb: Vec<u8> = (0..1820).flat_map(|_| red).collect();
+        let mut last = None;
+        for frame in 4..7u16 {
+            for line in 0..24u16 {
+                seq += 1;
+                if let Some(f) = asm.feed(&pack_line(frame, seq, line, 0, PIXFMT_RGB555, 1, 0, &rgb)) {
+                    last = Some(f);
+                }
+            }
+        }
+        let f = last.expect("フレームが完成しない");
+        let o = (10 * 1820 + 900) * 4;
+        // RGB555 の 31 は 8bit に広げると 255
+        assert_eq!(&f.rgba[o..o + 3], &[255, 0, 0], "RGB の絵が復調で上書きされた");
     }
 }
