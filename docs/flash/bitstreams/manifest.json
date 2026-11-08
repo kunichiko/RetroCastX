@@ -1,6 +1,12 @@
 {
   "bitstreams": [
     {
+      "name": "v1.1.1",
+      "file": "retrocastx_v1.1.1.bit",
+      "date": "2026-11-08",
+      "note": "gw-v1.1.1: 小亀基板のS端子切替\n\n- **小亀基板のS端子/コンポジット切替(FFC 15 = K4)を駆動する。** これまでは\n  駆動しておらず、Viewer で S端子を選んでもコンポジット側のままで映らなかった。\n  CONFIG 0x0096 で切り替える(0=コンポジット/コンポーネント 1=S端子)。\n  Viewer 0.13.0 以降は映像ソースを選ぶと自動で書く\n\n\n---\nビルド: seed 6 / oss-cad-suite 2026-09-03 / litex 93c8d230e"
+    },
+    {
       "name": "v1.1.0",
       "file": "retrocastx_v1.1.0.bit",
       "date": "2026-11-06",
