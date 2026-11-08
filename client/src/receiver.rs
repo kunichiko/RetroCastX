@@ -32,6 +32,10 @@ pub(crate) fn raise_thread_qos() {
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn raise_thread_qos() {}
 
+/// フレーム全体を走査する解析(noise/abox/tune/weave)を何フレームに1回やるか。
+/// デスクトップは毎フレーム、モバイルは CPU が足りないので4フレームに1回
+const METER_EVERY: u32 = if cfg!(any(target_os = "ios", target_os = "android")) { 4 } else { 1 };
+
 pub struct Config {
     pub port: u16,
     /// 受信ソケットを縛るローカルアドレス。既定は 0.0.0.0(全IF)。
@@ -951,6 +955,8 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut publish_wait_us = 0u64;
     let mut publish_wait_max_us = 0u64;
     let mut noise = NoiseMeter::default();
+    // 解析の間引き(下の METER_EVERY)
+    let mut meter_tick = 0u32;
     let mut abox = ActiveBox::default();
     let mut tune = TuneMeter::default();
     let mut weave = WeaveMeter::default();
@@ -1349,10 +1355,17 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             //   リフレッシュに2枚入ったフレームが捨てられていた(全画面で約5%)。
             //   統計が1フレーム遅れるだけなので、計測の意味は変わらない。
             if let Some(old) = old {
-                noise.feed(&old.rgba);
-                abox.feed(&old.rgba, old.width, old.height);
-                tune.feed(&old.rgba, old.width, old.height);
-                weave.feed(&old.rgba, old.width, old.height);
+                // ★**モバイルでは4フレームに1回だけ測る。** 4つともフレーム全体を
+                //   走査するので、Pixel 10 で 8fsc のコンポジットでは受信ループの
+                //   時間の約3割を使い、受信キューから溢れる原因になっていた。
+                //   表示用の統計なので間引いても困らない
+                meter_tick = meter_tick.wrapping_add(1);
+                if meter_tick % METER_EVERY == 0 {
+                    noise.feed(&old.rgba);
+                    abox.feed(&old.rgba, old.width, old.height);
+                    tune.feed(&old.rgba, old.width, old.height);
+                    weave.feed(&old.rgba, old.width, old.height);
+                }
                 asm.recycle(old.rgba);
             }
         }
