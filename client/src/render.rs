@@ -161,6 +161,38 @@ impl Default for Params {
     }
 }
 
+/// 管面に映る範囲をバッファの座標で返す [左端x, 幅, 上端y, 高さ]。
+///
+/// ★**シェーダと計測帯の目盛りが同じ値を使う。** 別々に計算すると、目盛りが
+///   絵とずれる(以前は目盛りをバッファの画素数から作っていて、H位置や V幅を
+///   回しても動かなかった)。
+pub fn shown_range(p: &Params, tex_w: u32, tex_h: u32) -> [f32; 4] {
+    let geom = p.htotal > 0 && p.vtotal > 0.0;
+    if !geom {
+        // 幾何が使えないときは、バッファ全体がちょうど窓になる
+        return [0.0, tex_w.max(1) as f32, 0.0, tex_h.max(1) as f32];
+    }
+    let (ht, vt) = (p.htotal as f32, p.vtotal);
+    let w = p.effective_window();
+    [w[0] * ht - p.hs_offset as f32, (w[1] - w[0]) * ht,
+     w[2] * vt - p.vbp as f32, (w[3] - w[2]) * vt]
+}
+
+/// 管面の画面上の 横・縦 に並ぶバッファ座標の (始点, 終点)。回転はシェーダと同じ向き。
+///
+/// 90°/270° では横と縦が入れ替わり、片方は逆向きに並ぶ。
+pub fn screen_axes(range: [f32; 4], rotate: u32) -> [(f32, f32); 2] {
+    let x = (range[0], range[0] + range[1]);
+    let y = (range[2], range[2] + range[3]);
+    let rev = |a: (f32, f32)| (a.1, a.0);
+    match rotate % 4 {
+        0 => [x, y],
+        1 => [rev(y), x],
+        2 => [rev(x), rev(y)],
+        _ => [y, rev(x)],
+    }
+}
+
 /// シェーダへ渡す値。16バイト境界に合わせて4つのvec4にまとめる。
 ///
 /// 幾何は時間で決まる。バッファのサンプルkはラインの (hs_offset + k)/htotal の
@@ -170,20 +202,7 @@ fn uniforms(p: &Params, tex_w: u32, tex_h: u32, dst_w: f32, dst_h: f32) -> [u8; 
     let (tw, th) = (tex_w.max(1) as f32, tex_h.max(1) as f32);
     // htotal/vtotal が無い(MODE未受信など)ときはバッファ全体をそのまま出す
     let geom = p.htotal > 0 && p.vtotal > 0.0;
-    let (ht, vt) = (p.htotal.max(1) as f32, p.vtotal.max(1.0));
-    let w = p.effective_window();
-    let (h0, h1, v0, v1) = if geom {
-        (w[0], w[1], w[2], w[3])
-    } else {
-        // 幾何が使えないときは、バッファ全体がちょうど窓になるようにする
-        (0.0, 1.0, 0.0, 1.0)
-    };
-    let (hoff, voff) = if geom { (p.hs_offset as f32, p.vbp as f32) } else { (0.0, 0.0) };
-    let (span_x, span_y) = if geom {
-        ((h1 - h0) * ht, (v1 - v0) * vt)
-    } else {
-        (tw, th)
-    };
+    let [left, span_x, top, span_y] = shown_range(p, tex_w, tex_h);
     // 管面の縦横比。管面は物理的な形なので、時間ベースのときは指定が無ければ 4:3
     // にする(時間窓の比を使うとモードごとに管面の形が変わってしまう)。
     let aspect = if p.tube > 0.0 {
@@ -205,7 +224,7 @@ fn uniforms(p: &Params, tex_w: u32, tex_h: u32, dst_w: f32, dst_h: f32) -> [u8; 
     };
     let vals: [f32; 16] = [
         kx, ky, p.rotate as f32, p.filter as f32,
-        h0 * ht - hoff, (h1 - h0) * ht, v0 * vt - voff, (v1 - v0) * vt,
+        left, span_x, top, span_y,
         su.max(1e-6), sv.max(1e-6), tw, th,
         0.0, 0.0, 0.0, 0.0,
     ];
@@ -560,6 +579,55 @@ impl eframe::egui_wgpu::CallbackTrait for Callback {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★**目盛りがつまみで動くこと。** 以前はバッファの画素数を等分していて、
+    ///   H位置/V幅を回しても数字が変わらなかった。
+    #[test]
+    fn shown_range_follows_knobs() {
+        let base = Params {
+            htotal: 1104, vtotal: 1136.0, vbp: 70, time_based: true,
+            h_size: 0.7, h_pos: -0.05, v_size: 0.9, v_pos: 0.0,
+            ..Default::default()
+        };
+        let r0 = shown_range(&base, 1104, 1136);
+        // H位置を右へ = 絵が右へ = 管面の左端に来る番号が小さくなる
+        let r = shown_range(&Params { h_pos: 0.0, ..base }, 1104, 1136);
+        assert!(r[0] < r0[0] && (r[1] - r0[1]).abs() < 1e-3, "{r0:?} → {r:?}");
+        // V幅を広げる = 管面に入る行が増える
+        let r = shown_range(&Params { v_size: 1.0, ..base }, 1104, 1136);
+        assert!(r[3] > r0[3], "{r0:?} → {r:?}");
+        // 帰線期間まで見せれば、端は負やバッファ外の番号になる
+        let r = shown_range(&Params { h_size: 1.2, h_pos: 0.0, ..base }, 1104, 1136);
+        assert!(r[0] < 0.0 && r[0] + r[1] > 1104.0, "{r:?}");
+    }
+
+    /// ★**回転しても、目盛りの両端がシェーダの写像と一致すること。**
+    ///   シェーダの回転(fs の q)をここに写して、管面の四隅で突き合わせる。
+    #[test]
+    fn screen_axes_match_shader_rotation() {
+        let range = [100.0, 600.0, -20.0, 500.0];
+        let src = |q: (f32, f32)| (range[0] + q.0 * range[1], range[2] + q.1 * range[3]);
+        for rot in 0..4u32 {
+            let ax = screen_axes(range, rot);
+            for (ex, ey) in [(0.0, 0.5), (1.0, 0.5), (0.5, 0.0), (0.5, 1.0)] {
+                let q = match rot {
+                    0 => (ex, ey),
+                    1 => (ey, 1.0 - ex),
+                    2 => (1.0 - ex, 1.0 - ey),
+                    _ => (1.0 - ey, ex),
+                };
+                let (sx, sy) = src(q);
+                // 画面の横方向の端では、横の目盛りの値がその点のバッファ座標
+                let lerp = |a: (f32, f32), t: f32| a.0 + (a.1 - a.0) * t;
+                let want = if rot % 2 == 0 { (sx, sy) } else { (sy, sx) };
+                if ey == 0.5 {
+                    assert!((lerp(ax[0], ex) - want.0).abs() < 1e-3, "rot{rot} x端 {ex}");
+                } else {
+                    assert!((lerp(ax[1], ey) - want.1).abs() < 1e-3, "rot{rot} y端 {ey}");
+                }
+            }
+        }
+    }
 
     /// **交互する vtotal で幾何が動かないこと。** これが崩れると絵が上下に震える。
     ///

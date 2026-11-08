@@ -313,7 +313,7 @@ impl Default for Settings {
             board_ip: String::new(),
             bezel: String::new(),
             bezel_off: false,
-            letterbox: "hatch".into(),
+            letterbox: "ruler".into(),
             clean_open: false,
             clean_size: default_clean_size(),
             clean_undecorated: true,

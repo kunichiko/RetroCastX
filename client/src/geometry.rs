@@ -146,6 +146,29 @@ pub fn params(m: Option<&Mode>, vtotal_smooth: f32, act: (u32, u32, u32, u32), i
     }
 }
 
+/// 「画に合わせる」: 実測した絵の外接矩形(`act_*`)がちょうど管面に収まる
+/// [H幅, H位置, V幅, V位置]。測れていなければ None。
+///
+/// サンプル x はラインの (hs_offset + x)/htotal、行 y は周期の (vbp + y)/vtotal に
+/// ある(render.rs の uniforms と同じ対応)ので、矩形の両端を周期に対する割合へ直し、
+/// その幅と中心をつまみの値にする。位置は「周期の中心からのずれ」で、絵を動かす
+/// 向きに符号を取る(render.rs の effective_window)。
+///
+/// ★**押したときに一度だけ。** 絵に追従させると幾何が内容に依存し、暗い場面で
+///   管面が縮む。実CRTのつまみと同じく、合わせた値は帯域ごとに残す。
+pub fn fit_mon(p: &render::Params) -> Option<[f32; 4]> {
+    // 小さすぎる矩形は絵の一部(暗い場面の明るい塊)なので信用しない
+    if p.htotal == 0 || p.vtotal <= 0.0 || p.act_w < 64 || p.act_h < 16 {
+        return None;
+    }
+    let (ht, vt) = (p.htotal as f32, p.vtotal);
+    let x0 = (p.hs_offset + p.act_x) as f32 / ht;
+    let x1 = (p.hs_offset + p.act_x + p.act_w) as f32 / ht;
+    let y0 = (p.vbp + p.act_y) as f32 / vt;
+    let y1 = (p.vbp + p.act_y + p.act_h) as f32 / vt;
+    Some([x1 - x0, 0.5 - (x0 + x1) * 0.5, y1 - y0, 0.5 - (y0 + y1) * 0.5])
+}
+
 /// 管面の縦横比(幅/高さ。回転込み)。`frame` は切り出し後の画素数
 pub fn display_aspect(frame: (f32, f32), tube: f32, rotate: u32) -> (f32, f32) {
     let aspect = if tube > 0.0 { tube } else { frame.0 / frame.1.max(1.0) };
@@ -162,6 +185,44 @@ pub fn fit_centered(area_w: f32, area_h: f32, aspect: (f32, f32)) -> (f32, f32, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★**合わせた後、絵の外接矩形の四辺が管面の四辺にちょうど来ること。**
+    ///   描画と同じ effective_window で答え合わせする(式を写しただけの試験に
+    ///   しない)。vbp を入れて、縦の起点のずれも確かめる。
+    #[test]
+    fn fit_mon_puts_picture_edges_on_tube_edges() {
+        let mut p = render::Params {
+            htotal: 1104, vtotal: 1136.0, vbp: 70, time_based: true,
+            act_x: 210, act_y: 12, act_w: 768, act_h: 1024,
+            h_size: 1.0, v_size: 1.0,
+            ..Default::default()
+        };
+        let m = fit_mon(&p).expect("測れているのに合わせない");
+        (p.h_size, p.h_pos, p.v_size, p.v_pos) = (m[0], m[1], m[2], m[3]);
+        let w = p.effective_window();
+        let (ht, vt) = (1104.0, 1136.0);
+        let left = w[0] * ht - p.hs_offset as f32;
+        let right = w[1] * ht - p.hs_offset as f32;
+        let top = w[2] * vt - p.vbp as f32;
+        let bottom = w[3] * vt - p.vbp as f32;
+        assert!((left - 210.0).abs() < 0.01 && (right - 978.0).abs() < 0.01,
+                "横 {left}..{right}");
+        assert!((top - 12.0).abs() < 0.01 && (bottom - 1036.0).abs() < 0.01,
+                "縦 {top}..{bottom}");
+    }
+
+    /// 測れていない(モード未受信・暗い場面の小さな塊)なら動かさない。
+    #[test]
+    fn fit_mon_refuses_without_measurement() {
+        let p = render::Params {
+            htotal: 1104, vtotal: 1136.0,
+            act_x: 500, act_y: 500, act_w: 20, act_h: 8,
+            ..Default::default()
+        };
+        assert_eq!(fit_mon(&p), None);
+        let p = render::Params { act_w: 768, act_h: 1024, ..Default::default() };
+        assert_eq!(fit_mon(&p), None);
+    }
 
     fn mode(mflags: u16, vtotal: u16) -> Mode {
         Mode {

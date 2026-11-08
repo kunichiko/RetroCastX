@@ -1044,65 +1044,6 @@ use geometry::MON_NTSC;
 /// 小さい側はドットを飛ばして絵が壊れる。非対称なので迷ったら上。
 ///
 /// `probes` は (最良位相, 最良の鮮鋭度, 最悪の鮮鋭度) を候補の順(htotal降順)に。
-/// 「画に合わせる」ときの目標のウィンドウ内寸。動かす必要が無ければ `None`。
-///
-/// `tex` は**画の実寸ではなく、いま画面に出ている(レターボックス後の)大きさ**。
-/// だから `tex + 外側の余白` は必ず現在の内寸**以下**になる ─ つまりこの操作は
-/// 「余白を削って縮める」。1回なら意図どおりだが、**繰り返すと縮み続ける**。
-///
-/// ★**丸め程度の差では動かさない。** 比が一致すれば余白は0になって収束する
-///   はずだが、点と画素の丸めやパネル幅の増減で毎回わずかに残る。Windows の
-///   DPI 拡大では1回あたりの目減りが大きく、**同期がふらつくたびに合わせ直して
-///   窓が消えていった**(2026-09-10 実機。Macでは目減りが小さく気付かなかった)。
-/// 要求した内寸と実寸のずれをどこまで許すか[point]。
-/// 端数の丸めは通すが、タイトルバーや枠のぶん(数十point)は通さない。
-const FIT_TOLERANCE: f32 = 4.0;
-
-/// 要求してから答え合わせをするまでの猶予。ウィンドウマネージャの応答と
-/// アニメーションを待つぶん。
-const FIT_VERDICT_AFTER: std::time::Duration = std::time::Duration::from_millis(700);
-
-/// 直前の内寸要求が通ったかの判定。
-#[derive(Debug, PartialEq, Eq)]
-enum FitVerdict {
-    /// まだ分からない(猶予内)。要求を保持して次のフレームで見直す
-    Pending,
-    /// 要求どおりになった
-    Honored,
-    /// 猶予を過ぎても要求と違う。以後この環境では自動サイズ合わせをしない
-    Ignored,
-}
-
-fn fit_verdict(
-    requested: egui::Vec2,
-    actual: egui::Vec2,
-    elapsed: std::time::Duration,
-) -> FitVerdict {
-    if (actual - requested).length() <= FIT_TOLERANCE {
-        FitVerdict::Honored
-    } else if elapsed >= FIT_VERDICT_AFTER {
-        FitVerdict::Ignored
-    } else {
-        FitVerdict::Pending
-    }
-}
-
-fn fit_target(
-    window: egui::Vec2,
-    avail: egui::Vec2,
-    tex: egui::Vec2,
-    monitor: Option<egui::Vec2>,
-) -> Option<egui::Vec2> {
-    let chrome = window - avail;
-    let mut want = tex + chrome;
-    // 画面より大きくしない(はみ出すと操作できなくなる)
-    if let Some(mon) = monitor {
-        want = want.min(mon * 0.95);
-    }
-    let delta = (want - window).abs();
-    (delta.x > 3.0 || delta.y > 3.0).then_some(want)
-}
-
 fn quick_pick(probes: &[(u8, f32, f32)]) -> (usize, f32) {
     let rel_of = |p: &(u8, f32, f32)| if p.1 > 0.0 { p.2 / p.1 } else { 1.0 };
     let (mut j, mut min_rel) = (0usize, f32::MAX);
@@ -1275,11 +1216,6 @@ struct Session {
     slot_id: u32,
     /// 接続先の指定(自動 / 特定の基板 / つながない)
     board_sel: settings::BoardSel,
-    /// 中央の描画領域と画のサイズ。ウィンドウを等倍に合わせるのに使う
-    last_avail: egui::Vec2,
-    last_tex: egui::Vec2,
-    /// 次のフレームでウィンドウを画に合わせる(「画に合わせる」ボタンだけが立てる)
-    want_fit: bool,
     /// 切り替わりかけているモードと、それを最初に見た時刻。
     ///
     /// ★**すぐには追従しない。** モードは fh/vtotal/htotal の**測定値**から
@@ -1287,18 +1223,6 @@ struct Session {
     ///   切り出しと回転をリセットしていたため、**絵が飛んでいた**
     ///   (2026-09-10。ボード側で vactive が 568→372 に飛ぶ現象を実測)。
     pending_mode: Option<(String, std::time::Instant)>,
-    /// 直前に OS へ要求した内寸。次のフレームで実際の内寸と突き合わせる。
-    ///
-    /// ★**要求どおりにならない環境がある。** `fit_target` は
-    ///   「余白 = 内寸 - 描画領域」を測って、その余白ぶんを足した内寸を要求する。
-    ///   要求した内寸と、次に測れる内寸がずれる環境では、そのずれが毎回余白に
-    ///   化けて積もり、合わせ直すたびにウィンドウが縮んでいく(Windows で発生。
-    ///   macOS では出なかった)。**ずれを見つけたら合わせるのをやめる。**
-    ///   合っていない環境で反復しても正しい大きさには辿り着けないし、
-    ///   ユーザーが手で決めた大きさを奪い続ける方がずっと害が大きい。
-    fit_requested: Option<(egui::Vec2, std::time::Instant)>,
-    /// 要求が通らないと分かった環境では、自動サイズ合わせを止める
-    fit_disabled: bool,
     /// 受信中フレームの寸法(GPUテクスチャは callback_resources 側が持つ)
     frame_size: (u32, u32),
     render_state: Option<eframe::egui_wgpu::RenderState>,
@@ -1524,13 +1448,7 @@ impl Session {
             want_new_window: None,
             slot_id,
             board_sel: cfg.board_sel,
-            last_avail: egui::Vec2::ZERO,
-            last_tex: egui::Vec2::ZERO,
-            want_fit: false,
             pending_mode: None,
-            fit_requested: None,
-            // モバイルの窓は画面そのもので、大きさを変えられない
-            fit_disabled: MOBILE,
             frame_size: (0, 0),
             render_state,
             seen_gen: 0,
@@ -1547,7 +1465,7 @@ impl Session {
             bezel: cfg.bezel.clone(),
             bezel_off: cfg.bezel_off,
             letterbox: letterbox::Style::from_key(&cfg.letterbox)
-                .unwrap_or(letterbox::Style::Hatch),
+                .unwrap_or(letterbox::Style::Ruler),
             clean_open: cfg.clean_open,
             clean_size: cfg.clean_size,
             clean_undecorated: cfg.clean_undecorated,
@@ -1670,9 +1588,14 @@ impl Session {
         }
     }
 
-    /// 余白の計測帯に出す情報。`dots` は管面に映している範囲の画素数(回転前)。
+    /// 余白の計測帯に出す情報。
+    ///
+    /// ★**目盛りは絵の座標(0..最終ドット)に打つ。** 管面のどこにどの座標が
+    ///   来るかはシェーダと同じ `render::shown_range` から求めるので、
+    ///   H幅/H位置/V幅/V位置で目盛りが絵と一緒に動く。以前は管面の辺を等分して
+    ///   バッファの画素数を振っていたので、つまみを回しても動かなかった。
     fn letterbox_info(&self, area: egui::Rect, tube: egui::Rect,
-                      dots: Option<(f32, f32)>, ppp: f32) -> letterbox::Info {
+                      has_video: bool, ppp: f32) -> letterbox::Info {
         let win = format!("窓 {:.0}×{:.0}pt", area.width(), area.height());
         let mode = self.shared.mode.lock().unwrap().as_ref().map(|m| {
             let i = if m.mflags & 1 != 0 { "i" } else { "" };
@@ -1680,14 +1603,26 @@ impl Session {
                     m.hactive, m.vactive,
                     m.hfreq_mhz_x1000 as f32 / 1.0e6, m.vfreq_mhz_x1000 as f32 / 1.0e3)
         });
-        let Some((cw, ch)) = dots.filter(|_| mode.is_some()) else {
-            return letterbox::Info { dots: None, mode: None, lines: vec![win] };
-        };
-        // 画面上の横・縦に並ぶ画素数(90°/270°なら入れ替わる)
-        let d = if self.rotate % 2 == 1 { egui::vec2(ch, cw) } else { egui::vec2(cw, ch) };
+        if !has_video || mode.is_none() {
+            return letterbox::Info { ruler: None, mode: None, lines: vec![win] };
+        }
+        let range = render::shown_range(&self.render_params(),
+                                        self.frame_size.0, self.frame_size.1);
+        // ★**縦はライン番号で数える。** バッファの行は半ラインのスロットで、
+        //   プログレッシブは1ラインが2行を占める(geometry::slot_k)。行のまま
+        //   振ると X68000 の31kHz(568ライン)が 0〜1136 になって紛らわしい
+        let k = geometry::slot_k(self.shared.mode.lock().unwrap().as_ref()) as f32;
+        let range = [range[0], range[1], range[2] / k, range[3] / k];
+        let ends = render::screen_axes(range, self.rotate);
+        // 絵の長さ(最終ドット)。横は1ライン(htotal)、縦は取り込んだライン数
+        let (fw, fh) = (self.frame_size.0 as f32, self.frame_size.1 as f32 / k);
+        let lens = if self.rotate % 2 == 1 { [fh, fw] } else { [fw, fh] };
+        let ruler = [0, 1].map(|i| letterbox::Axis { a: ends[i].0, b: ends[i].1, len: lens[i] });
+        // 画面上の横・縦に並ぶ画素数(回転済み)
+        let d = egui::vec2((ends[0].1 - ends[0].0).abs(), (ends[1].1 - ends[1].0).abs());
         let px = tube.size() * ppp;
         letterbox::Info {
-            dots: Some(d),
+            ruler: Some(ruler),
             mode,
             lines: vec![
                 format!("管面 {:.0}×{:.0} → {:.0}×{:.0}px", d.x, d.y, px.x, px.y),
@@ -2736,6 +2671,36 @@ impl Session {
     /// 10.13サンプル/周期になっていた(絵は出るので気づきにくい)。
     ///
     /// 入力方式ごとの値は `retrocastx.videoin` が入れる。Viewer は触らない。
+    /// 「画に合わせる」。H幅/H位置/V幅/V位置を一度だけ決める。
+    ///
+    /// ★**コンポジット/S端子は既定の窓に戻すだけ。** NTSC の窓は規格と
+    ///   ビデオデッキで決まっている(MON_NTSC)。絵の中身から決めると、黒い
+    ///   縁のある番組で窓が縮む。
+    /// ★**RGB は映っている絵の範囲に合わせる。** 機種ごとに有効期間が違い、
+    ///   決め打ちの既定値([1,0,1,0] = 帰線期間まで全部)では小さく映る。
+    fn fit_geometry(&mut self) {
+        if self.mon_key == MON_KEY_NTSC {
+            self.mon = MON_NTSC;
+            self.toasts.info("管面をビデオデッキと同じ既定の範囲に戻しました");
+        } else if !self.tube_time_based {
+            self.toasts.notice("管面が時間基準でないので合わせられません");
+            return;
+        } else {
+            match geometry::fit_mon(&self.render_params()) {
+                Some(m) => {
+                    self.mon = m;
+                    self.toasts.info("いま映っている絵の範囲に管面を合わせました");
+                }
+                None => {
+                    self.toasts.notice(
+                        "絵の範囲が測れていません(信号が来ていないか、画面が暗すぎます)");
+                    return;
+                }
+            }
+        }
+        self.mark_settings_dirty();
+    }
+
     fn pll_locked_by_format(&self) -> bool {
         // ★**ボードが返す pixfmt だけで判定してはいけない。** 見た瞬間のボードは、
         //   こちらが書いたばかりの形式をまだ反映していないことがある。
@@ -5726,25 +5691,6 @@ impl Session {
                 self.window_size = sz;
                 self.mark_settings_dirty();
             }
-            // ★**要求した内寸になったか、その場で答え合わせをする。**
-            //   ここで見るのは「OSが要求を額面どおり受けたか」だけ。次の
-            //   合わせ直し(モードが変わるまで来ないこともある)まで待つと、
-            //   間に挟まった手動リサイズを「通らなかった」と誤判定する。
-            if let Some((want, at)) = self.fit_requested {
-                match fit_verdict(want, sz, at.elapsed()) {
-                    FitVerdict::Pending => {}
-                    FitVerdict::Honored => self.fit_requested = None,
-                    FitVerdict::Ignored => {
-                        self.fit_requested = None;
-                        self.fit_disabled = true;
-                        eprintln!(
-                            "fit: 要求した内寸 {:.0}x{:.0} が {:.0}x{:.0} にしか\
-                             ならないので自動サイズ合わせをやめます\
-                             (要求と実寸が食い違う環境)",
-                            want.x, want.y, sz.x, sz.y);
-                    }
-                }
-            }
         }
         // ★**位置は外枠(`outer_rect`)で覚える。** `with_position` が指すのは
         //   外枠なので、内枠(`inner_rect`)を渡すと**毎回タイトルバーの高さだけ
@@ -6455,9 +6401,17 @@ impl Session {
                 // 縦倍率(と 4:3 / 1.0 / integer scaling)は撤去した。表示の形は
                 // 管面が決めるので、ドット数に対する倍率という概念が要らない。
                 // 512x256 も 768x512 も、管面を 4:3 にすれば同じ形で映る。
-                // モバイルの窓は画面そのもので、大きさを変えられない
-                if !MOBILE && ui.button("画に合わせる").clicked() {
-                    self.want_fit = true;
+                // ★**ウィンドウの大きさは変えない。** 以前はウィンドウを画の等倍に
+                //   合わせるボタンだったが、窓は利用者が決めるもの(#45)。いまは
+                //   実CRTの技術者が一度だけつまみを回すのと同じく、管面の幾何を合わせる
+                if ui.button("画に合わせる")
+                    .on_hover_text("H幅/H位置/V幅/V位置を一度だけ合わせます。\n\
+                                    コンポジット/S端子: ビデオデッキと同じ既定の窓に戻す\n\
+                                    RGB: いま映っている絵の範囲が管面にちょうど収まるようにする\n\
+                                    (ウィンドウの大きさは変えません)")
+                    .clicked()
+                {
+                    self.fit_geometry();
                 }
                 ui.separator();
                 let hide = if MOBILE { "パネルを隠す" } else { "パネルを隠す (Tab)" };
@@ -6518,14 +6472,12 @@ impl Session {
                 } else {
                     egui::vec2(aspect, 1.0)
                 };
-                self.last_avail = avail;
                 // hole: 余白を描かない範囲(枠ありなら枠全体) / tube: 管面
                 let (hole, tube) = match bez {
                     // --- 枠なし: 管面を領域いっぱいに ---
                     None => {
                         let fit = (avail.x / disp.x).min(avail.y / disp.y);
                         let size = disp * fit;
-                        self.last_tex = size;
                         let t = egui::Rect::from_center_size(area.center(), size);
                         (t, t)
                     }
@@ -6534,7 +6486,6 @@ impl Session {
                         let outer = egui::vec2(b.outer_aspect(), 1.0);
                         let fit = (avail.x / outer.x).min(avail.y / outer.y);
                         let bsize = outer * fit;
-                        self.last_tex = bsize;
                         // 枠のテクスチャを必要な幅で用意する。幅が変わったら作り直す
                         // (拡大されたSVGがぼけないように)。ラスタライズは重いので
                         // 幅は64px刻みに丸めて、リサイズ中に作り直し続けないようにする。
@@ -6566,7 +6517,7 @@ impl Session {
                     }
                 };
                 // 余白。枠ありなら目盛りは枠に重なるので打たない
-                let info = self.letterbox_info(area, tube, has_video.then_some((cw, ch)),
+                let info = self.letterbox_info(area, tube, has_video,
                                                ui.ctx().pixels_per_point());
                 letterbox::paint(ui.painter(), area, hole, bez.is_none().then_some(tube),
                                  self.letterbox, &info);
@@ -6599,32 +6550,6 @@ impl Session {
         if MOBILE && central.response.interact(egui::Sense::click()).clicked() {
             self.show_panel = !self.show_panel;
             self.mark_settings_dirty();
-        }
-
-        // ウィンドウを画にぴったり合わせる。中央パネルを描いた後に行う
-        // (今フレームの描画領域が分かってから計算するため)。
-        // 画の外側の余白 = ウィンドウ内寸 - 中央の描画領域。右パネルとフレームの
-        // 分がここに入るので、内寸をこれだけ変えれば画がちょうど等倍で収まる。
-        // フルスクリーン中に InnerSize を送ると、要求が部分的にしか効かずレイアウトが
-        // 中途半端な大きさで残る(実機で画が画面中央ではなく左に寄った)。
-        // フルスクリーンでは「画面いっぱいに収める」のが既に正しい状態なので何もしない。
-        let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
-        if self.want_fit && is_fullscreen {
-            self.want_fit = false;
-        }
-        if self.want_fit && self.last_tex.x > 0.0 && self.last_avail.x > 0.0 {
-            self.want_fit = false;
-            // ★答え合わせは実寸を測っている側でやる(fit_requested)。通らない
-            //   環境と分かったら fit_disabled が立ち、以後は手を出さない。
-            let mon = ctx.input(|i| i.viewport().monitor_size);
-            if !self.fit_disabled {
-                if let Some(want) =
-                    fit_target(self.window_size, self.last_avail, self.last_tex, mon)
-                {
-                    self.fit_requested = Some((want, std::time::Instant::now()));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
-                }
-            }
         }
 
         self.remote_badge(&ctx);
@@ -6711,73 +6636,6 @@ mod tests {
         assert!((y0 - 35.6).abs() < 0.5 && (y1 - 515.6).abs() < 0.5, "縦 {y0}..{y1}");
         let aspect = geometry::NTSC_TUBE_ASPECT;
         assert!((aspect - 1.274).abs() < 0.005, "縦横比 {aspect}");
-    }
-
-    /// ★**繰り返しても縮み続けないこと。** `last_tex` はレターボックス後の
-    ///   表示サイズなので、素直に合わせると毎回余白ぶん小さくなる。同期が
-    ///   ふらつくたびに合わせ直していたため、Windows で窓が消えていった。
-    #[test]
-    fn fit_does_not_shrink_forever() {
-        let panel = egui::vec2(360.0, 0.0);      // 右パネルぶんの余白
-        let aspect = 4.0 / 3.0;
-        let mut win = egui::vec2(1160.0, 820.0);
-        for i in 0..50 {
-            let avail = win - panel;
-            // 画は領域に内接する(= レターボックスが残る)
-            let fit = (avail.x / aspect).min(avail.y);
-            let tex = egui::vec2(fit * aspect, fit);
-            match fit_target(win, avail, tex, None) {
-                Some(next) => {
-                    assert!(next.x > 100.0 && next.y > 100.0,
-                            "{i}回目で潰れた: {next:?}");
-                    win = next;
-                }
-                None => return,   // 収束した
-            }
-        }
-        panic!("50回合わせても収束しない(縮み続けている): {win:?}");
-    }
-
-    /// ★**要求が通らない環境では反復をやめる。** `fit_target` の式自体は
-    ///   モニタ上限を入れても収束する(総当たりで確認済み)。Windows で窓が
-    ///   縮み続けたのは式ではなく、要求した内寸と次に測れる内寸がずれ、その
-    ///   ずれが毎回「余白」に化けて積もったため。ずれを見つけたら降りる。
-    #[test]
-    fn fit_gives_up_when_request_is_ignored() {
-        let want = egui::vec2(1160.0, 820.0);
-        let short = std::time::Duration::from_millis(100);
-        let long = FIT_VERDICT_AFTER + std::time::Duration::from_millis(1);
-
-        // ぴったり = 通った
-        assert_eq!(fit_verdict(want, want, short), FitVerdict::Honored);
-        // 端数の丸めは通ったとみなす
-        assert_eq!(fit_verdict(want, want + egui::vec2(2.0, 0.0), long),
-                   FitVerdict::Honored);
-        // タイトルバーぶんずれている。猶予内はまだ判断しない
-        let off = want - egui::vec2(0.0, 30.0);
-        assert_eq!(fit_verdict(want, off, short), FitVerdict::Pending);
-        // 猶予を過ぎても違えば、この環境では諦める
-        assert_eq!(fit_verdict(want, off, long), FitVerdict::Ignored);
-    }
-
-    /// 丸め程度の差では動かさない。
-    #[test]
-    fn fit_ignores_rounding_noise() {
-        let win = egui::vec2(1000.0, 800.0);
-        let avail = egui::vec2(640.0, 800.0);
-        // 2ポイントだけ小さい = 丸めの範囲
-        let tex = egui::vec2(638.0, 799.0);
-        assert_eq!(fit_target(win, avail, tex, None), None);
-    }
-
-    /// 意味のある変化なら動かす(効かなくなっていないこと)。
-    #[test]
-    fn fit_still_resizes_when_it_matters() {
-        let win = egui::vec2(1000.0, 800.0);
-        let avail = egui::vec2(640.0, 800.0);
-        let tex = egui::vec2(640.0, 480.0);      // 縦に大きな余白
-        let want = fit_target(win, avail, tex, None).expect("動くべき場面で動かない");
-        assert_eq!(want, egui::vec2(1000.0, 480.0));
     }
 
     /// ★**ANNOUNCE の name は16バイト固定。** 日本語は1文字3バイトなので、
