@@ -1,6 +1,7 @@
 //! Frame reassembly (mirror of `host/python/retrocastx/receiver.py` FrameAssembler).
 //! Output is RGBA8 so the frame can go straight to a GPU texture.
 
+use crate::decode_worker::DecodeWorker;
 use crate::ntsc;
 use crate::protocol::{self as proto, Packet};
 
@@ -21,6 +22,8 @@ pub struct Stats {
     pub packets: u64,
     pub bytes: u64,
     pub frames: u64,
+    /// 復調が追いつかず、復調せずに飛ばしたフィールドの数
+    pub decode_skipped: u64,
 }
 
 pub struct FrameAssembler {
@@ -129,6 +132,21 @@ pub struct FrameAssembler {
     /// 公開用バッファの使い回し先。UIが使い終わったものを recycle() で戻す。
     /// 毎フレームの確保をなくすためだけのもので、中身に意味は無い。
     spare: Option<Vec<u8>>,
+    /// 復調を任せる常駐スレッド。None なら emit() の中で復調する
+    worker: Option<DecodeWorker>,
+    /// まだ復調へ渡せていないフィールドの届いた行
+    pending_seen: Vec<bool>,
+    /// まだ復調へ渡せていないフィールドの仕上げの条件
+    pending: Option<Pending>,
+    /// 直前の feed() でフィールドを閉じて復調へ回した
+    field_end: bool,
+}
+
+struct Pending {
+    interlaced: bool,
+    decay: f32,
+    frame_idx: u16,
+    fill_ratio: f32,
 }
 
 impl FrameAssembler {
@@ -143,6 +161,10 @@ impl FrameAssembler {
             hist_n: Vec::new(),
             ntsc_info: None,
             spare: None,
+            worker: None,
+            pending_seen: Vec::new(),
+            pending: None,
+            field_end: false,
             width: 0,
             height: 0,
             cur_frame: None,
@@ -422,7 +444,7 @@ impl FrameAssembler {
                 let mut completed = None;
                 if let Some(cur) = self.cur_frame {
                     if l.frame != cur {
-                        completed = Some(self.emit());
+                        completed = self.emit();
                     }
                 }
                 if self.cur_frame.is_none() {
@@ -631,7 +653,7 @@ impl FrameAssembler {
         }
     }
 
-    fn emit(&mut self) -> CompletedFrame {
+    fn emit(&mut self) -> Option<CompletedFrame> {
         // --- YC8 なら、まず復調して fb を RGB に置き換える ---
         //
         // ここでやるのは、Y/C分離のコムが上下のラインを要るのでフィールドが
@@ -640,7 +662,50 @@ impl FrameAssembler {
         //
         // ロックしなかったとき(バーストが無い信号など)は fb を触らないので、
         // ライン受信時に書いてあるYのグレースケールがそのまま残る。
-        if !self.raw.is_empty() && !self.raw_view {
+        let (w, h) = (self.width, self.height);
+        // 太らせるかどうかはインタレースの判定で決まる(finish_frame のコメント)
+        self.update_interlace_measure();
+        let woven = self.mode.as_ref().map_or(false, |m| m.mflags & 0x0001 != 0);
+        let interlaced = woven || self.interlace_measured;
+        // インターレースでは半分の行が来ないのが正常なので、減衰は別の値を使う
+        let d = if interlaced { self.interlace_decay } else { self.decay };
+        let decode = !self.raw.is_empty() && !self.raw_view;
+        let total = (self.width * self.height).max(1);
+        let fill_ratio = self.px_filled as f32 / total as f32;
+        let frame_idx = self.cur_frame.unwrap_or(0);
+        self.stats.frames += 1;
+        self.cur_frame = None;
+        self.px_filled = 0;
+
+        // 常駐スレッドで復調するときは、届いた行を溜めて渡すだけ。結果は
+        // take_decoded() で受け取る
+        if decode && self.worker.is_some() {
+            if self.pending.is_some() {
+                // 前のフィールドがまだ渡せていない(復調が追いついていない)。
+                // **新しい方だけを復調する。** 飛ばしたフィールドの行は前の
+                // 復調結果が残る(送られなかった行と同じ扱い)。
+                //
+                // ★届いた行を足して1回にまとめると、インタレースでは2フィールド
+                //   分(Pixel 10 の 480i で 524行)を復調することになり、1回が
+                //   倍かかってさらに遅れる。実機で 46ms/回・22fps に落ちた。
+                //   スレッドは空いた時点で次を始めるので、飛ばすフィールドの
+                //   極性は偏らない
+                self.stats.decode_skipped += 1;
+            }
+            if self.pending_seen.len() != h {
+                self.pending_seen = vec![false; h];
+            }
+            self.pending_seen.copy_from_slice(&self.line_seen);
+            for s in self.line_seen.iter_mut() {
+                *s = false;
+            }
+            self.pending = Some(Pending { interlaced, decay: d, frame_idx, fill_ratio });
+            self.field_end = true;
+            self.dispatch();
+            return None;
+        }
+
+        if decode {
             let dotclk = self.mode.as_ref().map(|m| m.dotclk_hz).unwrap_or(0);
             let hist = ntsc::History {
                 p2: &self.raw_p2, p4: &self.raw_p4, hist_n: &self.hist_n,
@@ -650,77 +715,11 @@ impl FrameAssembler {
                 &mut self.fb, self.comb3d.then_some(hist), self.adjust);
             self.ntsc_info = Some(info);
         }
-        // このフレームで受信できなかったライン(=送信側でドロップ)を前値×decayで減衰。
-        // 継続的に欠損するラインは 0.8^n で徐々に暗転し「しばらくすると消える」。
-        // 1回だけの欠損は80%でほぼ気づかず、次に受信すれば満輝度へ復帰。
-        let (w, h) = (self.width, self.height);
-        // 行位置は半ライン単位のスロットなので、プログレッシブでは1つ飛びに埋まる。
-        // 空くスロットは「次のラインまでの間隔」ぶん太らせて埋める(ビームには
-        // 太さがあるので物理的にも正しい)。インターレースでは間隔が1スロットに
-        // なるので、この処理は何もしない。
-        //
-        // 埋めるのは「隙間がちょうど1スロットで両隣が埋まっている」場合だけ。
-        // 構造的な空きは1つ飛びで規則的に現れるので必ずこの形になる。
-        //
-        // 織り込み済み(mflags bit0)のときは全スロットが埋まるので、この処理は本来
-        // 発動しない。ところが1本だけドロップすると発動し、**別フィールドの行**を
-        // 複製してしまう(隣のスロットは別フィールド)。実機で「ところどころ開始位置が
-        // 他の行と合わない」形で出た。織り込み時は太らせない。
-        //
-        // ★判定は mflags ではなく**測定**で行う。mflags bit0 は「フレーム単位の
-        //   織り込み」の意味で、VSYNCがフィールドごとに来る本物のインタレースでは
-        //   0 になる。詳細は update_interlace_measure のコメント。
-        self.update_interlace_measure();
-        let woven = self.mode.as_ref().map_or(false, |m| m.mflags & 0x0001 != 0);
-        let interlaced = woven || self.interlace_measured;
-        // インターレースでは半分の行が来ないのが正常なので、減衰は別の値を使う
-        let d = if interlaced { self.interlace_decay } else { self.decay };
-        if !interlaced {
-            let seen: Vec<bool> = self.line_seen.clone();
-            for line in 1..h {
-                let below = if line + 1 < h { seen[line + 1] } else { true };
-                if !seen[line] && seen[line - 1] && below {
-                    let (a, b) = self.fb.split_at_mut(line * w * 4);
-                    let src = &a[(line - 1) * w * 4..];
-                    b[..w * 4].copy_from_slice(&src[..w * 4]);
-                    self.line_seen[line] = true;
-                }
-            }
-        }
-        if d < 1.0 {
-            for line in 0..h {
-                if !self.line_seen.get(line).copied().unwrap_or(true) {
-                    let row = &mut self.fb[line * w * 4..(line + 1) * w * 4];
-                    for px in row.chunks_exact_mut(4) {
-                        px[0] = (px[0] as f32 * d) as u8;
-                        px[1] = (px[1] as f32 * d) as u8;
-                        px[2] = (px[2] as f32 * d) as u8;
-                        // alpha(px[3])は不変
-                    }
-                }
-            }
-        }
-        // 片方のフィールドだけを見る(切り分け用)。選んだパリティの行を
-        // 隣のスロットへ複製する = ラインダブラ。
-        if self.field_view != 0 {
-            let par = (self.field_view - 1) as usize;   // 1→0(偶数) / 2→1(奇数)
-            let mut line = par;
-            while line < h {
-                let dst = line ^ 1;                     // 隣のスロット
-                if dst < h {
-                    let s = line * w * 4;
-                    self.fb.copy_within(s..s + w * 4, dst * w * 4);
-                }
-                line += 2;
-            }
-        }
-        // 太らせても埋まらなかった行を数える。0でないと前フレームの残りが減衰して
-        // 薄い影として見える。診断用に統計へ出す
-        self.unfilled_rows = self.line_seen.iter().filter(|s| !**s).count() as u32;
+        self.unfilled_rows = finish_frame(&mut self.fb, &mut self.line_seen, w, h,
+                                          interlaced, d, self.field_view);
         for s in self.line_seen.iter_mut() {
             *s = false;
         }
-        let total = (self.width * self.height).max(1);
         // 公開用のバッファは使い回す。
         //
         // 以前は self.fb.clone() で毎フレーム新規確保していた。31kHzなら
@@ -740,18 +739,80 @@ impl FrameAssembler {
             _ => vec![0u8; need],
         };
         out.copy_from_slice(&self.fb);
-        let f = CompletedFrame {
-            frame_idx: self.cur_frame.unwrap_or(0),
+        Some(CompletedFrame {
+            frame_idx,
             width: self.width,
             height: self.height,
             rgba: out,
-            fill_ratio: self.px_filled as f32 / total as f32,
+            fill_ratio,
             stamps: None,
-        };
-        self.stats.frames += 1;
-        self.cur_frame = None;
-        self.px_filled = 0;
-        f
+        })
+    }
+
+    /// 復調を常駐スレッドへ移す。受信ループから使う(テストは同期のまま)。
+    pub fn enable_decode_worker(&mut self) {
+        if self.worker.is_none() {
+            self.worker = Some(DecodeWorker::spawn());
+        }
+    }
+
+    /// 直前の feed() でフィールドが閉じ、復調へ回したか(遅延計測の区切り用)
+    pub fn take_field_end(&mut self) -> bool {
+        std::mem::take(&mut self.field_end)
+    }
+
+    /// 常駐スレッドの復調が終わっていれば、そのフレームを返す。
+    pub fn take_decoded(&mut self) -> Option<CompletedFrame> {
+        let done = self.worker.as_mut()?.try_take()?;
+        self.ntsc_info = Some(done.info);
+        self.unfilled_rows = done.unfilled_rows;
+        if let Some(wk) = self.worker.as_mut() {
+            wk.free = done.job;
+        }
+        // 待っていた分があればすぐ渡す
+        self.dispatch();
+        Some(done.frame)
+    }
+
+    /// 溜めたフィールドを、スレッドが空いていれば材料を写して渡す。
+    fn dispatch(&mut self) {
+        let Some(wk) = self.worker.as_mut() else { return };
+        if wk.busy {
+            return;
+        }
+        let Some(p) = self.pending.take() else { return };
+        if self.raw.is_empty() || self.raw_view {
+            // 渡すまでの間に YC8 でなくなった
+            return;
+        }
+        let mut job = std::mem::take(&mut wk.free);
+        fn copy<T: Copy>(dst: &mut Vec<T>, src: &[T]) {
+            dst.clear();
+            dst.extend_from_slice(src);
+        }
+        job.width = self.width;
+        job.height = self.height;
+        job.dotclk_hz = self.mode.as_ref().map(|m| m.dotclk_hz).unwrap_or(0);
+        copy(&mut job.raw, &self.raw);
+        copy(&mut job.gray, &self.fb);
+        copy(&mut job.seen, &self.pending_seen);
+        job.comb3d = self.comb3d;
+        if self.comb3d {
+            copy(&mut job.p2, &self.raw_p2);
+            copy(&mut job.p4, &self.raw_p4);
+            copy(&mut job.hist_n, &self.hist_n);
+        }
+        job.adjust = self.adjust;
+        job.interlaced = p.interlaced;
+        job.decay = p.decay;
+        job.field_view = self.field_view;
+        job.frame_idx = p.frame_idx;
+        job.fill_ratio = p.fill_ratio;
+        job.out = self.spare.take().unwrap_or_default();
+        for s in self.pending_seen.iter_mut() {
+            *s = false;
+        }
+        wk.send(job);
     }
 }
 
@@ -778,6 +839,82 @@ fn ypbpr_to_rgb(y: i32, cb: i32, cr: i32) -> [u8; 3] {
     let g = (y - 100 * cb - 208 * cr + 128) >> 8;
     let b = (y + 516 * cb + 128) >> 8;
     [r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8]
+}
+
+/// フィールドを閉じるときの仕上げ(太らせ・欠損行の減衰・片フィールド表示)。
+/// 戻り値は太らせても埋まらなかった行数。`seen` は太らせた行も立つ。
+///
+/// 組立側で復調するときと常駐スレッドで復調するときの両方で使う。
+pub(crate) fn finish_frame(
+    fb: &mut [u8],
+    seen: &mut [bool],
+    w: usize,
+    h: usize,
+    interlaced: bool,
+    d: f32,
+    field_view: u8,
+) -> u32 {
+    // 行位置は半ライン単位のスロットなので、プログレッシブでは1つ飛びに埋まる。
+    // 空くスロットは「次のラインまでの間隔」ぶん太らせて埋める(ビームには
+    // 太さがあるので物理的にも正しい)。インターレースでは間隔が1スロットに
+    // なるので、この処理は何もしない。
+    //
+    // 埋めるのは「隙間がちょうど1スロットで両隣が埋まっている」場合だけ。
+    // 構造的な空きは1つ飛びで規則的に現れるので必ずこの形になる。
+    //
+    // 織り込み済み(mflags bit0)のときは全スロットが埋まるので、この処理は本来
+    // 発動しない。ところが1本だけドロップすると発動し、**別フィールドの行**を
+    // 複製してしまう(隣のスロットは別フィールド)。実機で「ところどころ開始位置が
+    // 他の行と合わない」形で出た。織り込み時は太らせない。
+    //
+    // ★判定は mflags ではなく**測定**で行う。mflags bit0 は「フレーム単位の
+    //   織り込み」の意味で、VSYNCがフィールドごとに来る本物のインタレースでは
+    //   0 になる。詳細は update_interlace_measure のコメント。
+    if !interlaced {
+        let seen0: Vec<bool> = seen.to_vec();
+        for line in 1..h {
+            let below = if line + 1 < h { seen0[line + 1] } else { true };
+            if !seen0[line] && seen0[line - 1] && below {
+                let (a, b) = fb.split_at_mut(line * w * 4);
+                let src = &a[(line - 1) * w * 4..];
+                b[..w * 4].copy_from_slice(&src[..w * 4]);
+                seen[line] = true;
+            }
+        }
+    }
+    // このフレームで受信できなかったライン(=送信側でドロップ)を前値×decayで減衰。
+    // 継続的に欠損するラインは 0.8^n で徐々に暗転し「しばらくすると消える」。
+    // 1回だけの欠損は80%でほぼ気づかず、次に受信すれば満輝度へ復帰。
+    if d < 1.0 {
+        for line in 0..h {
+            if !seen.get(line).copied().unwrap_or(true) {
+                let row = &mut fb[line * w * 4..(line + 1) * w * 4];
+                for px in row.chunks_exact_mut(4) {
+                    px[0] = (px[0] as f32 * d) as u8;
+                    px[1] = (px[1] as f32 * d) as u8;
+                    px[2] = (px[2] as f32 * d) as u8;
+                    // alpha(px[3])は不変
+                }
+            }
+        }
+    }
+    // 片方のフィールドだけを見る(切り分け用)。選んだパリティの行を
+    // 隣のスロットへ複製する = ラインダブラ。
+    if field_view != 0 {
+        let par = (field_view - 1) as usize;   // 1→0(偶数) / 2→1(奇数)
+        let mut line = par;
+        while line < h {
+            let dst = line ^ 1;                     // 隣のスロット
+            if dst < h {
+                let s = line * w * 4;
+                fb.copy_within(s..s + w * 4, dst * w * 4);
+            }
+            line += 2;
+        }
+    }
+    // 太らせても埋まらなかった行を数える。0でないと前フレームの残りが減衰して
+    // 薄い影として見える。診断用に統計へ出す
+    seen.iter().filter(|s| !**s).count() as u32
 }
 
 #[cfg(test)]
@@ -973,6 +1110,91 @@ mod tests {
         assert_eq!(a.rgba, b.rgba);
         for (x, &y) in ys.iter().enumerate() {
             assert_eq!(&b.rgba[x * 4..x * 4 + 3], &[y, y, y]);
+        }
+    }
+
+    /// 常駐スレッドで復調しても、組立側で復調したときと同じ絵になる。
+    /// 欠けた行(減衰・前の結果の保持)と3次元コムの履歴も含めて比べる
+    #[test]
+    fn decode_worker_matches_inline() {
+        use crate::protocol::PIXFMT_YC8;
+        let mut m = test_mode();
+        m.pixfmt = PIXFMT_YC8;
+        m.hactive = 1820;
+        m.htotal = 1820;
+        m.vactive = 24;
+        m.dotclk_hz = 28_636_364; // 8fsc
+        // ntsc.rs の試験と同じ合成: 同期・バースト・2色の帯。隣の行と、
+        // フレームごと(=1 NTSCフレームおき)に副搬送波を180°反転させる。
+        // 帯の境目をフレームごとにずらして、3次元コムの動き検出にも差を出す
+        let line_px = |frame: u16, line: u16| {
+            let sps = m.dotclk_hz as f32;
+            let at = |us: f32| (us * 1e-6 * sps) as usize;
+            let (cpi, porch) = (0.78f32, 158.0f32);
+            let flip = std::f32::consts::PI * (line as f32 + (frame / 2) as f32);
+            let mut px = Vec::new();
+            for n in 0..1820usize {
+                let psi = 2.0 * std::f32::consts::PI * (n as f32 - at(5.4) as f32) / 8.0 - flip;
+                let val = if n < at(4.7) {
+                    porch - 40.0 * cpi
+                } else if (at(5.4)..at(7.7)).contains(&n) {
+                    porch + 20.0 * cpi * psi.cos()
+                } else if n >= at(9.6) {
+                    let red = (n + frame as usize * 16) % 600 < 300;
+                    let (r, g, b) = if red { (0.8f32, 0.2, 0.2) } else { (0.2, 0.3, 0.8) };
+                    let yy = 0.299 * r + 0.587 * g + 0.114 * b;
+                    let c = (-0.493 * (b - yy) * psi.cos() + 0.877 * (r - yy) * psi.sin()) * 0.5;
+                    porch + (yy * 100.0 + c * 100.0) * cpi
+                } else {
+                    porch
+                };
+                px.extend_from_slice(&[val.clamp(0.0, 255.0) as u8, 0]);
+            }
+            px
+        };
+        let run = |worker: bool| {
+            let mut asm = FrameAssembler::new();
+            asm.set_decay(0.5);
+            if worker {
+                asm.enable_decode_worker();
+            }
+            assert!(asm.feed(&pack_mode(&m, 0, 0)).is_none());
+            let mut out = Vec::new();
+            let mut seq = 0;
+            for frame in 0..8u16 {
+                for line in 0..24u16 {
+                    // 3フレーム目は5行目を落とす(太らせの経路)
+                    if frame == 3 && line == 5 {
+                        continue;
+                    }
+                    seq += 1;
+                    let px = line_px(frame, line);
+                    let f = asm.feed(&pack_line(frame, seq, line, 0, PIXFMT_YC8, 1, 0, &px));
+                    if let Some(f) = f {
+                        out.push(f.rgba);
+                    } else if asm.take_field_end() {
+                        let t = std::time::Instant::now();
+                        loop {
+                            if let Some(f) = asm.take_decoded() {
+                                out.push(f.rgba);
+                                break;
+                            }
+                            assert!(t.elapsed().as_secs() < 5, "復調が返ってこない");
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                    }
+                }
+            }
+            (out, asm.ntsc_info.map(|i| i.lines_locked), asm.stats.decode_skipped)
+        };
+        let (a, la, _) = run(false);
+        let (b, lb, skipped) = run(true);
+        assert_eq!(a.len(), 7);
+        assert_eq!(skipped, 0);
+        assert_eq!(la, lb);
+        assert!(la.unwrap_or(0) > 0, "色がロックしていない(試験信号の問題)");
+        for (i, (x, y)) in a.iter().zip(&b).enumerate() {
+            assert!(x == y, "フレーム {i} が違う");
         }
     }
 }
