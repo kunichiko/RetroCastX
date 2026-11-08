@@ -22,7 +22,7 @@ use crate::protocol::{self as proto, Packet};
 /// 48000パケット/秒を落とさず捌くのは実質リアルタイム処理なので、
 /// USER_INTERACTIVE を要求する。効かない環境では単に無視される。
 #[cfg(target_os = "macos")]
-fn raise_thread_qos() {
+pub(crate) fn raise_thread_qos() {
     // QOS_CLASS_USER_INTERACTIVE
     unsafe {
         libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
@@ -30,7 +30,7 @@ fn raise_thread_qos() {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn raise_thread_qos() {}
+pub(crate) fn raise_thread_qos() {}
 
 pub struct Config {
     pub port: u16,
