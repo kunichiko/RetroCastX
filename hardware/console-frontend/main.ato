@@ -374,18 +374,33 @@ module App:
     # S端子ヘッダと同じ状況)。
     j_pb.sig ~ ffc.pb
 
-    # --- 音声(RCA 白/灰 と 赤) ---
+    # --- 音声(RCA 白/灰 と 赤): 10k / 10k で約半分に分圧して渡す ---
     #
-    # ACカップリングとバイアスはメイン基板の PCM1808 側(AudioAdc の c_in_*)に
-    # あるので、この基板は 10kΩ でGNDへ落として直流を確定させるだけ。
-    # 浮かせるとFFCの10cmでハムを拾う。10kΩなら送り出し(600Ω〜1kΩ級)に対して
-    # -0.5dB 程度の損失で済む。
+    # ACカップリングとバイアスはメイン基板の PCM1808 側(AudioAdc の c_in_*: 直列1µF)に
+    # あるので、この基板は分圧するだけ。
+    #
+    # ★**半分に落とす理由。** PCM1808 のフルスケールは 3Vpp(VCC=5V)で、民生機の
+    #   最大 2Vrms(5.66Vpp)が入らない。初版(10kΩ プルダウンで直結)は PS2 の音で
+    #   ピークがフルスケールに当たっていた(2026-11-07 実測)。
+    #   分圧比は PCM1808 の入力インピーダンス 60kΩ を含めて
+    #       10k||60k / (10k + 10k||60k) = 8.57k / 18.57k = 0.46
+    #   で、2Vrms → 2.6Vpp(フルスケールまで 1.3dB 残る)。
+    #   送り出しから見た負荷は約 18.6kΩ(民生機のライン出力は 10kΩ 以上を想定している)。
+    #   FFC 側から見た出力インピーダンスは約 5kΩ。浮かせないのでハムは拾いにくい。
+    #
+    # ★**ハムはこの回路では対処しない。** 映像の帰り電流がケーブルの GND で作る電位差が
+    #   音声に乗る(59.94Hz とその倍音)。差動で受ける案も検討したが、ハムが出た
+    #   サードパーティ製コンポーネントケーブルは**映像と音声の GND を RCA 側の近くで
+    #   合流させて約1.75Ωを共用していた**ので、差動にしても消せない(2026-11-08 実測。
+    #   純正のコンポジット/S端子ケーブルはノイズ無し)。対策はケーブルを替えること。
     r_aud_l = new R10K_0603
     r_aud_r = new R10K_0603
-    j_aud_l.sig ~> r_aud_l ~> gnd
-    j_aud_r.sig ~> r_aud_r ~> gnd
-    j_aud_l.sig ~ ffc.audio_l
-    j_aud_r.sig ~ ffc.audio_r
+    r_aud_l_ser = new R10K_0603
+    r_aud_r_ser = new R10K_0603
+    j_aud_l.sig ~> r_aud_l_ser ~> ffc.audio_l
+    j_aud_r.sig ~> r_aud_r_ser ~> ffc.audio_r
+    ffc.audio_l ~> r_aud_l ~> gnd
+    ffc.audio_r ~> r_aud_r ~> gnd
 
     # --- ステータス表示用シリアルLED ×4 ---
     #
@@ -494,3 +509,5 @@ module App:
     led2.DO.override_net_name = "led2_dout"
     led3.DO.override_net_name = "led3_dout"
     tp_led_do.pad.override_net_name = "led4_dout"
+    j_aud_l.sig.override_net_name = "aud_l_in"
+    j_aud_r.sig.override_net_name = "aud_r_in"
