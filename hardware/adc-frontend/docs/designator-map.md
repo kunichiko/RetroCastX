@@ -65,7 +65,7 @@ atopile は `keep_designators`(既定 true)のとき、`.kicad_pcb` の Referenc
 | C16 | **C45** | `c_filt2` | 4.7nF ±10% |
 | C51 | **C58** | `c_led` | 100nF ±10% |
 | C17 | **C46** | `c_osc` | 100nF ±10% |
-|  | **C51** | `c_sog1` | 100nF ±10% |
+|  | **C51** | `c_sog1` | 1nF(v1.0 初版は 100nF。実機で張り替え) |
 |  | **C52** | `c_sog1_aa` | 33pF ±5% |
 | C86 | **C39** | `c_sog2` | 100nF ±10% |
 | C55 | **C40** | `c_sog2_aa` | 33pF ±5% |
