@@ -680,6 +680,15 @@ impl FrameAssembler {
         self.cur_frame = None;
         self.px_filled = 0;
 
+        // 前面を離れているあいだは復調も受け渡しもしない(lifecycle.rs)。
+        // 届いた行の印だけ消し、次のフィールドを最初から溜め直す
+        if crate::lifecycle::paused() {
+            for s in self.line_seen.iter_mut() {
+                *s = false;
+            }
+            return None;
+        }
+
         // 常駐スレッドで復調するときは、届いた行を溜めて渡すだけ。結果は
         // take_decoded() で受け取る
         if decode && self.worker.is_some() {

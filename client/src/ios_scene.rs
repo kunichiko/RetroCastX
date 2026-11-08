@@ -45,6 +45,18 @@ define_class!(
             SCENE.with(|s| *s.borrow_mut() = scene);
             try_attach();
         }
+
+        // スクリーンショットの編集・コントロールセンター・アプリ切替などで
+        // 前面を離れたら映像を止める(lifecycle.rs)。背後へ回るときも必ず先に来る
+        #[unsafe(method(sceneWillResignActive:))]
+        fn will_resign_active(&self, _scene: &AnyObject) {
+            crate::lifecycle::set_paused(true);
+        }
+
+        #[unsafe(method(sceneDidBecomeActive:))]
+        fn did_become_active(&self, _scene: &AnyObject) {
+            crate::lifecycle::set_paused(false);
+        }
     }
 );
 
