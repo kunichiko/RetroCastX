@@ -768,6 +768,7 @@ class RetroCastXStreamer(LiteXModule):
                       ),
                        If((cfg_target == 0) & (cfg_key == 0x35),
                           capture.cfg_frame_skip.eq(rx.data[:4]),
+                          capture.cfg_frame_skip_pair.eq(rx.data[4]),
                       ),
                        # 非黒判定の閾値(5bit = 8bitコードの上位5bit)。key 0x37。
                        # ★**暗い「絵の中身」まで黒と見なすと、その画素は範囲から
@@ -981,7 +982,10 @@ class RetroCastXStreamer(LiteXModule):
                 0x32: reply_mux.eq(capture.stat_span_probe),
                 0x33: reply_mux.eq(capture.cap_drops),
                 0x34: reply_mux.eq(capture.stat_pop_probe),
-                0x35: reply_mux.eq(capture.cfg_frame_skip),
+                # bit4(対モード)も返す。古いゲートウェアは bit3:0 しか返さないので、
+                # Viewer は読み戻しで対モードの有無を判別できる
+                0x35: reply_mux.eq(Cat(capture.cfg_frame_skip,
+                                       capture.cfg_frame_skip_pair)),
                 0x37: reply_mux.eq(capture.cfg_black_th),
             })
         _add_reply({k: reply_mux.eq(sig) for k, sig in (extra_stats or {}).items()})
