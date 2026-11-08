@@ -6,15 +6,18 @@
 //!   フィールドが揃ったら材料を写して渡すだけにする。
 //!
 //! 常駐させるのは、フィールドごとにスレッドを作ると、作った直後は遅いコアで
-//! 走り出すため(スケジューラが速いコアへ移す前に終わってしまう)。
+//! 走り出すため(スケジューラが速いコアへ移す前に終わってしまう)。Android では
+//! さらにパフォーマンスヒントで締め切りを伝え、クロックを上げてもらう。
 //!
 //! 復調した fb はこのスレッドが持ち続ける。来なかった行は前の復調結果を残して
 //! 減衰させる、という組立側と同じ扱いをするため。
 
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
+use std::time::{Duration, Instant};
 
 use crate::assembler::{finish_frame, CompletedFrame};
 use crate::ntsc;
+use crate::perf_hint::Hint;
 
 /// 復調1回分の材料。バッファは結果と一緒に戻ってきて、次の回で使い回す。
 #[derive(Default)]
@@ -69,9 +72,17 @@ impl DecodeWorker {
             .spawn(move || {
                 crate::receiver::raise_thread_qos();
                 let mut fb: Vec<u8> = Vec::new();
+                // 1フィールド(約16.7ms)以内に終えたい、と OS へ伝える。Android
+                // 以外では作れず何もしない
+                let hint = Hint::for_current_thread(Duration::from_micros(16_000));
                 // 組立側が落ちれば送り手が消えて recv が Err になり、抜ける
                 while let Ok(job) = job_rx.recv() {
-                    if done_tx.send(run(&mut fb, job)).is_err() {
+                    let t = Instant::now();
+                    let done = run(&mut fb, job);
+                    if let Some(h) = hint.as_ref() {
+                        h.report(t.elapsed());
+                    }
+                    if done_tx.send(done).is_err() {
                         break;
                     }
                 }

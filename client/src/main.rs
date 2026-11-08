@@ -42,6 +42,7 @@ mod leds;
 mod metal_present;
 mod netcheck;
 mod ntsc;
+mod perf_hint;
 mod profiles;
 mod remote_input;
 mod render;

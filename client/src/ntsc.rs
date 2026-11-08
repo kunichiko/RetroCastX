@@ -735,7 +735,16 @@ pub fn decode_field(
     //   Pixel 10 で8本・既定の優先度にしたら、1本のときより遅くなった
     //   (受信キューからの破棄が毎秒 約6,800 → 約21,500)。受信スレッドとも
     //   コアを取り合うので、全コアは使わない
-    let nthreads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 4);
+    // ★**Android では分けない。** 復調のスレッドにはパフォーマンスヒント
+    //   (perf_hint.rs)を付けてクロックを上げてもらうが、その場で作るスレッドには
+    //   付かない。Pixel 10 で 1フィールドが、4本では 33〜35ms、1本+ヒントでは
+    //   13ms(ヒントなしの1本は 24〜33ms)。呼んだスレッドが遅いコアの
+    //   チャンクを待つことになるため
+    let nthreads = if cfg!(target_os = "android") {
+        1
+    } else {
+        std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 4)
+    };
     let rows_per = h.div_ceil(nthreads).max(1);
     let fb_len = (h * w * 4).min(fb.len());
     // スレッドへは参照で渡す(move クロージャが所有権ごと持っていかないように)
@@ -744,14 +753,11 @@ pub fn decode_field(
     let gamma_lut = &gamma_lut;
     let hist = &hist;
     let (locked, lines_3d, moving, n3) = std::thread::scope(|sc| {
-        let handles: Vec<_> = fb[..fb_len]
-            .chunks_mut(rows_per * w * 4)
-            .enumerate()
-            .map(|(ci, fb)| {
-                let y0 = ci * rows_per;
-                let y1 = (y0 + rows_per).min(h);
-                sc.spawn(move || {
-            crate::receiver::raise_thread_qos();
+        // 1つ目の範囲は呼んだスレッド自身が受け持つ(待っているだけにしない。
+        // パフォーマンスヒントもこのスレッドに付いている)
+        let work = move |ci: usize, fb: &mut [u8]| {
+            let y0 = ci * rows_per;
+            let y1 = (y0 + rows_per).min(h);
             let mut u = vec![0.0f32; w];
             let mut v = vec![0.0f32; w];
             let mut yl = vec![0.0f32; w];
@@ -1037,13 +1043,20 @@ pub fn decode_field(
                 }
             }
             (locked, lines_3d, moving, n3)
-                })
-            })
+        };
+        let mut chunks = fb[..fb_len].chunks_mut(rows_per * w * 4).enumerate();
+        let first = chunks.next();
+        let handles: Vec<_> = chunks
+            .map(|(ci, fb)| sc.spawn(move || {
+                crate::receiver::raise_thread_qos();
+                work(ci, fb)
+            }))
             .collect();
+        let r0 = first.map_or((0, 0, 0, 0), |(ci, fb)| work(ci, fb));
         handles
             .into_iter()
             .map(|t| t.join().expect("復調のスレッドが落ちた"))
-            .fold((0u32, 0u32, 0u32, 0u32), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3))
+            .fold(r0, |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3))
     });
     Info {
         lines_locked: locked,
