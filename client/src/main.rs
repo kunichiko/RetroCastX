@@ -1139,6 +1139,8 @@ fn quick_pick(probes: &[(u8, f32, f32)]) -> (usize, f32) {
 
 /// 操作パネル(管面の上に重ねるサイドメニュー)の幅[point]
 const PANEL_WIDTH: f32 = 360.0;
+/// 操作パネルの地の不透明度。文字が読める範囲で、裏の映像がうっすら見える程度
+const PANEL_OPACITY: f32 = 0.85;
 
 const AUTO_PLL_MIN: u32 = 200;
 const AUTO_PLL_MAX: u32 = 2304;
@@ -5802,9 +5804,12 @@ impl Session {
             .order(egui::Order::Middle)
             .fixed_pos(egui::pos2(screen.right() - w, screen.top()))
             .show(&ctx, |ui| {
+            // 地はうっすら透かす。管面に重ねているので、裏の映像が見えている方が
+            // 「押しのけていない」ことが分かり、調整の結果もパネル越しに追える
             let frame = egui::Frame::side_top_panel(ui.style())
-                .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                .shadow(ui.visuals().window_shadow);
+                .fill(ui.visuals().panel_fill.gamma_multiply(PANEL_OPACITY))
+                // 影は付けない。地が透けるので、裏に敷いた影まで透けて全体が暗く濁る
+                .stroke(ui.visuals().widgets.noninteractive.bg_stroke);
             let inner = egui::vec2(w, screen.height()) - frame.total_margin().sum();
             frame.show(ui, |ui| {
             ui.set_min_size(inner);
