@@ -178,6 +178,8 @@ pub struct Settings {
     pub bezel: String,
     /// 枠を一時的に隠す(bezel の選択は保つ)
     pub bezel_off: bool,
+    /// 管面の外(余白)の描き方。`letterbox::Style::key()` の値
+    pub letterbox: String,
     /// 補間 0=ニアレスト 1=バイリニア 2=sharp-bilinear
     pub filter: u32,
     /// ドット復元(1タップ逆フィルタ)の係数 a ×1000。0 = 無効。
@@ -311,6 +313,7 @@ impl Default for Settings {
             board_ip: String::new(),
             bezel: String::new(),
             bezel_off: false,
+            letterbox: "hatch".into(),
             clean_open: false,
             clean_size: default_clean_size(),
             clean_undecorated: true,
@@ -521,6 +524,7 @@ impl Settings {
                 "netcheck_muted" => s.netcheck_muted = v == "true",
                 "board_ip" => s.board_ip = v.to_string(),
                 "bezel_off" => s.bezel_off = v == "true",
+                "letterbox" => s.letterbox = v.to_string(),
                 "clean_open" => s.clean_open = v == "true",
                 "clean_undecorated" => s.clean_undecorated = v == "true",
                 "show_advanced" => s.show_advanced = v == "true",
@@ -618,6 +622,7 @@ impl Settings {
              netcheck_muted = {}\n\
              board_ip = {}\n\
              bezel_off = {}\n\
+             letterbox = {}\n\
              filter = {}\n\
              dot_a_milli = {}\n\
              interlace_decay = {}\n\
@@ -669,6 +674,7 @@ impl Settings {
             self.netcheck_muted,
             self.board_ip,
             self.bezel_off,
+            self.letterbox,
             self.filter,
             self.dot_a_milli,
             self.interlace_decay,
