@@ -117,6 +117,10 @@ pub struct Settings {
     pub tune_full_line: bool,
     /// フレーム間引き 0=毎フレーム / 1=2フレームに1回 …
     pub tune_frame_skip: u8,
+    /// 間引きをフィールド単位にする(インターレースのとき)。既定は false =
+    /// 2フィールドずつ(対モード。CONFIG 0x35 bit4)。フィールド単位は fps が
+    /// 倍になる代わりに片方の極性しか届かず、織り込みが崩れる
+    pub frame_skip_fields: bool,
     /// 映像ソースのプロファイル名。空文字は「自動」(全プロファイルを試す)
     pub source_profile: String,
     /// 画面回転 0/1/2/3 = 時計回りに 0/90/180/270 度(縦画面のゲーム用)
@@ -260,6 +264,7 @@ impl Default for Settings {
             tune_phase: 16,
             tune_full_line: false,
             tune_frame_skip: 0,
+            frame_skip_fields: false,
             source_profile: String::new(),
             rotate: 0,
             window: [0.22, 0.94, 0.07, 0.98],
@@ -424,6 +429,7 @@ impl Settings {
                 "source_profile" => s.source_profile = v.to_string(),
                 "tune_full_line" => s.tune_full_line = v == "true",
                 "tune_frame_skip" => { if let Ok(x) = v.parse::<u8>() { s.tune_frame_skip = x.min(7) } }
+                "frame_skip_fields" => s.frame_skip_fields = v == "true",
                 "rotate" => {
                     if let Ok(x) = v.parse::<u32>() {
                         s.rotate = if x < 4 { x } else { 0 };
@@ -565,6 +571,7 @@ impl Settings {
              source_profile = {}\n\
              tune_full_line = {}\n\
              tune_frame_skip = {}\n\
+             frame_skip_fields = {}\n\
              tube_time_based = {}\n\
              mon = {:.4},{:.4},{:.4},{:.4}\n\
              rotate = {}\n\
@@ -610,6 +617,7 @@ impl Settings {
             self.source_profile,
             self.tune_full_line,
             self.tune_frame_skip,
+            self.frame_skip_fields,
             self.tube_time_based,
             self.mon[0], self.mon[1], self.mon[2], self.mon[3],
             self.rotate,

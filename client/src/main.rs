@@ -943,6 +943,14 @@ struct Session {
     /// フレーム間引き。0=毎フレーム / 1=2フレームに1回 …
     /// 受信が追いつかない機械での保険。音声は間引かない
     tune_frame_skip: u8,
+    /// 間引きをフィールド単位にする(settings::Settings::frame_skip_fields)
+    frame_skip_fields: bool,
+    /// 間引きを書いた相手のボード。**掴んだボードが変わったら書き直す**
+    /// (apply_frame_skip)。ボードが落ちたら外す(電源で 0 に戻るため)
+    skip_applied_to: Option<[u8; 6]>,
+    /// ボードから読み戻した間引きの値(CONFIG 0x35 の生値)。対モード(bit4)に
+    /// 対応していないゲートウェアは bit4 を返さないので、その判別に使う
+    board_frame_skip: Option<u32>,
     /// 復調を止めて生のYを見る(切り分け用。設定には保存しない)
     raw_view: bool,
     /// 表示するフィールド 0=織り込み / 1=偶数 / 2=奇数(同上)
@@ -1246,6 +1254,9 @@ impl Session {
             tune_video_bw: cfg.tune_video_bw,
             tune_full_line: cfg.tune_full_line,
             tune_frame_skip: cfg.tune_frame_skip,
+            frame_skip_fields: cfg.frame_skip_fields,
+            skip_applied_to: None,
+            board_frame_skip: None,
             tune_phase: cfg.tune_phase,
             raw_view: false,
             field_view: 0,
@@ -1629,6 +1640,7 @@ impl Session {
             tune_video_bw: self.tune_video_bw,
             tune_full_line: self.tune_full_line,
             tune_frame_skip: self.tune_frame_skip,
+            frame_skip_fields: self.frame_skip_fields,
             tune_phase: self.tune_phase,
             source_profile: self.source_profile.clone(),
         }
@@ -2523,6 +2535,65 @@ impl Session {
     }
 
     /// CONFIGを1つ送る。UIの外(モード追従など)から使う
+    /// ボードへ書く間引きの値(CONFIG 0x35)。bit3:0 = 間引き数、bit4 = 対モード。
+    ///
+    /// 対モードはインターレースで2フィールドずつ間引く指定で、ボードは
+    /// プログレッシブでは無視するので、フィールド単位を選んでいない限り常に立てる
+    fn frame_skip_cfg(&self) -> u32 {
+        let pair = if self.frame_skip_fields { 0 } else { 0x10 };
+        self.tune_frame_skip as u32 | pair
+    }
+
+    /// いま受けている映像がインターレースか(MODE の mflags bit0)
+    fn interlaced(&self) -> bool {
+        self.shared.mode.lock().unwrap().as_ref().is_some_and(|m| m.mflags & 1 != 0)
+    }
+
+    /// 対モードを頼んだのにボードが bit4 を返してこない(古いゲートウェア)
+    fn frame_skip_pair_unsupported(&self) -> bool {
+        let want = self.frame_skip_cfg();
+        want & 0x10 != 0
+            && self.board_frame_skip.is_some_and(|v| v & 0xF == want & 0xF && v & 0x10 == 0)
+    }
+
+    /// 間引きの表示。インターレースの対モードでは、届くのが「2フィールドの組」で
+    /// あることが分かるようにする
+    fn frame_skip_label(&self) -> String {
+        let n = self.tune_frame_skip as u32;
+        if n == 0 {
+            return "毎フレーム".to_string();
+        }
+        let hz = self.shared.mode.lock().unwrap().as_ref()
+            .map(|m| m.vfreq_mhz_x1000 as f32 / 1000.0)
+            .filter(|hz| *hz > 1.0)
+            .unwrap_or(60.0);
+        if self.interlaced() && !self.frame_skip_fields {
+            format!("1/{} (2フィールドずつ、{:.0}組/秒)", n + 1, hz / 2.0 / (n + 1) as f32)
+        } else {
+            format!("1/{} ({:.0}fps相当)", n + 1, hz / (n + 1) as f32)
+        }
+    }
+
+    /// 間引きを掴んだボードへ書く。
+    ///
+    /// ★**間引きは受信する側の都合で決める値。** Pixel は毎秒 約27,000 パケットで
+    ///   頭打ちになるので 1/2 が要るが、PC は毎フレーム受けられる。ボードの設定は
+    ///   持ち主が替わっても残るので、掴むたびに自分の値を書かないと、前の持ち主の
+    ///   間引きのまま映る。ボードが落ちたら(MODE が消えたら)書き直す — 電源で
+    ///   0 に戻っているため。
+    fn apply_frame_skip(&mut self) {
+        let up = self.shared.mode.lock().unwrap().is_some();
+        let own = if up { self.claimed() } else { None };
+        if own.is_none() {
+            self.skip_applied_to = None;
+            return;
+        }
+        if self.skip_applied_to != own {
+            self.skip_applied_to = own;
+            self.send_cfg(protocol::CFG_KEY_FRAME_SKIP, self.frame_skip_cfg());
+        }
+    }
+
     fn send_cfg(&mut self, key: u16, val: u32) {
         self.tune_pending.insert(key, (val, std::time::Instant::now()));
         self.shared.config_queue.lock().unwrap().push((key, val));
@@ -2546,7 +2617,10 @@ impl Session {
             protocol::CFG_KEY_PLL_DIVIDE => self.tune_pll_divide = val as i32,
             protocol::CFG_KEY_VIDEO_BW => self.tune_video_bw = val as u8,
             protocol::CFG_KEY_FULL_LINE => self.tune_full_line = val != 0,
-            protocol::CFG_KEY_FRAME_SKIP => self.tune_frame_skip = val as u8,
+            // ★**間引きは取り込まない。** 他の Tune 値と違い、受信する側の都合で
+            //   決める値(Pixel は 1/2、PC は毎フレーム)なので、ボードに残っている
+            //   前の持ち主の値を引き継いではいけない。自分の値は掴んだときに書く
+            protocol::CFG_KEY_FRAME_SKIP => self.board_frame_skip = Some(val),
             protocol::CFG_KEY_PHASE => self.tune_phase = (val as u8).min(31),
             protocol::CFG_KEY_PIXFMT => self.tune_pixfmt = val as i32,
             protocol::CFG_KEY_GAIN_R => self.tune_gain_r = val as i32,
@@ -3659,19 +3733,38 @@ impl Session {
                     .on_hover_text("映像を何フレームに1回にするか。0=毎フレーム、\n\
                                     1=2フレームに1回(帯域とfpsが半分)。\n\
                                     音声は間引かないので、映像を減らすと\n\
-                                    音の途切れも減ります")
+                                    音の途切れも減ります。\n\
+                                    この設定はボードではなくこの Viewer のもので、\n\
+                                    ボードを掴むたびに書き込みます")
                     .changed()
                 {
                     self.tune_frame_skip = n as u8;
-                    send.push((protocol::CFG_KEY_FRAME_SKIP, n as u32));
+                    send.push((protocol::CFG_KEY_FRAME_SKIP, self.frame_skip_cfg()));
                 }
-                ui.monospace(if self.tune_frame_skip == 0 {
-                    "毎フレーム".to_string()
-                } else {
-                    format!("1/{} ({}fps相当)", self.tune_frame_skip + 1,
-                            55 / (self.tune_frame_skip as u32 + 1))
-                });
+                ui.monospace(self.frame_skip_label());
             });
+            // インターレースのときだけ、対(2フィールドずつ)かフィールド単位かを選ぶ
+            if self.tune_frame_skip > 0 && self.interlaced() {
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    let mut pairs = !self.frame_skip_fields;
+                    if ui.checkbox(&mut pairs, "2フィールドずつ")
+                        .on_hover_text("インターレースでは連続する2フィールドを組にして\n\
+                                        送り、組ごとに間引きます(織り込みが崩れない)。\n\
+                                        外すとフィールドを1枚ずつ数えるので fps は倍に\n\
+                                        なりますが、片方の極性のフィールドしか届かず\n\
+                                        縦の解像度が半分になります")
+                        .changed()
+                    {
+                        self.frame_skip_fields = !pairs;
+                        send.push((protocol::CFG_KEY_FRAME_SKIP, self.frame_skip_cfg()));
+                    }
+                    if self.frame_skip_pair_unsupported() {
+                        ui.label(egui::RichText::new("ゲートウェアが未対応(1枚ずつ間引かれます)")
+                            .size(11.0).color(theme::AMBER));
+                    }
+                });
+            }
             ui.horizontal(|ui| {
                 ui.monospace("帯域制限");
                 let mut bw = self.tune_video_bw as i32;
@@ -4007,7 +4100,7 @@ impl Session {
                 send.push((protocol::CFG_KEY_PHASE, self.tune_phase as u32));
                 send.push((protocol::CFG_KEY_FULL_LINE,
                            if self.tune_full_line { 1 } else { 0 }));
-                send.push((protocol::CFG_KEY_FRAME_SKIP, self.tune_frame_skip as u32));
+                send.push((protocol::CFG_KEY_FRAME_SKIP, self.frame_skip_cfg()));
             }
         }
         self.queue_config(send);
@@ -5231,6 +5324,8 @@ impl Session {
         // ★パネルの外に置く。Tab で隠していても全画面でも、電源を入れ直したあとに
         //   入力設定が入り直さないと「選んであるのに映らない」ままになる。
         self.autowrite_input_regs();
+        // 間引きはこの Viewer の設定。掴んだボードへ書く(パネルの外。隠していても効く)
+        self.apply_frame_skip();
         // 同じくパネルの外。映像が「自動」のときの音声はボードの入力系統に従う
         self.follow_board_input_audio();
 
