@@ -230,8 +230,39 @@ Android はブロードキャストの送信に制限が無い(INTERNET 権限�
 - **Android**: いまの成果物は APK(デバッグ鍵で署名)。**Google Play への提出は
   AAB 形式が必須**なので、出すなら bundletool で AAB を作る段を足す。対象 API
   レベルの引き上げ要件(毎年)にも追従が要る
-- CI(`viewer-release.yml`)にはまだ組み込んでいない。Android の NDK と iOS の
-  ターゲットを足すとビルド時間が延びるので、配る段になってから入れる
+- **CI**(`.github/workflows/viewer-release.yml` の `ios` / `android` ジョブ):
+  - PR と main では、両方とも未署名(Android は使い捨ての鍵)で組み立てだけ
+  - タグ `vX.Y.Z` では、iOS を App Store Connect へ上げ(TestFlight で配れる)、
+    Android の APK を GitHub Release に添付する
+  - 手動実行で `upload_testflight` を付けると、タグを打たずに iOS を上げられる
+  - iOS は Xcode のプロジェクトを持たないので、`bundle.sh` が App Store に要るもの
+    (asset catalog のアイコン、SDK / Xcode の版を示す DT* キー、プライバシー
+    マニフェスト)を自分で入れ、`ipa.sh` が .ipa に包み、altool で上げる
+
+#### iOS を App Store Connect へ上げるための準備(一度だけ)
+
+1. Apple Developer で App ID `jp.ohnaka.RetroCastX` を登録する
+2. App Store Connect でアプリを作る(バンドル ID に上の App ID を選ぶ)
+3. その App ID の **App Store 配布用**プロビジョニングプロファイルを作る
+4. リポジトリの Secrets に入れる(名前は MimicX-app と同じ)
+
+   | Secret | 中身 |
+   |---|---|
+   | `IOS_CERTIFICATE_BASE64` | Apple Distribution 証明書の .p12 を base64 にしたもの(MimicX と同じでよい) |
+   | `IOS_CERTIFICATE_PASSWORD` | その .p12 のパスワード |
+   | `IOS_APP_STORE_PROVISIONING_PROFILE_BASE64` | 3 のプロファイルを base64 にしたもの |
+
+   `KEYCHAIN_PASSWORD` と `APPSTORE_ISSUER_ID` / `APPSTORE_KEY_ID` /
+   `APPSTORE_PRIVATE_KEY` は macOS の公証用に入っているものを使う
+
+マルチキャストの許可が下りたら、3 のプロファイルを作り直して Secret を差し替える
+(許可はプロファイル経由で署名に入る)。
+
+#### Android の APK を Release に添付するための準備(一度だけ)
+
+`ANDROID_KEYSTORE_BASE64` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` /
+`ANDROID_KEY_PASSWORD` を入れる(MimicX-app と同じ名前)。**鍵が変わると上書き
+インストールできなくなる**ので、無いうちは Release に添付しない。
 
 ## 5. 試し方(実機ボードなしで)
 

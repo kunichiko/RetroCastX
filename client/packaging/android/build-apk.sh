@@ -18,6 +18,7 @@
 #
 # 署名は既定でデバッグ鍵(~/.android/debug.keystore)。配布用は
 #   ANDROID_KEYSTORE / ANDROID_KEYSTORE_PASS / ANDROID_KEY_ALIAS
+#   ANDROID_KEY_PASS(鍵のパスワード。省略時はキーストアと同じ)
 # を渡す。
 #
 # アプリの ID と表示名は MimicX と同じ使い分け。**既定は開発版**で、本番版とは
@@ -110,6 +111,7 @@ KS="${ANDROID_KEYSTORE:-${HOME}/.android/debug.keystore}"
     --ks "${KS}" \
     --ks-pass "pass:${ANDROID_KEYSTORE_PASS:-android}" \
     --ks-key-alias "${ANDROID_KEY_ALIAS:-androiddebugkey}" \
+    --key-pass "pass:${ANDROID_KEY_PASS:-${ANDROID_KEYSTORE_PASS:-android}}" \
     --out "${APK}" "${WORK}/aligned.apk"
 rm -rf "${WORK}"
 

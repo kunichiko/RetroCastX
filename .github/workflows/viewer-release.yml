@@ -1,10 +1,12 @@
 name: Viewer Release Build
 
-# Viewer(client/、Rust + eframe)の Mac/Windows ビルドと配布。
+# Viewer(client/、Rust + eframe)の Mac/Windows/iOS/Android ビルドと配布。
 #
-#   タグ v1.2.3 を push   → GitHub Release を作り、zip を添付する(macOSは署名+公証)
-#   main へのPR          → 両OSでビルドとテストだけ(署名も公証もしない)
-#   手動実行             → プラットフォームを選んでビルド(署名はする、Releaseは触らない)
+#   タグ v1.2.3 を push   → GitHub Release を作り、zip / apk を添付する(macOSは署名+公証)。
+#                          iOS は App Store Connect へ上げる(TestFlight で配れる)
+#   main へのPR          → 全OSでビルドとテストだけ(署名も公証もアップロードもしない)
+#   手動実行             → プラットフォームを選んでビルド(署名はする、Releaseは触らない)。
+#                          upload_testflight を付けると iOS を App Store Connect へ上げる
 #
 # バージョンの正は client/Cargo.toml。タグと食い違っていたら prepare で止める。
 # 構成は MimicX-app の release-build.yml に倣っている(Secretsの名前も同じなので
@@ -61,9 +63,17 @@ on:
           - all
           - macos
           - windows
+          - ios
+          - android
+      upload_testflight:
+        description: 'iOS を App Store Connect へ上げる(TestFlight)'
+        required: true
+        default: false
+        type: boolean
 
-# アプリ名(RetroCast X)とバンドルIDは client/packaging/macos/bundle.sh が持つ。
-# ここで重複させると、片方だけ変えたときに .app を見失う。
+# アプリ名(RetroCast X)とバンドルIDは client/packaging/{macos,ios}/bundle.sh と
+# client/packaging/android/build-apk.sh が持つ。ここで重複させると、片方だけ
+# 変えたときに .app / .apk を見失う。
 
 jobs:
   prepare:
@@ -496,3 +506,304 @@ jobs:
         run: |
           gh release upload "$env:GITHUB_REF_NAME" "..\dist\${{ steps.package.outputs.zip_name }}" --clobber
           gh release upload "$env:GITHUB_REF_NAME" "..\dist\${{ steps.installer.outputs.setup_name }}" --clobber
+
+  # iOS は Xcode のプロジェクトを持たない(cargo が作る実行ファイルを bundle.sh が
+  # .app に入れて署名する)ので、MimicX-app の xcodebuild archive / -exportArchive の
+  # 代わりに bundle.sh と ipa.sh で .ipa を作り、altool で App Store Connect へ上げる。
+  # Secrets の名前は MimicX-app と同じ。
+  #
+  #   IOS_CERTIFICATE_BASE64 / IOS_CERTIFICATE_PASSWORD
+  #       Apple Distribution 証明書(.p12)。MimicX と同じものでよい
+  #   IOS_APP_STORE_PROVISIONING_PROFILE_BASE64
+  #       jp.ohnaka.RetroCastX の App Store 配布用プロファイル
+  #   KEYCHAIN_PASSWORD / APPSTORE_ISSUER_ID / APPSTORE_KEY_ID / APPSTORE_PRIVATE_KEY
+  #       macOS の公証と共通
+  ios:
+    name: Build iOS
+    runs-on: macos-26
+    needs: [prepare, release]
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform == 'all' || github.event.inputs.platform == 'ios'
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: client
+    env:
+      IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+      IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+      IOS_APP_STORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_APP_STORE_PROVISIONING_PROFILE_BASE64 }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+      APPSTORE_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+      APPSTORE_PRIVATE_KEY: ${{ secrets.APPSTORE_PRIVATE_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            client/target
+          key: cargo-ios-${{ hashFiles('client/Cargo.lock') }}
+          restore-keys: |
+            cargo-ios-
+
+      - name: Toolchain info
+        run: |
+          rustup target add aarch64-apple-ios
+          rustc --version
+          xcodebuild -version
+
+      # テストは macOS のジョブで回している(同じコード)ので、ここはビルドだけ
+      - name: Build
+        run: cargo build --release --locked --target aarch64-apple-ios
+
+      # 署名とアップロードをするかを決める。
+      #   タグ           → 上げる。Secrets が揃っていなければ警告して未署名で作る
+      #                    (iOS の準備が済む前のリリースで、Mac/Windows まで赤くしない)
+      #   手動 + upload  → 上げる。Secrets が無ければ落とす(頼まれたことができない)
+      #   PR / main      → 未署名で組み立てだけ
+      - name: Decide signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          HAVE=1
+          for name in IOS_CERTIFICATE_BASE64 IOS_CERTIFICATE_PASSWORD \
+                      IOS_APP_STORE_PROVISIONING_PROFILE_BASE64 KEYCHAIN_PASSWORD \
+                      APPSTORE_ISSUER_ID APPSTORE_KEY_ID APPSTORE_PRIVATE_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "note: Secret ${name} が無い"
+              HAVE=0
+            fi
+          done
+          UPLOAD=0
+          if [ "${{ needs.prepare.outputs.is_release }}" = "true" ]; then
+            if [ "${HAVE}" = "1" ]; then
+              UPLOAD=1
+            else
+              echo "::warning::iOS の署名用の Secret が揃っていないので、App Store Connect へは上げません"
+            fi
+          elif [ "${{ github.event.inputs.upload_testflight }}" = "true" ]; then
+            if [ "${HAVE}" != "1" ]; then
+              echo "::error::App Store Connect へ上げるには、上に出ている Secret を設定してください"
+              exit 1
+            fi
+            UPLOAD=1
+          fi
+          # 手動実行は、上げなくても Secrets があれば署名する(配布用の署名が通るかを試せる)
+          SIGN=${UPLOAD}
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${HAVE}" = "1" ]; then
+            SIGN=1
+          fi
+          echo "SIGN=${SIGN}" >> "${GITHUB_ENV}"
+          echo "UPLOAD=${UPLOAD}" >> "${GITHUB_ENV}"
+          echo "署名: ${SIGN} / App Store Connect へ上げる: ${UPLOAD}"
+
+      - name: Install signing assets
+        if: env.SIGN == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          CERTIFICATE_PATH="${RUNNER_TEMP}/ios-signing.p12"
+          PP_PATH="${RUNNER_TEMP}/ios-appstore.mobileprovision"
+          KEYCHAIN_PATH="${RUNNER_TEMP}/ios-signing.keychain-db"
+          echo "${IOS_CERTIFICATE_BASE64}" | base64 --decode > "${CERTIFICATE_PATH}"
+          echo "${IOS_APP_STORE_PROVISIONING_PROFILE_BASE64}" | base64 --decode > "${PP_PATH}"
+
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security import "${CERTIFICATE_PATH}" -P "${IOS_CERTIFICATE_PASSWORD}" -A -t cert -f pkcs12 -k "${KEYCHAIN_PATH}"
+          security list-keychain -d user -s "${KEYCHAIN_PATH}" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -s -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+
+          # 署名には証明書の SHA-1 を渡す(同じ名前の証明書が複数あっても迷わない)
+          SIGN_IDENTITY=$(security find-identity -v -p codesigning "${KEYCHAIN_PATH}" \
+                          | awk '/"Apple Distribution:/ {print $2; exit}')
+          if [ -z "${SIGN_IDENTITY}" ]; then
+            echo "::error::IOS_CERTIFICATE_BASE64 に Apple Distribution 証明書が入っていません"
+            exit 1
+          fi
+
+          # プロファイルが本番の ID の App Store 配布用か確かめる(取り違えると
+          # アップロードの後で弾かれ、原因が分かりにくい)
+          security cms -D -i "${PP_PATH}" > "${RUNNER_TEMP}/profile.plist"
+          APPID=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "${RUNNER_TEMP}/profile.plist")
+          case "${APPID}" in
+            *.jp.ohnaka.RetroCastX) ;;
+            *) echo "::error::プロファイルの App ID が jp.ohnaka.RetroCastX ではありません (${APPID})"; exit 1 ;;
+          esac
+          if /usr/libexec/PlistBuddy -c 'Print :ProvisionedDevices' "${RUNNER_TEMP}/profile.plist" >/dev/null 2>&1; then
+            echo "::error::プロファイルが App Store 配布用ではありません(端末の一覧が入っている = Development / Ad Hoc)"
+            exit 1
+          fi
+          echo "プロファイル: $(/usr/libexec/PlistBuddy -c 'Print :Name' "${RUNNER_TEMP}/profile.plist") (${APPID})"
+
+          echo "IOS_SIGN_IDENTITY=${SIGN_IDENTITY}" >> "${GITHUB_ENV}"
+          echo "IOS_PROFILE=${PP_PATH}" >> "${GITHUB_ENV}"
+
+      - name: Bundle .app and .ipa
+        id: package
+        # 配布物は本番版の ID(jp.ohnaka.RetroCastX)。手元のビルドの既定は開発版(.dev)
+        env:
+          APP_IDENTITY: prod
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.prepare.outputs.app_version }}"
+          mkdir -p ../dist/ios
+          # SIGN=0 なら IOS_SIGN_IDENTITY が空なので、bundle.sh は ad-hoc 署名にする
+          packaging/ios/bundle.sh target/aarch64-apple-ios/release/retrocastx-viewer \
+            "${VERSION}" "${{ needs.prepare.outputs.build_number }}" ../dist/ios device
+          SUFFIX=""
+          [ "${SIGN}" = "1" ] || SUFFIX="-unsigned"
+          IPA_NAME="RetroCastX_ios-${VERSION}${SUFFIX}.ipa"
+          packaging/ios/ipa.sh "$(ls -d ../dist/ios/*.app)" "../dist/${IPA_NAME}"
+          echo "ipa_name=${IPA_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: retrocastx-viewer-ios-${{ needs.prepare.outputs.app_version }}-${{ needs.prepare.outputs.build_number }}
+          path: dist/${{ steps.package.outputs.ipa_name }}
+          retention-days: 14
+
+      # build 番号(CFBundleVersion)は prepare の build_number = 実行番号。同じ版で
+      # 上げ直しても番号が増えるので、App Store Connect に重複で弾かれない
+      - name: Upload to App Store Connect
+        if: env.UPLOAD == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEY_DIR="${HOME}/.appstoreconnect/private_keys"
+          KEY_PATH="${KEY_DIR}/AuthKey_${APPSTORE_KEY_ID}.p8"
+          mkdir -p "${KEY_DIR}"
+          if [[ "${APPSTORE_PRIVATE_KEY}" == *"BEGIN PRIVATE KEY"* ]]; then
+            printf '%s' "${APPSTORE_PRIVATE_KEY}" | perl -pe 's/\\n/\n/g; s/\r$//' > "${KEY_PATH}"
+          else
+            printf '%s' "${APPSTORE_PRIVATE_KEY}" | base64 --decode > "${KEY_PATH}"
+          fi
+          chmod 600 "${KEY_PATH}"
+          # altool は ~/.appstoreconnect/private_keys/AuthKey_<ID>.p8 を探す
+          xcrun altool --upload-app \
+            -f "../dist/${{ steps.package.outputs.ipa_name }}" \
+            -t ios \
+            --apiKey "${APPSTORE_KEY_ID}" \
+            --apiIssuer "${APPSTORE_ISSUER_ID}"
+
+  # Android は Gradle を使わない(build-apk.sh が NDK でビルドして apk に詰める)。
+  # Secrets の名前は MimicX-app と同じ。
+  #
+  #   ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD
+  #
+  # **鍵が変わると上書きインストールできなくなる**ので、Release へ添付するのは
+  # 配布用の鍵で署名したものだけ。鍵が無いときは使い捨ての鍵で署名して
+  # アーティファクトにだけ置く。
+  android:
+    name: Build Android
+    runs-on: ubuntu-latest
+    needs: [prepare, release]
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform == 'all' || github.event.inputs.platform == 'android'
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: client
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            client/target
+          key: cargo-android-${{ hashFiles('client/Cargo.lock') }}
+          restore-keys: |
+            cargo-android-
+
+      # ランナーには Android SDK と NDK が入っている。build-apk.sh が使う
+      # platforms;android-35 と、Linux でアイコンを縮める ImageMagick を確かめる
+      - name: Setup Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-linux-android
+          echo "ANDROID_NDK_HOME=${ANDROID_NDK_LATEST_HOME}" >> "${GITHUB_ENV}"
+          if [ ! -f "${ANDROID_HOME}/platforms/android-35/android.jar" ]; then
+            yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" >/dev/null
+          fi
+          command -v convert >/dev/null || sudo apt-get install -y imagemagick
+          echo "NDK: ${ANDROID_NDK_LATEST_HOME}"
+          ls "${ANDROID_HOME}/build-tools" | tail -1
+
+      - name: Install signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            for name in ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS; do
+              if [ -z "${!name:-}" ]; then
+                echo "::error::ANDROID_KEYSTORE_BASE64 があるときは ${name} も要ります"
+                exit 1
+              fi
+            done
+            KS="${RUNNER_TEMP}/retrocastx-release.keystore"
+            echo "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > "${KS}"
+            {
+              echo "ANDROID_KEYSTORE=${KS}"
+              echo "ANDROID_KEYSTORE_PASS=${ANDROID_KEYSTORE_PASSWORD}"
+              echo "ANDROID_KEY_PASS=${ANDROID_KEY_PASSWORD:-${ANDROID_KEYSTORE_PASSWORD}}"
+              echo "SIGNED=1"
+            } >> "${GITHUB_ENV}"
+          else
+            if [ "${{ needs.prepare.outputs.is_release }}" = "true" ]; then
+              echo "::warning::ANDROID_KEYSTORE_BASE64 が無いので、apk を Release へは添付しません"
+            fi
+            # build-apk.sh の既定(デバッグ鍵)を使い捨てで作る
+            mkdir -p "${HOME}/.android"
+            keytool -genkeypair -keystore "${HOME}/.android/debug.keystore" \
+              -storepass android -keypass android -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US" >/dev/null
+            echo "SIGNED=0" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Build apk
+        id: package
+        # 配布物は本番版の ID(jp.ohnaka.RetroCastX)。手元のビルドの既定は開発版(.dev)
+        env:
+          APP_IDENTITY: prod
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.prepare.outputs.app_version }}"
+          packaging/android/build-apk.sh ../dist/android
+          SUFFIX=""
+          [ "${SIGNED}" = "1" ] || SUFFIX="-debugkey"
+          APK_NAME="RetroCastX_android-${VERSION}${SUFFIX}.apk"
+          mv "../dist/android/RetroCastX_android-prod-${VERSION}.apk" "../dist/${APK_NAME}"
+          echo "apk_name=${APK_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: retrocastx-viewer-android-${{ needs.prepare.outputs.app_version }}-${{ needs.prepare.outputs.build_number }}
+          path: dist/${{ steps.package.outputs.apk_name }}
+          retention-days: 14
+
+      - name: Upload to GitHub Release
+        if: needs.prepare.outputs.is_release == 'true' && env.SIGNED == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" "../dist/${{ steps.package.outputs.apk_name }}" --clobber

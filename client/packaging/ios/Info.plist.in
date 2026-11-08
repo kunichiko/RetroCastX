@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>ja</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>@NAME@</string>
 	<key>CFBundleDisplayName</key>
@@ -30,6 +34,12 @@
 	</array>
 	<key>MinimumOSVersion</key>
 	<string>@MIN_OS@</string>
+	<!-- 実行ファイルは arm64 だけ。App Store は 64bit のバイナリにこれを求める
+	     (無いとアップロードで ITMS-90502 になる) -->
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
 	<!-- ★iOS 27 の SDK でビルドしたアプリは UIScene を採用しないと起動直後に
 	     落ちる。シーンのデリゲートは src/ios_scene.rs が定義するクラス -->
 	<key>UIApplicationSceneManifest</key>
@@ -73,28 +83,11 @@
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
-	<key>CFBundleIcons</key>
-	<dict>
-		<key>CFBundlePrimaryIcon</key>
-		<dict>
-			<key>CFBundleIconFiles</key>
-			<array>
-				<string>AppIcon60x60</string>
-				<string>AppIcon76x76</string>
-			</array>
-		</dict>
-	</dict>
-	<key>CFBundleIcons~ipad</key>
-	<dict>
-		<key>CFBundlePrimaryIcon</key>
-		<dict>
-			<key>CFBundleIconFiles</key>
-			<array>
-				<string>AppIcon60x60</string>
-				<string>AppIcon76x76</string>
-			</array>
-		</dict>
-	</dict>
+	<!-- アイコン(CFBundleIcons)は bundle.sh が actool の出力から足す -->
+	<!-- 暗号を使っていない(TLS のライブラリも入っていない)。App Store Connect で
+	     アップロードのたびに輸出規制の質問に答えずに済むように明示する -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<!-- iOS 14 以降、LAN への通信の前に許可ダイアログが出る。文言が無いと
 	     ダイアログが出ずに通信が黙って失敗する -->
 	<key>NSLocalNetworkUsageDescription</key>
