@@ -581,11 +581,46 @@ impl Profile {
     pub fn pixfmt_ok(&self, have: u8) -> bool {
         match self.pixfmt() {
             None => true,
-            Some(want) if self.needs_exact_pixfmt() => have == want,
+            Some(want) if self.needs_exact_pixfmt() => {
+                have == want || Some(have) == self.compact_pixfmt()
+            }
             Some(_) => matches!(have, proto::PIXFMT_RGB888
                                     | proto::PIXFMT_RGB555
                                     | proto::PIXFMT_RGB565),
         }
+    }
+
+    /// 帯域を減らした代わりの伝送形式(ボードが CAP_COMPACT を持つときに使う)。
+    ///
+    /// コンポジットは CVBS だけ(1B/px)、コンポーネントは YCbCr 4:2:2(2B/px)。
+    /// S端子は Y と C の両方が要るので YC8 のまま
+    pub fn compact_pixfmt(&self) -> Option<u8> {
+        if self.ycbcr {
+            Some(proto::PIXFMT_YCC422)
+        } else if self.key == "composite" {
+            Some(proto::PIXFMT_CVBS8)
+        } else {
+            None
+        }
+    }
+
+    /// ボードへ書く伝送形式。`compact` はボードが CAP_COMPACT を持つか
+    pub fn pixfmt_for(&self, compact: bool) -> Option<u8> {
+        if compact {
+            self.compact_pixfmt().or(self.pixfmt())
+        } else {
+            self.pixfmt()
+        }
+    }
+
+    /// 送出範囲の固定(開始画素, 画素数)。コンポーネントだけ。
+    ///
+    /// ★**1ラインを1パケットに収めるための値。** 2B/px で1パケットに入るのは
+    ///   724画素。BT.601 の有効画素は 122〜842 なので、112 から 724画素送ると
+    ///   バックポーチの終わり 8サンプル(黒の基準を測る)と有効画素 714 が入る。
+    ///   削れる右端 6画素は普通のモニタではオーバースキャンで見えない
+    pub fn send_window(&self) -> Option<(u32, u32)> {
+        self.ycbcr.then_some((112, 724))
     }
 
     pub fn pixfmt(&self) -> Option<u8> {
@@ -813,6 +848,31 @@ pub fn best_over_all(fh_hz: f64) -> Option<(&'static Profile, Candidate)> {
             .then(a.1.rel_err().partial_cmp(&b.1.rel_err()).unwrap())
     });
     ranked.into_iter().next()
+}
+
+#[cfg(test)]
+mod compact_tests {
+    use super::*;
+
+    /// 帯域を減らす形式は、コンポジットが CVBS8、コンポーネントが YCC422 +
+    /// 送出範囲の固定。S端子は C が要るので YC8 のまま。古いボードには従来の形式
+    #[test]
+    fn compact_formats_follow_the_source() {
+        let p = |k| by_key(k).unwrap();
+        assert_eq!(p("composite").pixfmt_for(true), Some(proto::PIXFMT_CVBS8));
+        assert_eq!(p("composite").pixfmt_for(false), Some(proto::PIXFMT_YC8));
+        assert_eq!(p("svideo").pixfmt_for(true), Some(proto::PIXFMT_YC8));
+        assert_eq!(p("component").pixfmt_for(true), Some(proto::PIXFMT_YCC422));
+        assert_eq!(p("component").pixfmt_for(false), Some(proto::PIXFMT_RGB888));
+        // 1ラインが1パケット(2B/px で 724画素)に収まる範囲
+        assert_eq!(p("component").send_window(), Some((112, 724)));
+        assert_eq!(p("composite").send_window(), None);
+        // どちらの形式で流れていても絵になる(警告を出さない)
+        assert!(p("component").pixfmt_ok(proto::PIXFMT_RGB888));
+        assert!(p("component").pixfmt_ok(proto::PIXFMT_YCC422));
+        assert!(p("composite").pixfmt_ok(proto::PIXFMT_CVBS8));
+        assert!(!p("svideo").pixfmt_ok(proto::PIXFMT_CVBS8));
+    }
 }
 
 #[cfg(test)]

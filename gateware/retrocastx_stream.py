@@ -46,6 +46,12 @@ UDP_PORT    = 34600
 PIXFMT_RGB888 = 0             # 3B/px byte0=R byte1=G byte2=B
 PIXFMT_RGB555 = 1             # 2B/px 0RRRRRGGGGGBBBBB
 PIXFMT_YC8    = 3             # 2B/px 下位=緑ch8bit(CVBS/Y) 上位=赤ch8bit(S-VideoのC)
+PIXFMT_YCC422 = 4             # 2B/px 2画素で Y0 Cb0 Y1 Cr0(コンポーネント。R=Pr G=Y B=Pb)
+PIXFMT_CVBS8  = 5             # 1B/px 緑ch8bit(コンポジットの CVBS)だけ
+# ANNOUNCE caps bit1: YCC422 / CVBS8、送出範囲の固定(0x38/0x39)、間引きの対モード
+# (0x35 bit4)に対応している。古いゲートウェアに新しい形式を書くと絵が壊れるので、
+# 受信側はこのビットを見てから使う
+CAP_COMPACT = 1 << 1
 SCROLL_PX   = 4               # テストパターンのカラーバー横スクロール量[px/frame](host pattern.pyと一致必須)
 
 # パケットタイプ(FSM内部コード。プロトコル上のtype値とは別)
@@ -274,6 +280,9 @@ class RetroCastXStreamer(LiteXModule):
         assert not interlace or height % 4 == 0
 
         self.comb += fmt888.eq(pixfmt == PIXFMT_RGB888)
+        # 1B/px(CVBS8)。断片長・語数・xの進み・読出アドレスが変わる
+        fmt1 = Signal()
+        self.comb += fmt1.eq(pixfmt == PIXFMT_CVBS8)
 
         # --- ライン断片化(host/python の protocol.fragment_line と同一の分割) ---
         #
@@ -290,9 +299,11 @@ class RetroCastXStreamer(LiteXModule):
         PX_ALIGN = 4
         FRAG_PX_555 = ((mtu_payload - 20) // 2) & ~(PX_ALIGN - 1)
         FRAG_PX_888 = ((mtu_payload - 20) // 3) & ~(PX_ALIGN - 1)
+        FRAG_PX_1   = (mtu_payload - 20) & ~(PX_ALIGN - 1)
         assert min(FRAG_PX_555, FRAG_PX_888) >= PX_ALIGN, "MTU too small"
         FRAG_PX = Signal(16)           # 1断片の最大ピクセル数(形式で決まる)
-        self.comb += FRAG_PX.eq(Mux(fmt888, FRAG_PX_888, FRAG_PX_555))
+        self.comb += FRAG_PX.eq(Mux(fmt888, FRAG_PX_888,
+                                    Mux(fmt1, FRAG_PX_1, FRAG_PX_555)))
         def _nw(n):                    # パターン生成側(RGB555固定)用
             return 5 + n // 2
         # パターン生成側(cap_mode でない)は RGB555 固定。断片表はビルド時に作る
@@ -312,12 +323,15 @@ class RetroCastXStreamer(LiteXModule):
         # 実行時の値(Signal)から length / nwords を作る式。形式で分ける。
         #   RGB555/YC8: length = 20 + 2n   nwords = 5 + n/2
         #   RGB888    : length = 20 + 3n   nwords = 5 + 3n/4  (n は4の倍数)
+        #   CVBS8     : length = 20 + n    nwords = 5 + n/4
         def _len_expr(n):
-            # 20 + 2n / 20 + 3n
-            return 20 + Mux(fmt888, n + Cat(C(0, 1), n), Cat(C(0, 1), n))
+            # 20 + 2n / 20 + 3n / 20 + n
+            return 20 + Mux(fmt888, n + Cat(C(0, 1), n),
+                            Mux(fmt1, n, Cat(C(0, 1), n)))
         def _nw_expr(n):
-            # 5 + n/2 / 5 + 3n/4(n は4の倍数)
-            return 5 + Mux(fmt888, n[2:] + Cat(C(0, 1), n[2:]), n[1:])
+            # 5 + n/2 / 5 + 3n/4 / 5 + n/4(n は4の倍数)
+            return 5 + Mux(fmt888, n[2:] + Cat(C(0, 1), n[2:]),
+                           Mux(fmt1, n[2:], n[1:]))
         aud_nwords = 5 + audio_nsamples
         # ★nwords / word_idx の幅は**両方の形式の最悪値**から決める。
         #
@@ -364,8 +378,9 @@ class RetroCastXStreamer(LiteXModule):
         def _px_adv():
             """ペイロード1語を送出したときの前進動作(形式で変わる)。
 
-            RGB555/YC8: 1語=2画素なので毎語 x += 2
+            RGB555/YC8/YCC422: 1語=2画素なので毎語 x += 2
             RGB888    : 4画素=3語。位相を回し、群の最後(位相2)で x += 4
+            CVBS8     : 1語=4画素なので毎語 x += 4
             """
             return [If(fmt888,
                        If(gph == 2,
@@ -374,6 +389,8 @@ class RetroCastXStreamer(LiteXModule):
                        ).Else(
                            NextValue(gph, gph + 1),
                        ),
+                   ).Elif(fmt1,
+                       NextValue(x, x + 4),
                    ).Else(
                        NextValue(x, x + 2),
                    )]
@@ -534,6 +551,9 @@ class RetroCastXStreamer(LiteXModule):
         # 実行時のA/Bで切り分けるために入れた。1にすると範囲を無視して 0..htotal
         # を送るので、範囲判定が原因なら直り、書き込みが原因なら直らない。
         self.cfg_full_line  = Signal(reset=0)                    # key 0x30
+        # 送出範囲の固定。win_len が 0 なら「黒でない範囲」の自動判定(従来どおり)
+        self.cfg_win_start  = Signal(16)                         # key 0x38
+        self.cfg_win_len    = Signal(16)                         # key 0x39
         self.cfg_video_bw   = Signal(4, reset=0xF)               # key 0x17
         self.cfg_fine_clamp = Signal(8, reset=0x87)              # key 0x18
         # H-PLL制御(reg 03h)。VCOレンジはピクセルクロックで決まる(データシート
@@ -760,6 +780,12 @@ class RetroCastXStreamer(LiteXModule):
                     If((cfg_target == 0) & (cfg_key == 0x30),
                         self.cfg_full_line.eq(rx.data[0]),
                     ),
+                    If((cfg_target == 0) & (cfg_key == 0x38),
+                        self.cfg_win_start.eq(rx.data[:16]),
+                    ),
+                    If((cfg_target == 0) & (cfg_key == 0x39),
+                        self.cfg_win_len.eq(rx.data[:16]),
+                    ),
                     If((cfg_target == 0) & (cfg_key == 0x36),
                         self.cfg_pixfmt.eq(rx.data[:8]),
                     ),
@@ -767,7 +793,7 @@ class RetroCastXStreamer(LiteXModule):
                           capture.cfg_span_probe_row.eq(rx.data[:13]),
                       ),
                        If((cfg_target == 0) & (cfg_key == 0x35),
-                          capture.cfg_frame_skip.eq(rx.data[:4]),
+                          capture.cfg_frame_skip.eq(rx.data[:5]),
                       ),
                        # 非黒判定の閾値(5bit = 8bitコードの上位5bit)。key 0x37。
                        # ★**暗い「絵の中身」まで黒と見なすと、その画素は範囲から
@@ -883,6 +909,8 @@ class RetroCastXStreamer(LiteXModule):
             0x11: reply_mux.eq(self.cfg_hs_offset),
             0x12: reply_mux.eq(self.cfg_pll_divide),
             0x30: reply_mux.eq(self.cfg_full_line),
+            0x38: reply_mux.eq(self.cfg_win_start),
+            0x39: reply_mux.eq(self.cfg_win_len),
             0x36: reply_mux.eq(self.cfg_pixfmt),
             0x17: reply_mux.eq(self.cfg_video_bw),
             0x18: reply_mux.eq(self.cfg_fine_clamp),
@@ -981,6 +1009,8 @@ class RetroCastXStreamer(LiteXModule):
                 0x32: reply_mux.eq(capture.stat_span_probe),
                 0x33: reply_mux.eq(capture.cap_drops),
                 0x34: reply_mux.eq(capture.stat_pop_probe),
+                # bit4(対モード)も返る。古いゲートウェアは bit3:0 しか返さないので、
+                # Viewer は読み戻しで対モードの有無を判別できる
                 0x35: reply_mux.eq(capture.cfg_frame_skip),
                 0x37: reply_mux.eq(capture.cfg_black_th),
             })
@@ -1238,12 +1268,20 @@ class RetroCastXStreamer(LiteXModule):
                 # 0RRRRRGGGGGBBBBB。Cat は第1引数がLSB側
                 return Cat(p[19:24], p[11:16], p[3:8], C(0, 1))
             s0, s1 = rdd[0:32], rdd[32:64]
-            w2b = Signal(32)          # 2B/px(RGB555 or YC8)の語
+            w2b = Signal(32)          # 2B/px(RGB555 / YC8 / YCC422)と CVBS8 の語
             w3b = Signal(32)          # 3B/px(RGB888)の語
+            # ★CVBS8 は capture 側が1エントリに4画素の緑chを {G0 G1 0 0 | G2 G3 0 0}
+            #   と詰めてあるので、語の組み立ては YC8 と同じ式でよい
+            raw16 = Signal()
+            self.comb += raw16.eq((pixfmt == PIXFMT_YC8) | fmt1)
+            # YCC422: 2画素で Y0 Cb0 Y1 Cr0。色差は偶数画素の値を使う(足し算を
+            # 入れないのはタイミングのため。4:2:2 の co-sited 配置と同じ意味)
+            ycc = Cat(s0[8:16], s0[16:24], s1[8:16], s0[0:8])
             self.comb += [
-                w2b.eq(Mux(pixfmt == PIXFMT_YC8,
-                           Cat(s0[0:16], s1[0:16]),           # YC8 はそのまま
-                           Cat(_slot555(s0), _slot555(s1)))),
+                w2b.eq(Mux(raw16,
+                           Cat(s0[0:16], s1[0:16]),           # YC8 / CVBS8 はそのまま
+                           Mux(pixfmt == PIXFMT_YCC422, ycc,
+                               Cat(_slot555(s0), _slot555(s1))))),
                 line_pixdata.eq(Mux(fmt888, w3b, w2b)),
             ]
             if True:
@@ -1292,8 +1330,8 @@ class RetroCastXStreamer(LiteXModule):
                 sink.valid & sink.ready & (ptype == _T_LINE) & (
                     ((word_idx >= 5) & (word_idx != nwords - 1)) |
                     ((word_idx == nwords - 1) & ~frag_last)))
-            x_next = Signal(max=width + 2)
-            self.comb += x_next.eq(x + Mux(x_adv, 2, 0))
+            x_next = Signal(max=width + 4)
+            self.comb += x_next.eq(x + Mux(x_adv, Mux(fmt1, 4, 2), 0))
             if True:
                 # ★位相ごとに必要なエントリが違う。BRAM は1サイクル遅延なので
                 #   「次サイクルに必要なエントリ」を先出しする(2B/px と同じ流儀)。
@@ -1310,7 +1348,9 @@ class RetroCastXStreamer(LiteXModule):
                         ent_base + Mux(x_adv,
                                        Mux(gph == 2, 2, 1),
                                        Mux(gph == 0, 0, 1)),
-                        x_next[1:]))          # 2B/px: entry = x_next/2
+                        Mux(fmt1,
+                            x_next[2:],       # CVBS8: entry = x_next/4(4画素/エントリ)
+                            x_next[1:])))     # 2B/px: entry = x_next/2
                 # 位相0から前進する瞬間の rd_data が entry base。次サイクルには
                 # base+1 に変わるので、ここでラッチしておく
                 self.sync += If(fmt888 & x_adv & (gph == 0),
@@ -1388,7 +1428,7 @@ class RetroCastXStreamer(LiteXModule):
             # 設定漏れで壊れるより、形式から決まる方が事故が少ない。
             send_full = Signal()
             self.comb += send_full.eq(self.cfg_full_line |
-                                      (self.cfg_pixfmt == PIXFMT_YC8))
+                                      (self.cfg_pixfmt == PIXFMT_YC8) | fmt1)
             self.comb += [
                 If(send_full,
                     # 範囲を無視してラインの先頭から htotal ぶん送る。
@@ -1396,6 +1436,13 @@ class RetroCastXStreamer(LiteXModule):
                     #  「範囲を無視する」はずが左端だけ内容依存で動いてしまう)
                     lo_c.eq(self.cfg_hs_offset),
                     hi_c.eq(self.cfg_pll_divide),
+                # 送出範囲の固定(key 0x38/0x39)。コンポーネントは色差の無信号が
+                # 中間値で「黒」にならず、範囲がライン全体に広がる。そのままだと
+                # 1ラインが2パケットになるので、有効画素とバックポーチの終わりだけを
+                # 決め打ちで送り、1パケット(2B/px で 724 画素)に収める
+                ).Elif(self.cfg_win_len != 0,
+                    lo_c.eq(self.cfg_win_start),
+                    hi_c.eq(self.cfg_win_start + self.cfg_win_len),
                 # line_last は内包。全黒の行では line_first > line_last になるので
                 # その場合は空(送るピクセル0)にする。行自体は送る(落とすと受信側が
                 # 「黒い行」と「届かなかった行」を区別できない)。
@@ -2150,7 +2197,7 @@ class RetroCastXStream(SoCMini):
             # ★Ethernet コアと同じ MAC を渡すこと。食い違うと SUBSCRIBE/CONFIG の
             #   宛先照合(自MACと一致するか)が通らなくなる。
             mac_address=my_mac, my_ip=my_ip,
-            caps=Cat(self.status.mac_valid, C(0, 15)),
+            caps=Cat(self.status.mac_valid, C(1, 1), C(0, 14)),   # bit1 = CAP_COMPACT
             audio_sources=[(self.i2s.sources[0], 48000),
                            (self.i2s.sources[1], 48000),
                            (self.spdif.source, self.spdif.rate_hz),
@@ -2345,6 +2392,8 @@ class RetroCastXStream(SoCMini):
                 # 画素の詰め方は伝送形式から決まる(capture側で pix ドメインへ同期)
                 self.capture.cfg_raw_yc.eq(
                     self.streamer.cfg_pixfmt == PIXFMT_YC8),
+                self.capture.cfg_cvbs8.eq(
+                    self.streamer.cfg_pixfmt == PIXFMT_CVBS8),
             ]
 
 

@@ -111,7 +111,17 @@ class TvpCapture(Module):
         # 間引かないので、同じ受信キューを共有している音声の取りこぼしも減る。
         # 間引くのは push の段階なので、メタFIFOにも面にも載らず、
         # ボード側の仕事そのものが減る。
-        self.cfg_frame_skip     = Signal(4)          # key 0x35
+        # key 0x35。bit3:0 = 間引き数、bit4 = 対モード。
+        # 対モード: インターレースで**2フィールドを1単位として**間引く。
+        # フィールドごとに数えると、1/2 で片方の極性のフィールドしか届かず、
+        # もう片方は古いまま残って織り込みが崩れる(480i など、フィールドごとに
+        # VSYNC が来る信号)。1回のVSYNCに2フィールド入る信号(il_frame)は、もともと
+        # 1単位がフレーム全体なので無視する。どの順の2フィールドでも受信側は位置
+        # (半ライン単位)で織り込むので、対の始まりの極性は揃えない。
+        # ★**1本の5bitレジスタで持つ。** bit4 を別の信号にして書込/読出の経路を
+        #   増やしたら、配置が変わって sys と eth_rx のタイミングが全シードで
+        #   閉じなくなった(足した論理はわずか)。
+        self.cfg_frame_skip     = Signal(5)          # key 0x35
         self.cfg_span_probe_row = Signal(row_bits)   # key 0x31
         self.stat_span_probe    = Signal(32)         # key 0x32: {any, hi, lo}
         # FIFO出口で pop した瞬間の {row, x_hi, x_lo}。同じエントリの値が揃って
@@ -272,6 +282,8 @@ class TvpCapture(Module):
         # 先に存在している必要がある)
         skip_cnt = Signal(4)
         send_frame = Signal(reset=1)              # 間引きで落とすフレームでは 0
+        pair_2nd = Signal()                       # 次のフィールドは対の2枚目
+        pair_on  = Signal()                       # 対モードが効く(下で毎クロック更新)
         pair_lo = Signal(32)                      # 偶数xピクセル保持(32bitスロット)
 
         # VSYNCエッジ行数ガード: 前回受理VSYNCからの経過行数(vrow)が vs_min_rows 以上の
@@ -353,6 +365,13 @@ class TvpCapture(Module):
         self.cfg_raw_yc = Signal()          # 1 = YC8(生8bit) / 0 = RGB555
         raw_yc = Signal()                   # pixドメインへ同期した版
         self.specials += MultiReg(self.cfg_raw_yc, raw_yc, "pix")
+        # CVBS8(1B/px、コンポジットの CVBS だけ): 1エントリ(2スロット)に4画素の
+        # 緑chを {G0 G1 0 0 | G2 G3 0 0} と詰める。送出側は YC8 と同じ式で語を作り、
+        # 1語=4画素として数える。YC8 の赤ch(S端子の C)はコンポジットでは未接続で
+        # ほぼ0なので、捨てれば帯域が半分になり、1ラインが3パケット→2パケットに減る
+        self.cfg_cvbs8 = Signal()
+        cvbs8 = Signal()
+        self.specials += MultiReg(self.cfg_cvbs8, cvbs8, "pix")
         # ★バッファには**変換せず8bitのまま**入れる(byte0=R byte1=G byte2=B)。
         #   YC8 だけは「下位=緑ch / 上位=赤ch」という別の意味を持つ形式なので、
         #   ここで詰め替えておく(復調に8bitの生値が要るのは元から同じ)。
@@ -822,9 +841,16 @@ class TvpCapture(Module):
         self.comb += [
             xpix.eq(x - self.cfg_hs_offset),
             active.eq((x >= self.cfg_hs_offset) & (xpix < width) & row_ok),
-            pix_we.eq(active & xpix[0]),          # 奇数pxが揃った時に1ペア書込
-            pix_adr.eq(xpix[1:1 + entry_bits]),
+            # 奇数pxが揃った時に1ペア書込(CVBS8 は4画素揃った時に1エントリ)
+            pix_we.eq(active & Mux(cvbs8, xpix[0:2] == 3, xpix[0])),
+            pix_adr.eq(Mux(cvbs8, xpix[2:2 + entry_bits], xpix[1:1 + entry_bits])),
         ]
+        # CVBS8 の4画素分の緑ch。0〜2画素目を保持し、3画素目と一緒に書く
+        q0 = Signal(8); q1 = Signal(8); q2 = Signal(8)
+        self.sync.pix += If(active,
+            Case(xpix[0:2], {0: q0.eq(g), 1: q1.eq(g), 2: q2.eq(g)}))
+        quad = Signal(64)
+        self.comb += quad.eq(Cat(q0, q1, C(0, 16), q2, g, C(0, 16)))
 
         # --- ライン内の「黒でない範囲」を entry 単位で記録する ---
         # 送るのはこの範囲だけにする。ライン全体(ブランキング込み)を送ると帯域が
@@ -887,7 +913,8 @@ class TvpCapture(Module):
             wr.adr.eq(Cat(clr_adr[:entry_bits], face)), wr.dat_w.eq(0), wr.we.eq(1),
         ).Else(
             wr.adr.eq(Cat(pix_adr, face)),
-            wr.dat_w.eq(Cat(pair_lo, pixw)),   # {奇数px, 偶数px}
+            # {奇数px, 偶数px}。CVBS8 は4画素の緑ch
+            wr.dat_w.eq(Mux(cvbs8, quad, Cat(pair_lo, pixw))),
             wr.we.eq(pix_we),
         )
 
@@ -981,11 +1008,21 @@ class TvpCapture(Module):
             If(frame_start, frame.eq(frame + 1), field.eq(~field)),
             # このフレームを送るか。frame_start ごとに数え、cfg_frame_skip 回
             # 飛ばして1回送る。0 なら常に送る。
+            # 対モードでフィールドごとにVSYNCが来るインターレースなら、対の
+            # 2枚目は1枚目と同じ判定を引き継ぎ、数えるのは対の1枚目だけにする。
+            # 対モードが効く条件はレジスタに落としてから使う(モード切替時にしか
+            # 変わらないので1クロック遅れは無害。frame_start の経路を伸ばさない)
+            pair_on.eq(self.cfg_frame_skip[4] & il_det & ~il_frame),
             If(frame_start,
-                If(skip_cnt >= self.cfg_frame_skip,
-                    skip_cnt.eq(0), send_frame.eq(1),
+                If(pair_2nd,
+                    pair_2nd.eq(0),
                 ).Else(
-                    skip_cnt.eq(skip_cnt + 1), send_frame.eq(0),
+                    pair_2nd.eq(pair_on),
+                    If(skip_cnt >= self.cfg_frame_skip[:4],
+                        skip_cnt.eq(0), send_frame.eq(1),
+                    ).Else(
+                        skip_cnt.eq(skip_cnt + 1), send_frame.eq(0),
+                    ),
                 ),
             ),
         ]

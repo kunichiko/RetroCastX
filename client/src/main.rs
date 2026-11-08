@@ -29,6 +29,7 @@
 mod android_log;
 mod appicon;
 mod assembler;
+mod decode_worker;
 mod awake;
 mod audio;
 mod bezel;
@@ -45,6 +46,7 @@ mod leds;
 mod metal_present;
 mod netcheck;
 mod ntsc;
+mod perf_hint;
 mod profiles;
 mod remote_input;
 mod render;
@@ -84,6 +86,8 @@ fn pixfmt_name(f: u8) -> &'static str {
         protocol::PIXFMT_RGB555 => "RGB555 (2B/px)",
         protocol::PIXFMT_RGB565 => "RGB565 (2B/px)",
         protocol::PIXFMT_YC8 => "YC8 (2B/px)",
+        protocol::PIXFMT_YCC422 => "YCC422 (2B/px)",
+        protocol::PIXFMT_CVBS8 => "CVBS8 (1B/px)",
         _ => "unknown",
     }
 }
@@ -661,9 +665,9 @@ fn run_headless(
             .map(|m| format!("{}x{}", m.hactive, m.vactive))
             .unwrap_or_else(|| "no mode".into());
         println!(
-            "{dims}  {:.1} fps  {:.1} Mbps  frames={} pkts={} lost={} qdrop={} orphan={}",
+            "{dims}  {:.1} fps  {:.1} Mbps  frames={} pkts={} lost={} qdrop={} orphan={} skipped={}",
             s.fps, s.mbps, s.frames, s.packets, s.lost_packets, s.queue_drops,
-            s.orphan_lines
+            s.orphan_lines, s.decode_skipped
         );
         // 音声。**枯渇の切り分け表示を GUI を開かずに読めるように。**
         if let Some(a) = shared.audio.lock().unwrap().clone() {
@@ -1162,6 +1166,18 @@ struct Session {
     /// フレーム間引き。0=毎フレーム / 1=2フレームに1回 …
     /// 受信が追いつかない機械での保険。音声は間引かない
     tune_frame_skip: u8,
+    /// 間引きをフィールド単位にする(settings::Settings::frame_skip_fields)
+    frame_skip_fields: bool,
+    /// コンポジットの3次元コム(settings::Settings::ntsc_comb3d)
+    ntsc_comb3d: bool,
+    /// 間引きを書いた相手のボード。**掴んだボードが変わったら書き直す**
+    /// (apply_frame_skip)。ボードが落ちたら外す(電源で 0 に戻るため)
+    skip_applied_to: Option<[u8; 6]>,
+    /// 送出範囲の固定を書いた相手と値(apply_send_window)
+    win_applied: Option<([u8; 6], (u32, u32))>,
+    /// ボードから読み戻した間引きの値(CONFIG 0x35 の生値)。対モード(bit4)に
+    /// 対応していないゲートウェアは bit4 を返さないので、その判別に使う
+    board_frame_skip: Option<u32>,
     /// 復調を止めて生のYを見る(切り分け用。設定には保存しない)
     raw_view: bool,
     /// 表示するフィールド 0=織り込み / 1=偶数 / 2=奇数(同上)
@@ -1469,6 +1485,11 @@ impl Session {
             tune_video_bw: cfg.tune_video_bw,
             tune_full_line: cfg.tune_full_line,
             tune_frame_skip: cfg.tune_frame_skip,
+            frame_skip_fields: cfg.frame_skip_fields,
+            ntsc_comb3d: cfg.ntsc_comb3d,
+            skip_applied_to: None,
+            win_applied: None,
+            board_frame_skip: None,
             tune_phase: cfg.tune_phase,
             raw_view: false,
             field_view: 0,
@@ -1855,6 +1876,8 @@ impl Session {
             tune_video_bw: self.tune_video_bw,
             tune_full_line: self.tune_full_line,
             tune_frame_skip: self.tune_frame_skip,
+            frame_skip_fields: self.frame_skip_fields,
+            ntsc_comb3d: self.ntsc_comb3d,
             tune_phase: self.tune_phase,
             source_profile: self.source_profile.clone(),
         }
@@ -1929,12 +1952,12 @@ impl Session {
                         && have.is_some_and(|h| p.pixfmt_ok(h));
                     let mut n = 0;
                     let mut wrote: Vec<(u16, u32)> = Vec::new();
-                    for (k, v, _) in p.input_regs {
-                        if keep_fmt && *k == protocol::CFG_KEY_PIXFMT {
+                    for (k, v) in self.input_regs_for_board(p) {
+                        if keep_fmt && k == protocol::CFG_KEY_PIXFMT {
                             continue;
                         }
-                        send.push((*k, *v));
-                        wrote.push((*k, *v));
+                        send.push((k, v));
+                        wrote.push((k, v));
                         n += 1;
                     }
                     // ★書いた値で Tune欄の表示も更新する。ここを忘れると
@@ -2728,7 +2751,7 @@ impl Session {
             return true;
         }
         matches!(self.shared.mode.lock().unwrap().as_ref(),
-                 Some(m) if m.pixfmt == protocol::PIXFMT_YC8)
+                 Some(m) if protocol::is_raw8(m.pixfmt))
     }
 
     fn set_pll(&mut self, new: u32) {
@@ -2749,6 +2772,65 @@ impl Session {
     }
 
     /// CONFIGを1つ送る。UIの外(モード追従など)から使う
+    /// ボードへ書く間引きの値(CONFIG 0x35)。bit3:0 = 間引き数、bit4 = 対モード。
+    ///
+    /// 対モードはインターレースで2フィールドずつ間引く指定で、ボードは
+    /// プログレッシブでは無視するので、フィールド単位を選んでいない限り常に立てる
+    fn frame_skip_cfg(&self) -> u32 {
+        let pair = if self.frame_skip_fields { 0 } else { 0x10 };
+        self.tune_frame_skip as u32 | pair
+    }
+
+    /// いま受けている映像がインターレースか(MODE の mflags bit0)
+    fn interlaced(&self) -> bool {
+        self.shared.mode.lock().unwrap().as_ref().is_some_and(|m| m.mflags & 1 != 0)
+    }
+
+    /// 対モードを頼んだのにボードが bit4 を返してこない(古いゲートウェア)
+    fn frame_skip_pair_unsupported(&self) -> bool {
+        let want = self.frame_skip_cfg();
+        want & 0x10 != 0
+            && self.board_frame_skip.is_some_and(|v| v & 0xF == want & 0xF && v & 0x10 == 0)
+    }
+
+    /// 間引きの表示。インターレースの対モードでは、届くのが「2フィールドの組」で
+    /// あることが分かるようにする
+    fn frame_skip_label(&self) -> String {
+        let n = self.tune_frame_skip as u32;
+        if n == 0 {
+            return "毎フレーム".to_string();
+        }
+        let hz = self.shared.mode.lock().unwrap().as_ref()
+            .map(|m| m.vfreq_mhz_x1000 as f32 / 1000.0)
+            .filter(|hz| *hz > 1.0)
+            .unwrap_or(60.0);
+        if self.interlaced() && !self.frame_skip_fields {
+            format!("1/{} (2フィールドずつ、{:.0}組/秒)", n + 1, hz / 2.0 / (n + 1) as f32)
+        } else {
+            format!("1/{} ({:.0}fps相当)", n + 1, hz / (n + 1) as f32)
+        }
+    }
+
+    /// 間引きを掴んだボードへ書く。
+    ///
+    /// ★**間引きは受信する側の都合で決める値。** Pixel は毎秒 約27,000 パケットで
+    ///   頭打ちになるので 1/2 が要るが、PC は毎フレーム受けられる。ボードの設定は
+    ///   持ち主が替わっても残るので、掴むたびに自分の値を書かないと、前の持ち主の
+    ///   間引きのまま映る。ボードが落ちたら(MODE が消えたら)書き直す — 電源で
+    ///   0 に戻っているため。
+    fn apply_frame_skip(&mut self) {
+        let up = self.shared.mode.lock().unwrap().is_some();
+        let own = if up { self.claimed() } else { None };
+        if own.is_none() {
+            self.skip_applied_to = None;
+            return;
+        }
+        if self.skip_applied_to != own {
+            self.skip_applied_to = own;
+            self.send_cfg(protocol::CFG_KEY_FRAME_SKIP, self.frame_skip_cfg());
+        }
+    }
+
     fn send_cfg(&mut self, key: u16, val: u32) {
         self.tune_pending.insert(key, (val, std::time::Instant::now()));
         self.shared.config_queue.lock().unwrap().push((key, val));
@@ -2772,7 +2854,10 @@ impl Session {
             protocol::CFG_KEY_PLL_DIVIDE => self.tune_pll_divide = val as i32,
             protocol::CFG_KEY_VIDEO_BW => self.tune_video_bw = val as u8,
             protocol::CFG_KEY_FULL_LINE => self.tune_full_line = val != 0,
-            protocol::CFG_KEY_FRAME_SKIP => self.tune_frame_skip = val as u8,
+            // ★**間引きは取り込まない。** 他の Tune 値と違い、受信する側の都合で
+            //   決める値(Pixel は 1/2、PC は毎フレーム)なので、ボードに残っている
+            //   前の持ち主の値を引き継いではいけない。自分の値は掴んだときに書く
+            protocol::CFG_KEY_FRAME_SKIP => self.board_frame_skip = Some(val),
             protocol::CFG_KEY_PHASE => self.tune_phase = (val as u8).min(31),
             protocol::CFG_KEY_PIXFMT => self.tune_pixfmt = val as i32,
             protocol::CFG_KEY_GAIN_R => self.tune_gain_r = val as i32,
@@ -2824,7 +2909,11 @@ impl Session {
             self.input_regs_autowritten = false;
             return;
         };
-        if p.pixfmt_ok(have) {
+        // 形式が絵になっていても、帯域を減らせる形式に替えられるなら書く
+        // (CAP_COMPACT を持つボードで、コンポーネントが RGB888 のまま流れている等)
+        let want = p.pixfmt_for(self.board_compact());
+        let ok = p.pixfmt_ok(have) && (!p.needs_exact_pixfmt() || want == Some(have));
+        if ok {
             self.input_regs_autowritten = false;
             return;
         }
@@ -2832,15 +2921,61 @@ impl Session {
             return;
         }
         self.input_regs_autowritten = true;
-        for (k, v, _) in p.input_regs {
-            self.send_cfg(*k, *v);
-            self.set_tune_mirror(*k, *v);
+        for (k, v) in self.input_regs_for_board(p) {
+            self.send_cfg(k, v);
+            self.set_tune_mirror(k, v);
         }
         // ★頼まれていないのにボードのレジスタを書き換えた。黙ってやるのは
         //   良くないので必ず伝える(ただし数秒で消す。状態ではなく出来事なので)
         self.toasts.notice(format!(
             "伝送形式が食い違っていたため、{} の入力設定を自動で書き込みました ({}件)",
             p.label, p.input_regs.len()));
+    }
+
+    /// 掴んでいるボードが帯域を減らす形式(CAP_COMPACT)に対応しているか
+    fn board_compact(&self) -> bool {
+        let Some(mac) = self.claimed() else { return false };
+        self.shared.boards.lock().unwrap().get(&mac)
+            .is_some_and(|b| b.caps & protocol::CAP_COMPACT != 0)
+    }
+
+    /// 映像ソースの入力設定を、掴んでいるボードに合わせて返す。
+    ///
+    /// ★**新しい形式は CAP_COMPACT を持つボードにだけ書く。** 古いゲートウェアに
+    ///   YCC422 や CVBS8 を書くと、知らない形式として RGB555 の詰め方で送られて
+    ///   絵が壊れる。プロファイルの値(YC8 / RGB888)は古いボード向けに残してある
+    fn input_regs_for_board(&self, p: &profiles::Profile) -> Vec<(u16, u32)> {
+        let fmt = p.pixfmt_for(self.board_compact());
+        p.input_regs
+            .iter()
+            .map(|(k, v, _)| match (*k, fmt) {
+                (protocol::CFG_KEY_PIXFMT, Some(f)) => (*k, f as u32),
+                _ => (*k, *v),
+            })
+            .collect()
+    }
+
+    /// 送出範囲の固定(0x38/0x39)を掴んだボードへ書く。
+    ///
+    /// コンポーネントのときだけ範囲を固定し、それ以外では必ず解除する。
+    /// ★**解除し忘れると RGB の絵が切り取られる。** ボードの設定は持ち主や映像
+    ///   ソースが替わっても残るので、間引きと同じく掴むたび・ソースを替えるたびに
+    ///   書く。古いゲートウェア(CAP_COMPACT なし)には書かない(知らないキー)
+    fn apply_send_window(&mut self) {
+        let up = self.shared.mode.lock().unwrap().is_some();
+        let own = if up { self.claimed() } else { None };
+        let Some(mac) = own.filter(|_| self.board_compact()) else {
+            self.win_applied = None;
+            return;
+        };
+        let want = profiles::by_key(&self.source_profile)
+            .and_then(|p| p.send_window())
+            .unwrap_or((0, 0));
+        if self.win_applied != Some((mac, want)) {
+            self.win_applied = Some((mac, want));
+            self.send_cfg(protocol::CFG_KEY_WIN_START, want.0);
+            self.send_cfg(protocol::CFG_KEY_WIN_LEN, want.1);
+        }
     }
 
     /// いまの有効映像が何µsか。管面の掃引時間を決める基準になる
@@ -3729,6 +3864,17 @@ impl Session {
                     *self.shared.raw_view.lock().unwrap() = Some(v);
                 }
             }
+            // 3次元コム。前後のフレームを使うので静止部分の色が綺麗になるが重い。
+            // モバイルの CPU では復調が追いつかず受信キューから溢れることがある
+            if ui.checkbox(&mut self.ntsc_comb3d, "3次元コム")
+                .on_hover_text(
+                    "コンポジットの Y/C 分離に前後のフレームも使う。\n\
+                     静止部分の色のにじみが減るが CPU を多く使う。\n\
+                     復調が追いつかない(遅延が大きい・queue drops が増える)ときは外す")
+                .changed()
+            {
+                self.mark_settings_dirty();
+            }
             // 片方のフィールドだけ見る。**織り込みの影響を外すための道具。**
             // 縦線が二重に見えるとき、2枚のフィールドがずれているのか、1枚の中で
             // 既に二重なのかを分けられる。選んだ側を隣のスロットへ複製して全高で出す
@@ -3885,19 +4031,38 @@ impl Session {
                     .on_hover_text("映像を何フレームに1回にするか。0=毎フレーム、\n\
                                     1=2フレームに1回(帯域とfpsが半分)。\n\
                                     音声は間引かないので、映像を減らすと\n\
-                                    音の途切れも減ります")
+                                    音の途切れも減ります。\n\
+                                    この設定はボードではなくこの Viewer のもので、\n\
+                                    ボードを掴むたびに書き込みます")
                     .changed()
                 {
                     self.tune_frame_skip = n as u8;
-                    send.push((protocol::CFG_KEY_FRAME_SKIP, n as u32));
+                    send.push((protocol::CFG_KEY_FRAME_SKIP, self.frame_skip_cfg()));
                 }
-                ui.monospace(if self.tune_frame_skip == 0 {
-                    "毎フレーム".to_string()
-                } else {
-                    format!("1/{} ({}fps相当)", self.tune_frame_skip + 1,
-                            55 / (self.tune_frame_skip as u32 + 1))
-                });
+                ui.monospace(self.frame_skip_label());
             });
+            // インターレースのときだけ、対(2フィールドずつ)かフィールド単位かを選ぶ
+            if self.tune_frame_skip > 0 && self.interlaced() {
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    let mut pairs = !self.frame_skip_fields;
+                    if ui.checkbox(&mut pairs, "2フィールドずつ")
+                        .on_hover_text("インターレースでは連続する2フィールドを組にして\n\
+                                        送り、組ごとに間引きます(織り込みが崩れない)。\n\
+                                        外すとフィールドを1枚ずつ数えるので fps は倍に\n\
+                                        なりますが、片方の極性のフィールドしか届かず\n\
+                                        縦の解像度が半分になります")
+                        .changed()
+                    {
+                        self.frame_skip_fields = !pairs;
+                        send.push((protocol::CFG_KEY_FRAME_SKIP, self.frame_skip_cfg()));
+                    }
+                    if self.frame_skip_pair_unsupported() {
+                        ui.label(egui::RichText::new("ゲートウェアが未対応(1枚ずつ間引かれます)")
+                            .size(11.0).color(theme::AMBER));
+                    }
+                });
+            }
             ui.horizontal(|ui| {
                 ui.monospace("帯域制限");
                 let mut bw = self.tune_video_bw as i32;
@@ -4233,7 +4398,7 @@ impl Session {
                 send.push((protocol::CFG_KEY_PHASE, self.tune_phase as u32));
                 send.push((protocol::CFG_KEY_FULL_LINE,
                            if self.tune_full_line { 1 } else { 0 }));
-                send.push((protocol::CFG_KEY_FRAME_SKIP, self.tune_frame_skip as u32));
+                send.push((protocol::CFG_KEY_FRAME_SKIP, self.frame_skip_cfg()));
             }
         }
         self.queue_config(send);
@@ -5445,6 +5610,7 @@ impl Session {
             self.dot_a_milli,
             std::sync::atomic::Ordering::Relaxed,
         );
+        self.shared.comb3d.store(self.ntsc_comb3d, std::sync::atomic::Ordering::Relaxed);
         // コンポーネントなら RGB888 の3チャンネルを Pr/Y/Pb として RGB に直させる
         self.shared.ycbcr.store(
             profiles::by_key(&self.source_profile).is_some_and(|p| p.ycbcr),
@@ -5505,6 +5671,10 @@ impl Session {
         // ★パネルの外に置く。Tab で隠していても全画面でも、電源を入れ直したあとに
         //   入力設定が入り直さないと「選んであるのに映らない」ままになる。
         self.autowrite_input_regs();
+        // 間引きはこの Viewer の設定。掴んだボードへ書く(パネルの外。隠していても効く)
+        self.apply_frame_skip();
+        // コンポーネントは送出範囲を固定して1ラインを1パケットに収める
+        self.apply_send_window();
         // 同じくパネルの外。映像が「自動」のときの音声はボードの入力系統に従う
         self.follow_board_input_audio();
 
@@ -5730,6 +5900,10 @@ impl Session {
                 theme::kv(ui, "rate", format!("{:.1} fps  {:.1} Mbps", s.fps, s.mbps));
                 if self.show_advanced {
                     theme::kv(ui, "frames", format!("{}", s.frames));
+                    // 復調(コンポジット)が追いつかず、飛ばしたフィールドの数
+                    if s.decode_skipped > 0 {
+                        theme::kv(ui, "skipped", format!("{}", s.decode_skipped));
+                    }
                 }
                 // lost はOSのUDPバッファ溢れ、qdrop は組立が追いつかず受信スレッドの
                 // キューが満杯で捨てた分。分けて出さないとどちらが詰まっているのか
@@ -5795,7 +5969,7 @@ impl Session {
                         "NTSC 白黒(バーストなし) 黒レベルのみ校正",
                     );
                 } else if matches!(self.shared.mode.lock().unwrap().as_ref(),
-                                   Some(m) if m.pixfmt == protocol::PIXFMT_YC8) {
+                                   Some(m) if protocol::is_raw8(m.pixfmt)) {
                     ui.colored_label(
                         theme::AMBER,
                         "NTSC復調 未ロック(Yのグレースケール表示)",
@@ -6064,12 +6238,19 @@ impl Session {
                     // ゲートウェアは実行時に切り替えるので再ビルドは要らない。
                     ui.monospace("伝送形式");
                     let mut f = self.tune_pixfmt;
+                    // 帯域を減らす形式(YCC422 / CVBS8)は対応しているボードにだけ出す
+                    let compact = self.board_compact();
                     egui::ComboBox::from_id_salt("pixfmt")
                         .selected_text(pixfmt_name(f as u8))
                         .show_ui(ui, |ui| {
                             for v in [protocol::PIXFMT_RGB888, protocol::PIXFMT_RGB555,
                                       protocol::PIXFMT_YC8] {
                                 ui.selectable_value(&mut f, v as i32, pixfmt_name(v));
+                            }
+                            if compact {
+                                for v in [protocol::PIXFMT_YCC422, protocol::PIXFMT_CVBS8] {
+                                    ui.selectable_value(&mut f, v as i32, pixfmt_name(v));
+                                }
                             }
                         });
                     if f != self.tune_pixfmt {

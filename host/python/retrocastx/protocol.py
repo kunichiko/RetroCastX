@@ -175,9 +175,15 @@ PIXFMT_RGB565 = 2
 # 数コードしか無くて副搬送波の位相を推定できないので、復調用には8bitが要る。
 # 2B/px は RGB555 と同じなので、断片化・MTU計算・受信バッファは共通のまま。
 PIXFMT_YC8 = 3
+# YCC422: コンポーネント用 2B/px。2画素で Y0 Cb0 Y1 Cr0(色差は偶数画素の値)。
+# CVBS8 : コンポジット用 1B/px。緑ch(CVBS)だけ。どちらも ANNOUNCE caps bit1
+#         (CAP_COMPACT)を持つボードだけが送れる
+PIXFMT_YCC422 = 4
+PIXFMT_CVBS8 = 5
+CAP_COMPACT = 1 << 1
 
 BYTES_PER_PX = {PIXFMT_RGB888: 3, PIXFMT_RGB555: 2, PIXFMT_RGB565: 2,
-                PIXFMT_YC8: 2}
+                PIXFMT_YC8: 2, PIXFMT_YCC422: 2, PIXFMT_CVBS8: 1}
 
 _COMMON = struct.Struct("<BBBBHH")        # magic, version, type, flags, frame, seq
 _LINE = struct.Struct("<HHHBBI")          # line, offset_px, count_px, pixfmt, mode_id, timestamp

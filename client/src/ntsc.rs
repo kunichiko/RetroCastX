@@ -342,58 +342,82 @@ fn tbc_plane(src: &[u8], w: usize, h: usize, rows: &[bool], ba: usize, bb: usize
             }
         }
     }
-    let (mut ss, mut nn) = (0.0f32, 0usize);
-    let mut pad: Vec<f32> = Vec::with_capacity(w + 16);
-    for y in 0..h {
-        if !used(y) {
-            continue;
-        }
-        let row = &src[y * w * 2..(y + 1) * w * 2];
-        let o = &mut out[y * w..(y + 1) * w];
-        let t = tau[y];
-        // ★**行の中でもずれは伸びる**(速度誤差)。取り込みクロックの周波数が
-        //   行ごとにわずかに違うので、バーストで揃えた後の残りが行の右へ行くほど
-        //   直線的に増えていた(実測: 13.6µs で 0.019 → 57.6µs で 0.069サンプル)。
-        //   クロックは行をまたいで連続しているので、**時間的に次の行のバースト**が
-        //   この行の終わりのずれを表す。その間を直線で結ぶと右端の残りは 0.043 に
-        //   なった(前後4本の3次補間でも 0.041 で、差は小さいので直線にした)。
-        //   時間的に次の行 = 同じフィールドの隣 = コム間隔 `step` 先の行。
-        let dt = if step > 0 && y + step < h && has[y] && has[y + step] {
-            (tau[y + step] - t) / w as f32
-        } else {
-            0.0
-        };
-        let nb = (ba + bb) as f32 * 0.5;
-        if t == 0.0 && dt == 0.0 {
-            for n in 0..w {
-                o[n] = row[n * 2] as f32;
+    // 行ごとに独立なので、復調の本体と同じく行の範囲ごとにスレッドへ分ける。
+    // ★iPhone 15 Pro の 8fsc で、本体だけ4本に分けたときは 1フィールド 20ms
+    //   (1本で 37ms)。この段も分けると 15.5ms になり、60fps に届く
+    let nthreads = decode_threads();
+    let rows_per = h.div_ceil(nthreads).max(1);
+    let (tau, has) = (&tau, &has);
+    let (ss, nn) = std::thread::scope(|sc| {
+        let work = move |ci: usize, out: &mut [f32]| {
+            let y0 = ci * rows_per;
+            let y1 = (y0 + rows_per).min(h);
+            let (mut ss, mut nn) = (0.0f32, 0usize);
+            let mut pad: Vec<f32> = Vec::with_capacity(w + 16);
+            for y in y0..y1 {
+                if !used(y) {
+                    continue;
+                }
+                let row = &src[y * w * 2..(y + 1) * w * 2];
+                let o = &mut out[(y - y0) * w..(y - y0 + 1) * w];
+                let t = tau[y];
+                // ★**行の中でもずれは伸びる**(速度誤差)。取り込みクロックの周波数が
+                //   行ごとにわずかに違うので、バーストで揃えた後の残りが行の右へ行くほど
+                //   直線的に増えていた(実測: 13.6µs で 0.019 → 57.6µs で 0.069サンプル)。
+                //   クロックは行をまたいで連続しているので、**時間的に次の行のバースト**が
+                //   この行の終わりのずれを表す。その間を直線で結ぶと右端の残りは 0.043 に
+                //   なった(前後4本の3次補間でも 0.041 で、差は小さいので直線にした)。
+                //   時間的に次の行 = 同じフィールドの隣 = コム間隔 `step` 先の行。
+                let dt = if step > 0 && y + step < h && has[y] && has[y + step] {
+                    (tau[y + step] - t) / w as f32
+                } else {
+                    0.0
+                };
+                let nb = (ba + bb) as f32 * 0.5;
+                if t == 0.0 && dt == 0.0 {
+                    for n in 0..w {
+                        o[n] = row[n * 2] as f32;
+                    }
+                    continue;
+                }
+                ss += t * t;
+                nn += 1;
+                // Catmull-Rom。線形補間だと副搬送波の振幅がずれ量で変わる
+                // (0.5サンプルで 7.6%)ので、行ごとに彩度が揺れてしまう。
+                // 端の処理を内側のループから追い出すため、両端を延ばした行を作る
+                // (ずれは TBC_MAX_SAMPLES と速度ぶんで高々数サンプル)
+                const PAD: usize = 8;
+                pad.clear();
+                pad.extend(std::iter::repeat(row[0] as f32).take(PAD));
+                pad.extend((0..w).map(|n| row[n * 2] as f32));
+                pad.extend(std::iter::repeat(row[(w - 1) * 2] as f32).take(PAD));
+                let lim = (PAD - 2) as f32;
+                for n in 0..w {
+                    let sh = (t + dt * (n as f32 - nb)).clamp(-lim, lim);
+                    let x = n as f32 + sh;
+                    let i = x.floor();
+                    let f = x - i;
+                    let i = (i as isize + PAD as isize) as usize;
+                    let (p0, p1, p2, p3) = (pad[i - 1], pad[i], pad[i + 1], pad[i + 2]);
+                    o[n] = p1 + 0.5 * f * (p2 - p0
+                        + f * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3
+                        + f * (3.0 * (p1 - p2) + p3 - p0)));
+                }
             }
-            continue;
-        }
-        ss += t * t;
-        nn += 1;
-        // Catmull-Rom。線形補間だと副搬送波の振幅がずれ量で変わる
-        // (0.5サンプルで 7.6%)ので、行ごとに彩度が揺れてしまう。
-        // 端の処理を内側のループから追い出すため、両端を延ばした行を作る
-        // (ずれは TBC_MAX_SAMPLES と速度ぶんで高々数サンプル)
-        const PAD: usize = 8;
-        pad.clear();
-        pad.extend(std::iter::repeat(row[0] as f32).take(PAD));
-        pad.extend((0..w).map(|n| row[n * 2] as f32));
-        pad.extend(std::iter::repeat(row[(w - 1) * 2] as f32).take(PAD));
-        let lim = (PAD - 2) as f32;
-        for n in 0..w {
-            let sh = (t + dt * (n as f32 - nb)).clamp(-lim, lim);
-            let x = n as f32 + sh;
-            let i = x.floor();
-            let f = x - i;
-            let i = (i as isize + PAD as isize) as usize;
-            let (p0, p1, p2, p3) = (pad[i - 1], pad[i], pad[i + 1], pad[i + 2]);
-            o[n] = p1 + 0.5 * f * (p2 - p0
-                + f * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3
-                + f * (3.0 * (p1 - p2) + p3 - p0)));
-        }
-    }
+            (ss, nn)
+        };
+        let mut chunks = out.chunks_mut(rows_per * w).enumerate();
+        let first = chunks.next();
+        let handles: Vec<_> = chunks
+            .map(|(ci, out)| sc.spawn(move || {
+                crate::receiver::raise_thread_qos();
+                work(ci, out)
+            }))
+            .collect();
+        let r0 = first.map_or((0.0, 0), |(ci, out)| work(ci, out));
+        handles.into_iter().map(|h| h.join().unwrap())
+            .fold(r0, |a, b| (a.0 + b.0, a.1 + b.1))
+    });
     (out, if nn > 0 { (ss / nn as f32).sqrt() } else { 0.0 })
 }
 
@@ -484,6 +508,15 @@ fn gamma_lut(adj: Adjust) -> Option<[u8; 256]> {
         *v = ((i as f32 / 255.0).powf(inv) * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
     }
     Some(t)
+}
+
+/// 復調を行の範囲ごとに分けるスレッドの数(decode_field の本体の注記)
+fn decode_threads() -> usize {
+    if cfg!(target_os = "android") {
+        1
+    } else {
+        std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 4)
+    }
 }
 
 pub fn decode_field(
@@ -716,297 +749,344 @@ pub fn decode_field(
     let gamma_lut = gamma_lut(adj);
 
     // --- 4. コム → 直交復調 → RGB ---
-    let mut u = vec![0.0f32; w];
-    let mut v = vec![0.0f32; w];
-    let mut yl = vec![0.0f32; w];
-    let mut mot = vec![0.0f32; w];
-    let mut c3buf = vec![0.0f32; w];
     // 画素ごとの「2次元へ落とした割合」(0 = 静止でフレームコム、1 = 2次元)。
     // 輝度の作り方も同じ割合で切り替えるので残しておく
-    let mut amix = vec![1.0f32; w];
     // 2次元コムのクロマと、上下の行の差(縦の変化。輝度の作り方を選ぶのに使う)
-    let mut c2buf = vec![0.0f32; w];
-    let mut vdet = vec![f32::INFINITY; w];
     let vd_lo = VDETAIL_LO_IRE * code_per_ire;
     let vd_hi = VDETAIL_HI_IRE * code_per_ire;
-    let mut locked = 0u32;
-    let mut lines_3d = 0u32;
-    let (mut moving, mut n3) = (0u32, 0u32);
     let motion_th = MOTION_IRE * code_per_ire;
     let motion_core = MOTION_CORE_IRE * code_per_ire;
-    for y in 0..h {
-        if !filled.get(y).copied().unwrap_or(false) {
-            continue;
-        }
-        // 上下の相手。片方しか無ければそれだけを使う(端の行)。
-        let up = y.checked_sub(comb_step)
-            .filter(|&i| filled.get(i).copied().unwrap_or(false));
-        let dn = (y + comb_step < h)
-            .then(|| y + comb_step)
-            .filter(|&i| filled.get(i).copied().unwrap_or(false));
-        let chroma_ok = mag[y] > BURST_MIN && (svideo || up.is_some() || dn.is_some());
-        locked += chroma_ok as u32;
+    // ★**行の範囲ごとにスレッドへ分ける。** この段はラインごとに独立していて
+    //   (コムは上下の行を読むだけ、書くのは自分の行の fb だけ)、1フィールドの
+    //   復調を1本のスレッドでやると、その間は受信と組立も止まる。Pixel 10 では
+    //   8fsc のコンポジットで受信キューから毎秒数千パケットを捨てていた。
+    //   作業用の配列はスレッドごとに持ち、集計は最後に足す。
+    // ★チャンクの先頭の行は、前の行の作業用の値(上下どちらの相手も無い行で
+    //   残る vdet / c2buf)を引き継がない。そういう行は端だけなので見た目は同じ。
+    // ★**スレッドは4本まで、受信と同じ優先度で。** 既定の優先度のままだと
+    //   省電力コアに回され、呼び出し側は一番遅いチャンクを待つことになる。
+    //   Pixel 10 で8本・既定の優先度にしたら、1本のときより遅くなった
+    //   (受信キューからの破棄が毎秒 約6,800 → 約21,500)。受信スレッドとも
+    //   コアを取り合うので、全コアは使わない
+    // ★**Android では分けない。** 復調のスレッドにはパフォーマンスヒント
+    //   (perf_hint.rs)を付けてクロックを上げてもらうが、その場で作るスレッドには
+    //   付かない。Pixel 10 で 1フィールドが、4本では 33〜35ms、1本+ヒントでは
+    //   13ms(ヒントなしの1本は 24〜33ms)。呼んだスレッドが遅いコアの
+    //   チャンクを待つことになるため
+    let nthreads = decode_threads();
+    let rows_per = h.div_ceil(nthreads).max(1);
+    let fb_len = (h * w * 4).min(fb.len());
+    // スレッドへは参照で渡す(move クロージャが所有権ごと持っていかないように)
+    let (cosp, sinp, mag) = (&cosp, &sinp, &mag);
+    let (cur, frame_ok, tan_half, q2) = (&cur, &frame_ok, &tan_half, &q2);
+    let gamma_lut = &gamma_lut;
+    let hist = &hist;
+    let (locked, lines_3d, moving, n3) = std::thread::scope(|sc| {
+        // 1つ目の範囲は呼んだスレッド自身が受け持つ(待っているだけにしない。
+        // パフォーマンスヒントもこのスレッドに付いている)
+        let work = move |ci: usize, fb: &mut [u8]| {
+            let y0 = ci * rows_per;
+            let y1 = (y0 + rows_per).min(h);
+            let mut u = vec![0.0f32; w];
+            let mut v = vec![0.0f32; w];
+            let mut yl = vec![0.0f32; w];
+            let mut mot = vec![0.0f32; w];
+            let mut c3buf = vec![0.0f32; w];
+            let mut amix = vec![1.0f32; w];
+            let mut c2buf = vec![0.0f32; w];
+            let mut vdet = vec![f32::INFINITY; w];
+            let mut locked = 0u32;
+            let mut lines_3d = 0u32;
+            let (mut moving, mut n3) = (0u32, 0u32);
+            for y in y0..y1 {
+                if !filled.get(y).copied().unwrap_or(false) {
+                    continue;
+                }
+                // 上下の相手。片方しか無ければそれだけを使う(端の行)。
+                let up = y.checked_sub(comb_step)
+                    .filter(|&i| filled.get(i).copied().unwrap_or(false));
+                let dn = (y + comb_step < h)
+                    .then(|| y + comb_step)
+                    .filter(|&i| filled.get(i).copied().unwrap_or(false));
+                let chroma_ok = mag[y] > BURST_MIN && (svideo || up.is_some() || dn.is_some());
+                locked += chroma_ok as u32;
 
-        // 色相は「復調の位相基準をずらす」ことで入れる。ψ = 2π(n-ba)/8 - φ なので、
-        // th = ψ + hue は φ' = φ - hue と同じ。ライン毎に1回の回転で済む。
-        let (cp, sp) = {
-            let (c0, s0) = (cosp[y], sinp[y]);
-            if adj.hue_deg == 0.0 {
-                (c0, s0)
-            } else {
-                let h = adj.hue_deg.to_radians();
-                (c0 * h.cos() + s0 * h.sin(), s0 * h.cos() - c0 * h.sin())
-            }
-        };
-        let px = |i: usize, j: usize| cur[i * w + j];
-        // S端子では C(赤ch)がそのままクロマ。ミッドレベルクランプなので
-        // バックポーチを0点にする
-        let c_porch = if svideo {
-            let mut s = 0.0f32;
-            for n in pa..pb {
-                s += raw[(y * w + n) * 2 + 1] as f32;
-            }
-            s / (pb - pa).max(1) as f32
-        } else {
-            0.0
-        };
-        // この行で3次元が使えるか。履歴が3回以上書かれている行だけ。
-        // **S端子ではコムを一切使わない**(Y と C が最初から別々に来ている)
-        // ★**2フィールド前が180°反転していない行ではフレームコムを使わない。**
-        //
-        //   プログレッシブ(240p)の NTSC は1フィールド 262行なら 262×227.5 が整数で、
-        //   副搬送波の位相が毎フィールド同じ(263行でも2フィールド前は同位相)。
-        //   フレームコムの差を取るとクロマが消え、色が出ずに輝度へ市松が残った
-        //   (実機 2026-10-10、ジェネレータの「プログレッシブNTSC」。位相ズレ 179.6°)。
-        //   以前は ε が外れた行で位相補正を掛けないだけで、3次元は使い続けていた。
-        //   ε が測れて補正の範囲に入っている行だけを3次元にする。
-        let use3d = !svideo && frame_ok[y] && hist.as_ref().map_or(false, |hh| {
-            hh.hist_n.get(y).copied().unwrap_or(0) >= 3
-                && q2.is_some()
-        });
-        if use3d {
-            lines_3d += 1;
-            // 動き検出は **2 NTSCフレーム前**(位相0°)との差。1フレーム前だと
-            // 位相180°でクロマが差に出てしまい、色のある所が全部「動いている」
-            // ことになる(実測で副搬送波成分が 388 対 9315)。
-            let hh = hist.as_ref().unwrap();
-            // ★**2フレーム前の行を、サンプル位置の揺れの分ずらしてから比べる。**
-            //
-            //   DATACLK は HSYNC に PLL でロックしているので、行ごとに取り込み位置が
-            //   わずかに揺れる(実測 2026-10-09: 2フレーム前との差で標準偏差
-            //   0.10サンプル = 3.6ns、最大0.39。行の左半分と右半分で測ったずれの
-            //   相関は 0.977 で、**行の中ではほぼ一定**)。カラーバーの境界は
-            //   傾きが最大26コード/サンプルあるので、このずれだけで差が10コード
-            //   近くになり、静止しているのに「動いている」と判定されていた。
-            //   ずれを行ごとに最小二乗で求めて線形補間で戻すと、境界の動き量は
-            //   99%点で 4.8 → 1.7コードになった(平坦部と同じ)。
-            let prow = |n: usize| hh.p4[(y * w + n) * 2] as f32;
-            let sh = line_shift(|n| px(y, n), prow, aa.max(1), ab.min(w - 1));
-            for n in 0..w {
-                let t = n as f32 - sh;
-                let i0 = (t.floor().max(0.0) as usize).min(w - 1);
-                let i1 = (i0 + 1).min(w - 1);
-                let fr = (t - i0 as f32).clamp(0.0, 1.0);
-                let r = prow(i0) * (1.0 - fr) + prow(i1) * fr;
-                mot[n] = (px(y, n) - r).abs();
-            }
-            // 副搬送波1周期(8サンプル)で平均してノイズを落とす
-            boxcar(&mut mot, 8);
-            // フレームコムのクロマ。位相ズレ ε を 2サンプル遅延で戻す(3b参照)。
-            for n in 0..w {
-                c3buf[n] = (px(y, n) - q2.as_ref().unwrap()[y * w + n]) * 0.5;
-            }
-            let t = tan_half[y];
-            if t != 0.0 {
-                // 後ろから回すので c3buf[n-2] は**補正前の値**のまま使える
-                for n in (2..w).rev() {
-                    c3buf[n] -= c3buf[n - 2] * t;
+                // 色相は「復調の位相基準をずらす」ことで入れる。ψ = 2π(n-ba)/8 - φ なので、
+                // th = ψ + hue は φ' = φ - hue と同じ。ライン毎に1回の回転で済む。
+                let (cp, sp) = {
+                    let (c0, s0) = (cosp[y], sinp[y]);
+                    if adj.hue_deg == 0.0 {
+                        (c0, s0)
+                    } else {
+                        let h = adj.hue_deg.to_radians();
+                        (c0 * h.cos() + s0 * h.sin(), s0 * h.cos() - c0 * h.sin())
+                    }
+                };
+                let px = |i: usize, j: usize| cur[i * w + j];
+                // S端子では C(赤ch)がそのままクロマ。ミッドレベルクランプなので
+                // バックポーチを0点にする
+                let c_porch = if svideo {
+                    let mut s = 0.0f32;
+                    for n in pa..pb {
+                        s += raw[(y * w + n) * 2 + 1] as f32;
+                    }
+                    s / (pb - pa).max(1) as f32
+                } else {
+                    0.0
+                };
+                // この行で3次元が使えるか。履歴が3回以上書かれている行だけ。
+                // **S端子ではコムを一切使わない**(Y と C が最初から別々に来ている)
+                // ★**2フィールド前が180°反転していない行ではフレームコムを使わない。**
+                //
+                //   プログレッシブ(240p)の NTSC は1フィールド 262行なら 262×227.5 が整数で、
+                //   副搬送波の位相が毎フィールド同じ(263行でも2フィールド前は同位相)。
+                //   フレームコムの差を取るとクロマが消え、色が出ずに輝度へ市松が残った
+                //   (実機 2026-10-10、ジェネレータの「プログレッシブNTSC」。位相ズレ 179.6°)。
+                //   以前は ε が外れた行で位相補正を掛けないだけで、3次元は使い続けていた。
+                //   ε が測れて補正の範囲に入っている行だけを3次元にする。
+                let use3d = !svideo && frame_ok[y] && hist.as_ref().map_or(false, |hh| {
+                    hh.hist_n.get(y).copied().unwrap_or(0) >= 3
+                        && q2.is_some()
+                });
+                if use3d {
+                    lines_3d += 1;
+                    // 動き検出は **2 NTSCフレーム前**(位相0°)との差。1フレーム前だと
+                    // 位相180°でクロマが差に出てしまい、色のある所が全部「動いている」
+                    // ことになる(実測で副搬送波成分が 388 対 9315)。
+                    let hh = hist.as_ref().unwrap();
+                    // ★**2フレーム前の行を、サンプル位置の揺れの分ずらしてから比べる。**
+                    //
+                    //   DATACLK は HSYNC に PLL でロックしているので、行ごとに取り込み位置が
+                    //   わずかに揺れる(実測 2026-10-09: 2フレーム前との差で標準偏差
+                    //   0.10サンプル = 3.6ns、最大0.39。行の左半分と右半分で測ったずれの
+                    //   相関は 0.977 で、**行の中ではほぼ一定**)。カラーバーの境界は
+                    //   傾きが最大26コード/サンプルあるので、このずれだけで差が10コード
+                    //   近くになり、静止しているのに「動いている」と判定されていた。
+                    //   ずれを行ごとに最小二乗で求めて線形補間で戻すと、境界の動き量は
+                    //   99%点で 4.8 → 1.7コードになった(平坦部と同じ)。
+                    let prow = |n: usize| hh.p4[(y * w + n) * 2] as f32;
+                    let sh = line_shift(|n| px(y, n), prow, aa.max(1), ab.min(w - 1));
+                    for n in 0..w {
+                        let t = n as f32 - sh;
+                        let i0 = (t.floor().max(0.0) as usize).min(w - 1);
+                        let i1 = (i0 + 1).min(w - 1);
+                        let fr = (t - i0 as f32).clamp(0.0, 1.0);
+                        let r = prow(i0) * (1.0 - fr) + prow(i1) * fr;
+                        mot[n] = (px(y, n) - r).abs();
+                    }
+                    // 副搬送波1周期(8サンプル)で平均してノイズを落とす
+                    boxcar(&mut mot, 8);
+                    // フレームコムのクロマ。位相ズレ ε を 2サンプル遅延で戻す(3b参照)。
+                    for n in 0..w {
+                        c3buf[n] = (px(y, n) - q2.as_ref().unwrap()[y * w + n]) * 0.5;
+                    }
+                    let t = tan_half[y];
+                    if t != 0.0 {
+                        // 後ろから回すので c3buf[n-2] は**補正前の値**のまま使える
+                        for n in (2..w).rev() {
+                            c3buf[n] -= c3buf[n - 2] * t;
+                        }
+                    }
+                }
+                // ψ(n) = 2π(n-ba)/8 - φ を加法定理で展開する。cos/sin の値は
+                // n mod 8 の8点しかないので、積和2回で済む(8fsc の利点)。
+                let psi = |n: usize| {
+                    let k = (n + 8 - (ba & 7)) & 7;
+                    let (ck, sk) = (COS8[k], SIN8[k]);
+                    (ck * cp + sk * sp, sk * cp - ck * sp)
+                };
+                // --- 1) クロマをコムで取り出して復調する ---
+                //
+                // 上下2本を平均してから引くのは、片側だけだと C の重心が垂直方向に
+                // 半ラインずれるため。隣接ラインは副搬送波が180°反転しているので、
+                // 差で輝度が打ち消える。
+                for n in 0..w {
+                    // --- S端子: C(赤ch)がそのままクロマ。コムは一切要らない ---
+                    if svideo {
+                        let c = raw[(y * w + n) * 2 + 1] as f32 - c_porch;
+                        let (cos_psi, sin_psi) = psi(n);
+                        u[n] = -2.0 * c * cos_psi;
+                        v[n] = 2.0 * c * sin_psi;
+                        continue;
+                    }
+                    let mut acc = 0.0f32;
+                    let mut cnt = 0.0f32;
+                    if let Some(i) = up {
+                        acc += px(i, n);
+                        cnt += 1.0;
+                    }
+                    if let Some(i) = dn {
+                        acc += px(i, n);
+                        cnt += 1.0;
+                    }
+                    amix[n] = 1.0;
+                    if cnt == 0.0 {
+                        u[n] = 0.0;
+                        v[n] = 0.0;
+                        continue;
+                    }
+                    let mut c = (px(y, n) - acc / cnt) * 0.5;
+                    c2buf[n] = c;
+                    // 上下が両方あるときだけ縦の変化を測る。上と下は 2×コム間隔 離れて
+                    // いて副搬送波が同位相なので、差ではクロマが打ち消し、縦の変化だけ残る
+                    vdet[n] = match (up, dn) {
+                        (Some(i), Some(j)) => (px(i, n) - px(j, n)).abs(),
+                        _ => f32::INFINITY,
+                    };
+                    // --- 3次元(動き適応フレームコム) ---
+                    //
+                    // 静止部分では **フレームコムが原理的に正解**。同じライン番号の
+                    // 1 NTSCフレーム前は副搬送波が180°反転しているので、差が厳密に 2C に
+                    // なる(輝度がフレーム間で同一だから)。垂直方向を一切見ないので、
+                    // 2次元コムのように垂直detailで崩れない。
+                    //
+                    // 実測(静止部分でフレームコムを正解としたときの2次元コムの誤差):
+                    //     垂直detailが小さい所(下位50%)  0.79 IRE  ← ノイズ床以下
+                    //     垂直detailが大きい所(上位10%)  9.47 IRE  ← **12倍**
+                    //
+                    // 動いている所は成立しないので 2次元へ落とす(= 動き適応)。
+                    if use3d {
+                        let c3 = c3buf[n];
+                        // 動き量は mot[] に入れてある(2フレーム前との差を平滑したもの)
+                        let a = ((mot[n] - motion_core) / (motion_th - motion_core).max(1e-6))
+                            .clamp(0.0, 1.0);
+                        if a >= 0.5 { moving += 1; }
+                        n3 += 1;
+                        c = (1.0 - a) * c3 + a * c;
+                        amix[n] = a;
+                    }
+                    let (cos_psi, sin_psi) = psi(n);
+                    // バーストは -(B-Y) 軸(位相180°)。V の符号は実測で決めた
+                    // (既知の2色が回転では合わず、V反転で合った。ntsc.py のコメント参照)
+                    u[n] = -2.0 * c * cos_psi;
+                    v[n] = 2.0 * c * sin_psi;
+                }
+                if chroma_ok {
+                    boxcar(&mut u, CHROMA_LPF);
+                    boxcar(&mut v, CHROMA_LPF);
+                } else {
+                    u.iter_mut().for_each(|x| *x = 0.0);
+                    v.iter_mut().for_each(|x| *x = 0.0);
+                }
+                // --- 2) 輝度は「帯域制限した U,V を再変調して引いた残り」 ---
+                //
+                // ★**コムでもノッチでも駄目だった。** どちらも1本の線を3本に広げる:
+                //
+                //     Y の作り方        縦線への水平応答   横棒への垂直応答
+                //     x - C_comb        100% の1本  ○     25%/50%/25%  ×
+                //     x - C_notch       25%/50%/25% ×     100% の1本   ○
+                //     x - Ĉ (これ)      100% の1本  ○     100% の1本   ○
+                //
+                //   実機で最初に漢字の横棒が二重に見え、ノッチにしたら今度は鼻の縦線が
+                //   二重になった。**artefact を垂直から水平へ付け替えただけだった。**
+                //
+                // C = a·cos(ψ) + b·sin(ψ) と書けるとき、復調とLPFで a = -u, b = v が出る。
+                // 同じ基底で再変調すれば、実際に色として使う帯域制限されたクロマだけを引ける:
+                //     Ĉ = -u·cos(ψ) + v·sin(ψ)      Y = x - Ĉ
+                //
+                // 素通しになる理由:
+                //   - 垂直detailの無い縦線は C_comb = 0 なので Ĉ = 0 → Y = x
+                //   - fsc成分の無い横棒は 復調+LPF で u,v ≈ 0 → Ĉ ≈ 0 → Y = x
+                // つまり**「色として取り出した分だけ」を引く**ので、余計な広がりが出ない。
+                // ★S端子では **何も引かない**。Y が最初から独立に来ているので、
+                //   コムもノッチも再変調も要らず、輝度は送出されたまま素通しになる。
+                //   (クロスカラーもドットクロールも原理的に発生しない)
+                if svideo {
+                    for n in 0..w {
+                        yl[n] = px(y, n);
+                    }
+                } else {
+                    // ★**静止部分ではフレームコムのクロマ c3 をそのまま引く。**
+                    //
+                    //   再変調の Ĉ は帯域制限(CHROMA_LPF)したクロマなので、クロマが急に
+                    //   変わる所(カラーバーの色の境界)では信号のクロマと合わず、引き残しが
+                    //   輝度に出る。その残りは副搬送波なので**フレームごとに符号が反転し、
+                    //   30Hz でちらつく縞**になる(実機 2026-10-09。強さはクロマの変化量の
+                    //   順で、緑/マゼンタの境界が最大)。
+                    //   静止部分の c3 は境界まで正確なクロマで、x - c3 = (x + p2)/2 は
+                    //   前後2フレームの平均そのもの。水平にも垂直にも広がらないので、
+                    //   上の表の「x - Ĉ」の利点はそのまま残る。動いている所(amix → 1)は
+                    //   フレームコムが成立しないので従来どおり Ĉ を引く。
+                    for n in 0..w {
+                        let (cos_psi, sin_psi) = psi(n);
+                        let c_hat = -u[n] * cos_psi + v[n] * sin_psi;
+                        // ★**2次元でも、縦に変化の無い所は2次元コムのクロマを引く。**
+                        //
+                        //   上の表のとおり x - C_comb は横棒を上下に広げるが、それは縦の
+                        //   変化がある所の話。縦の変化が無い所(カラーバーの色の境界など)
+                        //   では C_comb は境界まで正確で、帯域制限した Ĉ を引くと境界に
+                        //   引き残しの縞が出る。プログレッシブ(240p)は3次元が使えない
+                        //   (progressive_ntsc_keeps_color)ので、インターレースで直した
+                        //   縞がそのまま出ていた(実機 2026-10-10)。縦の変化で両者を混ぜる。
+                        let c2d = if chroma_ok && vdet[n].is_finite() {
+                            let k = ((vdet[n] - vd_lo) / (vd_hi - vd_lo).max(1e-6)).clamp(0.0, 1.0);
+                            (1.0 - k) * c2buf[n] + k * c_hat
+                        } else {
+                            c_hat
+                        };
+                        let a = amix[n];
+                        let c_sub = if use3d && chroma_ok && a < 1.0 {
+                            (1.0 - a) * c3buf[n] + a * c2d
+                        } else {
+                            c2d
+                        };
+                        yl[n] = px(y, n) - c_sub;
+                    }
+                }
+                // --- 3) YUV → RGB ---
+                //
+                // 水平帰線区間(有効映像の外)は**黒にする**。実際のブラウン管はここで
+                // ビームが消えている。残しておくとバーストが緑の帯として管面に出る。
+                let o0 = (y - y0) * w * 4;
+                for n in 0..w.min(aa) {
+                    let o = o0 + n * 4;
+                    fb[o] = 0;
+                    fb[o + 1] = 0;
+                    fb[o + 2] = 0;
+                }
+                for n in ab.min(w)..w {
+                    let o = o0 + n * 4;
+                    fb[o] = 0;
+                    fb[o + 1] = 0;
+                    fb[o + 2] = 0;
+                }
+                for n in aa.min(w)..ab.min(w) {
+                    // コントラストは輝度と色差の両方へ、彩度は色差だけへ掛ける
+                    let yy = (yl[n] - porch) * inv_100ire * adj.contrast
+                        + adj.brightness * 0.01;
+                    let cgain = inv_100ire_c * adj.contrast * adj.saturation;
+                    let b_y = u[n] * cgain / 0.493;
+                    let r_y = v[n] * cgain / 0.877;
+                    let r = yy + r_y;
+                    let g = yy - 0.5094 * r_y - 0.1942 * b_y;
+                    let b = yy + b_y;
+                    let o = o0 + n * 4;
+                    let (r, g, b) = (to8(r), to8(g), to8(b));
+                    let (r, g, b) = match &gamma_lut {
+                        Some(t) => (t[r as usize], t[g as usize], t[b as usize]),
+                        None => (r, g, b),
+                    };
+                    fb[o] = r;
+                    fb[o + 1] = g;
+                    fb[o + 2] = b;
                 }
             }
-        }
-        // ψ(n) = 2π(n-ba)/8 - φ を加法定理で展開する。cos/sin の値は
-        // n mod 8 の8点しかないので、積和2回で済む(8fsc の利点)。
-        let psi = |n: usize| {
-            let k = (n + 8 - (ba & 7)) & 7;
-            let (ck, sk) = (COS8[k], SIN8[k]);
-            (ck * cp + sk * sp, sk * cp - ck * sp)
+            (locked, lines_3d, moving, n3)
         };
-        // --- 1) クロマをコムで取り出して復調する ---
-        //
-        // 上下2本を平均してから引くのは、片側だけだと C の重心が垂直方向に
-        // 半ラインずれるため。隣接ラインは副搬送波が180°反転しているので、
-        // 差で輝度が打ち消える。
-        for n in 0..w {
-            // --- S端子: C(赤ch)がそのままクロマ。コムは一切要らない ---
-            if svideo {
-                let c = raw[(y * w + n) * 2 + 1] as f32 - c_porch;
-                let (cos_psi, sin_psi) = psi(n);
-                u[n] = -2.0 * c * cos_psi;
-                v[n] = 2.0 * c * sin_psi;
-                continue;
-            }
-            let mut acc = 0.0f32;
-            let mut cnt = 0.0f32;
-            if let Some(i) = up {
-                acc += px(i, n);
-                cnt += 1.0;
-            }
-            if let Some(i) = dn {
-                acc += px(i, n);
-                cnt += 1.0;
-            }
-            amix[n] = 1.0;
-            if cnt == 0.0 {
-                u[n] = 0.0;
-                v[n] = 0.0;
-                continue;
-            }
-            let mut c = (px(y, n) - acc / cnt) * 0.5;
-            c2buf[n] = c;
-            // 上下が両方あるときだけ縦の変化を測る。上と下は 2×コム間隔 離れて
-            // いて副搬送波が同位相なので、差ではクロマが打ち消し、縦の変化だけ残る
-            vdet[n] = match (up, dn) {
-                (Some(i), Some(j)) => (px(i, n) - px(j, n)).abs(),
-                _ => f32::INFINITY,
-            };
-            // --- 3次元(動き適応フレームコム) ---
-            //
-            // 静止部分では **フレームコムが原理的に正解**。同じライン番号の
-            // 1 NTSCフレーム前は副搬送波が180°反転しているので、差が厳密に 2C に
-            // なる(輝度がフレーム間で同一だから)。垂直方向を一切見ないので、
-            // 2次元コムのように垂直detailで崩れない。
-            //
-            // 実測(静止部分でフレームコムを正解としたときの2次元コムの誤差):
-            //     垂直detailが小さい所(下位50%)  0.79 IRE  ← ノイズ床以下
-            //     垂直detailが大きい所(上位10%)  9.47 IRE  ← **12倍**
-            //
-            // 動いている所は成立しないので 2次元へ落とす(= 動き適応)。
-            if use3d {
-                let c3 = c3buf[n];
-                // 動き量は mot[] に入れてある(2フレーム前との差を平滑したもの)
-                let a = ((mot[n] - motion_core) / (motion_th - motion_core).max(1e-6))
-                    .clamp(0.0, 1.0);
-                if a >= 0.5 { moving += 1; }
-                n3 += 1;
-                c = (1.0 - a) * c3 + a * c;
-                amix[n] = a;
-            }
-            let (cos_psi, sin_psi) = psi(n);
-            // バーストは -(B-Y) 軸(位相180°)。V の符号は実測で決めた
-            // (既知の2色が回転では合わず、V反転で合った。ntsc.py のコメント参照)
-            u[n] = -2.0 * c * cos_psi;
-            v[n] = 2.0 * c * sin_psi;
-        }
-        if chroma_ok {
-            boxcar(&mut u, CHROMA_LPF);
-            boxcar(&mut v, CHROMA_LPF);
-        } else {
-            u.iter_mut().for_each(|x| *x = 0.0);
-            v.iter_mut().for_each(|x| *x = 0.0);
-        }
-        // --- 2) 輝度は「帯域制限した U,V を再変調して引いた残り」 ---
-        //
-        // ★**コムでもノッチでも駄目だった。** どちらも1本の線を3本に広げる:
-        //
-        //     Y の作り方        縦線への水平応答   横棒への垂直応答
-        //     x - C_comb        100% の1本  ○     25%/50%/25%  ×
-        //     x - C_notch       25%/50%/25% ×     100% の1本   ○
-        //     x - Ĉ (これ)      100% の1本  ○     100% の1本   ○
-        //
-        //   実機で最初に漢字の横棒が二重に見え、ノッチにしたら今度は鼻の縦線が
-        //   二重になった。**artefact を垂直から水平へ付け替えただけだった。**
-        //
-        // C = a·cos(ψ) + b·sin(ψ) と書けるとき、復調とLPFで a = -u, b = v が出る。
-        // 同じ基底で再変調すれば、実際に色として使う帯域制限されたクロマだけを引ける:
-        //     Ĉ = -u·cos(ψ) + v·sin(ψ)      Y = x - Ĉ
-        //
-        // 素通しになる理由:
-        //   - 垂直detailの無い縦線は C_comb = 0 なので Ĉ = 0 → Y = x
-        //   - fsc成分の無い横棒は 復調+LPF で u,v ≈ 0 → Ĉ ≈ 0 → Y = x
-        // つまり**「色として取り出した分だけ」を引く**ので、余計な広がりが出ない。
-        // ★S端子では **何も引かない**。Y が最初から独立に来ているので、
-        //   コムもノッチも再変調も要らず、輝度は送出されたまま素通しになる。
-        //   (クロスカラーもドットクロールも原理的に発生しない)
-        if svideo {
-            for n in 0..w {
-                yl[n] = px(y, n);
-            }
-        } else {
-            // ★**静止部分ではフレームコムのクロマ c3 をそのまま引く。**
-            //
-            //   再変調の Ĉ は帯域制限(CHROMA_LPF)したクロマなので、クロマが急に
-            //   変わる所(カラーバーの色の境界)では信号のクロマと合わず、引き残しが
-            //   輝度に出る。その残りは副搬送波なので**フレームごとに符号が反転し、
-            //   30Hz でちらつく縞**になる(実機 2026-10-09。強さはクロマの変化量の
-            //   順で、緑/マゼンタの境界が最大)。
-            //   静止部分の c3 は境界まで正確なクロマで、x - c3 = (x + p2)/2 は
-            //   前後2フレームの平均そのもの。水平にも垂直にも広がらないので、
-            //   上の表の「x - Ĉ」の利点はそのまま残る。動いている所(amix → 1)は
-            //   フレームコムが成立しないので従来どおり Ĉ を引く。
-            for n in 0..w {
-                let (cos_psi, sin_psi) = psi(n);
-                let c_hat = -u[n] * cos_psi + v[n] * sin_psi;
-                // ★**2次元でも、縦に変化の無い所は2次元コムのクロマを引く。**
-                //
-                //   上の表のとおり x - C_comb は横棒を上下に広げるが、それは縦の
-                //   変化がある所の話。縦の変化が無い所(カラーバーの色の境界など)
-                //   では C_comb は境界まで正確で、帯域制限した Ĉ を引くと境界に
-                //   引き残しの縞が出る。プログレッシブ(240p)は3次元が使えない
-                //   (progressive_ntsc_keeps_color)ので、インターレースで直した
-                //   縞がそのまま出ていた(実機 2026-10-10)。縦の変化で両者を混ぜる。
-                let c2d = if chroma_ok && vdet[n].is_finite() {
-                    let k = ((vdet[n] - vd_lo) / (vd_hi - vd_lo).max(1e-6)).clamp(0.0, 1.0);
-                    (1.0 - k) * c2buf[n] + k * c_hat
-                } else {
-                    c_hat
-                };
-                let a = amix[n];
-                let c_sub = if use3d && chroma_ok && a < 1.0 {
-                    (1.0 - a) * c3buf[n] + a * c2d
-                } else {
-                    c2d
-                };
-                yl[n] = px(y, n) - c_sub;
-            }
-        }
-        // --- 3) YUV → RGB ---
-        //
-        // 水平帰線区間(有効映像の外)は**黒にする**。実際のブラウン管はここで
-        // ビームが消えている。残しておくとバーストが緑の帯として管面に出る。
-        let o0 = y * w * 4;
-        for n in 0..w.min(aa) {
-            let o = o0 + n * 4;
-            fb[o] = 0;
-            fb[o + 1] = 0;
-            fb[o + 2] = 0;
-        }
-        for n in ab.min(w)..w {
-            let o = o0 + n * 4;
-            fb[o] = 0;
-            fb[o + 1] = 0;
-            fb[o + 2] = 0;
-        }
-        for n in aa.min(w)..ab.min(w) {
-            // コントラストは輝度と色差の両方へ、彩度は色差だけへ掛ける
-            let yy = (yl[n] - porch) * inv_100ire * adj.contrast
-                + adj.brightness * 0.01;
-            let cgain = inv_100ire_c * adj.contrast * adj.saturation;
-            let b_y = u[n] * cgain / 0.493;
-            let r_y = v[n] * cgain / 0.877;
-            let r = yy + r_y;
-            let g = yy - 0.5094 * r_y - 0.1942 * b_y;
-            let b = yy + b_y;
-            let o = o0 + n * 4;
-            let (r, g, b) = (to8(r), to8(g), to8(b));
-            let (r, g, b) = match &gamma_lut {
-                Some(t) => (t[r as usize], t[g as usize], t[b as usize]),
-                None => (r, g, b),
-            };
-            fb[o] = r;
-            fb[o + 1] = g;
-            fb[o + 2] = b;
-        }
-    }
+        let mut chunks = fb[..fb_len].chunks_mut(rows_per * w * 4).enumerate();
+        let first = chunks.next();
+        let handles: Vec<_> = chunks
+            .map(|(ci, fb)| sc.spawn(move || {
+                crate::receiver::raise_thread_qos();
+                work(ci, fb)
+            }))
+            .collect();
+        let r0 = first.map_or((0, 0, 0, 0), |(ci, fb)| work(ci, fb));
+        handles
+            .into_iter()
+            .map(|t| t.join().expect("復調のスレッドが落ちた"))
+            .fold(r0, |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3))
+    });
     Info {
         lines_locked: locked,
         comb_step,

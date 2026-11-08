@@ -26,7 +26,7 @@ use crate::protocol::{self as proto, Packet};
 ///   組立のスレッドが時間の約7割を E コアで走り、組立の遅延が 540ms まで
 ///   溜まった(Time Profiler)。iOS も同じ API なので Apple 全体で効かせる。
 #[cfg(target_vendor = "apple")]
-fn raise_thread_qos() {
+pub(crate) fn raise_thread_qos() {
     // QOS_CLASS_USER_INTERACTIVE
     unsafe {
         libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
@@ -37,7 +37,7 @@ fn raise_thread_qos() {
 /// THREAD_PRIORITY_URGENT_DISPLAY(画面の更新に使う優先度)。アプリ自身の
 /// スレッドなので権限は要らない。失敗しても既定の優先度で動くだけ
 #[cfg(target_os = "android")]
-fn raise_thread_qos() {
+pub(crate) fn raise_thread_qos() {
     // Linux では PRIO_PROCESS + 0 が「呼んだスレッド」を指す
     unsafe {
         libc::setpriority(libc::PRIO_PROCESS, 0, -8);
@@ -45,7 +45,11 @@ fn raise_thread_qos() {
 }
 
 #[cfg(not(any(target_vendor = "apple", target_os = "android")))]
-fn raise_thread_qos() {}
+pub(crate) fn raise_thread_qos() {}
+
+/// フレーム全体を走査する解析(noise/abox/tune/weave)を何フレームに1回やるか。
+/// デスクトップは毎フレーム、モバイルは CPU が足りないので4フレームに1回
+const METER_EVERY: u32 = if cfg!(any(target_os = "ios", target_os = "android")) { 4 } else { 1 };
 
 pub struct Config {
     pub port: u16,
@@ -110,6 +114,8 @@ pub struct StatsSnapshot {
     pub queue_drops: u64,
     pub orphan_lines: u64,
     pub frames: u64,
+    /// 復調が追いつかず、復調せずに飛ばしたフィールドの数
+    pub decode_skipped: u64,
     /// 暗部でフレーム間に値が変わった画素の割合[%](=点状ノイズの量)
     pub noise_flicker: f32,
     /// そのずれの平均振幅[/255]
@@ -671,6 +677,8 @@ pub struct Shared {
     /// **切り分けの道具。** 「二重に見える」等がデコーダ由来か、それより前(信号や
     /// 送出側)かを、絵を見るだけで分けられる。None なら変更なし。
     pub raw_view: Mutex<Option<bool>>,
+    /// 3次元コムを使うか(assembler の comb3d)。UI が毎フレーム書く
+    pub comb3d: AtomicBool,
     /// 表示するフィールド。0=織り込み / 1=偶数スロット / 2=奇数スロット。
     /// 織り込みの影響を外して1枚だけ見るための切り分け用。None なら変更なし。
     pub field_view: Mutex<Option<u8>>,
@@ -965,6 +973,10 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut audio = open_audio(&cfg, &shared, audio_src, audio_dev.as_deref());
     let mut last_dev_retry = Instant::now();
     let mut asm = FrameAssembler::new();
+    // コンポジットの復調は常駐スレッドで行う(受信を止めないため)
+    asm.enable_decode_worker();
+    // 復調へ回したフィールドの到着時刻。復調済みのフレームを受け取ったときに付ける
+    let mut decode_edges = None;
     // ラインの到着時刻を追う(描画遅延の基準)
     let mut line_clock = crate::latency::LineClock::default();
     asm.set_decay(cfg.decay);
@@ -986,6 +998,8 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut publish_wait_us = 0u64;
     let mut publish_wait_max_us = 0u64;
     let mut noise = NoiseMeter::default();
+    // 解析の間引き(下の METER_EVERY)
+    let mut meter_tick = 0u32;
     let mut abox = ActiveBox::default();
     let mut tune = TuneMeter::default();
     let mut weave = WeaveMeter::default();
@@ -1353,9 +1367,22 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         }
         asm.dot_a_milli = shared.dot_a_milli.load(Ordering::Relaxed);
         asm.ycbcr = shared.ycbcr.load(Ordering::Relaxed);
+        asm.comb3d = shared.comb3d.load(Ordering::Relaxed);
         let is_line = n >= 3 && buf[2] == proto::TYPE_LINE;
         let fed = asm.feed(&buf[..n]);
-        let edges = if is_line { line_clock.on_line(rx_t, fed.is_some()) } else { None };
+        let field_end = asm.take_field_end();
+        let edges = if is_line { line_clock.on_line(rx_t, fed.is_some() || field_end) } else { None };
+        if field_end {
+            decode_edges = edges;
+        }
+        // 復調済みのフレームは次のパケットの処理で受け取る(遅れは1パケット分)
+        let (fed, edges) = match fed {
+            Some(f) => (Some(f), edges),
+            None => match asm.take_decoded() {
+                Some(f) => (Some(f), decode_edges.take()),
+                None => (None, None),
+            },
+        };
         if let Some(mut frame) = fed {
             frames_since += 1;
             *shared.mode.lock().unwrap() = asm.mode.clone();
@@ -1381,10 +1408,17 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             //   リフレッシュに2枚入ったフレームが捨てられていた(全画面で約5%)。
             //   統計が1フレーム遅れるだけなので、計測の意味は変わらない。
             if let Some(old) = old {
-                noise.feed(&old.rgba);
-                abox.feed(&old.rgba, old.width, old.height);
-                tune.feed(&old.rgba, old.width, old.height);
-                weave.feed(&old.rgba, old.width, old.height);
+                // ★**モバイルでは4フレームに1回だけ測る。** 4つともフレーム全体を
+                //   走査するので、Pixel 10 で 8fsc のコンポジットでは受信ループの
+                //   時間の約3割を使い、受信キューから溢れる原因になっていた。
+                //   表示用の統計なので間引いても困らない
+                meter_tick = meter_tick.wrapping_add(1);
+                if meter_tick % METER_EVERY == 0 {
+                    noise.feed(&old.rgba);
+                    abox.feed(&old.rgba, old.width, old.height);
+                    tune.feed(&old.rgba, old.width, old.height);
+                    weave.feed(&old.rgba, old.width, old.height);
+                }
                 asm.recycle(old.rgba);
             }
         }
@@ -1487,6 +1521,7 @@ fn tick_stats(
         queue_drops: shared.queue_drops.load(Ordering::Relaxed),
         orphan_lines: asm.stats.orphan_lines,
         frames: asm.stats.frames,
+        decode_skipped: asm.stats.decode_skipped,
         noise_flicker: noise.flicker,
         noise_level: noise.level,
         active_x: abox.x,
