@@ -649,6 +649,8 @@ pub struct Shared {
     /// **切り分けの道具。** 「二重に見える」等がデコーダ由来か、それより前(信号や
     /// 送出側)かを、絵を見るだけで分けられる。None なら変更なし。
     pub raw_view: Mutex<Option<bool>>,
+    /// 3次元コムを使うか(assembler の comb3d)。UI が毎フレーム書く
+    pub comb3d: AtomicBool,
     /// 表示するフィールド。0=織り込み / 1=偶数スロット / 2=奇数スロット。
     /// 織り込みの影響を外して1枚だけ見るための切り分け用。None なら変更なし。
     pub field_view: Mutex<Option<u8>>,
@@ -1318,6 +1320,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         }
         asm.dot_a_milli = shared.dot_a_milli.load(Ordering::Relaxed);
         asm.ycbcr = shared.ycbcr.load(Ordering::Relaxed);
+        asm.comb3d = shared.comb3d.load(Ordering::Relaxed);
         let is_line = n >= 3 && buf[2] == proto::TYPE_LINE;
         let fed = asm.feed(&buf[..n]);
         let edges = if is_line { line_clock.on_line(rx_t, fed.is_some()) } else { None };

@@ -947,6 +947,8 @@ struct Session {
     tune_frame_skip: u8,
     /// 間引きをフィールド単位にする(settings::Settings::frame_skip_fields)
     frame_skip_fields: bool,
+    /// コンポジットの3次元コム(settings::Settings::ntsc_comb3d)
+    ntsc_comb3d: bool,
     /// 間引きを書いた相手のボード。**掴んだボードが変わったら書き直す**
     /// (apply_frame_skip)。ボードが落ちたら外す(電源で 0 に戻るため)
     skip_applied_to: Option<[u8; 6]>,
@@ -1259,6 +1261,7 @@ impl Session {
             tune_full_line: cfg.tune_full_line,
             tune_frame_skip: cfg.tune_frame_skip,
             frame_skip_fields: cfg.frame_skip_fields,
+            ntsc_comb3d: cfg.ntsc_comb3d,
             skip_applied_to: None,
             win_applied: None,
             board_frame_skip: None,
@@ -1646,6 +1649,7 @@ impl Session {
             tune_full_line: self.tune_full_line,
             tune_frame_skip: self.tune_frame_skip,
             frame_skip_fields: self.frame_skip_fields,
+            ntsc_comb3d: self.ntsc_comb3d,
             tune_phase: self.tune_phase,
             source_profile: self.source_profile.clone(),
         }
@@ -3632,6 +3636,17 @@ impl Session {
                     *self.shared.raw_view.lock().unwrap() = Some(v);
                 }
             }
+            // 3次元コム。前後のフレームを使うので静止部分の色が綺麗になるが重い。
+            // モバイルの CPU では復調が追いつかず受信キューから溢れることがある
+            if ui.checkbox(&mut self.ntsc_comb3d, "3次元コム")
+                .on_hover_text(
+                    "コンポジットの Y/C 分離に前後のフレームも使う。\n\
+                     静止部分の色のにじみが減るが CPU を多く使う。\n\
+                     復調が追いつかない(遅延が大きい・queue drops が増える)ときは外す")
+                .changed()
+            {
+                self.mark_settings_dirty();
+            }
             // 片方のフィールドだけ見る。**織り込みの影響を外すための道具。**
             // 縦線が二重に見えるとき、2枚のフィールドがずれているのか、1枚の中で
             // 既に二重なのかを分けられる。選んだ側を隣のスロットへ複製して全高で出す
@@ -5320,6 +5335,7 @@ impl Session {
             self.dot_a_milli,
             std::sync::atomic::Ordering::Relaxed,
         );
+        self.shared.comb3d.store(self.ntsc_comb3d, std::sync::atomic::Ordering::Relaxed);
         // コンポーネントなら RGB888 の3チャンネルを Pr/Y/Pb として RGB に直させる
         self.shared.ycbcr.store(
             profiles::by_key(&self.source_profile).is_some_and(|p| p.ycbcr),
