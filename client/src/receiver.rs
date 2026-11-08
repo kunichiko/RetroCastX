@@ -99,6 +99,8 @@ pub struct StatsSnapshot {
     pub queue_drops: u64,
     pub orphan_lines: u64,
     pub frames: u64,
+    /// 復調が追いつかず、復調せずに飛ばしたフィールドの数
+    pub decode_skipped: u64,
     /// 暗部でフレーム間に値が変わった画素の割合[%](=点状ノイズの量)
     pub noise_flicker: f32,
     /// そのずれの平均振幅[/255]
@@ -934,6 +936,10 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut audio = open_audio(&cfg, &shared, audio_src, audio_dev.as_deref());
     let mut last_dev_retry = Instant::now();
     let mut asm = FrameAssembler::new();
+    // コンポジットの復調は常駐スレッドで行う(受信を止めないため)
+    asm.enable_decode_worker();
+    // 復調へ回したフィールドの到着時刻。復調済みのフレームを受け取ったときに付ける
+    let mut decode_edges = None;
     // ラインの到着時刻を追う(描画遅延の基準)
     let mut line_clock = crate::latency::LineClock::default();
     asm.set_decay(cfg.decay);
@@ -1329,7 +1335,19 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         asm.comb3d = shared.comb3d.load(Ordering::Relaxed);
         let is_line = n >= 3 && buf[2] == proto::TYPE_LINE;
         let fed = asm.feed(&buf[..n]);
-        let edges = if is_line { line_clock.on_line(rx_t, fed.is_some()) } else { None };
+        let field_end = asm.take_field_end();
+        let edges = if is_line { line_clock.on_line(rx_t, fed.is_some() || field_end) } else { None };
+        if field_end {
+            decode_edges = edges;
+        }
+        // 復調済みのフレームは次のパケットの処理で受け取る(遅れは1パケット分)
+        let (fed, edges) = match fed {
+            Some(f) => (Some(f), edges),
+            None => match asm.take_decoded() {
+                Some(f) => (Some(f), decode_edges.take()),
+                None => (None, None),
+            },
+        };
         if let Some(mut frame) = fed {
             frames_since += 1;
             *shared.mode.lock().unwrap() = asm.mode.clone();
@@ -1468,6 +1486,7 @@ fn tick_stats(
         queue_drops: shared.queue_drops.load(Ordering::Relaxed),
         orphan_lines: asm.stats.orphan_lines,
         frames: asm.stats.frames,
+        decode_skipped: asm.stats.decode_skipped,
         noise_flicker: noise.flicker,
         noise_level: noise.level,
         active_x: abox.x,

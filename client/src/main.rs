@@ -27,6 +27,7 @@
 
 mod appicon;
 mod assembler;
+mod decode_worker;
 mod awake;
 mod audio;
 mod bezel;
@@ -444,9 +445,9 @@ fn run_headless(
             .map(|m| format!("{}x{}", m.hactive, m.vactive))
             .unwrap_or_else(|| "no mode".into());
         println!(
-            "{dims}  {:.1} fps  {:.1} Mbps  frames={} pkts={} lost={} qdrop={} orphan={}",
+            "{dims}  {:.1} fps  {:.1} Mbps  frames={} pkts={} lost={} qdrop={} orphan={} skipped={}",
             s.fps, s.mbps, s.frames, s.packets, s.lost_packets, s.queue_drops,
-            s.orphan_lines
+            s.orphan_lines, s.decode_skipped
         );
         // 音声。**枯渇の切り分け表示を GUI を開かずに読めるように。**
         if let Some(a) = shared.audio.lock().unwrap().clone() {
@@ -5589,6 +5590,10 @@ impl Session {
                 theme::kv(ui, "rate", format!("{:.1} fps  {:.1} Mbps", s.fps, s.mbps));
                 if self.show_advanced {
                     theme::kv(ui, "frames", format!("{}", s.frames));
+                    // 復調(コンポジット)が追いつかず、飛ばしたフィールドの数
+                    if s.decode_skipped > 0 {
+                        theme::kv(ui, "skipped", format!("{}", s.decode_skipped));
+                    }
                 }
                 // lost はOSのUDPバッファ溢れ、qdrop は組立が追いつかず受信スレッドの
                 // キューが満杯で捨てた分。分けて出さないとどちらが詰まっているのか
