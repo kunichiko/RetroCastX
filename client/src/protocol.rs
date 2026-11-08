@@ -24,13 +24,35 @@ pub const PIXFMT_RGB565: u8 = 2;
 /// 推定できないので、復調するには8bitのまま運ぶ必要がある。
 /// 2B/px は RGB555 と同じなので断片化もバッファ確保も共通。
 pub const PIXFMT_YC8: u8 = 3;
+/// コンポーネント用 2B/px。2画素で Y0 Cb0 Y1 Cr0(色差は偶数画素の値)。
+///
+/// RGB888 の 2/3 の大きさで、送出範囲の固定(0x38/0x39)と組み合わせると
+/// 480i の1ラインが1パケット(724画素)に収まる。8bit のまま運ぶので
+/// RGB555 のような階調の段差は出ない。受信側は RGB888(Pr/Y/Pb)に展開してから
+/// 既存のコンポーネント処理へ渡す。ボードの caps に CAP_COMPACT があるときだけ使う
+pub const PIXFMT_YCC422: u8 = 4;
+/// コンポジット用 1B/px。緑ch(CVBS)だけ。
+///
+/// YC8 の赤ch(S端子の C)はコンポジットでは未接続でほぼ0なので、捨てても絵は
+/// 変わらない。1ラインが3パケット→2パケットに減る。受信側は YC8 に展開してから
+/// 既存の復調へ渡す。ボードの caps に CAP_COMPACT があるときだけ使う
+pub const PIXFMT_CVBS8: u8 = 5;
+
+/// ANNOUNCE caps bit1: YCC422 / CVBS8、送出範囲の固定、間引きの対モードに対応
+pub const CAP_COMPACT: u16 = 1 << 1;
 
 pub fn bytes_per_px(pixfmt: u8) -> Option<usize> {
     match pixfmt {
         PIXFMT_RGB888 => Some(3),
-        PIXFMT_RGB555 | PIXFMT_RGB565 | PIXFMT_YC8 => Some(2),
+        PIXFMT_RGB555 | PIXFMT_RGB565 | PIXFMT_YC8 | PIXFMT_YCC422 => Some(2),
+        PIXFMT_CVBS8 => Some(1),
         _ => None,
     }
+}
+
+/// 生の ADC 値を運ぶ形式(コンポジット/S端子の復調に回すもの)か
+pub fn is_raw8(pixfmt: u8) -> bool {
+    matches!(pixfmt, PIXFMT_YC8 | PIXFMT_CVBS8)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -271,6 +293,11 @@ pub const CFG_KEY_IDENT_SAVE: u16 = 0x004C;
 pub const CFG_KEY_IDENT_EE: u16 = 0x004D;
 
 pub const CFG_KEY_FULL_LINE: u16 = 0x0030;
+/// 送出範囲の固定: 開始画素 / 画素数(0 なら従来の「黒でない範囲」の自動判定)。
+/// コンポーネントは色差の無信号が中間値で黒にならず、範囲がライン全体に広がる
+/// ので、有効画素とバックポーチの終わりだけを決め打ちで送る。CAP_COMPACT が要る
+pub const CFG_KEY_WIN_START: u16 = 0x0038;
+pub const CFG_KEY_WIN_LEN: u16 = 0x0039;
 /// フレーム間引き。0=毎フレーム / 1=2フレームに1回 / 2=3回に1回…
 ///
 /// 低スペックな受信機で取りこぼす場合の保険。映像(LINE)だけを間引き、音声は

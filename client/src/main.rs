@@ -74,6 +74,8 @@ fn pixfmt_name(f: u8) -> &'static str {
         protocol::PIXFMT_RGB555 => "RGB555 (2B/px)",
         protocol::PIXFMT_RGB565 => "RGB565 (2B/px)",
         protocol::PIXFMT_YC8 => "YC8 (2B/px)",
+        protocol::PIXFMT_YCC422 => "YCC422 (2B/px)",
+        protocol::PIXFMT_CVBS8 => "CVBS8 (1B/px)",
         _ => "unknown",
     }
 }
@@ -948,6 +950,8 @@ struct Session {
     /// 間引きを書いた相手のボード。**掴んだボードが変わったら書き直す**
     /// (apply_frame_skip)。ボードが落ちたら外す(電源で 0 に戻るため)
     skip_applied_to: Option<[u8; 6]>,
+    /// 送出範囲の固定を書いた相手と値(apply_send_window)
+    win_applied: Option<([u8; 6], (u32, u32))>,
     /// ボードから読み戻した間引きの値(CONFIG 0x35 の生値)。対モード(bit4)に
     /// 対応していないゲートウェアは bit4 を返さないので、その判別に使う
     board_frame_skip: Option<u32>,
@@ -1256,6 +1260,7 @@ impl Session {
             tune_frame_skip: cfg.tune_frame_skip,
             frame_skip_fields: cfg.frame_skip_fields,
             skip_applied_to: None,
+            win_applied: None,
             board_frame_skip: None,
             tune_phase: cfg.tune_phase,
             raw_view: false,
@@ -1715,12 +1720,12 @@ impl Session {
                         && have.is_some_and(|h| p.pixfmt_ok(h));
                     let mut n = 0;
                     let mut wrote: Vec<(u16, u32)> = Vec::new();
-                    for (k, v, _) in p.input_regs {
-                        if keep_fmt && *k == protocol::CFG_KEY_PIXFMT {
+                    for (k, v) in self.input_regs_for_board(p) {
+                        if keep_fmt && k == protocol::CFG_KEY_PIXFMT {
                             continue;
                         }
-                        send.push((*k, *v));
-                        wrote.push((*k, *v));
+                        send.push((k, v));
+                        wrote.push((k, v));
                         n += 1;
                     }
                     // ★書いた値で Tune欄の表示も更新する。ここを忘れると
@@ -2514,7 +2519,7 @@ impl Session {
             return true;
         }
         matches!(self.shared.mode.lock().unwrap().as_ref(),
-                 Some(m) if m.pixfmt == protocol::PIXFMT_YC8)
+                 Some(m) if protocol::is_raw8(m.pixfmt))
     }
 
     fn set_pll(&mut self, new: u32) {
@@ -2672,7 +2677,11 @@ impl Session {
             self.input_regs_autowritten = false;
             return;
         };
-        if p.pixfmt_ok(have) {
+        // 形式が絵になっていても、帯域を減らせる形式に替えられるなら書く
+        // (CAP_COMPACT を持つボードで、コンポーネントが RGB888 のまま流れている等)
+        let want = p.pixfmt_for(self.board_compact());
+        let ok = p.pixfmt_ok(have) && (!p.needs_exact_pixfmt() || want == Some(have));
+        if ok {
             self.input_regs_autowritten = false;
             return;
         }
@@ -2680,15 +2689,61 @@ impl Session {
             return;
         }
         self.input_regs_autowritten = true;
-        for (k, v, _) in p.input_regs {
-            self.send_cfg(*k, *v);
-            self.set_tune_mirror(*k, *v);
+        for (k, v) in self.input_regs_for_board(p) {
+            self.send_cfg(k, v);
+            self.set_tune_mirror(k, v);
         }
         // ★頼まれていないのにボードのレジスタを書き換えた。黙ってやるのは
         //   良くないので必ず伝える(ただし数秒で消す。状態ではなく出来事なので)
         self.toasts.notice(format!(
             "伝送形式が食い違っていたため、{} の入力設定を自動で書き込みました ({}件)",
             p.label, p.input_regs.len()));
+    }
+
+    /// 掴んでいるボードが帯域を減らす形式(CAP_COMPACT)に対応しているか
+    fn board_compact(&self) -> bool {
+        let Some(mac) = self.claimed() else { return false };
+        self.shared.boards.lock().unwrap().get(&mac)
+            .is_some_and(|b| b.caps & protocol::CAP_COMPACT != 0)
+    }
+
+    /// 映像ソースの入力設定を、掴んでいるボードに合わせて返す。
+    ///
+    /// ★**新しい形式は CAP_COMPACT を持つボードにだけ書く。** 古いゲートウェアに
+    ///   YCC422 や CVBS8 を書くと、知らない形式として RGB555 の詰め方で送られて
+    ///   絵が壊れる。プロファイルの値(YC8 / RGB888)は古いボード向けに残してある
+    fn input_regs_for_board(&self, p: &profiles::Profile) -> Vec<(u16, u32)> {
+        let fmt = p.pixfmt_for(self.board_compact());
+        p.input_regs
+            .iter()
+            .map(|(k, v, _)| match (*k, fmt) {
+                (protocol::CFG_KEY_PIXFMT, Some(f)) => (*k, f as u32),
+                _ => (*k, *v),
+            })
+            .collect()
+    }
+
+    /// 送出範囲の固定(0x38/0x39)を掴んだボードへ書く。
+    ///
+    /// コンポーネントのときだけ範囲を固定し、それ以外では必ず解除する。
+    /// ★**解除し忘れると RGB の絵が切り取られる。** ボードの設定は持ち主や映像
+    ///   ソースが替わっても残るので、間引きと同じく掴むたび・ソースを替えるたびに
+    ///   書く。古いゲートウェア(CAP_COMPACT なし)には書かない(知らないキー)
+    fn apply_send_window(&mut self) {
+        let up = self.shared.mode.lock().unwrap().is_some();
+        let own = if up { self.claimed() } else { None };
+        let Some(mac) = own.filter(|_| self.board_compact()) else {
+            self.win_applied = None;
+            return;
+        };
+        let want = profiles::by_key(&self.source_profile)
+            .and_then(|p| p.send_window())
+            .unwrap_or((0, 0));
+        if self.win_applied != Some((mac, want)) {
+            self.win_applied = Some((mac, want));
+            self.send_cfg(protocol::CFG_KEY_WIN_START, want.0);
+            self.send_cfg(protocol::CFG_KEY_WIN_LEN, want.1);
+        }
     }
 
     /// いまの有効映像が何µsか。管面の掃引時間を決める基準になる
@@ -5326,6 +5381,8 @@ impl Session {
         self.autowrite_input_regs();
         // 間引きはこの Viewer の設定。掴んだボードへ書く(パネルの外。隠していても効く)
         self.apply_frame_skip();
+        // コンポーネントは送出範囲を固定して1ラインを1パケットに収める
+        self.apply_send_window();
         // 同じくパネルの外。映像が「自動」のときの音声はボードの入力系統に従う
         self.follow_board_input_audio();
 
@@ -5581,7 +5638,7 @@ impl Session {
                         "NTSC 白黒(バーストなし) 黒レベルのみ校正",
                     );
                 } else if matches!(self.shared.mode.lock().unwrap().as_ref(),
-                                   Some(m) if m.pixfmt == protocol::PIXFMT_YC8) {
+                                   Some(m) if protocol::is_raw8(m.pixfmt)) {
                     ui.colored_label(
                         theme::AMBER,
                         "NTSC復調 未ロック(Yのグレースケール表示)",
@@ -5847,12 +5904,19 @@ impl Session {
                     // ゲートウェアは実行時に切り替えるので再ビルドは要らない。
                     ui.monospace("伝送形式");
                     let mut f = self.tune_pixfmt;
+                    // 帯域を減らす形式(YCC422 / CVBS8)は対応しているボードにだけ出す
+                    let compact = self.board_compact();
                     egui::ComboBox::from_id_salt("pixfmt")
                         .selected_text(pixfmt_name(f as u8))
                         .show_ui(ui, |ui| {
                             for v in [protocol::PIXFMT_RGB888, protocol::PIXFMT_RGB555,
                                       protocol::PIXFMT_YC8] {
                                 ui.selectable_value(&mut f, v as i32, pixfmt_name(v));
+                            }
+                            if compact {
+                                for v in [protocol::PIXFMT_YCC422, protocol::PIXFMT_CVBS8] {
+                                    ui.selectable_value(&mut f, v as i32, pixfmt_name(v));
+                                }
                             }
                         });
                     if f != self.tune_pixfmt {
