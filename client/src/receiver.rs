@@ -639,6 +639,13 @@ pub struct Shared {
     /// 指定値そのものではない。ユニキャスト指定で何も返ってこない場合は
     /// ブロードキャストへ切り替えるので、そのときはここが変わる。
     pub sub_dest: Mutex<String>,
+    /// 手入力のボードIP(モバイルの「ボードのIP」欄)。空でなければ SUBSCRIBE を
+    /// **ブロードキャストに加えて**ここへも送る。
+    ///
+    /// ★**iOS の逃げ道。** iOS はマルチキャストの許可(entitlement)が無いと
+    ///   ブロードキャストを送れないので、ユニキャストでしか届かない。
+    /// ★**置き換えずに足す。** 置き換えると他のボードの発見が止まる。
+    pub extra_dest: Mutex<Option<String>>,
     /// インターレース時の残光(前フィールドの行をどれだけ残すか)。
     /// UIから実行時に変えられるよう Shared 経由で渡す。None なら起動時の値のまま。
     pub interlace_decay: Mutex<Option<f32>>,
@@ -880,10 +887,25 @@ fn pick_targets(
 }
 
 /// 宛先すべてへ送り、成功した数を返す。0 なら1つも出せていない。
-fn send_all(sock: &UdpSocket, port: u16, targets: &[String], pkt: &[u8]) -> usize {
+/// SUBSCRIBE が1つも出せなかったときの案内。原因が OS ごとに違う
+#[cfg(not(target_os = "ios"))]
+const SEND_FAIL_HINT: &str = "VPN が既定経路を握っていると限定ブロードキャストが送れません。\n\
+                              有線/Wi-Fi のNICが有効か、ボードと同じL2にいるかを確認してください";
+/// ★**iOS はブロードキャストの送信に Apple の許可(マルチキャストの entitlement)が
+///   要る。** 無いと送信自体が失敗するので、ボードのIPを入れてもらう。
+///   ローカルネットワークの許可を拒否した場合も同じ症状になる。
+#[cfg(target_os = "ios")]
+const SEND_FAIL_HINT: &str = "「ボードのIP」にボードのアドレスを入れてください。\n\
+                              設定 > プライバシー > ローカルネットワーク で\n\
+                              RetroCast X が許可されているかも確認してください";
+
+fn send_all(
+    sock: &UdpSocket, port: u16, targets: &[String], extra: Option<&str>, pkt: &[u8],
+) -> usize {
     let mut ok = 0usize;
-    for t in targets {
-        if sock.send_to(pkt, (t.as_str(), port)).is_ok() {
+    let extra = extra.filter(|e| !targets.iter().any(|t| t == e));
+    for t in targets.iter().map(String::as_str).chain(extra) {
+        if sock.send_to(pkt, (t, port)).is_ok() {
             ok += 1;
         }
     }
@@ -1003,7 +1025,8 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             *shared.sub_dest.lock().unwrap() = broadcast.clone();
             last_subscribe = None;   // すぐ送り直す
         }
-        if !targets.is_empty() {
+        let extra = shared.extra_dest.lock().unwrap().clone();
+        if !targets.is_empty() || extra.is_some() {
             // ★**掴めたボードにだけ購読を出す。** 以前はワイルドカードで購読して
             //   いたので、**LANに2枚あると両方が同時に映像を送ってきて**どちらも
             //   組み立てられず、2つ目のウィンドウを開くと1枚を奪い合った。
@@ -1016,13 +1039,10 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 // ★**送信失敗を黙って捨てない。** 以前は `let _ =` で捨てていたので、
                 //   VPNで送れないときの症状が「何も映らない」だけになり、原因を
                 //   突き止めるのに何度も時間を使った。1つも出せていないなら言う。
-                let ok = send_all(&send_sock, cfg.port, &targets, &pkt);
+                let ok = send_all(&send_sock, cfg.port, &targets, extra.as_deref(), &pkt);
                 *shared.net_error.lock().unwrap() = if ok == 0 {
-                    Some(format!(
-                        "SUBSCRIBE を送信できません(宛先 {})。\n\
-                         VPN が既定経路を握っていると限定ブロードキャストが送れません。\n\
-                         有線/Wi-Fi のNICが有効か、ボードと同じL2にいるかを確認してください",
-                        targets.join(" ")))
+                    Some(format!("SUBSCRIBE を送信できません(宛先 {})。\n{}",
+                                 targets.join(" "), SEND_FAIL_HINT))
                 } else {
                     None
                 };
@@ -1039,7 +1059,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             if last_probe.map_or(true, |t: Instant| t.elapsed() >= Duration::from_secs(3)) {
                 last_probe = Some(Instant::now());
                 let pkt = proto::pack_subscribe(sub_seq, true, &proto::WILDCARD_MAC);
-                send_all(&send_sock, cfg.port, &targets, &pkt);
+                send_all(&send_sock, cfg.port, &targets, extra.as_deref(), &pkt);
                 sub_seq = sub_seq.wrapping_add(1);
             }
 
@@ -1136,13 +1156,13 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         {
             let mut q = shared.config_queue.lock().unwrap();
             if !q.is_empty() {
-                if targets.is_empty() {
+                if targets.is_empty() && extra.is_none() {
                     q.clear();
                 } else {
                     let mac = claim.as_ref().map(|c| c.mac).unwrap_or(proto::WILDCARD_MAC);
                     for (key, value) in q.drain(..) {
                         let pkt = proto::pack_config(sub_seq, 0, 0, key, value, &mac);
-                        send_all(&send_sock, cfg.port, &targets, &pkt);
+                        send_all(&send_sock, cfg.port, &targets, extra.as_deref(), &pkt);
                         sub_seq = sub_seq.wrapping_add(1);
                     }
                 }
@@ -1171,13 +1191,13 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         {
             let mut q = shared.config_get_queue.lock().unwrap();
             if !q.is_empty() {
-                if targets.is_empty() {
+                if targets.is_empty() && extra.is_none() {
                     q.clear();
                 } else {
                     let mac = claim.as_ref().map(|c| c.mac).unwrap_or(proto::WILDCARD_MAC);
                     for key in q.drain(..) {
                         let pkt = proto::pack_config(sub_seq, 0, 1, key, 0, &mac);
-                        send_all(&send_sock, cfg.port, &targets, &pkt);
+                        send_all(&send_sock, cfg.port, &targets, extra.as_deref(), &pkt);
                         sub_seq = sub_seq.wrapping_add(1);
                     }
                 }

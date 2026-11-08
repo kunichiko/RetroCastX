@@ -2985,6 +2985,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "retrocastx-android"
+version = "0.0.0"
+dependencies = [
+ "cpal",
+ "eframe",
+ "if-addrs",
+ "libc",
+ "pollster 1.0.1",
+ "resvg",
+ "socket2",
+ "winit",
+]
+
+[[package]]
 name = "retrocastx-viewer"
 version = "0.12.0"
 dependencies = [
@@ -2996,6 +3010,7 @@ dependencies = [
  "midir",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
+ "objc2-avf-audio",
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
  "pollster 1.0.1",

@@ -61,8 +61,7 @@ impl Claim {
         let file = open_lock(&lock_path(&mac))?;
         // ★**try_lock。** 待ってはいけない ─ UIスレッドから呼ぶので、
         //   掴めないなら即座に「使用中」と答える必要がある。
-        file.try_lock().ok()?;
-        Some(Claim { mac, _file: file })
+        try_lock(&file).then_some(Claim { mac, _file: file })
     }
 }
 
@@ -77,10 +76,23 @@ pub fn taken_by_other(mac: &[u8; 6], own: Option<[u8; 6]>) -> bool {
     }
     // ロックファイルすら作れない環境では、掴めない前提にすると何も開けなくなる
     let Some(file) = open_lock(&lock_path(mac)) else { return false };
-    match file.try_lock() {
-        Ok(()) => false, // 掴めた = 誰も使っていない(ここで落として解放)
-        Err(_) => true,
-    }
+    // 掴めた = 誰も使っていない(ここで落として解放)
+    !try_lock(&file)
+}
+
+/// 待たずに排他ロックを取る。取れたら true。
+#[cfg(not(target_os = "android"))]
+fn try_lock(file: &File) -> bool {
+    file.try_lock().is_ok()
+}
+
+/// ★**Android の std には `File::try_lock` の実装が無い。** 常に Unsupported を
+///   返すので、そのままだと**どのボードも掴めず SUBSCRIBE を出さない**(映像が
+///   来ない)。flock 自体はあるので直接呼ぶ。
+#[cfg(target_os = "android")]
+fn try_lock(file: &File) -> bool {
+    use std::os::fd::AsRawFd;
+    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
 }
 
 #[cfg(test)]

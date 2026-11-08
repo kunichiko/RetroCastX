@@ -25,6 +25,8 @@
 // --headless の出力はこれまでどおり見える。
 #![windows_subsystem = "windows"]
 
+#[cfg(target_os = "android")]
+mod android_log;
 mod appicon;
 mod assembler;
 mod awake;
@@ -54,6 +56,10 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use eframe::egui;
+
+/// iPhone/iPad/Android。窓が1枚で全画面、キーボードもマウスも無い前提の
+/// 切り替え(別プロセスの低遅延全画面・複数ウィンドウ・Tab 等のキー操作を出さない)
+const MOBILE: bool = cfg!(any(target_os = "ios", target_os = "android"));
 
 /// コンソールから起動されたときだけ、その親コンソールへ標準出力を戻す。
 /// Explorer から起動したときは親が無いので何も起きない(コンソールは出ない)。
@@ -107,12 +113,7 @@ fn main() -> eframe::Result {
     // 保存済み設定を読み、CLI引数があればそれで上書きする(その回だけ有効)
     let mut cfg = settings::Settings::load_slot(slot_id);
     eprintln!("settings: {}", settings::Settings::path_for_slot(slot_id).display());
-    let mut audio = receiver::AudioOpts::default();
-    audio.source = cfg.audio_source;
-    // 起動時から設定のデバイスで開く(既定デバイスで鳴り始めるのを防ぐ)
-    audio.device = cfg.audio_device.clone();
-    audio.prebuffer_ms = cfg.audio_buffer_ms;
-    audio.max_ms = receiver::audio_max_ms(cfg.audio_buffer_ms);
+    let mut audio = audio_opts(&cfg);
     let mut bind = String::from("0.0.0.0");
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -252,13 +253,77 @@ fn main() -> eframe::Result {
                         fullscreen_vsync, return_window); // 戻らない
     }
 
+    audio::prepare_session();
+    run_gui(
+        GuiLaunch {
+            port, subscribe_to, target_mac, bind, no_vsync, decay, interlace_decay, audio, cfg,
+            slot_id,
+        },
+        |_| {},
+    )
+}
+
+/// 保存済み設定から音声の開き方を作る
+fn audio_opts(cfg: &settings::Settings) -> receiver::AudioOpts {
+    let mut audio = receiver::AudioOpts::default();
+    audio.source = cfg.audio_source;
+    // 起動時から設定のデバイスで開く(既定デバイスで鳴り始めるのを防ぐ)
+    audio.device = cfg.audio_device.clone();
+    audio.prebuffer_ms = cfg.audio_buffer_ms;
+    audio.max_ms = receiver::audio_max_ms(cfg.audio_buffer_ms);
+    audio
+}
+
+/// ウィンドウ版(eframe)の起動に要るもの。デスクトップと iOS は main が引数から、
+/// Android は android_main が既定値から作る
+struct GuiLaunch {
+    port: u16,
+    subscribe_to: Option<String>,
+    target_mac: Option<[u8; 6]>,
+    bind: String,
+    no_vsync: bool,
+    decay: f32,
+    interlace_decay: f32,
+    audio: receiver::AudioOpts,
+    cfg: settings::Settings,
+    slot_id: u32,
+}
+
+/// eframe を起動する。`tweak` は起動直前の NativeOptions に手を入れる口
+/// (Android は AndroidApp をここで渡す)
+fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> eframe::Result {
+    let GuiLaunch {
+        port, subscribe_to, target_mac, bind, no_vsync, decay, interlace_decay, audio, cfg,
+        slot_id,
+    } = l;
     let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
+    // ★**モバイルでは GPU が申告する上限をそのまま要求する。** eframe の既定は
+    //   デスクトップ向けの `wgpu::Limits::default()` を決め打ちで要求するので、
+    //   1項目でも足りない GPU では起動直後に落ちる(iOS シミュレータは
+    //   max_inter_stage_shader_variables が 15 で、既定の 16 に届かない)。
+    //   Android の GPU も機種ごとにまちまち。
+    if MOBILE {
+        if let eframe::egui_wgpu::WgpuSetup::CreateNew(new) = &mut wgpu_options.wgpu_setup {
+            // ★**Android は GLES で描く。** Vulkan はエミュレータ(gfxstream)で
+            //   スワップチェーンを作れず起動時に panic した。実機でも Vulkan
+            //   ドライバの当たり外れは大きく、映像を板に貼るだけの描画なので
+            //   GLES で足りる
+            if cfg!(target_os = "android") {
+                new.instance_descriptor.backends = eframe::wgpu::Backends::GL;
+            }
+            new.device_descriptor = Arc::new(|adapter| eframe::wgpu::DeviceDescriptor {
+                label: Some("egui wgpu device"),
+                required_limits: adapter.limits(),
+                ..Default::default()
+            });
+        }
+    }
     if no_vsync {
         wgpu_options.surface.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
         wgpu_options.surface.desired_maximum_frame_latency = Some(1); // 低遅延優先
     }
 
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: {
             // アイコンは実行時に設定しないとタスクバー/タイトルバーに出ない
             // (exeへの埋め込みはExplorerのファイル用。appicon.rs 参照)
@@ -284,6 +349,7 @@ fn main() -> eframe::Result {
         wgpu_options,
         ..Default::default()
     };
+    tweak(&mut options);
     eframe::run_native(
         "RetroCast X",
         options,
@@ -323,12 +389,46 @@ fn main() -> eframe::Result {
 }
 
 
+/// Android の入口。NativeActivity が共有ライブラリ(android/Cargo.toml)を
+/// 読み込んでこれを呼ぶ。引数は渡ってこないので、すべて保存済み設定と既定値で起動する
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+fn android_main(app: winit::platform::android::activity::AndroidApp) {
+    android_log::redirect_stdio();
+    if let Some(dir) = app.internal_data_path() {
+        settings::set_base_dir(dir);
+    }
+    awake::keep_screen_on(&app);
+    let slot_id = 0;
+    let cfg = settings::Settings::load_slot(slot_id);
+    eprintln!("settings: {}", settings::Settings::path_for_slot(slot_id).display());
+    let l = GuiLaunch {
+        port: protocol::DEFAULT_PORT,
+        subscribe_to: Some("255.255.255.255".to_string()),
+        target_mac: None,
+        bind: "0.0.0.0".to_string(),
+        no_vsync: false,
+        decay: 0.8,
+        interlace_decay: 1.0,
+        audio: audio_opts(&cfg),
+        cfg,
+        slot_id,
+    };
+    if let Err(e) = run_gui(l, |o| o.android_app = Some(app)) {
+        eprintln!("eframe: {e}");
+    }
+}
+
 /// CJKを含むシステムフォントをeguiへ追加する。
 /// 出力デバイス名はOS由来で日本語を含むことがあり、egui既定フォントにはCJKの
 /// グリフが無いため豆腐(□)になる。フォントは同梱せず、実行環境のものを使う。
 fn install_cjk_font(ctx: &egui::Context) {
     // 単一フォント(.ttf/.otf)のみ。.ttc はコレクションでab_glyphが扱えない
     const CANDIDATES: &[&str] = &[
+        // iOS(41MB あるが、日本語の入った単体フォントがこれしか無い)
+        "/System/Library/Fonts/Core/HiraginoKakuGothic.ttc",
+        // Android(コレクションの0番が日本語)
+        "/system/fonts/NotoSansCJK-Regular.ttc",
         // macOS
         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
         "/Library/Fonts/Arial Unicode.ttf",
@@ -400,6 +500,38 @@ pub fn relaunch(extra: &[String]) -> bool {
             false
         }
     }
+}
+
+/// ノッチ・Dynamic Island・ホームインジケータの分だけ周囲を空ける(iOS)。
+///
+/// eframe は画面の端から端までを使わせるので、そのままだと操作パネルの
+/// 1行目が Dynamic Island の下に潜る。先に置いたパネルほど外側に付くので、
+/// **ほかのパネルより前に呼ぶ。** 余白は黒(管面の外側と同じ)。
+fn safe_area_spacers(root: &mut egui::Ui) {
+    let ctx = root.ctx().clone();
+    let (full, safe) = (ctx.viewport_rect(), ctx.content_rect());
+    let sides = [
+        (egui::Panel::top("safe-top"), safe.min.y - full.min.y),
+        (egui::Panel::bottom("safe-bottom"), full.max.y - safe.max.y),
+        (egui::Panel::left("safe-left"), safe.min.x - full.min.x),
+        (egui::Panel::right("safe-right"), full.max.x - safe.max.x),
+    ];
+    for (panel, size) in sides {
+        if size > 0.5 {
+            panel
+                .exact_size(size)
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+                .show(root, |_| {});
+        }
+    }
+}
+
+/// 手入力のボードIP。前後の空白を落とし、IPv4 として読めるときだけ返す
+fn valid_ipv4(s: &str) -> Option<String> {
+    let s = s.trim();
+    s.parse::<std::net::Ipv4Addr>().ok().map(|_| s.to_string())
 }
 
 fn parse_mac(s: &str) -> [u8; 6] {
@@ -1179,6 +1311,9 @@ struct Session {
     netcheck_modal: bool,
     /// 「今後表示しない」。設定に保存する
     netcheck_muted: bool,
+    /// 手入力のボードIP(モバイル)。入力中の文字列で、正しい IPv4 のときだけ
+    /// 受信スレッドへ渡す(settings::Settings::board_ip)
+    board_ip: String,
     /// 直ったことを確認したので、再起動を勧めるダイアログを出す。
     ///
     /// ★**直った直後が勧めどき。** 受信バッファーはNICドライバのリングなので、
@@ -1223,6 +1358,7 @@ impl Session {
         let shared = Arc::new(receiver::Shared::default());
         // 受信(=再生器を開く)より前に保存した音量を入れる(開いた直後に 100% で鳴らさない)
         *shared.gain.lock().unwrap() = Some(if cfg.muted { 0.0 } else { cfg.volume });
+        *shared.extra_dest.lock().unwrap() = valid_ipv4(&cfg.board_ip);
         let ctx = egui_ctx.clone();
         let rx_error = receiver::spawn(
             receiver::Config { port, bind: bind.clone(), subscribe_to: subscribe_to.clone(), target_mac, decay, interlace_decay, audio },
@@ -1299,7 +1435,8 @@ impl Session {
             pending_mode: None,
             fitted_sig: None,
             fit_requested: None,
-            fit_disabled: false,
+            // モバイルの窓は画面そのもので、大きさを変えられない
+            fit_disabled: MOBILE,
             frame_size: (0, 0),
             render_state,
             seen_gen: 0,
@@ -1354,6 +1491,7 @@ impl Session {
             netcheck: None,
             netcheck_modal: false,
             netcheck_muted: cfg.netcheck_muted,
+            board_ip: cfg.board_ip.clone(),
             netcheck_restart_ask: false,
             netcheck_fix: None,
             netcheck_recheck_at: None,
@@ -1588,6 +1726,7 @@ impl Session {
             dot_a_milli: self.dot_a_milli,
             show_panel: self.show_panel,
             netcheck_muted: self.netcheck_muted,
+            board_ip: self.board_ip.clone(),
             bezel: self.bezel.clone(),
             bezel_off: self.bezel_off,
             clean_open: self.clean_open,
@@ -4152,6 +4291,40 @@ impl Session {
                 .on_hover_text(
                     "各NICのサブネット宛ブロードキャストへ2秒ごとに送っています。\n                     限定ブロードキャスト(255.255.255.255)は使いません。\n                     あれは既定経路に載るので、VPN接続中は送信自体が\n                     失敗します(receiver.rs の broadcast_targets 参照)。\n                     サブネットが違っても同じL2セグメントにいれば届きます");
         }
+        if MOBILE {
+            self.board_ip_ui(ui);
+        }
+    }
+
+    /// ボードのIPの手入力(モバイル)。
+    ///
+    /// ★**iOS はブロードキャストを送れないことがある。** マルチキャストの許可
+    ///   (entitlement)の無いアプリは送信自体が失敗するので、ボードのIPが
+    ///   分かっていればユニキャストで繋がるようにする。ブロードキャストは止めない
+    ///   (receiver::Shared::extra_dest)。
+    fn board_ip_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "ボードのIP");
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut self.board_ip)
+                    .hint_text("自動")
+                    .desired_width(140.0),
+            );
+            let ip = valid_ipv4(&self.board_ip);
+            let empty = self.board_ip.trim().is_empty();
+            // 打ちかけの値は渡さない(1文字ごとに宛先が変わる)
+            if r.changed() && (empty || ip.is_some()) {
+                *self.shared.extra_dest.lock().unwrap() = ip.clone();
+                self.mark_settings_dirty();
+            }
+            if !empty && ip.is_none() {
+                ui.label(egui::RichText::new("IPv4 で").size(11.0).color(theme::AMBER));
+            }
+        })
+        .response
+        .on_hover_text(
+            "見つからないときだけ入れてください。ボードのIPは\n\
+             PC版 Viewer の「ボード」欄で確認できます");
     }
 
     /// 「ボード」欄。**LANに複数あるときの指名と、個体設定の書き換え。**
@@ -4246,6 +4419,7 @@ impl Session {
                     ui.label(egui::RichText::new("使用中").size(10.0).color(theme::AMBER))
                         .on_hover_text("他のウィンドウが使っています(選んでおけば空き次第つながります)");
                 } else if !picked
+                    && !MOBILE
                     && ui
                         .small_button("別窓")
                         .on_hover_text("このボードを新しいウィンドウで開く")
@@ -5040,11 +5214,7 @@ impl App {
             return false;
         }
         let cfg = settings::Settings::load_slot(id);
-        let mut audio = receiver::AudioOpts::default();
-        audio.source = cfg.audio_source;
-        audio.device = cfg.audio_device.clone();
-        audio.prebuffer_ms = cfg.audio_buffer_ms;
-        audio.max_ms = receiver::audio_max_ms(cfg.audio_buffer_ms);
+        let audio = audio_opts(&cfg);
         self.sessions.push(Session::new(
             id, ctx, rs, self.port, Some("255.255.255.255".to_string()), None,
             self.bind.clone(), self.no_vsync, self.decay, self.interlace_decay,
@@ -5269,7 +5439,7 @@ impl Session {
         // ★**macOS の .app は二重起動できない。** Finder や Dock から2つ目を
         //   開こうとしても既存のウィンドウが前面に来るだけなので、アプリの中に
         //   入口が要る(`open -n` を使う。session.rs 参照)。
-        if root.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
+        if !MOBILE && root.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
             // ★**いつでも開ける。** 空いているボードが無ければ「未選択」の窓が
             //   開くだけ。開けない方が不便だし、あとで空けば繋がる。
             self.open_new_session(None);
@@ -5302,15 +5472,43 @@ impl Session {
                 self.auto_start_quick();
             }
         }
+        if MOBILE {
+            safe_area_spacers(root);
+        }
+        // ★**狭い画面(スマホの縦持ち)ではパネルを画面幅いっぱいにする。** 横に
+        //   並べるとパネルが画面からはみ出し、映像も切手大に潰れる。映像とは
+        //   切り替えて見る(先頭の「映像に戻る」、映像のタップで行き来する)。
+        let panel_full = MOBILE && self.show_panel && root.available_width() < 720.0;
         if self.show_panel {
-        egui::Panel::right(egui::Id::new("info")).show(root, |ui| {
+        let mut panel = egui::Panel::right(egui::Id::new("info"));
+        if panel_full {
+            panel = panel.exact_size(root.available_width());
+        }
+        panel.show(root, |ui| {
             // 項目が増えて下が操作できなくなるので縦スクロールにする。
             // auto_shrink=false でパネル幅いっぱいを使い、内容が短いときも
             // 幅が縮まないようにする。
-            egui::ScrollArea::vertical()
+            // ★**全幅のときは横にもスクロールさせる。** 行によっては画面幅
+            //   (縦持ちのスマホで約410pt)より広く、縦だけのスクロールでは
+            //   中身の幅がパネルを押し広げる。egui は右パネルを右端基準で
+            //   切り詰めるので、はみ出した分だけ左端が画面の外へ消えていた。
+            let scroll = if panel_full {
+                egui::ScrollArea::both()
+            } else {
+                egui::ScrollArea::vertical()
+            };
+            scroll
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                ui.heading(egui::RichText::new("RetroCastX").color(theme::ACCENT));
+                ui.horizontal(|ui| {
+                    ui.heading(egui::RichText::new("RetroCastX").color(theme::ACCENT));
+                    // Tab キーの無いモバイル向けの出口。パネルが全幅だと映像が
+                    // 見えずタップできないので、いちばん上に置く
+                    if MOBILE && ui.button("映像に戻る").clicked() {
+                        self.show_panel = false;
+                        self.mark_settings_dirty();
+                    }
+                });
                 if let Some(err) = &self.rx_error {
                     ui.colored_label(egui::Color32::RED, err);
                 }
@@ -5319,9 +5517,13 @@ impl Session {
                 //   どちらも「どの節にも属さない道具」なので、節の間に挟まって
                 //   いると迷子に見える。
                 self.quick_scan_bar(ui);
-                self.window_bar(ui);
-                // 低遅延全画面も「見せ方を変える道具」なのでここ(配信出力とは別物)
-                self.lowlat_fs_ui(ui);
+                // 窓を増やす・別プロセスの全画面へ切り替える、はモバイルに無い
+                // (窓は1枚で最初から全画面)
+                if !MOBILE {
+                    self.window_bar(ui);
+                    // 低遅延全画面も「見せ方を変える道具」なのでここ(配信出力とは別物)
+                    self.lowlat_fs_ui(ui);
+                }
                 // ★**送れていないことを明示する。** 「何も映らない」だけだと
                 //   受信側の問題と区別できず、原因の切り分けに時間がかかる。
                 if let Some(err) = self.shared.net_error.lock().unwrap().clone() {
@@ -5347,9 +5549,12 @@ impl Session {
                 self.spdif_ui(ui);
                 ui.separator();
 
-                Self::section(ui, "配信出力");
-                self.clean_out_ui(ui);
-                ui.separator();
+                // 配信用の別窓は OBS で掴むためのもの。モバイルには窓が1枚しか無い
+                if !MOBILE {
+                    Self::section(ui, "配信出力");
+                    self.clean_out_ui(ui);
+                    ui.separator();
+                }
 
                 Self::section(ui, "LED");
                 self.led_ui(ui);
@@ -5837,13 +6042,20 @@ impl Session {
                 // 縦倍率(と 4:3 / 1.0 / integer scaling)は撤去した。表示の形は
                 // 管面が決めるので、ドット数に対する倍率という概念が要らない。
                 // 512x256 も 768x512 も、管面を 4:3 にすれば同じ形で映る。
-                if ui.button("画に合わせる").clicked() {
+                // モバイルの窓は画面そのもので、大きさを変えられない
+                if !MOBILE && ui.button("画に合わせる").clicked() {
                     self.want_fit = true;
                 }
                 ui.separator();
-                if ui.button("パネルを隠す (Tab)")
-                    .on_hover_text("操作パネルを隠して映像だけにします。\n\
-                                    Tab キーで戻せます")
+                let hide = if MOBILE { "パネルを隠す" } else { "パネルを隠す (Tab)" };
+                if ui.button(hide)
+                    .on_hover_text(if MOBILE {
+                        "操作パネルを隠して映像だけにします。\n\
+                         映像をタップすると戻ります"
+                    } else {
+                        "操作パネルを隠して映像だけにします。\n\
+                         Tab キーで戻せます"
+                    })
                     .clicked()
                 {
                     self.show_panel = false;
@@ -5858,9 +6070,14 @@ impl Session {
         // 見えるようにしていたが、幾何がGPU側へ移ってどちらもキャプチャ範囲では
         // なく管面の外周を指すようになったので撤去した。管面の位置は H位置/H幅
         // のスライダーで直接合わせる。
-        egui::CentralPanel::default()
+        let central = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(root, |ui| {
+                // パネルが全幅のときは何も置かない。待機表示の文字ぶんでも幅を
+                // 取ると、その分だけパネルの左端に重なって隠す
+                if panel_full {
+                    return;
+                }
                 // 映像が無くても枠は描く。実機のCRTは映像が無くても筐体があるので、
                 // 待機中に枠だけ消えるのは不自然。開口部は黒にして待機表示を中に出す。
                 let has_video = self.frame_size.0 > 0;
@@ -5966,6 +6183,12 @@ impl Session {
                     }
                 }
             });
+        // モバイルには Tab キーが無いので、映像のタップでパネルを出し入れする。
+        // 中央に押せる部品は無い(映像と枠を描くだけ)ので、タップを横取りしても困らない
+        if MOBILE && central.response.interact(egui::Sense::click()).clicked() {
+            self.show_panel = !self.show_panel;
+            self.mark_settings_dirty();
+        }
 
         // ウィンドウを画にぴったり合わせる。中央パネルを描いた後に行う
         // (今フレームの描画領域が分かってから計算するため)。

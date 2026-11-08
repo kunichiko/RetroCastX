@@ -47,6 +47,25 @@ pub fn apply(ctx: &egui::Context) {
     v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, ACCENT_EDGE);
     v.widgets.active.bg_stroke = egui::Stroke::new(1.0, ACCENT);
     ctx.set_visuals(v);
+    if cfg!(any(target_os = "ios", target_os = "android")) {
+        touch_spacing(ctx);
+    }
+}
+
+/// 指で押せる大きさにする。マウス前提の既定値(高さ18pt)のままでは、隣の
+/// ボタンやスライダーを押し間違える。Apple の指針は 44pt だが、項目の多い
+/// パネルが縦に倍伸びるので、押し間違えない程度に留める
+fn touch_spacing(ctx: &egui::Context) {
+    ctx.all_styles_mut(|style| {
+        let sp = &mut style.spacing;
+        sp.interact_size.y = 30.0;
+        sp.button_padding = egui::vec2(10.0, 6.0);
+        sp.item_spacing = egui::vec2(10.0, 8.0);
+        sp.slider_width = 160.0;
+        sp.icon_width = 20.0;
+        sp.icon_width_inner = 12.0;
+        sp.scroll.bar_width = 12.0;
+    });
 }
 
 /// パネルのセクション見出しを1本描く。

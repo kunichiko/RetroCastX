@@ -12,6 +12,10 @@
 //!   `pmset -g assertions` に "RetroCast X" の名前で出る
 //! - Windows: `SetThreadExecutionState`。**呼んだスレッドに紐づく**ので、
 //!   UIスレッド(update の中)からだけ呼ぶこと
+//! - iOS: `UIApplication.idleTimerDisabled`(自動ロックを止める)。UIKit なので
+//!   これもメインスレッド(update の中)から呼ぶ
+//! - Android: ウィンドウの `FLAG_KEEP_SCREEN_ON` を**起動時に1回だけ**立てる
+//!   (下の android モジュール)。映像の有無では切り替えない
 //! - その他: 何もしない
 
 pub struct KeepAwake {
@@ -79,12 +83,23 @@ impl KeepAwake {
         unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
     }
 
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "ios")]
+    fn acquire(&mut self) -> bool {
+        ios::set_idle_timer_disabled(true);
+        true
+    }
+
+    #[cfg(target_os = "ios")]
+    fn release(&mut self) {
+        ios::set_idle_timer_disabled(false);
+    }
+
+    #[cfg(not(any(target_os = "macos", windows, target_os = "ios")))]
     fn acquire(&mut self) -> bool {
         true
     }
 
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", windows, target_os = "ios")))]
     fn release(&mut self) {}
 }
 
@@ -150,5 +165,40 @@ mod mac {
         if id != 0 {
             unsafe { IOPMAssertionRelease(id) };
         }
+    }
+}
+
+#[cfg(target_os = "ios")]
+mod ios {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+
+    pub fn set_idle_timer_disabled(on: bool) {
+        unsafe {
+            let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
+            if !app.is_null() {
+                let _: () = msg_send![app, setIdleTimerDisabled: on];
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+pub use android::keep_screen_on;
+
+#[cfg(target_os = "android")]
+mod android {
+    use winit::platform::android::activity::{AndroidApp, WindowManagerFlags};
+
+    /// 画面を消さないフラグを立てる。**イベントループに入る前に1回だけ呼ぶ。**
+    ///
+    /// ★**実行中に切り替えてはいけない。** 映像を受け始めたところで立てたら、
+    ///   イベントループが起床しても反復せず寝たままになり、描画も入力も止まって
+    ///   5秒で ANR になった(エミュレータで再現)。フラグの変更は Java 側の
+    ///   メインスレッドでウィンドウを組み直させるので、その最中の通知待ちと
+    ///   噛み合うらしい。止めておく意味は前面にいる間しか無く、裏へ回れば OS が
+    ///   外すので、起動時に立てっぱなしで困らない。
+    pub fn keep_screen_on(app: &AndroidApp) {
+        app.set_window_flags(WindowManagerFlags::KEEP_SCREEN_ON, WindowManagerFlags::empty());
     }
 }

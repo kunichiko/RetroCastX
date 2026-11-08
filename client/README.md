@@ -1,7 +1,7 @@
 # RetroCast X(Viewer / クライアントアプリ)
 
 Rust + eframe/egui(wgpuバックエンド)のクロスプラットフォーム・ビューア。
-Mac/Windows/Linux を単一コードベースでカバーする。
+Mac/Windows/Linux を単一コードベースでカバーする(iOS / Android は試作。下記)。
 
 ```sh
 cargo run --release                     # SUBSCRIBEをブロードキャストして実機ボードを受信
@@ -186,6 +186,43 @@ touch "/path/to/RetroCast X.app" && killall Dock
   README-first.txt で案内している
 - **ゲートウェア/Python側のCI**: このワークフローはViewerだけを見る
 
+## iOS / Android(試作)
+
+同じコードを iPhone / iPad / Android 向けにもビルドできる。検討の経緯と、
+まだ確かめていないこと(Wi-Fi の帯域、iOS のブロードキャスト制限など)は
+[docs/mobile.md](../docs/mobile.md)。**まだ配布物は作っていない**(CI にも無い)。
+
+iOS(Xcode のプロジェクトは使わない。`bundle.sh` が .app を組んで署名する):
+
+```sh
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+IPHONEOS_DEPLOYMENT_TARGET=16.0 cargo build --release --target aarch64-apple-ios-sim
+packaging/ios/bundle.sh target/aarch64-apple-ios-sim/release/retrocastx-viewer 0.12.0 0 /tmp/out simulator
+xcrun simctl install booted "/tmp/out/RetroCast X.app"
+xcrun simctl launch --console-pty booted jp.ohnaka.RetroCastX   # stderr がそのまま出る
+```
+
+実機向けは `--target aarch64-apple-ios` でビルドし、`device` を指定して
+`IOS_SIGN_IDENTITY`(署名ID)と `IOS_PROFILE`(.mobileprovision)を渡す
+(`bundle.sh` 冒頭のコメント)。**`IPHONEOS_DEPLOYMENT_TARGET` は Info.plist の
+`MinimumOSVersion`(16.0)と揃える。**
+
+Android(Gradle は使わない。NativeActivity に `.so` を入れて SDK のツールで束ねる):
+
+```sh
+rustup target add aarch64-linux-android
+packaging/android/build-apk.sh /tmp/out        # NDK / build-tools / platforms;android-35 が要る
+adb install -r /tmp/out/RetroCastX_android-0.12.0.apk
+adb logcat -s RetroCastX                       # eprintln! の出力
+```
+
+`apksigner` は Java を使う。jenv などで `java` が壊れているときは
+`JAVA_HOME` と `PATH` を Android Studio 同梱の JDK(`.../Android Studio.app/Contents/jbr/Contents/Home`)に向ける。
+
+Android 版は `android/` の別パッケージで、ソースは本体の `src/` をそのまま使う
+(`main.rs` を lib のルートにして `android_main` を出す)。本体に `[lib]` を足すと
+デスクトップのビルドで本体を2回コンパイルすることになるため。
+
 ## 構成
 
 - `src/protocol.rs` — プロトコルv0のパース(リファレンスは `host/python/retrocastx/protocol.py`)
@@ -195,6 +232,8 @@ touch "/path/to/RetroCast X.app" && killall Dock
 - `src/remote_input.rs` — MimicX へのキー転送(CoreMIDI SysEx)
 - `src/keytap.rs` — 物理キーの取り出し(macOS の AppKit イベント監視)
 - `src/netcheck.rs` — NIC受信バッファーの確認(Windows、レジストリを読む)
+- `src/android_log.rs` — Android で標準出力/標準エラーを logcat へ流す
+- `android/` — Android 版のパッケージ(入口だけ。ソースは `src/` を共有)
 
 ## MimicX と組み合わせてリモート操作する(macOS)
 

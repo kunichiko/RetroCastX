@@ -11,6 +11,8 @@
 //! $HOME/.config/retrocastx/viewer.conf          Unix
 //! %APPDATA%\retrocastx\viewer.conf              Windows
 //! %USERPROFILE%\AppData\Roaming\retrocastx\...   同(APPDATA未設定時)
+//! $HOME/Library/Application Support/retrocastx/  iOS(アプリのコンテナ)
+//! <内部データ領域>/retrocastx/                    Android(android_main が渡す)
 //! ```
 //!
 //! 起動時にパスを1行表示して、「どこかに勝手に作られた忘れられる設定」に
@@ -19,6 +21,28 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+/// 環境変数より優先する置き場所。Android は環境変数に何も無いので、入口
+/// (android_main)がアプリの内部データ領域を入れる
+static BASE_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn set_base_dir(dir: PathBuf) {
+    let _ = BASE_DIR.set(dir);
+}
+
+/// iOS の HOME はアプリのコンテナで、その直下は書けない(書けるのは
+/// Documents / Library / tmp)。設定はユーザーに見せるものではないので Library 側
+#[cfg(target_os = "ios")]
+fn platform_base() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library").join("Application Support"))
+}
+
+#[cfg(not(target_os = "ios"))]
+fn platform_base() -> Option<PathBuf> {
+    None
+}
 // ★**「いまの設定ファイル」をグローバルに持たない。** 1プロセスで複数の
 //   ウィンドウを開くようになったので、プロセスに1つでは足りない
 //   (2つ目のウィンドウが1つ目の設定を上書きする)。番号は呼び側が持つ。
@@ -140,6 +164,10 @@ pub struct Settings {
     /// 管理者権限が無くて直せない人に毎回出すのは敵対的なので、逃げ道を用意する
     /// (パネル内の表示は消さない)
     pub netcheck_muted: bool,
+    /// 手入力のボードIP(モバイル)。空ならブロードキャストだけで探す。
+    /// iOS はブロードキャストを送れないことがあるので、その逃げ道
+    /// (receiver::Shared::extra_dest)
+    pub board_ip: String,
     /// モニタの枠(ベゼル)の名前。空文字は枠なし
     pub bezel: String,
     /// 枠を一時的に隠す(bezel の選択は保つ)
@@ -272,6 +300,7 @@ impl Default for Settings {
             tube_aspect: 0.0,
             show_panel: true,
             netcheck_muted: false,
+            board_ip: String::new(),
             bezel: String::new(),
             bezel_off: false,
             clean_open: false,
@@ -371,8 +400,9 @@ impl Settings {
         // フォールバックすると「.」= カレントディレクトリに作ってしまい、
         // 起動した場所ごとに設定が散らばる(実機のWindowsで確認)。
         // APPDATA(= C:\Users\<user>\AppData\Roaming)を先に見る。
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
+        let base = BASE_DIR.get().cloned()
+            .or_else(platform_base)
+            .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
             .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
             .or_else(|| {
@@ -479,6 +509,7 @@ impl Settings {
                 "bezel" => s.bezel = v.to_string(),
                 "show_panel" => s.show_panel = v != "false",
                 "netcheck_muted" => s.netcheck_muted = v == "true",
+                "board_ip" => s.board_ip = v.to_string(),
                 "bezel_off" => s.bezel_off = v == "true",
                 "clean_open" => s.clean_open = v == "true",
                 "clean_undecorated" => s.clean_undecorated = v == "true",
@@ -573,6 +604,7 @@ impl Settings {
              bezel = {}\n\
              show_panel = {}\n\
              netcheck_muted = {}\n\
+             board_ip = {}\n\
              bezel_off = {}\n\
              filter = {}\n\
              dot_a_milli = {}\n\
@@ -621,6 +653,7 @@ impl Settings {
             self.bezel,
             self.show_panel,
             self.netcheck_muted,
+            self.board_ip,
             self.bezel_off,
             self.filter,
             self.dot_a_milli,
