@@ -44,6 +44,7 @@ mod keytap;
 mod latency;
 mod leds;
 mod letterbox;
+mod lifecycle;
 mod link;
 #[cfg(target_os = "macos")]
 mod metal_present;
@@ -374,6 +375,7 @@ fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> efra
         Box::new(move |cc| {
             #[cfg(target_os = "ios")]
             ios_scene::set_window(cc);
+            lifecycle::set_ctx(&cc.egui_ctx);
             // アイコン由来の配色を先に当てる(ウィジェットが作られる前)
             theme::apply(&cc.egui_ctx);
             install_cjk_font(&cc.egui_ctx);
@@ -3685,10 +3687,6 @@ impl Session {
     }
 
     fn tune_ui(&mut self, ui: &mut egui::Ui) {
-        self.auto_step();
-        self.follow_band();
-        self.follow_mode();
-        self.sync_tune_from_board();
         let mut send: Vec<(u16, u32)> = Vec::new();
         let row = |ui: &mut egui::Ui, label: &str, val: &mut i32,
                        lo: i32, hi: i32, key: u16, send: &mut Vec<(u16, u32)>| {
@@ -5761,6 +5759,15 @@ impl Session {
         self.apply_send_window();
         // 同じくパネルの外。映像が「自動」のときの音声はボードの入力系統に従う
         self.follow_board_input_audio();
+        // ★**帯域・モードの追従もパネルの外。** 以前は Tune 欄を描くときに
+        //   呼んでいたので、パネルを隠したまま起動すると mon_key が 0 のままで、
+        //   コンポジットの管面が NTSC の形にならなかった(レイアウトはドット比の
+        //   横長、シェーダは 4:3 で、iOS で絵が中央に小さく出た)。帯域ごとの
+        //   PLL/位相の復元も、S キーで始めた簡易スキャンの進行も止まっていた
+        self.auto_step();
+        self.follow_band();
+        self.follow_mode();
+        self.sync_tune_from_board();
 
         // Tab で操作パネルを出し入れする。隠すと戻すUIが無くなるので、
         // キーだけは常に効くようにしておく(テキスト入力中は除く)。
@@ -6559,8 +6566,9 @@ impl Session {
                                                ui.ctx().pixels_per_point());
                 letterbox::paint(ui.painter(), area, hole, bez.is_none().then_some(tube),
                                  self.letterbox, &info);
-                // 管面 → 枠。枠は開口部が抜けているので後から重ねる
-                if has_video {
+                // 管面 → 枠。枠は開口部が抜けているので後から重ねる。
+                // 前面を離れているあいだは映像を止めているので黒(lifecycle.rs)
+                if has_video && !lifecycle::paused() {
                     self.paint_tube(ui, tube);
                 } else {
                     ui.painter().rect_filled(tube, 0.0, egui::Color32::BLACK);
