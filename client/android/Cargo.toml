@@ -1,0 +1,34 @@
+# Android 版 Viewer。中身はデスクトップ版と同じ ../src で、入口だけが違う
+# (NativeActivity が共有ライブラリの android_main を呼ぶ。src/main.rs 参照)。
+#
+# ★**別パッケージにしてある。** ../Cargo.toml に cdylib の [lib] を足すと、
+#   デスクトップの `cargo build` が bin と lib で本体を2回コンパイルする。
+#   ここなら `-p retrocastx-android` を指定したときだけビルドされる。
+#
+# APK の組み立ては packaging/android/build-apk.sh。
+[package]
+name = "retrocastx-android"
+# アプリのバージョンは ../Cargo.toml が正(build-apk.sh がそこから読む)
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "retrocastx"
+path = "../src/main.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+cpal.workspace = true
+# accesskit(デスクトップでは既定で入る)は GameActivity でしか使えないので外す
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
+pollster.workspace = true
+resvg.workspace = true
+socket2.workspace = true
+libc.workspace = true
+winit.workspace = true
+if-addrs.workspace = true
+# ナビゲーションバーなどの余白(WindowInsets)を Java から読む(src/main.rs の
+# read_window_insets)。android-activity / cpal が使っている版とは別だが、0.21 の
+# API の方が素直に書ける
+jni = "0.21"

@@ -681,6 +681,30 @@ mod rate_tests {
     }
 }
 
+/// iOS の音声セッションを「再生」カテゴリにする。**出力を開く前に呼ぶこと。**
+///
+/// 既定の SoloAmbient のままだと、本体横の消音スイッチで音が出なくなる
+/// (ゲームの音を聴くアプリでは不具合にしか見えない)。cpal はカテゴリに
+/// 触らないので、こちらで決める。
+#[cfg(target_os = "ios")]
+pub fn prepare_session() {
+    use objc2_avf_audio::{AVAudioSession, AVAudioSessionCategoryPlayback};
+    unsafe {
+        let session = AVAudioSession::sharedInstance();
+        if let Some(cat) = AVAudioSessionCategoryPlayback {
+            if let Err(e) = session.setCategory_error(cat) {
+                eprintln!("audio: AVAudioSession のカテゴリを設定できない: {e:?}");
+            }
+        }
+        if let Err(e) = session.setActive_error(true) {
+            eprintln!("audio: AVAudioSession を有効にできない: {e:?}");
+        }
+    }
+}
+
+#[cfg(not(target_os = "ios"))]
+pub fn prepare_session() {}
+
 /// 実測レートを「標準レート + ずれ[ppm]」として言い表す。
 ///
 /// ★**丸めない。** 44101 を 44100 と表示してしまうと、本当に非標準のレート

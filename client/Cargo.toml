@@ -47,13 +47,45 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
     "std", "CALayer", "CAMetalLayer", "objc2-metal",
 ] }
 
+# iOS: 消音スイッチで黙らないよう AVAudioSession のカテゴリを再生用にする
+# (src/audio.rs)のと、遊んでいる間の自動ロック抑止(src/awake.rs)。
+# 版は cpal が使っているものに揃える
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+objc2-avf-audio = { version = "0.3", default-features = false, features = [
+    "std", "AVAudioSession", "AVAudioSessionTypes",
+] }
+
 [dependencies]
+cpal.workspace = true
+# 既定機能そのまま(workspace 側で切ってあるので列挙する)。既定に含まれる
+# winit/default は列挙できないが、下で winit を既定機能付きで直接引いているので同じになる
+eframe = { workspace = true, features = [
+    "accesskit", "default_fonts", "wayland", "web_screen_reader", "wgpu", "x11",
+] }
+pollster.workspace = true
+resvg.workspace = true
+socket2.workspace = true
+# macOSのスケジューラにQoSを伝えるためだけに使う(pthread_set_qos_class_self_np)
+libc.workspace = true
+winit.workspace = true
+if-addrs.workspace = true
+
+# Android 版は android/ の別パッケージ。NativeActivity が共有ライブラリの
+# android_main を呼ぶので lib が要るが、ここに [lib] を足すとデスクトップの
+# ビルドでも本体を2回コンパイルすることになる。詳しくは android/Cargo.toml
+[workspace]
+members = ["android"]
+
+# 両パッケージで同じ src/ をコンパイルするので、版はここ1か所で持つ
+[workspace.dependencies]
 cpal = "0.18.1"
-eframe = "0.35.0"
+# 既定機能の accesskit が Android の NativeActivity と両立しないので、既定は切って
+# 各パッケージで選ぶ
+eframe = { version = "0.35.0", default-features = false }
 pollster = "1.0.1"
 resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts"] }
 socket2 = "0.6.5"
-# macOSのスケジューラにQoSを伝えるためだけに使う(pthread_set_qos_class_self_np)
 libc = "0.2"
 winit = "0.30.13"
 if-addrs = "0.15.0"

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- build-apk.sh が @...@ を埋める。Java/Kotlin のコードは無い(hasCode=false):
+     OS 標準の NativeActivity が lib_name の共有ライブラリを読み込み、
+     android_main(src/main.rs)を呼ぶ -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="@PACKAGE@"
+    android:versionCode="@VERSION_CODE@"
+    android:versionName="@VERSION@">
+
+    <uses-sdk android:minSdkVersion="@MIN_SDK@" android:targetSdkVersion="@TARGET_SDK@" />
+
+    <!-- UDP の送受信。インストール時に自動で許可される(ダイアログは出ない) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- NIC の列挙(if-addrs でサブネット宛ブロードキャストの宛先を作る) -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <application
+        android:label="@LABEL@"
+        android:icon="@mipmap/ic_launcher"
+        android:hasCode="false"
+        android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+        <!-- configChanges: 回転やキーボードの抜き差しで Activity を作り直させない。
+             作り直されると受信スレッドごと落ちて、映像が数秒途切れる -->
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density">
+            <meta-data android:name="android.app.lib_name" android:value="retrocastx" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
