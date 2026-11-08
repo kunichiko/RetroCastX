@@ -112,7 +112,7 @@ impl FsGeom {
     {
         use crate::geometry as g;
         let m = shared.mode.lock().unwrap().clone();
-        let ntsc = m.as_ref().is_some_and(|m| m.pixfmt == crate::protocol::PIXFMT_YC8);
+        let ntsc = m.as_ref().is_some_and(|m| crate::protocol::is_raw8(m.pixfmt));
         let key = match &m {
             _ if ntsc => g::MON_KEY_NTSC,
             Some(m) if m.hfreq_mhz_x1000 > 1_000_000 =>
