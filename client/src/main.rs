@@ -1139,6 +1139,9 @@ struct Session {
     /// **食い違いが解消したら false に戻す**ので、ボードの電源を入れ直すたびに
     /// 1回だけ書き直す。書いてから MODE が変わるまでの間に何度も書かないための掛け金。
     input_regs_autowritten: bool,
+    /// 入力設定を最後にボードへ書いた時刻(手でも自動でも)。直後は MODE が
+    /// まだ古い伝送形式を言ってくるので、自動の書き直しを待たせる
+    input_regs_written_at: Option<std::time::Instant>,
     /// 映像ソースのプロファイル名(profiles::PROFILES の key)。空文字は「自動」。
     /// pll_divide を絵の内容ではなく fH とドットクロック候補から決めるのに使う
     source_profile: String,
@@ -1417,6 +1420,7 @@ impl Session {
             vtotal_mode_id: std::cell::Cell::new(u16::MAX),
             toasts: toast::Toasts::default(),
             input_regs_autowritten: false,
+            input_regs_written_at: None,
             source_profile: cfg.source_profile.clone(),
             tune_pending: Default::default(),
             tune_get_at: None,
@@ -1918,6 +1922,8 @@ impl Session {
                     for (k, v) in wrote {
                         self.set_tune_mirror(k, v);
                     }
+                    // 書いた直後に自動の書き直しが動かないように(autowrite_input_regs)
+                    self.input_regs_written_at = Some(std::time::Instant::now());
                     self.toasts.info(format!("{} の入力設定をボードへ書き込みました ({n}件)", p.label));
                 }
             }
@@ -2924,7 +2930,19 @@ impl Session {
         if self.input_regs_autowritten {
             return;
         }
+        // ★**書いた直後は待つ。** MODE は1秒ごとなので、映像ソースを切り替えて
+        //   入力設定を書いた直後は、まだ前の伝送形式を言ってくる。それを「電源を
+        //   入れ直して設定が消えた」と取り違えて約30件をもう一度書いていた。TVP が
+        //   初期化し直されて同期を取り直すので、切り替えのたびにしばらくライン
+        //   ノイズが入った(X68000 ⇄ コンポジット)。3秒経っても食い違っていれば、
+        //   書き込みが落ちたとみなして書く
+        if self.input_regs_written_at
+            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3))
+        {
+            return;
+        }
         self.input_regs_autowritten = true;
+        self.input_regs_written_at = Some(std::time::Instant::now());
         for (k, v) in self.input_regs_for_board(p) {
             self.send_cfg(k, v);
             self.set_tune_mirror(k, v);
