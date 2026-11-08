@@ -198,6 +198,7 @@ const REGS_X68000: InputRegs = &[
     //   実測(24kHz 1024x848)の織り込みのずれ: 0x08 → 4.6〜5.0 / 0x09 → 1.39〜1.44
     (proto::CFG_KEY_SYNC_CTL2, 0x09, "★VSOUTを同期セパレータ直結(フィールドごと)"),
     (proto::CFG_KEY_NO_RAW_PHASE, 0, "生同期(HSYNC_A/VSYNC_A)が実際に来るので使う"),
+    (proto::CFG_KEY_KOKAME_SEL, 0, "小亀基板は使わない(既定のコンポジット側に戻す)"),
 ];
 
 /// MSX RGB: Rin2/Gin2/Bin2 + SOGin2 に CSYNC (aux 2x5ヘッダ)
@@ -230,10 +231,12 @@ const REGS_MSX: InputRegs = &[
     (proto::CFG_KEY_SYNC_CTL2, 0x08, "TVP既定のまま(MSXでは未実測)"),
     (proto::CFG_KEY_NO_RAW_PHASE, 1,
      "★CSYNCをSOGで受けるので生同期は繋がらない。浮いた同期入力の自己発振を使わない"),
+    (proto::CFG_KEY_KOKAME_SEL, 0, "小亀基板は使わない(既定のコンポジット側に戻す)"),
 ];
 
 /// コンポジット NTSC: J5(2x4)の Y ピンに CVBS → Gin1、同期は SOGin1 へ分岐
 const REGS_COMPOSITE: InputRegs = &[
+    (proto::CFG_KEY_KOKAME_SEL, 0, "小亀基板のスイッチをコンポジット側へ"),
     (proto::CFG_KEY_IN_MUX1, MUX_ALL1, "SOG/R/G/B すべて _1(J5)"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOGから取る"),
     (proto::CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz(バーストで誤トリガしない)"),
@@ -270,6 +273,7 @@ const REGS_COMPOSITE: InputRegs = &[
 
 /// S端子: J5(2x4)の Gin1 = Y / Rin1 = C、SOGin1 へ Y から分岐
 const REGS_SVIDEO: InputRegs = &[
+    (proto::CFG_KEY_KOKAME_SEL, 1, "★小亀基板のスイッチをS端子側へ(0のままだとCVBSの端子を見る)"),
     (proto::CFG_KEY_IN_MUX1, MUX_ALL1, "SOG/R/G/B すべて _1(J5)"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOG(Yから分岐)から取る"),
     (proto::CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz"),

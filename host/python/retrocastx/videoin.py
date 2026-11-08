@@ -172,6 +172,7 @@ MODES = {
             (proto.CFG_KEY_PLL_DIVIDE, 1104, "起点=31kHzのhtotal(Viewerが上書きする)"),
             (proto.CFG_KEY_PLL_CTL, 0x18, "ICP = 40×75/1104 = 2.7 → 3"),
             (proto.CFG_KEY_NO_RAW_PHASE, 0, "生同期が実際に来るので極性判定に使う"),
+            (proto.CFG_KEY_KOKAME_SEL, 0, "小亀基板は使わない(既定のコンポジット側)"),
         ] + _RGB_ANALOG,
     },
     "msx": {
@@ -202,12 +203,14 @@ MODES = {
             # ★生同期は繋がらない。未接続のシュミットバッファ入力が自己発振して
             #   raw_ok が誤って立つと、存在しない同期の位相で極性が決まる
             (proto.CFG_KEY_NO_RAW_PHASE, 1, "★生同期は繋がらない(CSYNCをSOGで受ける)"),
+            (proto.CFG_KEY_KOKAME_SEL, 0, "小亀基板は使わない(既定のコンポジット側)"),
         ] + _RGB_ANALOG,
     },
     "composite": {
         "label": "コンポジット NTSC (J5のYピンにCVBS → Gin1、SOGin1へ分岐)",
         "roles": ("cvbs", None),
         "regs": _CVBS_TIMING + [
+            (proto.CFG_KEY_KOKAME_SEL, 0, "小亀基板のスイッチをコンポジット側へ"),
             (proto.CFG_KEY_SOG_THRESH, 0x0B, "CVBSのスライス位置(実機で成立している既定)"),
             # ★200 にしてある(以前は 230)。230 だとクランプ窓が**映像の頭に食い込み**、
             #   ラインの頭 0.3µs ほどが半分の明るさになり、窓の終わりが同期の揺れに
@@ -237,6 +240,7 @@ MODES = {
         "label": "S端子 (J5: Gin1=Y / Rin1=C、SOGin1へYから分岐)",
         "roles": ("y", "c"),
         "regs": _CVBS_TIMING + [
+            (proto.CFG_KEY_KOKAME_SEL, 1, "★小亀基板のスイッチをS端子側へ"),
             # ★**Yはボトムレベル + クランプ窓を同期チップの中へ。** ここは2回間違えた。
             #
             #   1回目: 窓をバックポーチ(230)に置いたままボトムにした → バックポーチが

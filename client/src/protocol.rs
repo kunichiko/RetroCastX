@@ -394,6 +394,12 @@ pub const CFG_KEY_SOG_HLEN: u16 = 0x0060;
 ///   効いたかどうかは `rawok` ではなく織り込みの成立で判断すること。
 pub const CFG_KEY_NO_RAW_PHASE: u16 = 0x006A;
 
+/// 小亀基板のアナログスイッチの選択。0=コンポジット/コンポーネント(既定) / 1=S端子。
+///
+/// 1本の選択線で Y/CVBS(→Gin1・SOGin1)と C/Pr(→Rin1)が一緒に切り替わる。
+/// 電源で 0 に戻るので、映像ソースの `input_regs` に入れて毎回書く。
+pub const CFG_KEY_KOKAME_SEL: u16 = 0x0096;
+
 /// 直近で見た SOGOUT の最長Low期間[pixクロック]。読み出し専用。
 ///
 /// ★**捕捉側の `sog_ok` はこれを使う**(`lowmax > 100 && lowmax < 0x8000`)。
