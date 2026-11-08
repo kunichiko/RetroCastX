@@ -91,6 +91,12 @@ else
         ENT="${OUTDIR}/entitlements.plist"
         security cms -D -i "${IOS_PROFILE}" > "${OUTDIR}/profile.plist"
         /usr/libexec/PlistBuddy -x -c "Print :Entitlements" "${OUTDIR}/profile.plist" > "${ENT}"
+        # チームのワイルドカードのプロファイル(App ID が "TEAM.*")なら、署名に
+        # 入れる ID は実際のバンドルIDにする。"*" のまま入れると実機が受け付けない
+        APPID=$(/usr/libexec/PlistBuddy -c "Print :application-identifier" "${ENT}")
+        case "${APPID}" in
+            *'*') /usr/libexec/PlistBuddy -c "Set :application-identifier ${APPID%%.*}.${BUNDLE_ID}" "${ENT}" ;;
+        esac
     fi
     codesign --force --sign "${IOS_SIGN_IDENTITY}" --entitlements "${ENT}" --timestamp=none "${APP}"
 fi

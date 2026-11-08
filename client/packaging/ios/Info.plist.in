@@ -30,6 +30,25 @@
 	</array>
 	<key>MinimumOSVersion</key>
 	<string>@MIN_OS@</string>
+	<!-- ★iOS 27 の SDK でビルドしたアプリは UIScene を採用しないと起動直後に
+	     落ちる。シーンのデリゲートは src/ios_scene.rs が定義するクラス -->
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>UIWindowSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneConfigurationName</key>
+					<string>Default</string>
+					<key>UISceneDelegateClassName</key>
+					<string>RetroCastXSceneDelegate</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
 	<!-- これが無いと旧機種互換の縮小表示(上下に黒帯)で起動する -->
 	<key>UILaunchScreen</key>
 	<dict/>

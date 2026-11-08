@@ -36,6 +36,8 @@ mod claim;
 mod cleanout;
 mod fullscreen;
 mod geometry;
+#[cfg(target_os = "ios")]
+mod ios_scene;
 mod keytap;
 mod latency;
 mod leds;
@@ -256,6 +258,8 @@ fn main() -> eframe::Result {
     }
 
     audio::prepare_session();
+    #[cfg(target_os = "ios")]
+    ios_scene::register();
     run_gui(
         GuiLaunch {
             port, subscribe_to, target_mac, bind, no_vsync, decay, interlace_decay, audio, cfg,
@@ -356,6 +360,8 @@ fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> efra
         "RetroCast X",
         options,
         Box::new(move |cc| {
+            #[cfg(target_os = "ios")]
+            ios_scene::set_window(cc);
             // アイコン由来の配色を先に当てる(ウィジェットが作られる前)
             theme::apply(&cc.egui_ctx);
             install_cjk_font(&cc.egui_ctx);
