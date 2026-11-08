@@ -144,8 +144,9 @@ Android はブロードキャストの送信に制限が無い(INTERNET 権限�
 
 - **iOS**: Apple Developer Program(macOS 版の署名に使っているものと同じ)。
   実機に入れるには開発用のプロビジョニングプロファイル、配るには TestFlight か
-  App Store の審査。バンドルIDは今のところ macOS 版と同じ `jp.ohnaka.RetroCastX`
-  (`IOS_BUNDLE_ID` で変えられる)。分けるかどうかは決めていない
+  App Store の審査。ID は全 OS 共通で、配布版 `jp.ohnaka.RetroCastX`、手元の
+  開発版 `jp.ohnaka.RetroCastX.dev`(MimicX と同じ使い分け。`APP_IDENTITY=prod`
+  を付けたときだけ配布版になる)
 - **Android**: いまの成果物は APK(デバッグ鍵で署名)。**Google Play への提出は
   AAB 形式が必須**なので、出すなら bundletool で AAB を作る段を足す。対象 API
   レベルの引き上げ要件(毎年)にも追従が要る
@@ -161,7 +162,7 @@ sender_sim を相手にする。**同じ LAN に実機ボードとデスクト�
 iOS シミュレータ(ホストとネットワークを共有する):
 
 ```sh
-xcrun simctl launch --console-pty booted jp.ohnaka.RetroCastX --port 34700 --no-subscribe
+xcrun simctl launch --console-pty booted jp.ohnaka.RetroCastX.dev --port 34700 --no-subscribe
 (cd host/python && python3 -m retrocastx.sender_sim --port 34700 --pixfmt rgb555)
 ```
 

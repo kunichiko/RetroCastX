@@ -5,7 +5,7 @@
 #
 # 例:
 #   cd client && packaging/android/build-apk.sh /tmp/out
-#   adb install -r /tmp/out/RetroCastX_android-0.12.0.apk
+#   adb install -r /tmp/out/RetroCastX_android-dev-0.12.0.apk
 #   adb logcat -s RetroCastX            # eprintln! の出力(src/android_log.rs)
 #
 # Gradle は使わない。Java/Kotlin のコードが無い(OS 標準の NativeActivity が
@@ -19,13 +19,22 @@
 # 署名は既定でデバッグ鍵(~/.android/debug.keystore)。配布用は
 #   ANDROID_KEYSTORE / ANDROID_KEYSTORE_PASS / ANDROID_KEY_ALIAS
 # を渡す。
+#
+# アプリの ID と表示名は MimicX と同じ使い分け。**既定は開発版**で、本番版とは
+# 別アプリとして並べて入れられる。CI のリリースビルドだけが APP_IDENTITY=prod を渡す。
+#   開発版(既定)        jp.ohnaka.RetroCastX.dev  "RetroCast X Dev"
+#   本番版(APP_IDENTITY=prod)  jp.ohnaka.RetroCastX      "RetroCast X"
 set -eu
 
 OUTDIR="${1:?出力先ディレクトリ}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 CLIENT=$(cd "${HERE}/../.." && pwd)
 
-PACKAGE="jp.ohnaka.retrocastx"
+case "${APP_IDENTITY:-dev}" in
+    prod) PACKAGE="jp.ohnaka.RetroCastX"; APP_NAME="RetroCast X" ;;
+    dev) PACKAGE="jp.ohnaka.RetroCastX.dev"; APP_NAME="RetroCast X Dev" ;;
+    *) echo "APP_IDENTITY は prod か dev" >&2; exit 2 ;;
+esac
 # AAudio(cpal の Android 経路)が使える下限
 MIN_SDK=26
 TARGET_SDK=35
@@ -63,6 +72,7 @@ rm -rf "${WORK}"
 mkdir -p "${WORK}/res" "${WORK}/lib/arm64-v8a"
 
 sed -e "s|@PACKAGE@|${PACKAGE}|g" \
+    -e "s|@LABEL@|${APP_NAME}|g" \
     -e "s|@VERSION@|${VERSION}|g" \
     -e "s|@VERSION_CODE@|${VERSION_CODE}|g" \
     -e "s|@MIN_SDK@|${MIN_SDK}|g" \
@@ -94,7 +104,7 @@ cp "${SO}" "${WORK}/lib/arm64-v8a/"
 # -P 16: .so を 16KB 境界に揃える(Android 15 以降の 16KB ページ端末で必須)
 "${BT}/zipalign" -f -P 16 4 "${WORK}/unaligned.apk" "${WORK}/aligned.apk"
 
-APK="${OUTDIR}/RetroCastX_android-${VERSION}.apk"
+APK="${OUTDIR}/RetroCastX_android-${APP_IDENTITY:-dev}-${VERSION}.apk"
 KS="${ANDROID_KEYSTORE:-${HOME}/.android/debug.keystore}"
 "${BT}/apksigner" sign \
     --ks "${KS}" \
@@ -104,4 +114,4 @@ KS="${ANDROID_KEYSTORE:-${HOME}/.android/debug.keystore}"
 rm -rf "${WORK}"
 
 echo "できました: ${APK}"
-echo "  version ${VERSION} (code ${VERSION_CODE})  arm64-v8a  署名: ${KS}"
+echo "  ${PACKAGE}  version ${VERSION} (code ${VERSION_CODE})  arm64-v8a  署名: ${KS}"

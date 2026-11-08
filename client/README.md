@@ -116,8 +116,14 @@ macOSの `.app` は `packaging/macos/bundle.sh` が組み立てる。**CIのYAML
 ```sh
 cargo build --release
 packaging/macos/bundle.sh target/release/retrocastx-viewer 0.1.0 0 /tmp/out
-open "/tmp/out/RetroCast X.app"
+open "/tmp/out/RetroCast X Dev.app"
 ```
+
+**手元で作ると開発版になる**(`jp.ohnaka.RetroCastX.dev`、「RetroCast X Dev」)。
+MimicX と同じ使い分けで、配布版(`jp.ohnaka.RetroCastX`)と並べて入れられる。
+本番版の ID で作るのは CI だけで、`APP_IDENTITY=prod` を付けて呼んでいる
+(iOS / Android のスクリプトも同じ)。なお macOS の設定ファイル
+(`~/.config/retrocastx/`)は ID ではなく固定の場所なので、両者で共有される。
 
 **Windowsはインストーラ版も作る**(`client/packaging/windows/retrocastx.iss`、
 Inno Setup 6。`windows-latest` に preinstall されている)。中身は zip と同じで、
@@ -198,8 +204,8 @@ iOS(Xcode のプロジェクトは使わない。`bundle.sh` が .app を組ん�
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 IPHONEOS_DEPLOYMENT_TARGET=16.0 cargo build --release --target aarch64-apple-ios-sim
 packaging/ios/bundle.sh target/aarch64-apple-ios-sim/release/retrocastx-viewer 0.12.0 0 /tmp/out simulator
-xcrun simctl install booted "/tmp/out/RetroCast X.app"
-xcrun simctl launch --console-pty booted jp.ohnaka.RetroCastX   # stderr がそのまま出る
+xcrun simctl install booted "/tmp/out/RetroCast X Dev.app"
+xcrun simctl launch --console-pty booted jp.ohnaka.RetroCastX.dev   # stderr がそのまま出る
 ```
 
 実機向けは `--target aarch64-apple-ios` でビルドし、`device` を指定して
@@ -212,7 +218,7 @@ Android(Gradle は使わない。NativeActivity に `.so` を入れて SDK の�
 ```sh
 rustup target add aarch64-linux-android
 packaging/android/build-apk.sh /tmp/out        # NDK / build-tools / platforms;android-35 が要る
-adb install -r /tmp/out/RetroCastX_android-0.12.0.apk
+adb install -r /tmp/out/RetroCastX_android-dev-0.12.0.apk
 adb logcat -s RetroCastX                       # eprintln! の出力
 ```
 

@@ -7,8 +7,13 @@
 #   cd client && cargo build --release --target aarch64-apple-ios-sim
 #   packaging/ios/bundle.sh target/aarch64-apple-ios-sim/release/retrocastx-viewer \
 #       0.12.0 0 /tmp/out simulator
-#   xcrun simctl install booted "/tmp/out/RetroCast X.app"
-#   xcrun simctl launch --console booted jp.ohnaka.RetroCastX
+#   xcrun simctl install booted "/tmp/out/RetroCast X Dev.app"
+#   xcrun simctl launch --console-pty booted jp.ohnaka.RetroCastX.dev
+#
+# アプリの ID と表示名は MimicX と同じ使い分け。**既定は開発版**で、本番版とは
+# 別アプリとして並べて入れられる。CI のリリースビルドだけが APP_IDENTITY=prod を渡す。
+#   開発版(既定)        jp.ohnaka.RetroCastX.dev  "RetroCast X Dev"
+#   本番版(APP_IDENTITY=prod)  jp.ohnaka.RetroCastX      "RetroCast X"
 #
 # 実機(device)は署名に次の環境変数が要る:
 #   IOS_SIGN_IDENTITY   "Apple Development: ..." など(security find-identity -p codesigning)
@@ -27,8 +32,11 @@ OUTDIR="${4:?出力先ディレクトリ}"
 KIND="${5:?simulator か device}"
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-APP_NAME="RetroCast X"
-BUNDLE_ID="${IOS_BUNDLE_ID:-jp.ohnaka.RetroCastX}"
+case "${APP_IDENTITY:-dev}" in
+    prod) BUNDLE_ID="jp.ohnaka.RetroCastX"; APP_NAME="RetroCast X" ;;
+    dev) BUNDLE_ID="jp.ohnaka.RetroCastX.dev"; APP_NAME="RetroCast X Dev" ;;
+    *) echo "APP_IDENTITY は prod か dev" >&2; exit 2 ;;
+esac
 EXECUTABLE="retrocastx-viewer"
 # rustc の aarch64-apple-ios の既定の最低版より上げてある。wgpu の Metal 経路が
 # 前提にする版に揃える

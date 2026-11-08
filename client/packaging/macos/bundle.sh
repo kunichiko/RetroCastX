@@ -6,7 +6,12 @@
 # 例(手元で試すとき):
 #   cd client && cargo build --release
 #   packaging/macos/bundle.sh target/release/retrocastx-viewer 0.1.0 0 /tmp/out
-#   open "/tmp/out/RetroCast X.app"
+#   open "/tmp/out/RetroCast X Dev.app"
+#
+# アプリの ID と表示名は MimicX と同じ使い分け。**既定は開発版**で、本番版とは
+# 別アプリとして並べて入れられる。CI のリリースビルドだけが APP_IDENTITY=prod を渡す。
+#   開発版(既定)        jp.ohnaka.RetroCastX.dev  "RetroCast X Dev"
+#   本番版(APP_IDENTITY=prod)  jp.ohnaka.RetroCastX      "RetroCast X"
 #
 # CI(.github/workflows/viewer-release.yml)からも同じスクリプトを呼ぶ。
 # **YAMLの中にロジックを書かない**こと: 署名で詰まったときに手元で同じものを
@@ -22,8 +27,11 @@ BUILD="${3:?ビルド番号 (例 GITHUB_RUN_NUMBER)}"
 OUTDIR="${4:?出力先ディレクトリ}"
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-APP_NAME="RetroCast X"
-BUNDLE_ID="jp.ohnaka.RetroCastX"
+case "${APP_IDENTITY:-dev}" in
+    prod) BUNDLE_ID="jp.ohnaka.RetroCastX"; APP_NAME="RetroCast X" ;;
+    dev) BUNDLE_ID="jp.ohnaka.RetroCastX.dev"; APP_NAME="RetroCast X Dev" ;;
+    *) echo "APP_IDENTITY は prod か dev" >&2; exit 2 ;;
+esac
 EXECUTABLE="retrocastx-viewer"
 
 APP="${OUTDIR}/${APP_NAME}.app"

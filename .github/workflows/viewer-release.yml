@@ -241,6 +241,10 @@ jobs:
           done
 
       - name: Bundle .app
+        # 配布物は本番版の ID(jp.ohnaka.RetroCastX)。手元のビルドの既定は
+        # 開発版(.dev)なので、ここで明示する(bundle.sh 冒頭参照)
+        env:
+          APP_IDENTITY: prod
         run: |
           set -euo pipefail
           mkdir -p ../dist/app

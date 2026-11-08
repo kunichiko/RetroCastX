@@ -18,7 +18,7 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <application
-        android:label="RetroCast X"
+        android:label="@LABEL@"
         android:icon="@mipmap/ic_launcher"
         android:hasCode="false"
         android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
