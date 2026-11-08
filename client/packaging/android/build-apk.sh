@@ -80,19 +80,38 @@ sed -e "s|@PACKAGE@|${PACKAGE}|g" \
     -e "s|@TARGET_SDK@|${TARGET_SDK}|g" \
     "${HERE}/AndroidManifest.xml.in" > "${WORK}/AndroidManifest.xml"
 
-# ランチャーアイコン。Android も iOS と同じく全面ベタの master を縮める
-# (丸や角丸の切り抜きはランチャー側がやる)。sips は macOS 標準、Linux なら ImageMagick
+# ランチャーアイコン。アダプティブアイコン(前景+背景の2層)にする。
+#
+# ★**PNG を1枚置くだけ(従来形式)だと、Android 8 以降のランチャーは白い丸の中に
+#   小さく縮めて出す。** iOS と違い、従来形式の絵を丸く切り抜いてはくれない。
+#
+# 層は 108dp 四方で、マスク(丸・角丸など機種次第)で見えるのは中央の 72dp。
+# master をちょうど 72dp に縮めて置けば、丸いマスクでも四隅が欠けるだけで
+# 絵の全体が見える。周りは master の縁と同じ黒で埋め、背景も黒にする
+# (視差で前景が動いても境目が出ない)。minSdk が 26 なので従来形式は要らない。
+# sips は macOS 標準、Linux なら ImageMagick
 MASTER="${CLIENT}/packaging/AppIcon.png"
-for spec in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
+for spec in mdpi:72:108 hdpi:108:162 xhdpi:144:216 xxhdpi:216:324 xxxhdpi:288:432; do
     d="${WORK}/res/mipmap-${spec%%:*}"
-    px="${spec##*:}"
+    px=$(echo "${spec}" | cut -d: -f2)
+    full=$(echo "${spec}" | cut -d: -f3)
     mkdir -p "${d}"
     if command -v sips >/dev/null; then
-        sips -z "${px}" "${px}" "${MASTER}" --out "${d}/ic_launcher.png" >/dev/null
+        sips -z "${px}" "${px}" "${MASTER}" --padToHeightWidth "${full}" "${full}" \
+            --padColor 000000 --out "${d}/ic_launcher_foreground.png" >/dev/null
     else
-        convert "${MASTER}" -resize "${px}x${px}" "${d}/ic_launcher.png"
+        convert "${MASTER}" -resize "${px}x${px}" -background black -gravity center \
+            -extent "${full}x${full}" "${d}/ic_launcher_foreground.png"
     fi
 done
+mkdir -p "${WORK}/res/mipmap-anydpi-v26"
+cat > "${WORK}/res/mipmap-anydpi-v26/ic_launcher.xml" <<'XML'
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@android:color/black" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>
+XML
 
 "${BT}/aapt2" compile --dir "${WORK}/res" -o "${WORK}/res.zip"
 "${BT}/aapt2" link -o "${WORK}/unaligned.apk" -I "${PLATFORM_JAR}" \
