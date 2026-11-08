@@ -37,6 +37,15 @@ git commit -s -m "コミットメッセージ"
 Signed-off-by: 山田太郎 <taro@example.com>
 ```
 
+毎回 `-s` を付ける代わりに、リポジトリ同梱のフックで自動化できます。
+clone したら一度だけ次を実行してください。
+
+```sh
+git config core.hooksPath .githooks
+```
+
+以後のコミットには `Signed-off-by` が自動で付きます(既にあれば足しません)。
+
 この署名は [Developer Certificate of Origin 1.1](DCO)(このリポジトリの `DCO`
 ファイル)への同意を意味します。要約すると「このコードは自分が書いたものか、
 適切なライセンスの下で持ち込む権利があるものです」という本人の宣言です。
