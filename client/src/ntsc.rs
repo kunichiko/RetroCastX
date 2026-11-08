@@ -342,58 +342,82 @@ fn tbc_plane(src: &[u8], w: usize, h: usize, rows: &[bool], ba: usize, bb: usize
             }
         }
     }
-    let (mut ss, mut nn) = (0.0f32, 0usize);
-    let mut pad: Vec<f32> = Vec::with_capacity(w + 16);
-    for y in 0..h {
-        if !used(y) {
-            continue;
-        }
-        let row = &src[y * w * 2..(y + 1) * w * 2];
-        let o = &mut out[y * w..(y + 1) * w];
-        let t = tau[y];
-        // ★**行の中でもずれは伸びる**(速度誤差)。取り込みクロックの周波数が
-        //   行ごとにわずかに違うので、バーストで揃えた後の残りが行の右へ行くほど
-        //   直線的に増えていた(実測: 13.6µs で 0.019 → 57.6µs で 0.069サンプル)。
-        //   クロックは行をまたいで連続しているので、**時間的に次の行のバースト**が
-        //   この行の終わりのずれを表す。その間を直線で結ぶと右端の残りは 0.043 に
-        //   なった(前後4本の3次補間でも 0.041 で、差は小さいので直線にした)。
-        //   時間的に次の行 = 同じフィールドの隣 = コム間隔 `step` 先の行。
-        let dt = if step > 0 && y + step < h && has[y] && has[y + step] {
-            (tau[y + step] - t) / w as f32
-        } else {
-            0.0
-        };
-        let nb = (ba + bb) as f32 * 0.5;
-        if t == 0.0 && dt == 0.0 {
-            for n in 0..w {
-                o[n] = row[n * 2] as f32;
+    // 行ごとに独立なので、復調の本体と同じく行の範囲ごとにスレッドへ分ける。
+    // ★iPhone 15 Pro の 8fsc で、本体だけ4本に分けたときは 1フィールド 20ms
+    //   (1本で 37ms)。この段も分けると 15.5ms になり、60fps に届く
+    let nthreads = decode_threads();
+    let rows_per = h.div_ceil(nthreads).max(1);
+    let (tau, has) = (&tau, &has);
+    let (ss, nn) = std::thread::scope(|sc| {
+        let work = move |ci: usize, out: &mut [f32]| {
+            let y0 = ci * rows_per;
+            let y1 = (y0 + rows_per).min(h);
+            let (mut ss, mut nn) = (0.0f32, 0usize);
+            let mut pad: Vec<f32> = Vec::with_capacity(w + 16);
+            for y in y0..y1 {
+                if !used(y) {
+                    continue;
+                }
+                let row = &src[y * w * 2..(y + 1) * w * 2];
+                let o = &mut out[(y - y0) * w..(y - y0 + 1) * w];
+                let t = tau[y];
+                // ★**行の中でもずれは伸びる**(速度誤差)。取り込みクロックの周波数が
+                //   行ごとにわずかに違うので、バーストで揃えた後の残りが行の右へ行くほど
+                //   直線的に増えていた(実測: 13.6µs で 0.019 → 57.6µs で 0.069サンプル)。
+                //   クロックは行をまたいで連続しているので、**時間的に次の行のバースト**が
+                //   この行の終わりのずれを表す。その間を直線で結ぶと右端の残りは 0.043 に
+                //   なった(前後4本の3次補間でも 0.041 で、差は小さいので直線にした)。
+                //   時間的に次の行 = 同じフィールドの隣 = コム間隔 `step` 先の行。
+                let dt = if step > 0 && y + step < h && has[y] && has[y + step] {
+                    (tau[y + step] - t) / w as f32
+                } else {
+                    0.0
+                };
+                let nb = (ba + bb) as f32 * 0.5;
+                if t == 0.0 && dt == 0.0 {
+                    for n in 0..w {
+                        o[n] = row[n * 2] as f32;
+                    }
+                    continue;
+                }
+                ss += t * t;
+                nn += 1;
+                // Catmull-Rom。線形補間だと副搬送波の振幅がずれ量で変わる
+                // (0.5サンプルで 7.6%)ので、行ごとに彩度が揺れてしまう。
+                // 端の処理を内側のループから追い出すため、両端を延ばした行を作る
+                // (ずれは TBC_MAX_SAMPLES と速度ぶんで高々数サンプル)
+                const PAD: usize = 8;
+                pad.clear();
+                pad.extend(std::iter::repeat(row[0] as f32).take(PAD));
+                pad.extend((0..w).map(|n| row[n * 2] as f32));
+                pad.extend(std::iter::repeat(row[(w - 1) * 2] as f32).take(PAD));
+                let lim = (PAD - 2) as f32;
+                for n in 0..w {
+                    let sh = (t + dt * (n as f32 - nb)).clamp(-lim, lim);
+                    let x = n as f32 + sh;
+                    let i = x.floor();
+                    let f = x - i;
+                    let i = (i as isize + PAD as isize) as usize;
+                    let (p0, p1, p2, p3) = (pad[i - 1], pad[i], pad[i + 1], pad[i + 2]);
+                    o[n] = p1 + 0.5 * f * (p2 - p0
+                        + f * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3
+                        + f * (3.0 * (p1 - p2) + p3 - p0)));
+                }
             }
-            continue;
-        }
-        ss += t * t;
-        nn += 1;
-        // Catmull-Rom。線形補間だと副搬送波の振幅がずれ量で変わる
-        // (0.5サンプルで 7.6%)ので、行ごとに彩度が揺れてしまう。
-        // 端の処理を内側のループから追い出すため、両端を延ばした行を作る
-        // (ずれは TBC_MAX_SAMPLES と速度ぶんで高々数サンプル)
-        const PAD: usize = 8;
-        pad.clear();
-        pad.extend(std::iter::repeat(row[0] as f32).take(PAD));
-        pad.extend((0..w).map(|n| row[n * 2] as f32));
-        pad.extend(std::iter::repeat(row[(w - 1) * 2] as f32).take(PAD));
-        let lim = (PAD - 2) as f32;
-        for n in 0..w {
-            let sh = (t + dt * (n as f32 - nb)).clamp(-lim, lim);
-            let x = n as f32 + sh;
-            let i = x.floor();
-            let f = x - i;
-            let i = (i as isize + PAD as isize) as usize;
-            let (p0, p1, p2, p3) = (pad[i - 1], pad[i], pad[i + 1], pad[i + 2]);
-            o[n] = p1 + 0.5 * f * (p2 - p0
-                + f * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3
-                + f * (3.0 * (p1 - p2) + p3 - p0)));
-        }
-    }
+            (ss, nn)
+        };
+        let mut chunks = out.chunks_mut(rows_per * w).enumerate();
+        let first = chunks.next();
+        let handles: Vec<_> = chunks
+            .map(|(ci, out)| sc.spawn(move || {
+                crate::receiver::raise_thread_qos();
+                work(ci, out)
+            }))
+            .collect();
+        let r0 = first.map_or((0.0, 0), |(ci, out)| work(ci, out));
+        handles.into_iter().map(|h| h.join().unwrap())
+            .fold(r0, |a, b| (a.0 + b.0, a.1 + b.1))
+    });
     (out, if nn > 0 { (ss / nn as f32).sqrt() } else { 0.0 })
 }
 
@@ -484,6 +508,15 @@ fn gamma_lut(adj: Adjust) -> Option<[u8; 256]> {
         *v = ((i as f32 / 255.0).powf(inv) * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
     }
     Some(t)
+}
+
+/// 復調を行の範囲ごとに分けるスレッドの数(decode_field の本体の注記)
+fn decode_threads() -> usize {
+    if cfg!(target_os = "android") {
+        1
+    } else {
+        std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 4)
+    }
 }
 
 pub fn decode_field(
@@ -740,11 +773,7 @@ pub fn decode_field(
     //   付かない。Pixel 10 で 1フィールドが、4本では 33〜35ms、1本+ヒントでは
     //   13ms(ヒントなしの1本は 24〜33ms)。呼んだスレッドが遅いコアの
     //   チャンクを待つことになるため
-    let nthreads = if cfg!(target_os = "android") {
-        1
-    } else {
-        std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 4)
-    };
+    let nthreads = decode_threads();
     let rows_per = h.div_ceil(nthreads).max(1);
     let fb_len = (h * w * 4).min(fb.len());
     // スレッドへは参照で渡す(move クロージャが所有権ごと持っていかないように)
