@@ -2991,6 +2991,7 @@ dependencies = [
  "cpal",
  "eframe",
  "if-addrs",
+ "jni 0.21.1",
  "libc",
  "pollster 1.0.1",
  "resvg",

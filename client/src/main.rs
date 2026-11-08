@@ -51,6 +51,8 @@ mod receiver;
 mod settings;
 mod theme;
 mod toast;
+#[cfg_attr(not(any(target_os = "ios", target_os = "android")), allow(dead_code))]
+mod touch;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -381,6 +383,7 @@ fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> efra
                 decay,
                 interlace_decay,
                 awake: awake::KeepAwake::new(),
+                touch: touch::TouchGesture::default(),
             };
             app.restore_windows(&cc.egui_ctx, cc.wgpu_render_state.clone());
             Ok(Box::new(app))
@@ -399,6 +402,7 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
         settings::set_base_dir(dir);
     }
     awake::keep_screen_on(&app);
+    let _ = ANDROID_APP.set(app.clone());
     let slot_id = 0;
     let cfg = settings::Settings::load_slot(slot_id);
     eprintln!("settings: {}", settings::Settings::path_for_slot(slot_id).display());
@@ -510,11 +514,17 @@ pub fn relaunch(extra: &[String]) -> bool {
 fn safe_area_spacers(root: &mut egui::Ui) {
     let ctx = root.ctx().clone();
     let (full, safe) = (ctx.viewport_rect(), ctx.content_rect());
+    let [top, bottom, left, right] = android_insets(&ctx).unwrap_or([
+        safe.min.y - full.min.y,
+        full.max.y - safe.max.y,
+        safe.min.x - full.min.x,
+        full.max.x - safe.max.x,
+    ]);
     let sides = [
-        (egui::Panel::top("safe-top"), safe.min.y - full.min.y),
-        (egui::Panel::bottom("safe-bottom"), full.max.y - safe.max.y),
-        (egui::Panel::left("safe-left"), safe.min.x - full.min.x),
-        (egui::Panel::right("safe-right"), full.max.x - safe.max.x),
+        (egui::Panel::top("safe-top"), top),
+        (egui::Panel::bottom("safe-bottom"), bottom),
+        (egui::Panel::left("safe-left"), left),
+        (egui::Panel::right("safe-right"), right),
     ];
     for (panel, size) in sides {
         if size > 0.5 {
@@ -527,6 +537,72 @@ fn safe_area_spacers(root: &mut egui::Ui) {
         }
     }
 }
+
+/// Android の余白 [上, 下, 左, 右](pt)。
+///
+/// ★**egui-winit は Android の余白を egui に渡さない**(iOS だけ)。targetSdk 35
+///   からはウィンドウがナビゲーションバーの下まで広がるので、何もしないと
+///   操作パネルの下端がバーに潜る(Pixel 10 で確認)。
+/// ★**NativeActivity の content rect は使えない。** 窓全体が返ってくる(余白 0)。
+///   JNI で View の WindowInsets を読む。読むだけなら UI スレッド以外からでよい。
+///   毎フレーム JNI を呼ぶのは無駄なので、0.5秒ごとに読み直す。
+#[cfg(target_os = "android")]
+fn android_insets(ctx: &egui::Context) -> Option<[f32; 4]> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHE: Mutex<Option<(Instant, [i32; 4])>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap();
+    let px = match *cache {
+        Some((at, px)) if at.elapsed() < Duration::from_millis(500) => px,
+        _ => {
+            let px = read_window_insets()?;
+            *cache = Some((Instant::now(), px));
+            px
+        }
+    };
+    let ppp = ctx.pixels_per_point();
+    Some(px.map(|v| v.max(0) as f32 / ppp))
+}
+
+/// `getWindow().getDecorView().getRootWindowInsets()` の各辺 [上, 下, 左, 右](px)
+#[cfg(target_os = "android")]
+fn read_window_insets() -> Option<[i32; 4]> {
+    use jni::objects::JObject;
+    let app = ANDROID_APP.get()?;
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
+    // android_main のスレッドは android-activity が接続済みなので、外されない
+    let mut env = vm.attach_current_thread().ok()?;
+    let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
+    env.with_local_frame(8, |env| -> jni::errors::Result<Option<[i32; 4]>> {
+        let window = env.call_method(&activity, "getWindow", "()Landroid/view/Window;", &[])?.l()?;
+        let decor = env.call_method(&window, "getDecorView", "()Landroid/view/View;", &[])?.l()?;
+        let insets = env
+            .call_method(&decor, "getRootWindowInsets", "()Landroid/view/WindowInsets;", &[])?
+            .l()?;
+        if insets.is_null() {
+            return Ok(None); // まだ窓に付いていない
+        }
+        let mut side = |name: &str| env.call_method(&insets, name, "()I", &[]).and_then(|v| v.i());
+        Ok(Some([
+            side("getSystemWindowInsetTop")?,
+            side("getSystemWindowInsetBottom")?,
+            side("getSystemWindowInsetLeft")?,
+            side("getSystemWindowInsetRight")?,
+        ]))
+    })
+    .ok()
+    .flatten()
+}
+
+#[cfg(not(target_os = "android"))]
+fn android_insets(_ctx: &egui::Context) -> Option<[f32; 4]> {
+    None
+}
+
+/// 余白(content rect)を引くために持っておく。android_main が入れる
+#[cfg(target_os = "android")]
+static ANDROID_APP: std::sync::OnceLock<winit::platform::android::activity::AndroidApp> =
+    std::sync::OnceLock::new();
 
 /// 手入力のボードIP。前後の空白を落とし、IPv4 として読めるときだけ返す
 fn valid_ipv4(s: &str) -> Option<String> {
@@ -4845,6 +4921,15 @@ impl Session {
                     "NICの受信バッファーが小さい可能性があります\n                     (このドライバは設定値を公開していないので確認できません)",
                 );
         }
+        // ★**モバイルに PowerShell の案内を出しても直せない。** 落ちる理由は
+        //   たいてい Wi-Fi の帯域で(Pixel 10 の 11ac でコンポジット約450Mbpsが
+        //   7〜9%落ちた)、打てる手は有線にするか帯域を下げるかしかない。
+        if MOBILE {
+            ui.weak(egui::RichText::new(
+                "Wi-Fi では帯域が足りないことがあります。USB の有線LANアダプタを\n\
+                 使うか、Tune の「間引き」で帯域を下げてください").size(11.0));
+            return;
+        }
         // ★**押したら直る**ようにする。管理者権限が要るのでこのプロセスは
         //   昇格させず、ShellExecuteW の runas でこの1コマンドだけ昇格させる。
         //   コピーの方も残す ─ UACを使えない環境や、内容を確認したい人のため。
@@ -5191,6 +5276,8 @@ struct App {
     interlace_decay: f32,
     /// 前面にあって映像を受けている間、OS のスリープを止める(awake.rs)
     awake: awake::KeepAwake,
+    /// タッチの身振りの振り分け(モバイル。touch.rs)
+    touch: touch::TouchGesture,
 }
 
 impl App {
@@ -5248,6 +5335,11 @@ impl eframe::App for App {
     /// ★**転送先は1つだけ。** キーは実機のキーボードに化けるので、複数の
     ///   ウィンドウが同時に送ると誰も操作できなくなる。
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // スクロールのつもりの縦スワイプがスライダーを動かさないよう、egui に
+        // 渡す前に身振りを決める
+        if MOBILE {
+            self.touch.filter(&mut raw_input.events);
+        }
         if let Some(s) = self.sessions.first_mut() {
             s.remote_step(ctx, raw_input);
         }
@@ -5728,9 +5820,12 @@ impl Session {
                 self.audio_ui(ui);
                 ui.separator();
 
-                Self::section(ui, "Remote input");
-                self.remote_ui(ui);
-                ui.separator();
+                // MimicX へのキー転送は macOS だけ(CoreMIDI)
+                if !MOBILE {
+                    Self::section(ui, "Remote input");
+                    self.remote_ui(ui);
+                    ui.separator();
+                }
 
                 Self::section(ui, "Tune");
                 self.tune_ui(ui);

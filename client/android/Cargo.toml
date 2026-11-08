@@ -28,3 +28,7 @@ socket2.workspace = true
 libc.workspace = true
 winit.workspace = true
 if-addrs.workspace = true
+# ナビゲーションバーなどの余白(WindowInsets)を Java から読む(src/main.rs の
+# read_window_insets)。android-activity / cpal が使っている版とは別だが、0.21 の
+# API の方が素直に書ける
+jni = "0.21"
