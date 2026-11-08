@@ -30,14 +30,44 @@ pub fn band_of(fh_khz: f32) -> u32 {
 pub const NTSC_LINE_US: f32 = 63.556;
 pub const NTSC_LINES: f32 = 525.0;
 
-/// 管面の縦横比。NTSC を時間ベースで出すときは、見せている時間窓から求める
-pub fn tube_aspect_eff(tube_aspect: f32, ntsc: bool, time_based: bool, mon: [f32; 4]) -> f32 {
-    if !ntsc || !time_based {
-        return tube_aspect;
-    }
-    let h_us = mon[0].max(0.01) * NTSC_LINE_US;
-    let lines = mon[2].max(0.01) * NTSC_LINES;
+/// コンポジット/S端子の管面の初期値 [H幅, H位置, V幅, V位置]。
+///
+/// ★**ビデオデッキの HDMI 出力と同じ範囲を映す**(2026-10-09 実測、白黒の格子
+///   パターン。中央の点と格子を目印に、こちらの受信データと同じ物差しで比べた)。
+///     横: 9.95〜60.87µs(= ntsc::ACTIVE_US)。中心 35.41µs が中央の点に一致
+///     縦: 480ライン。フレームの 35.6〜515.6 行目(中央の点は 272.5 行目)
+///   以前は15kHz帯の管面(RGB用)を共用していて、帰線区間の黒い余白まで映り、
+///   中心も右へずれていた。
+///   位置は「周期の中心からのずれ」で、絵を動かす向きに符号を取る(render.rs)。
+pub const MON_NTSC: [f32; 4] = {
+    let (h0, h1) = crate::ntsc::ACTIVE_US;
+    let (v0, v1) = (35.6, 515.6);
+    [
+        (h1 - h0) / NTSC_LINE_US,
+        0.5 - (h0 + h1) * 0.5 / NTSC_LINE_US,
+        (v1 - v0) / NTSC_LINES,
+        0.5 - (v0 + v1) * 0.5 / NTSC_LINES,
+    ]
+};
+
+/// コンポジット/S端子の管面の縦横比。初期の窓(`MON_NTSC`)を規格の画素比
+/// (720サンプル×480ライン = 4:3、有効 53.333µs)で映した形で、約 1.274
+/// (ビデオデッキと同じ)。
+///
+/// ★**いまの H幅/V幅からは求めない。** 以前は映している窓から毎回求めていた
+///   ので、H幅を 1.1 倍にすると管面の横幅も 1.1 倍になり、1µs あたりの幅が
+///   変わらず**絵が動かなかった**(管面の幅だけが動く)。実機の振幅つまみは
+///   ガラスの形を変えずに絵を伸び縮みさせるものなので、形は初期の窓で固定し、
+///   つまみは RGB と同じく絵の大きさに効かせる。
+pub const NTSC_TUBE_ASPECT: f32 = {
+    let h_us = MON_NTSC[0] * NTSC_LINE_US;
+    let lines = MON_NTSC[2] * NTSC_LINES;
     4.0 / 3.0 * (h_us / 53.333) * (480.0 / lines)
+};
+
+/// 管面の縦横比。NTSC を時間ベースで出すときは、規格で決まる形に固定する
+pub fn tube_aspect_eff(tube_aspect: f32, ntsc: bool, time_based: bool) -> f32 {
+    if ntsc && time_based { NTSC_TUBE_ASPECT } else { tube_aspect }
 }
 
 /// 利用者の設定のうち幾何に効くもの
@@ -155,6 +185,33 @@ mod tests {
         assert_eq!(params(Some(&il), 525.0, (0, 0, 0, 0), &i).vbp, 30);
         let mut s = VtotalSmoother::default();
         assert_eq!(s.update(Some(&p)), 1136.0);
+    }
+
+    /// コンポジットの管面の形は、初期の窓をビデオデッキと同じ 1.274 で映す形。
+    #[test]
+    fn ntsc_tube_aspect_matches_vcr() {
+        assert!((NTSC_TUBE_ASPECT - 1.274).abs() < 0.005, "縦横比 {NTSC_TUBE_ASPECT}");
+        assert_eq!(tube_aspect_eff(4.0 / 3.0, true, true), NTSC_TUBE_ASPECT);
+        // 時間ベースでなければ、RGB と同じく管面の設定に従う
+        assert_eq!(tube_aspect_eff(4.0 / 3.0, true, false), 4.0 / 3.0);
+        assert_eq!(tube_aspect_eff(4.0 / 3.0, false, true), 4.0 / 3.0);
+    }
+
+    /// ★**H幅/V幅は振幅つまみとして絵の大きさに効くこと。** 管面の形は固定で、
+    ///   窓(映す時間)だけが変わる。1µs あたりの管面上の幅は窓に反比例する。
+    ///   以前は管面の形も窓と一緒に変わり、この比が 1 のままで絵が動かなかった。
+    #[test]
+    fn ntsc_amplitude_scales_the_picture() {
+        let tube_w = |h_size: f32| {
+            let a = display_aspect((720.0, 480.0), tube_aspect_eff(0.0, true, true), 0);
+            let (_, _, w, _) = fit_centered(1280.0, 960.0, a);
+            // 管面の幅 ÷ 映している時間 = 1µs あたりの幅
+            w / (h_size * NTSC_LINE_US)
+        };
+        let base = tube_w(MON_NTSC[0]);
+        let shrunk = tube_w(MON_NTSC[0] * 1.1);
+        assert!((shrunk / base - 1.0 / 1.1).abs() < 1e-4,
+                "H幅を広げても絵が縮まない: {base} → {shrunk}");
     }
 
     /// 管面は画面いっぱいに比を保って置く(テクスチャの画素数では決めない)

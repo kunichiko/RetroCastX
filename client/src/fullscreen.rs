@@ -121,7 +121,7 @@ impl FsGeom {
         };
         let default = if ntsc { self.mon_ntsc } else { [1.0, 0.0, 1.0, 0.0] };
         let mon = self.mon_bands.get(&key).copied().unwrap_or(default);
-        let tube = g::tube_aspect_eff(self.tube_aspect, ntsc, self.time_based, mon);
+        let tube = g::tube_aspect_eff(self.tube_aspect, ntsc, self.time_based);
         // 絵の広がりは span_*(明るい画素がある範囲)。無ければ active_*(main.rs と同じ)
         let act = {
             let st = shared.stats.lock().unwrap();
