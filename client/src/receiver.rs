@@ -21,7 +21,11 @@ use crate::protocol::{self as proto, Packet};
 ///
 /// 48000パケット/秒を落とさず捌くのは実質リアルタイム処理なので、
 /// USER_INTERACTIVE を要求する。効かない環境では単に無視される。
-#[cfg(target_os = "macos")]
+///
+/// ★**iOS ではこれが無いと省電力コアに回される。** iPhone 15 Pro の実測で、
+///   組立のスレッドが時間の約7割を E コアで走り、組立の遅延が 540ms まで
+///   溜まった(Time Profiler)。iOS も同じ API なので Apple 全体で効かせる。
+#[cfg(target_vendor = "apple")]
 fn raise_thread_qos() {
     // QOS_CLASS_USER_INTERACTIVE
     unsafe {
@@ -29,7 +33,18 @@ fn raise_thread_qos() {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Android は QoS の代わりにスレッドの nice 値を上げる。-8 は Android の
+/// THREAD_PRIORITY_URGENT_DISPLAY(画面の更新に使う優先度)。アプリ自身の
+/// スレッドなので権限は要らない。失敗しても既定の優先度で動くだけ
+#[cfg(target_os = "android")]
+fn raise_thread_qos() {
+    // Linux では PRIO_PROCESS + 0 が「呼んだスレッド」を指す
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS, 0, -8);
+    }
+}
+
+#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
 fn raise_thread_qos() {}
 
 pub struct Config {
