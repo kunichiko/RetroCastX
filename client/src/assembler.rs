@@ -115,6 +115,12 @@ pub struct FrameAssembler {
     interlace_decay: f32,
     /// 復調を止めて生のYをそのまま見る(切り分け用)
     raw_view: bool,
+    /// 3次元コム(前後のフレームを使う Y/C 分離)を使うか。切ると2次元だけになる。
+    ///
+    /// ★**モバイルの CPU では追いつかない。** Pixel 10 で 8fsc のコンポジットを
+    ///   復調すると組立が 720ms まで遅れ、受信キューから溢れた。静止部分の色の
+    ///   にじみが少し増える代わりに負担が減る
+    pub comb3d: bool,
     /// 見た目の調整(彩度・明るさ・コントラスト・色相)
     adjust: ntsc::Adjust,
     /// 表示するフィールド。0=織り込み(通常) / 1=偶数スロットのみ / 2=奇数スロットのみ。
@@ -156,6 +162,7 @@ impl FrameAssembler {
             decay: 0.8,
             interlace_decay: 1.0,
             raw_view: false,
+            comb3d: true,
             field_view: 0,
             adjust: ntsc::Adjust::default(),
         }
@@ -640,7 +647,7 @@ impl FrameAssembler {
             };
             let info = ntsc::decode_field(
                 &self.raw, self.width, self.height, &self.line_seen, dotclk,
-                &mut self.fb, Some(hist), self.adjust);
+                &mut self.fb, self.comb3d.then_some(hist), self.adjust);
             self.ntsc_info = Some(info);
         }
         // このフレームで受信できなかったライン(=送信側でドロップ)を前値×decayで減衰。
