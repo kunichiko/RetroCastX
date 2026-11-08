@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- プライバシーマニフェスト。bundle.sh が .app の直下に入れる。
+
+     追跡も、データの収集もしない。「理由の申告が要る API」(required reason API)は
+     Rust の標準ライブラリ経由で次の2つを使っているので申告する
+     (nm -u で実行ファイルの未定義シンボルを見て決めた):
+
+       SystemBootTime  mach_absolute_time(std::time::Instant)
+                       35F9.1 = 経過時間を測るため(フレーム間隔・遅延の計測)
+       FileTimestamp   stat / fstat / fstatat(設定ファイルの読み書き)
+                       C617.1 = アプリのコンテナ内のファイルの情報
+
+     UserDefaults・ディスク容量・キーボードの API は使っていない。依存を足して
+     これらが増えたら、ここも足すこと(申告が無いと App Store Connect から
+     ITMS-91053 の警告が来て、新規の審査では弾かれる)。 -->
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>35F9.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
