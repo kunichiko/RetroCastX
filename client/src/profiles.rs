@@ -103,6 +103,12 @@ pub struct Profile {
     /// 良く見えてしまう。残差の閾値を通っている時点でどちらも「信号を説明できる」
     /// ので、そこから先は推測の水晶より実測済みの水晶を優先する。
     pub verified: bool,
+    /// 3チャンネルが R/G/B ではなく **Pr/Y/Pb**(コンポーネント)で来るか。
+    ///
+    /// TVP7002 の色空間変換は RGB→YCbCr の向きしか無いので、ボードは
+    /// 赤ch=Pr / 緑ch=Y / 青ch=Pb を RGB888 の枠でそのまま送り、Viewer が
+    /// RGB に直す(`assembler` の `ycbcr`)。
+    pub ycbcr: bool,
 }
 
 /// 入力MUX(19h)。[7:6]=SOG [5:4]=R [3:2]=G [1:0]=B、各 00=_1 / 01=_2 / 10=_3
@@ -198,6 +204,8 @@ const REGS_X68000: InputRegs = &[
     //   実測(24kHz 1024x848)の織り込みのずれ: 0x08 → 4.6〜5.0 / 0x09 → 1.39〜1.44
     (proto::CFG_KEY_SYNC_CTL2, 0x09, "★VSOUTを同期セパレータ直結(フィールドごと)"),
     (proto::CFG_KEY_NO_RAW_PHASE, 0, "生同期(HSYNC_A/VSYNC_A)が実際に来るので使う"),
+    (proto::CFG_KEY_SOG_VTH, 400, "垂直ブロードパルスの検出閾値(既定。8fscで776、MSXで579)"),
+    (proto::CFG_KEY_KOKAME_SEL, 0, "小亀基板は使わない(既定のコンポジット側に戻す)"),
 ];
 
 /// MSX RGB: Rin2/Gin2/Bin2 + SOGin2 に CSYNC (aux 2x5ヘッダ)
@@ -230,10 +238,14 @@ const REGS_MSX: InputRegs = &[
     (proto::CFG_KEY_SYNC_CTL2, 0x08, "TVP既定のまま(MSXでは未実測)"),
     (proto::CFG_KEY_NO_RAW_PHASE, 1,
      "★CSYNCをSOGで受けるので生同期は繋がらない。浮いた同期入力の自己発振を使わない"),
+    (proto::CFG_KEY_SOG_VTH, 400, "垂直ブロードパルスの検出閾値(既定。8fscで776、MSXで579)"),
+    (proto::CFG_KEY_KOKAME_SEL, 0, "小亀基板は使わない(既定のコンポジット側に戻す)"),
 ];
 
 /// コンポジット NTSC: J5(2x4)の Y ピンに CVBS → Gin1、同期は SOGin1 へ分岐
 const REGS_COMPOSITE: InputRegs = &[
+    (proto::CFG_KEY_SOG_VTH, 400, "垂直ブロードパルスの検出閾値(既定。8fscで776、MSXで579)"),
+    (proto::CFG_KEY_KOKAME_SEL, 0, "小亀基板のスイッチをコンポジット側へ"),
     (proto::CFG_KEY_IN_MUX1, MUX_ALL1, "SOG/R/G/B すべて _1(J5)"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOGから取る"),
     (proto::CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz(バーストで誤トリガしない)"),
@@ -270,6 +282,8 @@ const REGS_COMPOSITE: InputRegs = &[
 
 /// S端子: J5(2x4)の Gin1 = Y / Rin1 = C、SOGin1 へ Y から分岐
 const REGS_SVIDEO: InputRegs = &[
+    (proto::CFG_KEY_SOG_VTH, 400, "垂直ブロードパルスの検出閾値(既定。8fscで776、MSXで579)"),
+    (proto::CFG_KEY_KOKAME_SEL, 1, "★小亀基板のスイッチをS端子側へ(0のままだとCVBSの端子を見る)"),
     (proto::CFG_KEY_IN_MUX1, MUX_ALL1, "SOG/R/G/B すべて _1(J5)"),
     (proto::CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOG(Yから分岐)から取る"),
     (proto::CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz"),
@@ -315,6 +329,50 @@ const REGS_SVIDEO: InputRegs = &[
     (proto::CFG_KEY_SYNC_CTL2, 0x08, "TVP既定のまま(この方式では未実測)"),
     (proto::CFG_KEY_NO_RAW_PHASE, 1,
      "★生同期は繋がらない(J5にはY/Cしか無い)。浮いた同期入力の自己発振を使わない"),
+];
+
+/// コンポーネント(YPbPr): 小亀基板の黄(Y)/青(Pb)/赤(Pr)。
+///   Y → スイッチ(コンポジット側)→ Gin1・SOGin1 / Pr → スイッチ → Rin1 / Pb → Bin1
+///
+/// 対象は SDTV/EDTV(240p・480i・480p)。どれも BT.601 の 858 サンプル/ライン
+/// (15.7kHz は 13.5MHz、31.5kHz は 27MHz)なので **pll_divide は 858 の1つで済む**。
+/// 720p/1080i は 74.25MHz × 3B/px でギガビットに収まらないので扱わない。
+const REGS_COMPONENT: InputRegs = &[
+    // ★垂直ブロードパルスの検出閾値[pixクロック]。既定400は MSX(21.48MHz)で決めた値で、
+    //   13.5MHz ではブロードパルス(約27µs)が 366 クロックしか無く**届かない**。
+    //   届かないとフィールドの判別が推測頼みになり、480i の織り込みが崩れて
+    //   偶数/奇数ラインがずれた(2026-11-08 実機、最長Low 367)。水平同期(4.7µs=63)と
+    //   ブロードパルス(366)の間に置く。480p(27MHz)では水平同期が 63、垂直は
+    //   織り込まないので関係しない
+    (proto::CFG_KEY_SOG_VTH, 200, "★垂直ブロードパルスの検出閾値(13.5MHzで366クロック)"),
+    (proto::CFG_KEY_KOKAME_SEL, 0, "小亀基板のスイッチをコンポジット側へ(Y=黄 / Pr=赤)"),
+    (proto::CFG_KEY_IN_MUX1, MUX_ALL1, "SOG/R/G/B すべて _1(小亀基板)"),
+    (proto::CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOG(Yから分岐)から取る"),
+    (proto::CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz"),
+    (proto::CFG_KEY_SOG_THRESH, 20, "Yのスライス位置(S端子のYと同じ信号形なので同じ値から始める)"),
+    (proto::CFG_KEY_PLL_DIVIDE, 858, "BT.601 の 858(480i/240p=13.5MHz、480p=27MHz)"),
+    (proto::CFG_KEY_PLL_CTL, 0x18, "データシート Table 4 の 480i/480p 推奨(ULow, ICP=011b)"),
+    // データシート Table 3: YPbPr は Y がボトム、Pb/Pr がミッド
+    (proto::CFG_KEY_CLAMP_SEL, 0b101, "Y(G)はボトム / Pb(B)・Pr(R)はミッド"),
+    (proto::CFG_KEY_COARSE_GAIN_GB, 0x77,
+     "粗ゲイン1.2倍(TVP既定)。白0.7V×1.2 → 黒16〜白235付近に来る見込み"),
+    (proto::CFG_KEY_COARSE_GAIN_R, 0x07, "Pr 粗ゲイン1.2倍(TVP既定)"),
+    (proto::CFG_KEY_COARSE_OFF_G, 0x10, "Y 粗オフセット既定(+64コード=8bitで16)"),
+    (proto::CFG_KEY_COARSE_OFF_R, 0x10, "R粗オフセット既定"),
+    // ★窓はバックポーチに置く(ボトムクランプはブランキング=黒を基準にする)。
+    //   窓の実位置は「同期の立ち下がり + start + 約32サンプル」だった(コンポジットの
+    //   実測)。遅れが時間でもサンプル数でも、56 なら 480i(13.5MHz)・480p(27MHz)の
+    //   両方でバックポーチに収まる(49〜70 が共通の範囲)
+    (proto::CFG_KEY_CLAMP_START, 56, "クランプ窓をバックポーチへ(480i/480p 共通の値)"),
+    (proto::CFG_KEY_CLAMP_WIDTH, 16, "データシート Table 13 の SDTV 推奨幅"),
+    (proto::CFG_KEY_GAIN_B, 0, "ファインゲイン1.000倍(実測後に詰める)"),
+    (proto::CFG_KEY_GAIN_G, 0, "ファインゲイン1.000倍(実測後に詰める)"),
+    (proto::CFG_KEY_GAIN_R, 0, "ファインゲイン1.000倍(実測後に詰める)"),
+    (proto::CFG_KEY_PIXFMT, proto::PIXFMT_RGB888 as u32,
+     "★3チャンネル8bit(RGB555 だと色差が5bitしか残らない)"),
+    (proto::CFG_KEY_FIELD_INVERT, 0, "フィールド極性は既定(未実測)"),
+    (proto::CFG_KEY_SYNC_CTL2, 0x08, "TVP既定のまま(未実測)"),
+    (proto::CFG_KEY_NO_RAW_PHASE, 1, "★生同期は繋がらない(小亀基板には同期線が無い)"),
 ];
 
 /// 実測で裏を取れているのは x68000 と msx。
@@ -370,6 +428,7 @@ pub const PROFILES: &[Profile] = &[
         htotal_multiple: 8,
         audio_src: Some(0),
         verified: true,
+        ycbcr: false,
     },
     Profile {
         key: "msx",
@@ -400,6 +459,7 @@ pub const PROFILES: &[Profile] = &[
         htotal_multiple: 1,
         audio_src: Some(1),
         verified: true,
+        ycbcr: false,
     },
     Profile {
         key: "vga",
@@ -413,6 +473,7 @@ pub const PROFILES: &[Profile] = &[
         htotal_multiple: 1,
         audio_src: Some(0),
         verified: false,
+        ycbcr: false,
     },
     Profile {
         key: "pc98",
@@ -426,6 +487,7 @@ pub const PROFILES: &[Profile] = &[
         htotal_multiple: 1,
         audio_src: Some(0),
         verified: false,
+        ycbcr: false,
     },
     // --- ここから下は「配線の方式」で決まる映像ソース。選ぶと入力設定を書く ---
     //
@@ -446,6 +508,7 @@ pub const PROFILES: &[Profile] = &[
         htotal_multiple: 1,
         audio_src: Some(3),
         verified: true,
+        ycbcr: false,
     },
     Profile {
         key: "svideo",
@@ -460,6 +523,21 @@ pub const PROFILES: &[Profile] = &[
         htotal_multiple: 1,
         audio_src: Some(3),
         verified: false,
+        ycbcr: false,
+    },
+    Profile {
+        key: "component",
+        label: "コンポーネント (YPbPr 240p/480i/480p)",
+        input_regs: REGS_COMPONENT,
+        auto_pick: false,
+        oscillators: &[
+            Clock { name: "BT.601 13.5MHz", hz: 13.5e6, dividers: &[1] },
+            Clock { name: "BT.601 27MHz", hz: 27.0e6, dividers: &[1] },
+        ],
+        htotal_multiple: 1,
+        audio_src: Some(3),
+        verified: false,
+        ycbcr: true,
     },
 ];
 
@@ -486,6 +564,30 @@ impl Profile {
     ///
     /// ボードが返してくる pixfmt と突き合わせると「電源を入れ直して設定が消えた」
     /// のが分かる。ビットストリームはフラッシュに残るが、TVPのレジスタは消える。
+    /// pll_divide が規格で決まっていて、Viewer の推定・帯域ごとの復元・スキャンで
+    /// 動かしてはいけないソースか(コンポジット/S端子/コンポーネント)。
+    pub fn pll_fixed(&self) -> bool {
+        self.ycbcr || self.pixfmt() == Some(proto::PIXFMT_YC8)
+    }
+
+    /// 伝送形式が**この値でないと絵にならない**か。RGB 機は RGB555 でも RGB888 でも
+    /// 見られるが、YC8(復調に生の8bitが要る)とコンポーネント(色差を8bitで要る)は違う。
+    pub fn needs_exact_pixfmt(&self) -> bool {
+        self.pll_fixed()
+    }
+
+    /// ボードがいま流している伝送形式 `have` で、このソースが絵になるか。
+    /// 伝送形式を持たないソース(入力設定を書かない推定用)は何でも可とする。
+    pub fn pixfmt_ok(&self, have: u8) -> bool {
+        match self.pixfmt() {
+            None => true,
+            Some(want) if self.needs_exact_pixfmt() => have == want,
+            Some(_) => matches!(have, proto::PIXFMT_RGB888
+                                    | proto::PIXFMT_RGB555
+                                    | proto::PIXFMT_RGB565),
+        }
+    }
+
     pub fn pixfmt(&self) -> Option<u8> {
         self.input_regs
             .iter()
@@ -898,6 +1000,19 @@ mod tests {
         assert_eq!(c.pll_divide, 1368);
     }
 
+    /// コンポーネントは 15.7kHz(240p/480i)でも 31.5kHz(480p)でも 858 に落ちる。
+    /// pll_divide を1つの値で書いているのはこの前提なので、崩れたら気づけるように。
+    #[test]
+    fn component_is_858_in_both_bands() {
+        let p = by_key("component").unwrap();
+        assert!(p.ycbcr && p.pll_fixed() && !p.auto_pick);
+        assert_eq!(p.pixfmt(), Some(proto::PIXFMT_RGB888));
+        for fh in [15734.0, 31469.0] {
+            let c = candidates(p, fh, 0.15, LINE_BUFFER_W);
+            assert!(c.iter().any(|c| c.pll_divide == 858), "fH={fh} で 858 が出ない: {c:?}");
+        }
+    }
+
     #[test]
     fn auto_picks_x68000() {
         for (fh, want) in [(31499.0, 1104), (24699.0, 1408), (15980.0, 1216)] {
@@ -958,6 +1073,7 @@ mod tests {
             ("msx", MUX_ALL2),
             ("composite", MUX_ALL1),
             ("svideo", MUX_ALL1),
+            ("component", MUX_ALL1),
         ];
         for (key, mux) in want {
             let p = by_key(key).unwrap_or_else(|| panic!("{key} が無い"));

@@ -1,0 +1,17 @@
+import has_designator_prefix
+import has_part_picked
+import is_atomic_part
+import is_auto_generated
+
+component SAMSUNG_CL10A106KP8NNNC_package:
+    # This trait marks this file as auto-generated
+    # If you want to manually change it, remove the trait
+    trait is_auto_generated<system="ato_part", source="easyeda:C19702", date="2026-11-08T02:01:16.461324+00:00", checksum="65938a1807ebc890e99de0d511751d40b726a21a3ee07ae8362480ea7d18d364">
+
+    trait is_atomic_part<manufacturer="SAMSUNG", partnumber="CL10A106KP8NNNC", footprint="C0603.kicad_mod", symbol="CL10A106KP8NNNC.kicad_sym", model="C0603_L1.6-W0.8-H0.8.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C19702", manufacturer="SAMSUNG", partno="CL10A106KP8NNNC">
+    trait has_designator_prefix<prefix="C">
+
+    # pins
+    pin 1
+    pin 2

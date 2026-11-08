@@ -2060,6 +2060,14 @@ class RetroCastXStream(SoCMini):
         ])
         self.led_status = StatusLed(platform.request("led_status"), sys_clk_freq)
         self.led_kokame = KeyframeLeds(platform.request("led_kokame"), sys_clk_freq)
+        # 小亀基板のアナログスイッチ(TS5A23159)の選択。0=コンポジット/コンポーネント
+        # (小亀側の10kΩプルダウンと同じ既定) / 1=S端子(Y→FFC9, C→FFC7)。
+        # CONFIG の書込みレジスタをそのままピンへ出す(組合せ出力にしない)
+        platform.add_extension([
+            ("kokame_sel", 0, Pins("K4"), IOStandard("LVCMOS33")),   # SO-DIMM 148
+        ])
+        self.kokame_sel = Signal()
+        self.comb += platform.request("kokame_sel").eq(self.kokame_sel)
 
         # I2Cは100kHz(長い手配線+弱プルアップでも読出しの取りこぼしを避ける)
         self.status = StatusDisplay(platform.request("tvp_oled_i2c"), sys_clk_freq,
@@ -2172,6 +2180,8 @@ class RetroCastXStream(SoCMini):
                 0x92: self.led_kokame.bank,
                 0x93: self.led_kokame.bright,
                 0x94: self.led_status.bright,
+                # 小亀基板の入力切替(0=コンポジット/コンポーネント 1=S端子)
+                0x96: self.kokame_sel,
             },
             extra_stats={
                 # デジタルRGB の測定値(読み取り専用)

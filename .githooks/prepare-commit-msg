@@ -1,0 +1,7 @@
+#!/bin/sh
+# すべてのコミットに Signed-off-by(DCO)を自動で付ける。
+# 同じ人の署名が既にあれば足さない(amend・rebase で重複しない)。
+COMMIT_MSG_FILE=$1
+
+SOB=$(git var GIT_COMMITTER_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+git interpret-trailers --in-place --if-exists addIfDifferent --trailer "$SOB" "$COMMIT_MSG_FILE"

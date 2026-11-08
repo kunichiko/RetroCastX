@@ -54,6 +54,19 @@ component C100nF_0603 from Capacitor:
     trait has_designator_prefix<prefix="C">
     assert capacitance within 90nF to 110nF
 
+component C10uF_0603 from Capacitor:
+    """10µF 10V X5R(1608 / 0603インチ)。映像のACカップリング。
+
+    ★v1.0 初版は 100nF だった。75Ω終端 → 100nF → 10kΩ(1.65V)は時定数 1ms の
+    高域通過で、明るい区間の後ろで黒が 7〜9 コード沈んだ(コンポーネントで実測、
+    2026-11-08)。10µF で時定数 0.1 秒にして解消(手持ちの 0603 10µF で張り替えて確認)。
+    1.65V のバイアスなので X5R の直流バイアス減少は小さい。
+    """
+    trait is_atomic_part<manufacturer="SAMSUNG", partnumber="CL10A106KP8NNNC", footprint="parts/SAMSUNG_CL10A106KP8NNNC/C0603.kicad_mod", symbol="parts/SAMSUNG_CL10A106KP8NNNC/CL10A106KP8NNNC.kicad_sym", model="parts/SAMSUNG_CL10A106KP8NNNC/C0603_L1.6-W0.8-H0.8.step">
+    trait has_part_picked::by_supplier<supplier_id="lcsc", supplier_partno="C19702", manufacturer="SAMSUNG", partno="CL10A106KP8NNNC">
+    trait has_designator_prefix<prefix="C">
+    assert capacitance within 9uF to 11uF
+
 component C10uF_0805 from Capacitor:
     """10µF 25V(2012 / 0805インチ)。バイアスレールとLED電源のバルク。
     元から手はんだしやすいサイズなので変更なし(メイン基板と同一品番)。"""

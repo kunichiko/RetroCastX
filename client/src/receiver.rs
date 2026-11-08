@@ -557,6 +557,9 @@ pub struct Shared {
     /// ドット復元(1タップ逆フィルタ)の係数 a ×1000。0 = 無効。
     /// UI から live に変えられるよう Atomic で持つ(詳細は assembler の dot_a_milli)。
     pub dot_a_milli: AtomicU32,
+    /// RGB888 の3チャンネルを Pr/Y/Pb として RGB に直すか(コンポーネント入力)。
+    /// UI が選んでいる映像ソースから毎フレーム書く(詳細は assembler の ycbcr)。
+    pub ycbcr: AtomicBool,
     pub frame: Mutex<Option<CompletedFrame>>,
     /// フレーム更新の世代カウンタ(UIはこれでテクスチャ再アップロードを判定)
     pub frame_gen: AtomicU64,
@@ -1334,6 +1337,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             asm.set_adjust(a);
         }
         asm.dot_a_milli = shared.dot_a_milli.load(Ordering::Relaxed);
+        asm.ycbcr = shared.ycbcr.load(Ordering::Relaxed);
         let is_line = n >= 3 && buf[2] == proto::TYPE_LINE;
         let fed = asm.feed(&buf[..n]);
         let edges = if is_line { line_clock.on_line(rx_t, fed.is_some()) } else { None };

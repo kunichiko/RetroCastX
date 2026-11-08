@@ -79,6 +79,24 @@ pub struct FrameAssembler {
     /// 合っていればオーバーシュート(輪郭のリンギング)は出ない。
     /// 高域が 1/(1-a) 倍に持ち上がるぶん雑音も増えるが、実測 noise 0.4% なら問題ない。
     pub dot_a_milli: u32,
+    /// RGB888 の3チャンネルが **Pr/Y/Pb**(コンポーネント)か。
+    ///
+    /// TVP7002 は YPbPr→RGB の色空間変換を持たない(RGB→YCbCr の向きだけ)ので、
+    /// ボードは赤ch=Pr / 緑ch=Y / 青ch=Pb をそのまま RGB888 の枠で送ってくる。
+    /// ここで BT.601 のスタジオレンジ(Y 16〜235 / 色差 128±112)として RGB に直す。
+    /// レベルの根拠は profiles.rs の REGS_COMPONENT(粗ゲイン1.2倍・粗オフセット+16)。
+    pub ycbcr: bool,
+    /// コンポーネントの黒の基準(行ごと)。[Y, Cb, Cr] の生コード。
+    ///
+    /// ★**ライン先頭のバックポーチを毎ライン測って、そこを Y=16 / 色差=128 とみなす**
+    ///   (デジタルのクランプ)。TVP の粗オフセットで黒は 16 付近に来る設計だが、
+    ///   実機では 17〜20、ラインごとにも 19〜23 と揺れ、色差の中心も 126〜127 だった
+    ///   (2026-11-08)。黒が (2,7,2) の緑がかった灰色になるのを、固定値ではなく
+    ///   実測で消す。ラインごとに測るので、ライン間の揺れも一緒に取れる。
+    ///   (行が始まる断片(offset 0)が来たときに更新し、来なければ前回の値を使う)
+    ycc_ref: Vec<[i32; 3]>,
+    /// ycc_ref の全体の目安(×16 の固定小数)。行の値が信用できないときに使う
+    ycc_ref_avg: [i32; 3],
     /// 行ごとの「直前に書いた生の値」と「その次のx」。断片化したラインで
     /// v[n-1] を跨いで繋ぐために持つ。**復元後ではなく生の値**を保つこと。
     last_raw: Vec<[u8; 3]>,
@@ -130,6 +148,9 @@ impl FrameAssembler {
             parity_alt: 0,
             interlace_measured: false,
             dot_a_milli: 0,
+            ycbcr: false,
+            ycc_ref: Vec::new(),
+            ycc_ref_avg: [16 * 16, 128 * 16, 128 * 16],
             last_raw: Vec::new(),
             last_x: Vec::new(),
             decay: 0.8,
@@ -234,6 +255,48 @@ impl FrameAssembler {
     }
 
     /// Feed one datagram; returns a frame completed by this packet, if any.
+    /// コンポーネントの行の黒の基準を返す(行の頭の断片ならバックポーチで測り直す)。
+    ///
+    /// `px` は RGB888 の枠(byte0=Pr / byte1=Y / byte2=Pb)。バックポーチの位置は
+    /// BT.601 の 858 サンプル/ラインで、ボードが同期の立ち下がりからラインを
+    /// 取る(hs_offset=0)前提。480i(13.5MHz)も 480p(27MHz)も同期 0〜62・
+    /// バックポーチ 62〜120 で同じ位置に来る(実測: 同期は 0〜61 がコード0)。
+    fn update_ycc_ref(&mut self, row: usize, off: usize, px: &[u8]) -> [i32; 3] {
+        const BP: std::ops::Range<usize> = 72..110;
+        let avg = self.ycc_ref_avg.map(|v| (v + 8) >> 4);
+        let Some(slot) = self.ycc_ref.get_mut(row) else {
+            return avg;
+        };
+        if off == 0 && px.len() >= BP.end * 3 {
+            let mut sum = [0i32; 3];
+            for p in px[BP.start * 3..BP.end * 3].chunks_exact(3) {
+                sum[0] += p[1] as i32;
+                sum[1] += p[2] as i32;
+                sum[2] += p[0] as i32;
+            }
+            let n = BP.len() as i32;
+            let m = sum.map(|v| (v + n / 2) / n);
+            // 垂直帰線の行(バックポーチに等化パルスが来る)や絵の頭が入り込んだ行は
+            // 外れ値になる。目安から大きく離れたら使わない
+            if (m[0] - avg[0]).abs() <= 12
+                && (m[1] - avg[1]).abs() <= 12
+                && (m[2] - avg[2]).abs() <= 12
+            {
+                *slot = m;
+            } else {
+                *slot = avg;
+            }
+            // 目安は外れ値も含めて少しずつ寄せる(1行で動くのは最大 1/4 コード)。
+            // 外れ値で弾くだけにすると、本当の黒が目安から 12 以上離れていたときに
+            // 二度と追いつけない
+            for c in 0..3 {
+                let d = (m[c] * 16 - self.ycc_ref_avg[c]) / 64;
+                self.ycc_ref_avg[c] += d.clamp(-4, 4);
+            }
+        }
+        *slot
+    }
+
     pub fn feed(&mut self, datagram: &[u8]) -> Option<CompletedFrame> {
         let pkt = proto::parse(datagram).ok()?;
         self.stats.packets += 1;
@@ -294,6 +357,7 @@ impl FrameAssembler {
                     self.ntsc_info = None;
                     self.line_seen = vec![false; self.height];
                     self.last_raw = vec![[0u8; 3]; self.height];
+                    self.ycc_ref = vec![[16, 128, 128]; self.height];
                     self.last_x = vec![usize::MAX; self.height];
                     self.cur_frame = None;
                     self.px_filled = 0;
@@ -377,10 +441,24 @@ impl FrameAssembler {
                             } else {
                                 [0, 0, 0]
                             };
+                        let yref = if self.ycbcr {
+                            self.update_ycc_ref(row, off, &l.pixels[..fit * 3])
+                        } else {
+                            [16, 128, 128]
+                        };
                         for (i, px) in l.pixels.chunks_exact(3).enumerate().take(fit) {
                             let o = base + i * 4;
+                            let px = if self.ycbcr {
+                                ypbpr_to_rgb(
+                                    px[1] as i32 - yref[0] + 16,
+                                    px[2] as i32 - yref[1] + 128,
+                                    px[0] as i32 - yref[2] + 128,
+                                )
+                            } else {
+                                [px[0], px[1], px[2]]
+                            };
                             if a == 0 {
-                                self.fb[o..o + 3].copy_from_slice(px);
+                                self.fb[o..o + 3].copy_from_slice(&px);
                             } else {
                                 let raw = [px[0] as i32, px[1] as i32, px[2] as i32];
                                 // d[n] = (v[n] - a·v[n-1]) / (1-a)
@@ -636,6 +714,20 @@ impl FrameAssembler {
     }
 }
 
+/// BT.601 スタジオレンジの Y/Cb/Cr(8bit)を RGB に直す。
+///
+/// 係数は ITU-R BT.601 の逆変換を 256 倍した整数(Y 16〜235 → 0〜255、
+/// 色差 16〜240 → ±0.5)。SDTV/EDTV(240p/480i/480p)は全部 601 の行列で良い。
+fn ypbpr_to_rgb(y: i32, cb: i32, cr: i32) -> [u8; 3] {
+    let y = 298 * (y - 16);
+    let cb = cb - 128;
+    let cr = cr - 128;
+    let r = (y + 409 * cr + 128) >> 8;
+    let g = (y - 100 * cb - 208 * cr + 128) >> 8;
+    let b = (y + 516 * cb + 128) >> 8;
+    [r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -724,5 +816,52 @@ mod tests {
             assert_eq!(&f.rgba[x * 4..x * 4 + 3], &[y, y, y],
                        "x={x} は Y をそのまま3成分に置く");
         }
+    }
+
+    /// コンポーネントの基準色が RGB の基準色に戻ること(BT.601 の75%カラーバー)
+    #[test]
+    fn ypbpr_bars_map_to_rgb() {
+        use super::ypbpr_to_rgb;
+        let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| (*x as i32 - y as i32).abs() <= 2);
+        assert_eq!(ypbpr_to_rgb(16, 128, 128), [0, 0, 0]);
+        assert_eq!(ypbpr_to_rgb(235, 128, 128), [255, 255, 255]);
+        // 75% 赤 / 緑 / 青(Y, Cb, Cr は BT.601 の表の値)
+        assert!(near(ypbpr_to_rgb(65, 100, 212), [191, 0, 0]), "{:?}", ypbpr_to_rgb(65, 100, 212));
+        assert!(near(ypbpr_to_rgb(112, 72, 58), [0, 191, 0]), "{:?}", ypbpr_to_rgb(112, 72, 58));
+        assert!(near(ypbpr_to_rgb(35, 212, 114), [0, 0, 191]), "{:?}", ypbpr_to_rgb(35, 212, 114));
+    }
+
+    /// コンポーネントの黒が浮いていても、バックポーチを基準に (0,0,0) に戻ること。
+    /// 実機の値(黒 Y=20 / Cb=126 / Cr=127)で確かめる
+    #[test]
+    fn ycbcr_black_follows_back_porch() {
+        use crate::protocol::PIXFMT_RGB888;
+        let mut asm = FrameAssembler::new();
+        asm.ycbcr = true;
+        let mut m = test_mode();
+        m.pixfmt = PIXFMT_RGB888;
+        m.hactive = 858;
+        m.htotal = 858;
+        assert!(asm.feed(&pack_mode(&m, 0, 0)).is_none());
+        // byte0=Pr byte1=Y byte2=Pb。同期 0..62 は Y=0、以降は黒(20/126/127)、
+        // 300 番だけ白(黒+219)
+        let mut px = Vec::new();
+        for x in 0..858usize {
+            let y = if x < 62 { 0 } else if x == 300 { 20 + 219 } else { 20 };
+            px.extend_from_slice(&[127, y, 126]);
+        }
+        let mut seq = 0;
+        let mut last = None;
+        for frame in 0..3u16 {
+            for line in 0..2u16 {
+                seq += 1;
+                if let Some(f) = asm.feed(&pack_line(frame, seq, line, 0, PIXFMT_RGB888, 1, 0, &px)) {
+                    last = Some(f);
+                }
+            }
+        }
+        let f = last.expect("フレームが完成しない");
+        assert_eq!(&f.rgba[200 * 4..200 * 4 + 3], &[0, 0, 0], "黒が浮いている");
+        assert_eq!(&f.rgba[300 * 4..300 * 4 + 3], &[255, 255, 255], "白が白にならない");
     }
 }

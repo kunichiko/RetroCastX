@@ -172,6 +172,8 @@ MODES = {
             (proto.CFG_KEY_PLL_DIVIDE, 1104, "起点=31kHzのhtotal(Viewerが上書きする)"),
             (proto.CFG_KEY_PLL_CTL, 0x18, "ICP = 40×75/1104 = 2.7 → 3"),
             (proto.CFG_KEY_NO_RAW_PHASE, 0, "生同期が実際に来るので極性判定に使う"),
+            (proto.CFG_KEY_SOG_VTH, 400, "垂直ブロードパルスの検出閾値(既定)"),
+            (proto.CFG_KEY_KOKAME_SEL, 0, "小亀基板は使わない(既定のコンポジット側)"),
         ] + _RGB_ANALOG,
     },
     "msx": {
@@ -202,12 +204,16 @@ MODES = {
             # ★生同期は繋がらない。未接続のシュミットバッファ入力が自己発振して
             #   raw_ok が誤って立つと、存在しない同期の位相で極性が決まる
             (proto.CFG_KEY_NO_RAW_PHASE, 1, "★生同期は繋がらない(CSYNCをSOGで受ける)"),
+            (proto.CFG_KEY_SOG_VTH, 400, "垂直ブロードパルスの検出閾値(既定)"),
+            (proto.CFG_KEY_KOKAME_SEL, 0, "小亀基板は使わない(既定のコンポジット側)"),
         ] + _RGB_ANALOG,
     },
     "composite": {
         "label": "コンポジット NTSC (J5のYピンにCVBS → Gin1、SOGin1へ分岐)",
         "roles": ("cvbs", None),
         "regs": _CVBS_TIMING + [
+            (proto.CFG_KEY_SOG_VTH, 400, "垂直ブロードパルスの検出閾値(既定)"),
+            (proto.CFG_KEY_KOKAME_SEL, 0, "小亀基板のスイッチをコンポジット側へ"),
             (proto.CFG_KEY_SOG_THRESH, 0x0B, "CVBSのスライス位置(実機で成立している既定)"),
             # ★200 にしてある(以前は 230)。230 だとクランプ窓が**映像の頭に食い込み**、
             #   ラインの頭 0.3µs ほどが半分の明るさになり、窓の終わりが同期の揺れに
@@ -237,6 +243,8 @@ MODES = {
         "label": "S端子 (J5: Gin1=Y / Rin1=C、SOGin1へYから分岐)",
         "roles": ("y", "c"),
         "regs": _CVBS_TIMING + [
+            (proto.CFG_KEY_SOG_VTH, 400, "垂直ブロードパルスの検出閾値(既定)"),
+            (proto.CFG_KEY_KOKAME_SEL, 1, "★小亀基板のスイッチをS端子側へ"),
             # ★**Yはボトムレベル + クランプ窓を同期チップの中へ。** ここは2回間違えた。
             #
             #   1回目: 窓をバックポーチ(230)に置いたままボトムにした → バックポーチが
@@ -273,6 +281,34 @@ MODES = {
             (proto.CFG_KEY_GAIN_B, 35, "青は未使用(RGBの既定)"),
             (proto.CFG_KEY_GAIN_G, 0, "Yのファインゲイン1.000倍(コンポジットと同じ)"),
             (proto.CFG_KEY_GAIN_R, 0, "Cのファインゲイン1.000倍(実測後に詰める)"),
+        ],
+    },
+    # ★client/src/profiles.rs の REGS_COMPONENT と同じ値。変えるときは両方そろえること
+    "component": {
+        "label": "コンポーネント YPbPr (小亀: Y=黄→Gin1 / Pb=青→Bin1 / Pr=赤→Rin1)",
+        # 3ch とも8bitで要るので RGB888 の枠で送る。probe の波形解析(CVBS/S端子用)は対象外
+        "roles": ("rgb", None),
+        "regs": [
+            (proto.CFG_KEY_SOG_VTH, 200, "★垂直ブロードパルスの検出閾値(13.5MHzで366クロック。400だと届かない)"),
+            (proto.CFG_KEY_KOKAME_SEL, 0, "小亀基板のスイッチをコンポジット側へ(Y=黄 / Pr=赤)"),
+            (proto.CFG_KEY_IN_MUX1, MUX_ALL1, "SOG/R/G/B すべて _1(小亀基板)"),
+            (proto.CFG_KEY_SYNC_CTL, SYNC_SOG, "HもVもSOG(Yから分岐)から取る"),
+            (proto.CFG_KEY_IN_MUX2, 0x12, "SOG LPF 2.5MHz"),
+            (proto.CFG_KEY_SOG_THRESH, 20, "Yのスライス位置(S端子のYと同じ値から始める)"),
+            (proto.CFG_KEY_PLL_DIVIDE, 858, "BT.601 の 858(480i/240p=13.5MHz、480p=27MHz)"),
+            (proto.CFG_KEY_PLL_CTL, 0x18, "データシート Table 4 の 480i/480p 推奨"),
+            (proto.CFG_KEY_CLAMP_SEL, 0b101, "Y(G)はボトム / Pb(B)・Pr(R)はミッド"),
+            (proto.CFG_KEY_COARSE_GAIN_GB, 0x77, "粗ゲイン1.2倍(TVP既定)"),
+            (proto.CFG_KEY_COARSE_GAIN_R, 0x07, "Pr 粗ゲイン1.2倍(TVP既定)"),
+            (proto.CFG_KEY_COARSE_OFF_G, 0x10, "Y 粗オフセット既定(+64コード=8bitで16)"),
+            (proto.CFG_KEY_COARSE_OFF_R, 0x10, "R粗オフセット既定"),
+            (proto.CFG_KEY_CLAMP_START, 56, "クランプ窓をバックポーチへ(480i/480p 共通の値)"),
+            (proto.CFG_KEY_CLAMP_WIDTH, 16, "データシート Table 13 の SDTV 推奨幅"),
+            (proto.CFG_KEY_GAIN_B, 0, "ファインゲイン1.000倍"),
+            (proto.CFG_KEY_GAIN_G, 0, "ファインゲイン1.000倍"),
+            (proto.CFG_KEY_GAIN_R, 0, "ファインゲイン1.000倍"),
+            (proto.CFG_KEY_PIXFMT, proto.PIXFMT_RGB888, "★3チャンネル8bit"),
+            (proto.CFG_KEY_NO_RAW_PHASE, 1, "★生同期は繋がらない(小亀基板には同期線が無い)"),
         ],
     },
 }

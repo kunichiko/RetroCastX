@@ -17,5 +17,7 @@
 
 ## コミット
 
-- すべてのコミットに `Signed-off-by` を付ける(`git commit -s`。DCO の CI がある)。
+- すべてのコミットに `Signed-off-by` を付ける(DCO の CI がある)。
+  `.githooks/prepare-commit-msg` が自動で付けるので、`git config --get core.hooksPath`
+  が `.githooks` でなければ、まず `git config core.hooksPath .githooks` を実行する。
 - コミットメッセージは日本語で、既存の履歴の書き方に合わせる。
