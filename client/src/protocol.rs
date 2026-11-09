@@ -40,6 +40,9 @@ pub const PIXFMT_CVBS8: u8 = 5;
 
 /// ANNOUNCE caps bit1: YCC422 / CVBS8、送出範囲の固定、間引きの対モードに対応
 pub const CAP_COMPACT: u16 = 1 << 1;
+/// ANNOUNCE caps bit2: 小亀のLEDの「Viewer が居ないあいだ」の動作(CONFIG 0x0097)に
+/// 対応している(gw-v1.4.0 以降)
+pub const CAP_LED_IDLE: u16 = 1 << 2;
 
 pub fn bytes_per_px(pixfmt: u8) -> Option<usize> {
     match pixfmt {
