@@ -354,15 +354,15 @@ fn upload(link: &mut Link, s: &LedSettings) -> Result<u32, String> {
 ///
 /// ★**焼くのは値が違うときだけ。** EEPROM には書き換え回数の寿命がある。
 ///   起動時の値は EEPROM から読んだものなので、読み返して同じなら焼き直す必要もない。
-/// ★焼くのは個体設定ページ全体なので、名前・IP の「適用したがまだ焼いていない」
-///   変更も一緒に焼かれる(個体設定の欄で試している最中だけ起きる)。
+/// ★**LED の欄だけを焼く(0x004C に 2)。** 1 だと名前・IP の「適用したが
+///   まだ焼いていない」試しまで一緒に焼いてしまう。
 fn sync_idle(link: &mut Link, idle: Idle) -> Result<bool, String> {
     let cur = link.get(KEY_KLED_IDLE).ok_or("ボードが応答しません")?;
     if cur == idle.code() {
         return Ok(false);
     }
     link.set(KEY_KLED_IDLE, idle.code())?;
-    link.set(proto::CFG_KEY_IDENT_SAVE, 1)?;
+    link.set(proto::CFG_KEY_IDENT_SAVE, proto::IDENT_SAVE_LED_ONLY)?;
     // 焼き終わるまで(8バイト×4ページ、各最大5ms)待つ。0=未実行 1=実行中 2=成功 3=失敗
     let t0 = Instant::now();
     while t0.elapsed() < Duration::from_secs(2) {

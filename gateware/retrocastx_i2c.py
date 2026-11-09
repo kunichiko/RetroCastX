@@ -246,6 +246,9 @@ class StatusDisplay(Module):
         self.set_sel   = Signal(3)       # 0..3=name語 4=静的IP 5=flags 6=led_idle
         self.set_val   = Signal(32)
         self.save_stb  = Signal()
+        # 焼く範囲。0=いま動いている値をすべて / 1=LED の欄(led_idle)だけ
+        # (名前・IP・flags は EEPROM にあった値のまま書き直す。未保存の試しを巻き込まない)
+        self.save_sel  = Signal()
         # 0=未実行 1=実行中 2=成功 3=失敗
         self.save_state = Signal(2)
         # 観測用
@@ -772,18 +775,37 @@ class StatusDisplay(Module):
         save_pending = Signal()
         save_clr = Signal()
         save_res = Signal(2)
+        save_led_only = Signal()
+        cw_done  = Signal()                  # 焼き終えた1パルス
+
+        # --- EEPROM にいま入っている値の写し ---
+        # LED の欄だけを焼くとき、ほかの欄はここから書く。起動時に読めたページで
+        # 埋め、焼いたら更新する。ページが無効なら既定(= 未設定のボードの動作)のまま
+        st_name  = Signal(128, reset=self.cfg_name.reset.value)
+        st_ip    = Signal(32)
+        st_flags = Signal(8)
+        # 書くページの中身(焼いている間は save_led_only が変わらないので、
+        # レジスタに通しておいて書込みの経路に選択の段を足さない)
+        w_name  = Signal(128)
+        w_ip    = Signal(32)
+        w_flags = Signal(8)
+        self.sync += [
+            w_name.eq(Mux(save_led_only, st_name, self.cfg_name)),
+            w_ip.eq(Mux(save_led_only, st_ip, self.cfg_ip)),
+            w_flags.eq(Mux(save_led_only, st_flags, self.cfg_flags)),
+        ]
 
         # 書き込むページの中身。読み出しと同じレイアウトを1か所で組む。
         def _cfg_byte(j):
             if j == 0:  return C(CFG_PAGE_MAGIC[0], 8)
             if j == 1:  return C(CFG_PAGE_MAGIC[1], 8)
             if j == 2:  return C(CFG_PAGE_VER, 8)
-            if j == 3:  return self.cfg_flags
-            if 4 <= j <= 7:  return self.cfg_ip[8 * (7 - j):8 * (7 - j) + 8]
+            if j == 3:  return w_flags
+            if 4 <= j <= 7:  return w_ip[8 * (7 - j):8 * (7 - j) + 8]
             if j == 8:  return cp_chk
             if j == 9:  return self.cfg_led_idle
             if j <= 15: return C(0, 8)
-            return self.cfg_name[8 * (j - 16):8 * (j - 16) + 8]
+            return w_name[8 * (j - 16):8 * (j - 16) + 8]
         cfg_bytes = Array([_cfg_byte(j) for j in range(CFG_PAGE_LEN)])
         # チェックサム算出中は自分自身を0として数える(でないと自己参照になる)
         cp_src = Signal(8)
@@ -811,6 +833,13 @@ class StatusDisplay(Module):
                 self.cfg_ip.eq(Cat(cp_buf[56:64], cp_buf[48:56],
                                    cp_buf[40:48], cp_buf[32:40])),
                 self.cfg_name.eq(cp_buf[128:256]),
+                st_flags.eq(cp_buf[24:32]),
+                st_ip.eq(Cat(cp_buf[56:64], cp_buf[48:56], cp_buf[40:48], cp_buf[32:40])),
+                st_name.eq(cp_buf[128:256]),
+            ),
+            # 焼けた内容が EEPROM の新しい中身
+            If(cw_done,
+                st_flags.eq(w_flags), st_ip.eq(w_ip), st_name.eq(w_name),
             ),
             # 外からの上書きは EEPROM の読み込みより後(起動直後に両方来ることは
             # 無いが、来たらホストの指示を勝たせる)
@@ -825,7 +854,7 @@ class StatusDisplay(Module):
                     6: self.cfg_led_idle.eq(self.set_val[:8]),
                 }),
             ),
-            If(self.save_stb, save_pending.eq(1)),
+            If(self.save_stb, save_pending.eq(1), save_led_only.eq(self.save_sel)),
             If(save_clr, save_pending.eq(0)),
         ]
         self.comb += self.save_state.eq(Mux(save_pending, 1, save_res))
@@ -1117,8 +1146,8 @@ class StatusDisplay(Module):
                     NextState("CW_START"),
                 ).Else(NextState("CW_DONE"))))
         fsm.act("CW_DONE", self.resetb.eq(1),
-            save_clr.eq(1), NextValue(save_res, 2),
-            # 焼けた内容がいま動いている値なので、読み直さずに valid を立てる
+            save_clr.eq(1), NextValue(save_res, 2), cw_done.eq(1),
+            # 焼けた内容は分かっているので、読み直さずに valid を立てる
             NextValue(self.cfg_valid, 1), NextValue(self.cfg_err, 0),
             NextState("TP_START"))
         fsm.act("CW_FAIL", self.resetb.eq(1), *issue(OP_STOP),
