@@ -295,6 +295,9 @@ pub const CFG_KEY_NAME2: u16 = 0x004A;
 pub const CFG_KEY_NAME3: u16 = 0x004B;
 /// SET 1=EEPROMへ焼く / GET 0=未実行 1=実行中 2=成功 3=失敗
 pub const CFG_KEY_IDENT_SAVE: u16 = 0x004C;
+/// 0x004C に書く値。LED の欄(0x0097)だけを焼き、名前・IP は EEPROM にある値のまま
+/// にする(CAP_LED_IDLE を持つボードだけ。1 はすべて焼く)
+pub const IDENT_SAVE_LED_ONLY: u32 = 2;
 /// bit0=妥当な設定ページがあった bit2:1=1未設定/2破損/3EEPROM無応答(読専)
 pub const CFG_KEY_IDENT_EE: u16 = 0x004D;
 

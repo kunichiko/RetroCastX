@@ -15,6 +15,10 @@
 3. magic が無ければ「未設定」(cfg_err=1)
 4. set_stb で書き換え → save_stb で EEPROM へ焼け、読み直しても同じ値になる
 5. 焼く順序が**ヘッダ(ページ0)を最後**にしている(commit-last)
+6. 焼いた内容で起動し直すと採用される
+7. LED の欄だけ焼く(save_sel=1)と、名前・IP は**EEPROM にあった値のまま**になる
+   (動作中の未保存の試しを巻き込まない)
+8. 未設定の EEPROM に LED の欄だけ焼くと、既定の名前で妥当なページができる
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
@@ -307,8 +311,50 @@ def main():
     assert r2['valid'] == 1 and r2['name'] == NEW and r2['ip'] == ip_int(NEW_IP)
     assert r2['led_idle'] == 2, r2['led_idle']
 
+    # --- 7) LED の欄だけ焼く: 名前・IP の未保存の試しを巻き込まない ---
+    TRIAL = "trial-name".encode().ljust(16, b"\0")
+
+    def do_led_only(dut):
+        for sel, val in [(k, int.from_bytes(TRIAL[4 * k:4 * k + 4], "little")) for k in range(4)] \
+                + [(4, ip_int((172, 16, 0, 9))), (6, 1)]:
+            yield dut.set_sel.eq(sel)
+            yield dut.set_val.eq(val)
+            yield dut.set_stb.eq(1)
+            yield
+            yield dut.set_stb.eq(0)
+            yield
+        yield dut.save_sel.eq(1)
+        yield dut.save_stb.eq(1)
+        yield
+        yield dut.save_stb.eq(0)
+        yield dut.save_sel.eq(0)
+
+    # 起動時の設定ページの読み込み(3000〜6000 サイクルの間)が済んでから書き換える。
+    # 済む前だと「EEPROM にある値」がまだ既定のままで、試験にならない
+    r = run(page, steps=400000, actions=[(8000, do_led_only)], until=save_done)
+    got = r['mem'][:CFG_PAGE_LEN]
+    print(f"7) LEDだけ焼く: 焼いた名前={_name_of(int.from_bytes(got[16:32], 'little'))!r} "
+          f"led_idle={got[9]} / 動作中の名前={r['name']!r}")
+    assert r['save'] == 2, f"保存に失敗している save_state={r['save']}"
+    assert sum(got) & 0xFF == 0, "チェックサムが合っていない"
+    assert got[9] == 1, f"LEDの欄が焼けていない: {got[9]}"
+    assert got[16:32] == page[16:32], "未保存の名前まで焼いた"
+    assert got[4:8] == page[4:8] and got[3] == page[3], "未保存のIPまで焼いた"
+    assert r['name'] == "trial-name", "動作中の値が戻ってしまった"
+    r3 = run(got, until=boot_read_done)
+    assert r3['valid'] == 1 and r3['name'] == "x68k-desk" and r3['led_idle'] == 1
+
+    # --- 8) 未設定の EEPROM に LED の欄だけ焼く ---
+    r = run(None, steps=400000, actions=[(3000, do_led_only)], until=save_done)
+    r4 = run(r['mem'][:CFG_PAGE_LEN], until=boot_read_done)
+    print(f"8) 未設定から: 再起動後 name={r4['name']!r} ip={r4['ip']:#x} "
+          f"led_idle={r4['led_idle']} valid={r4['valid']}")
+    assert r['save'] == 2
+    assert r4['valid'] == 1 and r4['name'] == DEFAULT_BOARD_NAME and r4['ip'] == 0 \
+        and r4['led_idle'] == 1
+
     print("\n[OK] 設定ページ: 読み込み/破損検出/未設定/書込み(8バイトページ+ACKポーリング)"
-          "/commit-last/焼き直し後の再読込 を確認")
+          "/commit-last/焼き直し後の再読込/LEDの欄だけ焼く を確認")
 
 
 if __name__ == "__main__":

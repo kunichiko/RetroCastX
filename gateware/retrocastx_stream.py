@@ -536,6 +536,7 @@ class RetroCastXStreamer(LiteXModule):
         self.ident_set_sel  = Signal(3)     # 0..3=name語 4=静的IP 5=flags 6=led_idle
         self.ident_set_val  = Signal(32)
         self.ident_save_stb = Signal()
+        self.ident_save_sel = Signal()      # 1=LED の欄だけ焼く(0x4C に 2)
         # StatusDisplay からの読み返し(GET応答と ANNOUNCE の name に使う)
         # 繋がなければ既定名のまま(sim はここを配線しない)
         self.stat_name       = Signal(128, reset=int.from_bytes(
@@ -556,7 +557,10 @@ class RetroCastXStreamer(LiteXModule):
                 *[If(cfg_key == k,
                      self.ident_set_stb.eq(1), self.ident_set_sel.eq(sel))
                   for k, sel in _IDENT_KEYS.items()],
-                If(cfg_key == 0x4C, self.ident_save_stb.eq(rx.data[0])),
+                # 1=すべて焼く / 2=LED の欄(0x97)だけ焼く
+                If(cfg_key == 0x4C,
+                    self.ident_save_stb.eq(rx.data[0] | rx.data[1]),
+                    self.ident_save_sel.eq(rx.data[1] & ~rx.data[0])),
             ),
         ]
 
@@ -2370,6 +2374,7 @@ class RetroCastXStream(SoCMini):
                 self.status.set_sel.eq(self.streamer.ident_set_sel),
                 self.status.set_val.eq(self.streamer.ident_set_val),
                 self.status.save_stb.eq(self.streamer.ident_save_stb),
+                self.status.save_sel.eq(self.streamer.ident_save_sel),
                 self.streamer.stat_name.eq(self.status.cfg_name),
                 self.streamer.stat_static_ip.eq(self.status.cfg_ip),
                 self.streamer.stat_net_flags.eq(self.status.cfg_flags),
