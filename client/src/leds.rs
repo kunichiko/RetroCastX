@@ -24,6 +24,8 @@ pub const KEY_KLED_BANK: u16 = 0x0092;
 pub const KEY_KLED_BRIGHT: u16 = 0x0093;
 pub const KEY_STAT_BRIGHT: u16 = 0x0094;
 pub const KEY_STAT_STATE: u16 = 0x0095;
+/// Viewer が居ないあいだの動作。EEPROM の個体設定ページに置かれ、電源投入直後から効く
+pub const KEY_KLED_IDLE: u16 = 0x0097;
 pub const KEY_TABLE_BASE: u16 = 0x0400;
 /// 1バンクの語数。フレーム数 × (1 + LED数) がこれに収まること
 pub const BANK_WORDS: usize = 256;
@@ -77,6 +79,51 @@ impl Effect {
     }
 }
 
+/// Viewer が居ないあいだ(ボードが映像を送っていないあいだ)の小亀のLED。
+///
+/// ★**ボードが自分でやる。** 居ないのだから Viewer は指示できない。値は EEPROM に
+///   焼くので電源投入直後から効く(`gateware/retrocastx_led.py` 冒頭)。呼吸は
+///   明るさだけを変えるので、色は表(固定色・レインボー…)のまま。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Idle {
+    Keep,
+    Breathe,
+    Off,
+}
+
+impl Idle {
+    pub const ALL: [Idle; 3] = [Idle::Keep, Idle::Breathe, Idle::Off];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Idle::Keep => "keep",
+            Idle::Breathe => "breathe",
+            Idle::Off => "off",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Idle::Keep => "そのまま光らせる",
+            Idle::Breathe => "呼吸",
+            Idle::Off => "消灯",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<Idle> {
+        Idle::ALL.into_iter().find(|e| e.key() == s)
+    }
+
+    /// CONFIG 0x0097 の値
+    pub fn code(self) -> u32 {
+        match self {
+            Idle::Keep => 0,
+            Idle::Breathe => 1,
+            Idle::Off => 2,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LedSettings {
     pub effect: Effect,
@@ -89,6 +136,8 @@ pub struct LedSettings {
     pub count: u8,
     pub bright: u8,
     pub status_bright: u8,
+    /// Viewer が居ないあいだの動作
+    pub idle: Idle,
 }
 
 impl Default for LedSettings {
@@ -101,23 +150,26 @@ impl Default for LedSettings {
             count: 4,
             bright: 64,
             status_bright: 32,
+            idle: Idle::Keep,
         }
     }
 }
 
 impl LedSettings {
-    /// 設定ファイルの1行。`効果,RRGGBB,周期ms,ずらし%,個数,明るさ,状態LEDの明るさ`
+    /// 設定ファイルの1行。
+    /// `効果,RRGGBB,周期ms,ずらし%,個数,明るさ,状態LEDの明るさ,切断中`
     pub fn format(&self) -> String {
         format!(
-            "{},{:06x},{},{},{},{},{}",
+            "{},{:06x},{},{},{},{},{},{}",
             self.effect.key(), rgb(self.color), self.period_ms, self.spread_pct,
-            self.count, self.bright, self.status_bright
+            self.count, self.bright, self.status_bright, self.idle.key()
         )
     }
 
+    /// 切断中の欄が無い古い7項目の行も読む(そのまま光らせる)
     pub fn parse(v: &str) -> Option<Self> {
         let f: Vec<&str> = v.split(',').map(str::trim).collect();
-        if f.len() != 7 {
+        if f.len() != 7 && f.len() != 8 {
             return None;
         }
         let c = u32::from_str_radix(f[1], 16).ok()?;
@@ -129,6 +181,10 @@ impl LedSettings {
             count: f[4].parse::<u8>().ok()?.clamp(1, MAX_LEDS),
             bright: f[5].parse().ok()?,
             status_bright: f[6].parse().ok()?,
+            idle: match f.get(7) {
+                Some(k) => Idle::from_key(k)?,
+                None => Idle::Keep,
+            },
         })
     }
 }
@@ -252,8 +308,9 @@ impl Link {
                     && u16::from_le_bytes([buf[18], buf[19]]) == key
                 {
                     let v = u32::from_le_bytes([buf[20], buf[21], buf[22], buf[23]]);
-                    // SET は書いた値が返るまで待つ(前の応答の遅れを掴まない)
-                    if op == proto::CFG_OP_GET || v == value {
+                    // SET は書いた値が返るまで待つ(前の応答の遅れを掴まない)。
+                    // EEPROM へ焼く(0x004C)は応答が保存の進み具合なので値を見ない
+                    if op == proto::CFG_OP_GET || v == value || key == proto::CFG_KEY_IDENT_SAVE {
                         return Some(v);
                     }
                 }
@@ -292,6 +349,32 @@ fn upload(link: &mut Link, s: &LedSettings) -> Result<u32, String> {
     Ok(bank)
 }
 
+/// Viewer が居ないあいだの動作をボードに合わせ、違っていれば EEPROM へ焼く。
+/// 焼いたら true。
+///
+/// ★**焼くのは値が違うときだけ。** EEPROM には書き換え回数の寿命がある。
+///   起動時の値は EEPROM から読んだものなので、読み返して同じなら焼き直す必要もない。
+/// ★焼くのは個体設定ページ全体なので、名前・IP の「適用したがまだ焼いていない」
+///   変更も一緒に焼かれる(個体設定の欄で試している最中だけ起きる)。
+fn sync_idle(link: &mut Link, idle: Idle) -> Result<bool, String> {
+    let cur = link.get(KEY_KLED_IDLE).ok_or("ボードが応答しません")?;
+    if cur == idle.code() {
+        return Ok(false);
+    }
+    link.set(KEY_KLED_IDLE, idle.code())?;
+    link.set(proto::CFG_KEY_IDENT_SAVE, 1)?;
+    // 焼き終わるまで(8バイト×4ページ、各最大5ms)待つ。0=未実行 1=実行中 2=成功 3=失敗
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_secs(2) {
+        match link.get(proto::CFG_KEY_IDENT_SAVE) {
+            Some(2) => return Ok(true),
+            Some(3) => return Err("EEPROM へ焼けませんでした".into()),
+            _ => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    Err("EEPROM へ焼き終わりません".into())
+}
+
 /// ボードがいま、こちらの書いた状態のままか。電源の入れ直しやボードの
 /// 差し替えで既定(バンク0 + 内蔵レインボー)に戻っていたら false。
 fn still_applied(link: &mut Link, a: &Applied) -> bool {
@@ -315,6 +398,8 @@ pub fn spawn(shared: Arc<Shared>, port: u16, req: Arc<Mutex<LedRequest>>) {
         let _ = sock.set_broadcast(true);
         let _ = sock.set_read_timeout(Some(Duration::from_millis(10)));
         let mut applied: Option<Applied> = None;
+        // 切断中の動作をどのボードにどの値で合わせたか(合わせたら繋ぎ直すまで触らない)
+        let mut idle_done: Option<([u8; 6], Idle)> = None;
         let mut checked = Instant::now() - Duration::from_secs(60);
         let mut seq = 0u16;
         while !shared.stop.load(Ordering::Relaxed) {
@@ -322,8 +407,10 @@ pub fn spawn(shared: Arc<Shared>, port: u16, req: Arc<Mutex<LedRequest>>) {
             let want = req.lock().unwrap().want.clone();
             let Some(want) = want else {
                 applied = None;
+                idle_done = None;
                 continue;
             };
+            let idle = want.idle;
             let Some(mac) = *shared.claimed.lock().unwrap() else { continue };
             let targets: Vec<String> = shared
                 .sub_dest
@@ -336,7 +423,10 @@ pub fn spawn(shared: Arc<Shared>, port: u16, req: Arc<Mutex<LedRequest>>) {
                 continue;
             }
             let mut link = Link { sock: sock.try_clone().unwrap(), port, targets, mac, seq };
-            let same = applied.as_ref().is_some_and(|a| a.mac == mac && a.settings == want);
+            // 切断中の動作は表と別に合わせる(下の sync_idle)ので、比べるときは除く
+            let same = applied.as_ref().is_some_and(|a| {
+                a.mac == mac && LedSettings { idle: a.settings.idle, ..want.clone() } == a.settings
+            });
             // 変わっていなければ5秒に1回だけ、ボードが覚えているかを確かめる
             let stale = same
                 && checked.elapsed() >= Duration::from_secs(5)
@@ -362,6 +452,24 @@ pub fn spawn(shared: Arc<Shared>, port: u16, req: Arc<Mutex<LedRequest>>) {
                         q.status = format!("送れませんでした: {e}");
                         applied = None;
                     }
+                }
+            }
+            // ★**繋いだときと変えたときだけ合わせる。** 定期的に確かめると、違う設定の
+            //   Viewer が2つあるとき交互に焼き合って EEPROM を擦り減らす
+            let caps = shared.boards.lock().unwrap().get(&mac).map_or(0, |b| b.caps);
+            if caps & proto::CAP_LED_IDLE != 0 && idle_done != Some((mac, idle)) {
+                let r = sync_idle(&mut link, idle);
+                let mut q = req.lock().unwrap();
+                match r {
+                    Ok(saved) => {
+                        if saved {
+                            q.status = format!("切断中は「{}」をボードに保存しました",
+                                               idle.label());
+                        }
+                        idle_done = Some((mac, idle));
+                    }
+                    // 失敗したら次の周回でやり直す
+                    Err(e) => q.status = format!("切断中の動作を保存できませんでした: {e}"),
                 }
             }
             seq = link.seq;
@@ -408,8 +516,17 @@ mod tests {
 
     #[test]
     fn settings_line_round_trips() {
-        let s = LedSettings { effect: Effect::Breathe, color: [1, 2, 3], ..Default::default() };
+        let s = LedSettings { effect: Effect::Breathe, color: [1, 2, 3], idle: Idle::Off,
+                              ..Default::default() };
         assert_eq!(LedSettings::parse(&s.format()), Some(s));
+    }
+
+    /// 切断中の欄が無い古い設定ファイルも読めて、「そのまま」になること
+    #[test]
+    fn old_settings_line_without_idle() {
+        let s = LedSettings::parse("rainbow,0080ff,4000,50,4,64,32").unwrap();
+        assert_eq!(s.idle, Idle::Keep);
+        assert_eq!(s.count, 4);
     }
 
     #[test]

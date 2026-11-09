@@ -2203,10 +2203,14 @@ impl Session {
     ///   Viewer が居ないときにこそ意味のある表示なので、Viewer に握らせない。
     fn led_ui(&mut self, ui: &mut egui::Ui) {
         let before = (self.led_control, self.leds.clone());
+        let caps = self.claimed()
+            .and_then(|mac| self.shared.boards.lock().unwrap().get(&mac).map(|b| b.caps))
+            .unwrap_or(0);
         ui.checkbox(&mut self.led_control, "Viewer から設定する")
             .on_hover_text(
                 "外すと、ボードの既定(ゆっくりしたレインボー)のままにします。\n\
-                 設定はボードに残らないので、電源を入れ直すたびに送り直します");
+                 設定はボードに残らないので、電源を入れ直すたびに送り直します\n\
+                 (「切断中」だけはボードに保存します)");
         ui.add_enabled_ui(self.led_control, |ui| {
             let l = &mut self.leds;
             ui.horizontal(|ui| {
@@ -2245,6 +2249,30 @@ impl Session {
                 theme::label_col(ui, "LEDの数");
                 ui.add(egui::Slider::new(&mut l.count, 1..=leds::MAX_LEDS))
                     .on_hover_text("小亀基板に載っている LED の個数");
+            });
+            // Viewer が居ないあいだの動作。ボードが自分でやり、EEPROM に焼く
+            // (古いゲートウェアは知らないキーなので選べなくする)
+            let idle_ok = caps & protocol::CAP_LED_IDLE != 0;
+            ui.horizontal(|ui| {
+                theme::label_col(ui, "切断中");
+                ui.add_enabled_ui(idle_ok, |ui| {
+                    egui::ComboBox::from_id_salt("led_idle")
+                        .selected_text(l.idle.label())
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            for e in leds::Idle::ALL {
+                                ui.selectable_value(&mut l.idle, e, e.label());
+                            }
+                        });
+                })
+                .response
+                .on_hover_text(
+                    "Viewer が繋がっていない(映像を送っていない)ときの小亀基板のLED。\n\
+                     呼吸は弱い明るさでゆっくり明滅し、色は上の効果のまま。\n\
+                     ボードの EEPROM に保存するので、電源を入れた直後から効きます");
+                if !idle_ok {
+                    ui.weak("gw-v1.4.0 以降");
+                }
             });
             ui.horizontal(|ui| {
                 theme::label_col(ui, "状態LED");
