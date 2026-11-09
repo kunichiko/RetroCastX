@@ -28,13 +28,15 @@ EUI = [0x74, 0xC9, 0x0F, 0x7C, 0x84, 0x29]
 BUSY_POLLS = 3
 
 
-def make_page(name, ip=(0, 0, 0, 0), flags=0, ver=CFG_PAGE_VER, magic=CFG_PAGE_MAGIC):
+def make_page(name, ip=(0, 0, 0, 0), flags=0, ver=CFG_PAGE_VER, magic=CFG_PAGE_MAGIC,
+              led_idle=0):
     b = bytearray(CFG_PAGE_LEN)
     b[0], b[1] = magic
     b[2] = ver
     b[3] = flags
     b[4:8] = bytes(ip)
     b[9:16] = bytes(7)
+    b[9] = led_idle
     b[16:32] = name.encode()[:16].ljust(16, b"\0")
     b[8] = 0
     b[8] = (-sum(b)) & 0xFF
@@ -198,6 +200,7 @@ def run(mem, steps=50000, actions=None, until=None):
         res['name'] = _name_of((yield dut.cfg_name))
         res['ip'] = (yield dut.cfg_ip)
         res['flags'] = (yield dut.cfg_flags)
+        res['led_idle'] = (yield dut.cfg_led_idle)
         res['valid'] = (yield dut.cfg_valid)
         res['err'] = (yield dut.cfg_err)
         res['save'] = (yield dut.save_state)
@@ -226,7 +229,8 @@ def ip_int(o):
 
 def main():
     # --- 1) 妥当なページを読む ---
-    page = make_page("x68k-desk", ip=(192, 168, 10, 77), flags=CFG_FLAG_STATIC_IP)
+    page = make_page("x68k-desk", ip=(192, 168, 10, 77), flags=CFG_FLAG_STATIC_IP,
+                     led_idle=1)
     r = run(page, until=boot_read_done)
     print(f"1) name={r['name']!r} ip={r['ip']:#010x} flags={r['flags']:#04x} "
           f"valid={r['valid']} err={r['err']} mac={r['mac']:#014x}")
@@ -235,6 +239,7 @@ def main():
     assert r['name'] == "x68k-desk", r['name']
     assert r['ip'] == ip_int((192, 168, 10, 77)), f"{r['ip']:#x}"
     assert r['flags'] == CFG_FLAG_STATIC_IP
+    assert r['led_idle'] == 1, f"LEDの切断中の動作を読んでいない: {r['led_idle']}"
 
     # --- 2) チェックサムが壊れていたら採用しない ---
     bad = bytearray(page)
@@ -263,6 +268,7 @@ def main():
             (3, int.from_bytes(nb[12:16], "little")),
             (4, ip_int(NEW_IP)),
             (5, CFG_FLAG_STATIC_IP),
+            (6, 2),                      # LED: 切断中は消灯
         ):
             yield dut.set_sel.eq(sel)
             yield dut.set_val.eq(val)
@@ -285,6 +291,7 @@ def main():
     assert sum(got) & 0xFF == 0, "チェックサムが合っていない"
     assert got[:2] == bytes(CFG_PAGE_MAGIC) and got[2] == CFG_PAGE_VER
     assert got[4:8] == bytes(NEW_IP), got[4:8]
+    assert got[9] == 2, f"LEDの切断中の動作が焼けていない: {got[9]}"
     assert got[16:32] == nb, got[16:32]
 
     # --- 5) 焼く順序: ヘッダ(0x00)が最後 ---
@@ -298,6 +305,7 @@ def main():
     r2 = run(r['mem'][:CFG_PAGE_LEN], until=boot_read_done)
     print(f"6) 再起動後 name={r2['name']!r} ip={r2['ip']:#010x} valid={r2['valid']}")
     assert r2['valid'] == 1 and r2['name'] == NEW and r2['ip'] == ip_int(NEW_IP)
+    assert r2['led_idle'] == 2, r2['led_idle']
 
     print("\n[OK] 設定ページ: 読み込み/破損検出/未設定/書込み(8バイトページ+ACKポーリング)"
           "/commit-last/焼き直し後の再読込 を確認")

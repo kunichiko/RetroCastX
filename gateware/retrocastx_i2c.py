@@ -37,7 +37,8 @@ DEFAULT_BOARD_NAME = "retrocastx-i5"
 #   0x03   1  flags  bit0 = 静的IPを使う
 #   0x04   4  静的IP(o1..o4 = 電線上の順)
 #   0x08   1  chk   32バイトの総和が0になる値
-#   0x09   7  予約(0)
+#   0x09   1  led_idle  小亀のLEDの、Viewer が居ないあいだの動作(retrocastx_led.py)
+#   0x0A   6  予約(0)
 #   0x10  16  name(UTF-8, NUL詰め)
 #
 # ★**チェックサムは必須。** 書込み中に電源が落ちると magic だけ残った半端な
@@ -233,12 +234,16 @@ class StatusDisplay(Module):
             DEFAULT_BOARD_NAME.encode()[:16].ljust(16, b"\0"), "little"))
         self.cfg_ip    = Signal(32)      # o1が最上位バイト(my_ip と同じ並び)
         self.cfg_flags = Signal(8)
+        # 小亀のLEDの「Viewer が居ないあいだ」の動作(0=そのまま 1=呼吸 2=消灯)。
+        # LED の表は RAM にあって電源で消えるが、これは電源投入直後から効かせたい
+        # ので個体設定と一緒に EEPROM に置く(ページの 0x09。retrocastx_led.py)
+        self.cfg_led_idle = Signal(8)
         self.cfg_valid = Signal()        # EEPROM に妥当な設定ページがあった
         # 0=OK 1=magic/ver不一致(未設定) 2=チェックサム不一致(壊れている) 3=読めない
         self.cfg_err   = Signal(2, reset=1)
         # 書き換え要求。set_stb で1枠ずつ更新し、save_stb で EEPROM へ焼く
         self.set_stb   = Signal()
-        self.set_sel   = Signal(3)       # 0..3=name語 4=静的IP 5=flags
+        self.set_sel   = Signal(3)       # 0..3=name語 4=静的IP 5=flags 6=led_idle
         self.set_val   = Signal(32)
         self.save_stb  = Signal()
         # 0=未実行 1=実行中 2=成功 3=失敗
@@ -776,6 +781,7 @@ class StatusDisplay(Module):
             if j == 3:  return self.cfg_flags
             if 4 <= j <= 7:  return self.cfg_ip[8 * (7 - j):8 * (7 - j) + 8]
             if j == 8:  return cp_chk
+            if j == 9:  return self.cfg_led_idle
             if j <= 15: return C(0, 8)
             return self.cfg_name[8 * (j - 16):8 * (j - 16) + 8]
         cfg_bytes = Array([_cfg_byte(j) for j in range(CFG_PAGE_LEN)])
@@ -800,6 +806,7 @@ class StatusDisplay(Module):
         self.sync += [
             If(cp_load & cp_ok,
                 self.cfg_flags.eq(cp_buf[24:32]),
+                self.cfg_led_idle.eq(cp_buf[72:80]),
                 # 0x04..0x07 が o1..o4。my_ip は o1 が最上位バイトなので詰め替える
                 self.cfg_ip.eq(Cat(cp_buf[56:64], cp_buf[48:56],
                                    cp_buf[40:48], cp_buf[32:40])),
@@ -815,6 +822,7 @@ class StatusDisplay(Module):
                     3: self.cfg_name[96:128].eq(self.set_val),
                     4: self.cfg_ip.eq(self.set_val),
                     5: self.cfg_flags.eq(self.set_val[:8]),
+                    6: self.cfg_led_idle.eq(self.set_val[:8]),
                 }),
             ),
             If(self.save_stb, save_pending.eq(1)),
