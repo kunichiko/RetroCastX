@@ -54,6 +54,9 @@ PIXFMT_CVBS8  = 5             # 1B/px 緑ch8bit(コンポジットの CVBS)だ�
 # (0x35 bit4)に対応している。古いゲートウェアに新しい形式を書くと絵が壊れるので、
 # 受信側はこのビットを見てから使う
 CAP_COMPACT = 1 << 1
+# ANNOUNCE caps bit2: 小亀のLEDの「Viewer が居ないあいだ」の動作(CONFIG 0x97、
+# EEPROM に焼ける)に対応している
+CAP_LED_IDLE = 1 << 2
 SCROLL_PX   = 4               # テストパターンのカラーバー横スクロール量[px/frame](host pattern.pyと一致必須)
 
 # パケットタイプ(FSM内部コード。プロトコル上のtype値とは別)
@@ -530,7 +533,7 @@ class RetroCastXStreamer(LiteXModule):
         #   (Migen のリセット値は定数でなければならない)。ストリーマは
         #   CONFIG を「1枠ぶんの書き換え要求」に翻訳するだけにする。
         self.ident_set_stb  = Signal()
-        self.ident_set_sel  = Signal(3)     # 0..3=name語 4=静的IP 5=flags
+        self.ident_set_sel  = Signal(3)     # 0..3=name語 4=静的IP 5=flags 6=led_idle
         self.ident_set_val  = Signal(32)
         self.ident_save_stb = Signal()
         # StatusDisplay からの読み返し(GET応答と ANNOUNCE の name に使う)
@@ -539,13 +542,14 @@ class RetroCastXStreamer(LiteXModule):
             DEFAULT_BOARD_NAME.encode()[:16].ljust(16, b"\0"), "little"))
         self.stat_static_ip  = Signal(32)
         self.stat_net_flags  = Signal(8)
+        self.stat_led_idle   = Signal(8)
         self.stat_save_state = Signal(2)
         self.stat_ee_status  = Signal(8)
 
         # CONFIG のキー → 書き換える枠。**フラットな If の並びにする**
         # (優先順位マルチプレクサになる Elif 連鎖は sys のクリティカルパスを
         #  伸ばす。同じ理由で応答側も Case にしてある)。
-        _IDENT_KEYS = {0x46: 5, 0x47: 4, 0x48: 0, 0x49: 1, 0x4A: 2, 0x4B: 3}
+        _IDENT_KEYS = {0x46: 5, 0x47: 4, 0x48: 0, 0x49: 1, 0x4A: 2, 0x4B: 3, 0x97: 6}
         self.comb += [
             self.ident_set_val.eq(rx.data),
             If(cfg_done & (cfg_op == 0) & (cfg_target == 0),
@@ -944,6 +948,7 @@ class RetroCastXStreamer(LiteXModule):
             0x1E: reply_mux.eq(self.cfg_gain_r),
             0x1F: reply_mux.eq(self.cfg_phase),
             0x46: reply_mux.eq(self.stat_net_flags),
+            0x97: reply_mux.eq(self.stat_led_idle),
             0x47: reply_mux.eq(self.stat_static_ip),
             0x48: reply_mux.eq(self.stat_name[0:32]),
             0x49: reply_mux.eq(self.stat_name[32:64]),
@@ -2222,7 +2227,8 @@ class RetroCastXStream(SoCMini):
             # ★Ethernet コアと同じ MAC を渡すこと。食い違うと SUBSCRIBE/CONFIG の
             #   宛先照合(自MACと一致するか)が通らなくなる。
             mac_address=my_mac, my_ip=my_ip,
-            caps=Cat(self.status.mac_valid, C(1, 1), C(0, 14)),   # bit1 = CAP_COMPACT
+            # bit1 = CAP_COMPACT / bit2 = CAP_LED_IDLE
+            caps=Cat(self.status.mac_valid, C(1, 1), C(1, 1), C(0, 13)),
             audio_sources=[(self.i2s.sources[0], 48000),
                            (self.i2s.sources[1], 48000),
                            (self.spdif.source, self.spdif.rate_hz),
@@ -2288,6 +2294,7 @@ class RetroCastXStream(SoCMini):
             self.status.cfg_touched.eq(self.streamer.cfg_wr_stb),
             self.led_status.host_seen.eq(self.streamer.stat_host_seen),
             self.led_status.streaming.eq(self.streamer.stat_streaming),
+            kled.streaming.eq(self.streamer.stat_streaming),
             kled.tbl_adr.eq(self.streamer.cfg_wr_key[0:9]),
             kled.tbl_dat_w.eq(self.streamer.cfg_wr_val),
             kled.tbl_we.eq(self.streamer.cfg_wr_stb &
@@ -2366,6 +2373,9 @@ class RetroCastXStream(SoCMini):
                 self.streamer.stat_name.eq(self.status.cfg_name),
                 self.streamer.stat_static_ip.eq(self.status.cfg_ip),
                 self.streamer.stat_net_flags.eq(self.status.cfg_flags),
+                self.streamer.stat_led_idle.eq(self.status.cfg_led_idle),
+                # 小亀のLEDの、Viewer が居ないあいだの動作(EEPROM が正)
+                self.led_kokame.idle_mode.eq(self.status.cfg_led_idle[0:2]),
                 self.streamer.stat_save_state.eq(self.status.save_state),
                 self.streamer.stat_ee_status.eq(
                     Cat(self.status.cfg_valid, self.status.cfg_err, C(0, 5))),

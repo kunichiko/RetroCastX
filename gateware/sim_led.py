@@ -10,7 +10,7 @@ GRB の並び・ビット順・リセット幅の取り違えもここで落ち�
 from migen import *
 
 from retrocastx_led import (StatusLed, KeyframeLeds, Ws2812Chain, rainbow_table,
-                            STATE_COLORS)
+                            STATE_COLORS, IDLE_KEEP, IDLE_BREATHE, IDLE_OFF)
 
 CLK = 8e6   # 1ビット10サイクル。実機(45MHz)より粗いがビット幅の比は同じ
 MS = 500    # シミュレーション上の「1ms」。実時間だと遅すぎるので縮める
@@ -166,8 +166,75 @@ def test_bright_and_off():
     print("bright/off: OK")
 
 
+def test_idle():
+    """Viewer が居ないあいだの動作。固定色(赤)で確かめる。
+
+    - 送信中はモードに関係なく通常の明るさ
+    - 呼吸: 色は赤のまま、明るさが上下する。山は通常の1/4、谷は消える
+    - 消灯: 全部 0。送信が戻れば通常の明るさに戻る
+    呼吸の1段を 1ms にして、1周(510段)を 510ms に縮める
+    """
+    pad = Signal()
+    dut = KeyframeLeds(pad, CLK, ms_cycles=MS, breathe_step_ms=1)
+    frames = []
+    marks = {}
+
+    def wait(ms):
+        for _ in range(ms * MS):
+            yield
+
+    def drive():
+        # バンク1へ 2LED・1フレーム(赤を保持)の表
+        for k, w in enumerate([1000, 0xFF0000, 0xFF0000]):
+            yield dut.tbl_adr.eq(256 + k)
+            yield dut.tbl_dat_w.eq(w)
+            yield dut.tbl_we.eq(1)
+            yield
+        yield dut.tbl_we.eq(0)
+        yield dut.n_led.eq(2)
+        yield dut.frames.eq(1)
+        yield dut.bank.eq(1)
+        yield dut.bright.eq(255)
+        yield dut.idle_mode.eq(IDLE_BREATHE)
+        yield dut.streaming.eq(1)
+        yield from wait(30)
+        marks["stream"] = len(frames)
+        yield dut.streaming.eq(0)
+        yield from wait(600)                # 呼吸を1周より長く見る
+        marks["breathe"] = len(frames)
+        yield dut.idle_mode.eq(IDLE_OFF)
+        yield from wait(30)
+        marks["off"] = len(frames)
+        yield dut.idle_mode.eq(IDLE_KEEP)
+        yield from wait(30)
+        marks["keep"] = len(frames)
+        yield dut.idle_mode.eq(IDLE_OFF)
+        yield dut.streaming.eq(1)
+        yield from wait(30)
+        marks["back"] = len(frames)
+
+    run_simulation(dut, [drive(), decode(pad, frames, 725 * MS)])
+    red = scale(0xFF0000, 255)
+    assert frames[marks["stream"] - 1] == [red, red], \
+        f"送信中に通常の明るさでない: {[hex(x) for x in frames[marks['stream'] - 1]]}"
+    br = frames[marks["stream"] + 3:marks["breathe"]]
+    assert all(x[0] == x[1] and x[0] & 0x00FFFF == 0 for x in br), "呼吸で色が変わった"
+    lv = [x[0] >> 16 for x in br]
+    # 山は 255 × 1/4 ≒ 64(ガンマと切り捨てで少し下がる)。谷は 0
+    assert 48 <= max(lv) <= 64, f"呼吸の山: {max(lv)}"
+    assert min(lv) == 0, f"呼吸の谷: {min(lv)}"
+    # 上りも下りもあること(1周している)
+    i_min = lv.index(0)
+    assert max(lv[:i_min]) >= 48 and max(lv[i_min:]) >= 48, "呼吸が1周していない"
+    assert frames[marks["off"] - 1] == [0, 0], "消灯しない"
+    assert frames[marks["keep"] - 1] == [red, red], "「そのまま」で通常の明るさに戻らない"
+    assert frames[marks["back"] - 1] == [red, red], "送信が戻っても通常の明るさに戻らない"
+    print(f"idle: OK — 呼吸 {min(lv)}〜{max(lv)} / {len(br)} 回送出")
+
+
 if __name__ == "__main__":
     test_status()
     test_keyframes()
     test_bright_and_off()
+    test_idle()
     print("all led sims passed")

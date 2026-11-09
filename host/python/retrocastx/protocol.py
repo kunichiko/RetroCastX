@@ -107,6 +107,7 @@ CFG_KEY_COARSE_GAIN_R = 0x0067  # レジスタ1Ch 粗アナログゲイン Red�
 CFG_KEY_COARSE_OFF_R = 0x0068   # レジスタ20h bit[5:0] 粗アナログオフセット Red
 CFG_KEY_NO_RAW_PHASE = 0x006A   # 1=生同期の位相をフィールド極性に使わない
 CFG_KEY_KOKAME_SEL = 0x0096     # 小亀基板の入力切替 0=コンポジット/コンポーネント 1=S端子
+CFG_KEY_KLED_IDLE = 0x0097      # 小亀のLEDの切断中の動作 0=そのまま 1=呼吸 2=消灯(0x004C で焼ける)
                                 #   ★生同期を繋がない方式(コンポジット/S端子/MSX)
                                 #     では 1。未接続の同期入力が自己発振して
                                 #     raw_ok が誤って立ち、極性が決まらなくなる
@@ -181,6 +182,8 @@ PIXFMT_YC8 = 3
 PIXFMT_YCC422 = 4
 PIXFMT_CVBS8 = 5
 CAP_COMPACT = 1 << 1
+# caps bit2: 小亀のLEDの切断中の動作(CONFIG 0x0097)に対応している(gw-v1.4.0 以降)
+CAP_LED_IDLE = 1 << 2
 
 BYTES_PER_PX = {PIXFMT_RGB888: 3, PIXFMT_RGB555: 2, PIXFMT_RGB565: 2,
                 PIXFMT_YC8: 2, PIXFMT_YCC422: 2, PIXFMT_CVBS8: 1}

@@ -21,6 +21,17 @@ CONFIG で書き込み、FPGA は補間しながらループ再生する。固�
   位相へ足す量」で、65536 / フェード時間[ms]。**割り算は Viewer がやる**
   (FPGA で割らないため)。0 ならフェードせずに切り替える
 - 最後のフレームの次は先頭へ戻る(ループ)
+
+**Viewer が居ないあいだ**(映像を送っていないあいだ)の動作は、表とは別に
+ゲートウェアが決める(居ないのだから Viewer は指示できない)。値は EEPROM の
+個体設定ページに置き、電源投入直後から効く(retrocastx_i2c.py、CONFIG 0x97):
+
+- 0 = そのまま光らせる(既定)
+- 1 = 呼吸。明るさを約6秒周期でゆっくり上下させる(山は通常の明るさの1/4)
+- 2 = 消灯
+
+呼吸は**明るさだけを変え、表の再生は止めない**。固定色ならその色のまま、
+レインボーなら色を回しながら明滅する。
 """
 from migen import *
 
@@ -39,6 +50,11 @@ TABLE_WORDS     = 512
 MAX_LEDS        = 8
 
 # 状態LEDの色(明るさを掛ける前)
+# 「Viewer が居ないあいだ」の動作(CONFIG 0x97 / EEPROM の個体設定ページ 0x09)
+IDLE_KEEP, IDLE_BREATHE, IDLE_OFF = 0, 1, 2
+# 呼吸の1段[ms]。0→255→0 の 510段で1周 = 約6秒
+BREATHE_STEP_MS = 12
+
 STATE_COLORS = {
     0: 0xFF0000,   # 赤: Viewer から何も来ていない
     1: 0xFF5000,   # 橙: Viewer が見つけているが受信していない
@@ -193,14 +209,19 @@ class StatusLed(LiteXModule):
 
 class KeyframeLeds(LiteXModule):
     """小亀基板のLED。キーフレーム表を補間しながらループ再生する。"""
-    def __init__(self, pad, sys_clk_freq, n_max=MAX_LEDS, ms_cycles=None):
+    def __init__(self, pad, sys_clk_freq, n_max=MAX_LEDS, ms_cycles=None,
+                 breathe_step_ms=BREATHE_STEP_MS):
         # ms_cycles: 1ms 相当のサイクル数。シミュレーションで時間を縮めるためだけの口
+        # (breathe_step_ms も同じ。呼吸の1周を短くする)
         init, n_frames = rainbow_table(4)
         # CONFIG から
         self.n_led   = Signal(4, reset=4)
         self.frames  = Signal(8, reset=n_frames)
         self.bank    = Signal()
         self.bright  = Signal(8, reset=64)
+        # Viewer が居ないあいだの動作。streaming が 0 の間だけ効く
+        self.streaming = Signal()
+        self.idle_mode = Signal(2)
         # 表の書き込み/読み返し(CONFIG のキー 0x0400〜)
         self.tbl_adr   = Signal(9)
         self.tbl_we    = Signal()
@@ -234,6 +255,54 @@ class KeyframeLeds(LiteXModule):
             If(ms_cnt == ms_div - 1, ms_cnt.eq(0), ms.eq(1)),
         ]
         refresh = Signal(4)              # 10ms ごとに LED へ送る
+
+        # --- Viewer が居ないあいだの明るさ ---
+        # 表の色に掛ける明るさ `level` を、ここで毎回作り直しておく。呼吸は
+        # 三角波 tri(0〜255)を2乗して(ガンマ2)、明るさの1/4を山にする。
+        # 掛け算は色の計算とは別の SerialMul で行う(どちらも急がない)
+        idle  = Signal()
+        off   = Signal()
+        level = Signal(8)
+        tri   = Signal(8, reset=255)
+        down  = Signal(reset=1)
+        b_cnt = Signal(max=max(breathe_step_ms, 2))
+        sq    = Signal(8)
+        b_lv  = Signal(8)
+        self.comb += idle.eq(~self.streaming &
+                             ((self.idle_mode == IDLE_BREATHE) | (self.idle_mode == IDLE_OFF)))
+        self.sync += [
+            # 映像を送っている間は山で待ち、居なくなったら山から下り始める
+            If(~idle,
+                tri.eq(255), down.eq(1), b_cnt.eq(0),
+            ).Elif(ms,
+                b_cnt.eq(Mux(b_cnt == breathe_step_ms - 1, 0, b_cnt + 1)),
+                If(b_cnt == breathe_step_ms - 1,
+                    If(down,
+                        If(tri == 0, down.eq(0)).Else(tri.eq(tri - 1)),
+                    ).Else(
+                        If(tri == 255, down.eq(1)).Else(tri.eq(tri + 1)),
+                    ),
+                ),
+            ),
+            off.eq(idle & (self.idle_mode == IDLE_OFF)),
+            # ★Mux の選択に ~idle を使わない。Migen のシミュレータは 1bit の ~ を
+            #   -2(真)と評価し、居ないあいだも通常の明るさのままに見えた
+            level.eq(Mux(idle, Mux(self.idle_mode == IDLE_BREATHE, b_lv, 0),
+                         self.bright)),
+        ]
+        self.bmul = bmul = SerialMul()
+        self.bfsm = bfsm = FSM(reset_state="SQ")
+        # tri × tri / 256 → sq、sq × (明るさ+1) / 1024 → b_lv(山は明るさの1/4)
+        bfsm.act("SQ",
+            bmul.x.eq(tri), bmul.y.eq(tri), bmul.start.eq(1),
+            NextState("SQ_W"))
+        bfsm.act("SQ_W",
+            If(~bmul.busy, NextValue(sq, bmul.p[8:16]), NextState("LV")))
+        bfsm.act("LV",
+            bmul.x.eq(sq), bmul.y.eq(self.bright + 1), bmul.start.eq(1),
+            NextState("LV_W"))
+        bfsm.act("LV_W",
+            If(~bmul.busy, NextValue(b_lv, bmul.p[10:17]), NextState("SQ")))
 
         stride  = Signal(5)
         self.comb += stride.eq(n_led + 1)
@@ -272,7 +341,7 @@ class KeyframeLeds(LiteXModule):
         sel = lambda w: Mux(ch == 0, w[0:8], Mux(ch == 1, w[8:16], w[16:24]))
         self.comb += [
             mul.x.eq(Mux(ph == 0, sel(a), Mux(ph == 1, sel(b), mixc))),
-            mul.y.eq(Mux(ph == 0, 256 - t, Mux(ph == 1, t, self.bright + 1))),
+            mul.y.eq(Mux(ph == 0, 256 - t, Mux(ph == 1, t, level + 1))),
         ]
 
         self.fsm = fsm = FSM(reset_state="RESTART")
@@ -330,7 +399,7 @@ class KeyframeLeds(LiteXModule):
         fsm.act("B", NextValue(b, rp.dat_r),
             NextValue(ch, 0), NextValue(ph, 0), NextState("MSTART"))
         # 1チャンネルにつき掛け算3回(SerialMul を順番に使う):
-        #   ph0: a×(256−t)  ph1: b×t → mix = 和/256  ph2: mix×(明るさ+1)/256
+        #   ph0: a×(256−t)  ph1: b×t → mix = 和/256  ph2: mix×(level+1)/256
         # 重みの和が256なので mix は a と b の間に収まり、符号付きの演算が要らない
         fsm.act("MSTART", mul.start.eq(1), NextState("MWAIT"))
         fsm.act("MWAIT",
@@ -351,7 +420,7 @@ class KeyframeLeds(LiteXModule):
                 ),
             ))
         fsm.act("STORE",
-            *[If(i == k, NextValue(chain.colors[k], Mux(self.frames == 0, 0, out)))
+            *[If(i == k, NextValue(chain.colors[k], Mux((self.frames == 0) | off, 0, out)))
               for k in range(n_max)],
             If(i == n_led - 1,
                 NextState("SEND"),
