@@ -46,7 +46,11 @@ pub fn apply(ctx: &egui::Context) {
     // 触れるものだけが teal で反応する。押せないものは灰色のまま
     v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, ACCENT_EDGE);
     v.widgets.active.bg_stroke = egui::Stroke::new(1.0, ACCENT);
-    ctx.set_visuals(v);
+    // ★**OS の明暗に従わせない。** `set_visuals` は「いまの OS の側」の見た目
+    //   しか替えないので、macOS がライトモードだと egui 既定の明るい見た目のまま
+    //   になり、濃い見出しの帯だけが浮いていた。映像の横に置くパネルは常に暗くする
+    ctx.set_theme(egui::Theme::Dark);
+    ctx.set_visuals_of(egui::Theme::Dark, v);
     if cfg!(any(target_os = "ios", target_os = "android")) {
         touch_spacing(ctx);
     }
@@ -66,30 +70,6 @@ fn touch_spacing(ctx: &egui::Context) {
         sp.icon_width_inner = 12.0;
         sp.scroll.bar_width = 12.0;
     });
-}
-
-/// パネルのセクション見出しを1本描く。
-///
-/// ★**太字にしても効かない。** egui の既定フォントには太字の字形が無く、
-///   `RichText::strong()` は色が少し明るくなるだけ。本文も monospace で字面が
-///   近いので、大きさを変えただけでは段差にならなかった。面(帯)と線(左の
-///   縦棒)と色(teal)の3つで区切る。
-pub fn section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(8.0);
-    let w = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 20.0), egui::Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(rect, 3.0, ACCENT_BG);
-    let edge = egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
-    p.rect_filled(edge, 1.0, ACCENT_EDGE);
-    p.text(
-        rect.left_center() + egui::vec2(10.0, 0.0),
-        egui::Align2::LEFT_CENTER,
-        title,
-        egui::FontId::proportional(13.0),
-        ACCENT,
-    );
-    ui.add_space(4.0);
 }
 
 /// ラベルと値を桁揃えして1行出す。

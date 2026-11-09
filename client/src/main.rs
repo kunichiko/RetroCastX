@@ -59,6 +59,8 @@ mod receiver;
 mod settings;
 mod theme;
 mod toast;
+mod userprof;
+mod panel;
 #[cfg_attr(not(any(target_os = "ios", target_os = "android")), allow(dead_code))]
 mod touch;
 
@@ -256,7 +258,7 @@ fn main() -> eframe::Result {
             time_based: cfg.tube_time_based,
             filter: cfg.filter,
             window: cfg.window,
-            mon_bands: cfg.mon_bands.clone(),
+            mon_bands: cfg.mon_bands_for_current(),
             mon_ntsc: MON_NTSC,
             gain: if cfg.muted { 0.0 } else { cfg.volume },
             spdif: (cfg.spdif_mix, cfg.spdif_volume),
@@ -1031,6 +1033,91 @@ struct AutoTune {
 /// 過剰サンプルの実測)。簡易スキャンが1段降りるかどうかもこの1つの数字で決まる。
 const PHASE_SENSITIVE: f32 = 0.85;
 
+/// 信号の有無を測る間隔。ボードは fH を1秒ごとに測り直すので、それより長くして
+/// 2回の読みが必ず別の測定窓になるようにする(`watch_signal`)
+const SIGNAL_POLL: std::time::Duration = std::time::Duration::from_millis(2200);
+
+/// 2回の fH の差がこれ以内なら「収束している」= 信号あり[Hz]。
+/// 本物は ±1Hz で動かず、未接続は数百Hz単位で漂う(docs/design-notes.md の実測)
+const SIGNAL_FH_TOL_HZ: u32 = 4;
+
+/// 端子を替えてから TVP の fH が落ち着くまで(docs/composite-video-plan.md の実測で
+/// 約3秒)。その間に届く MODE は前の端子のものなので、帯域を追わない
+const PORT_SETTLE: std::time::Duration = std::time::Duration::from_millis(3500);
+
+/// 端子に信号が来ているか
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sig {
+    Yes,
+    No,
+    /// いまは測れないが、最後に選んでいたときは信号があった
+    Seen,
+    /// 測れない(選んでいないアナログ端子、ボードの応答待ち)
+    Unknown,
+}
+
+impl Sig {
+    /// 塗りつぶすか(測れた)、輪だけか(測れない)
+    fn filled(self) -> bool {
+        matches!(self, Sig::Yes | Sig::No)
+    }
+
+    fn color(self) -> egui::Color32 {
+        match self {
+            Sig::Yes | Sig::Seen => theme::OK,
+            Sig::No | Sig::Unknown => egui::Color32::from_gray(90),
+        }
+    }
+
+    fn hint(self, port: profiles::Port) -> String {
+        let s = match self {
+            Sig::Yes => "信号あり",
+            Sig::No => "信号なし",
+            Sig::Seen => "最後に選んでいたときは信号がありました。\n\
+                          いまは測れません(この端子の同期は TVP を通してしか見えず、\n\
+                          TVP は1系統ずつしか見られない)",
+            Sig::Unknown if port == profiles::Port::Digital => "確認中",
+            Sig::Unknown => "選んでいない端子は測れません(この端子の同期は TVP を通してしか\n\
+                             見えず、TVP は1系統ずつしか見られない)。一度選ぶと覚えます",
+        };
+        format!("入力{} {}: {s}", port.number(), port.jack())
+    }
+}
+
+/// `watch_signal` の状態
+#[derive(Default)]
+struct SignalWatch {
+    /// どの端子を測っているか。替わったら履歴を捨てる
+    port: Option<profiles::Port>,
+    next_at: Option<std::time::Instant>,
+    /// 問い合わせを出したか(最初の1回は拾う答えが無い)
+    asked: bool,
+    /// 直近2回の TVP の fH[Hz]。古い順
+    fh: [Option<u32>; 2],
+    /// デジタルRGB の fH[Hz]
+    drgb_fh: Option<u32>,
+    /// D-SUB15 の生HSYNC の周波数[Hz]、直近2回。TVP を通らない経路を FPGA が
+    /// 数えている(key 0x2A)ので、どの端子を選んでいても入力3を測れる
+    raw_fh: [Option<u32>; 2],
+    /// 端子ごとの、最後に選んでいたときの判定(測れない端子の表示に使う)
+    last: std::collections::BTreeMap<profiles::Port, Sig>,
+}
+
+/// 2回の fH の読みから信号の有無を決める。未接続は漂い(SOG)、または 0(生HSYNC)
+fn sig_from_pair(fh: [Option<u32>; 2]) -> Sig {
+    match fh {
+        [Some(a), Some(b)] => {
+            let in_range = |f: u32| (10_000..=80_000).contains(&f);
+            if in_range(a) && in_range(b) && a.abs_diff(b) <= SIGNAL_FH_TOL_HZ {
+                Sig::Yes
+            } else {
+                Sig::No
+            }
+        }
+        _ => Sig::Unknown,
+    }
+}
+
 /// コンポジット/S端子(YC8)の管面を `mon_bands` に置くキー。実在しない帯域番号
 /// (帯域は kHz の値なので重ならない)。設定ファイルには `mon.1000` で残る。
 use geometry::MON_KEY_NTSC;
@@ -1144,9 +1231,19 @@ struct Session {
     /// 入力設定を最後にボードへ書いた時刻(手でも自動でも)。直後は MODE が
     /// まだ古い伝送形式を言ってくるので、自動の書き直しを待たせる
     input_regs_written_at: Option<std::time::Instant>,
-    /// 映像ソースのプロファイル名(profiles::PROFILES の key)。空文字は「自動」。
-    /// pll_divide を絵の内容ではなく fH とドットクロック候補から決めるのに使う
+    /// いまの端子で選んでいる機種のキー(組み込みは profiles::PROFILES の key、
+    /// ユーザーの機種は `u:…`)。空文字は「汎用」。
+    /// pll_divide を絵の内容ではなく fH とドットクロック候補から決めるのに使う。
+    /// **`port_profiles[input_port]` の写し**で、書き換えは `select_input` だけが行う
     source_profile: String,
+    /// 選んでいる入力端子
+    input_port: profiles::Port,
+    /// 端子ごとに選んでいる機種。端子を切り替えて戻ると前の機種に戻る
+    port_profiles: std::collections::BTreeMap<profiles::Port, String>,
+    /// `userprof` のフォルダから読んだ機種
+    user_profiles: Vec<userprof::UserProfile>,
+    /// いまの端子に信号が来ているかの判定(`watch_signal`)
+    signal: SignalWatch,
     tune_phase: u8,
     /// 送信したがまだボードの応答で確認できていない値(key → (値, 送信時刻))。
     /// 応答が返るまでは自分の値を優先し、押した瞬間に元へ戻って見えるのを防ぐ。
@@ -1293,10 +1390,22 @@ struct Session {
     /// いまの帯域のモニタプロファイル [H幅, H位置, V幅, V位置]。
     /// 1周期のうち管面に出る割合と、周期の中心からのずれ
     mon: [f32; 4],
-    /// 帯域ごとのモニタプロファイル(CZ-612Dのような3モードディスプレイに相当)
-    mon_bands: std::collections::BTreeMap<u32, [f32; 4]>,
-    /// 帯域ごとの [pll_divide, 位相]
-    band_pll: std::collections::BTreeMap<u32, [u32; 2]>,
+    /// 機種 × 帯域ごとのモニタプロファイル(CZ-612Dのような3モードディスプレイに相当)。
+    /// キーは (`profiles::geo_key`, 帯域)
+    mon_bands: std::collections::BTreeMap<(String, u32), [f32; 4]>,
+    /// 機種 × 帯域ごとの [pll_divide, 位相]
+    band_pll: std::collections::BTreeMap<(String, u32), [u32; 2]>,
+    /// `mon` / `tune_pll_divide` / `tune_phase` がどの機種の値か(`profiles::geo_key`)。
+    /// 機種を切り替えたら、いまの値をこの機種の側へしまってから新しい機種の値を出す。
+    /// 空は未確定(起動直後)
+    geo_prof: String,
+    /// 端子を替えた直後は、この時刻まで帯域を追わない(`PORT_SETTLE`)
+    band_hold_until: Option<std::time::Instant>,
+    /// パネルのいまのページ(ホーム / 詳細)
+    page: panel::Page,
+    /// 管面のつまみを動かしている(パネルを薄くする)。`peek_next` は今フレームの判定
+    peek: bool,
+    peek_next: bool,
     /// いまの周波数帯[kHz]。0 は未確定
     band_khz: u32,
     /// `mon_bands` を引くキー。普段は `band_khz` と同じで、コンポジット/S端子
@@ -1423,7 +1532,11 @@ impl Session {
             toasts: toast::Toasts::default(),
             input_regs_autowritten: false,
             input_regs_written_at: None,
-            source_profile: cfg.source_profile.clone(),
+            source_profile: cfg.source_profile().to_string(),
+            input_port: cfg.input_port,
+            port_profiles: cfg.port_profiles.clone(),
+            user_profiles: userprof::load_all(),
+            signal: SignalWatch::default(),
             tune_pending: Default::default(),
             tune_get_at: None,
             input_mux_get_at: None,
@@ -1495,6 +1608,11 @@ impl Session {
             band_pll: cfg.band_pll.clone(),
             band_khz: 0,
             mon_key: 0,
+            geo_prof: String::new(),
+            band_hold_until: None,
+            page: panel::Page::Home,
+            peek: false,
+            peek_next: false,
             auto: None,
             auto_done: None,
             modes: cfg.modes.clone(),
@@ -1654,75 +1772,6 @@ impl Session {
         ));
     }
 
-    /// パネルのセクション見出し。
-    ///
-    /// ★以前は `ui.strong()` だけだったので、本文の monospace と字面が近く
-    ///   「どこでセクションが切れているか」が読み取れなかった。区切り線は
-    ///   既に各セクションの終わりに入っているので、ここでは大きさと余白で
-    ///   段差を付ける。
-    fn section(ui: &mut egui::Ui, title: &str) {
-        theme::section(ui, title);
-    }
-
-    /// パネル最上部の簡易スキャン。
-    ///
-    /// ★**Tune の奥にもあるが、そこはスクロールしないと届かない。** モードが
-    ///   変わるたびに押すものなので、いちばん上に出して S キーでも叩けるように
-    ///   してある。実体は同じ `auto_start_quick()`。
-    fn quick_scan_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            if self.auto.is_some() {
-                if ui.button("中止").clicked() {
-                    self.auto = None;
-                    self.auto_done = Some("中止しました".into());
-                }
-                if let Some(a) = self.auto.as_ref() {
-                    ui.monospace(a.note.clone());
-                }
-            } else {
-                let n = self.scan_candidates().len();
-                let btn = ui.add_enabled(
-                    n > 0,
-                    egui::Button::new(egui::RichText::new("簡易スキャン").strong()),
-                );
-                let btn = btn.on_hover_text(if n > 0 {
-                    format!(
-                        "候補 {n} 点の位相感度を測って、いちばん感度が強い点を採ります\n\
-                         (候補1つにつき8秒ほど。位相も最適値に合わせます)。\n\
-                         S キーでも実行できます。詳細は Tune の同じボタンを参照"
-                    )
-                } else {
-                    "この fH を説明できる候補がありません\n\
-                     (MODE未受信か、プロファイルに無いドットクロック)".to_string()
-                });
-                if btn.clicked() {
-                    self.auto_start_quick();
-                }
-                ui.weak("S");
-                // ★詳細の出し入れはここに置く。**調査用の数値と細かい設定が
-                //   常用時の表示に混ざっていて読みづらい**ため、既定では畳む。
-                ui.separator();
-                let mut adv = self.show_advanced;
-                if ui.checkbox(&mut adv, "詳細")
-                    .on_hover_text(
-                        "調査用の数値(present方式・CPU時間・パケット統計など)と、\n\
-                         細かい設定(vbp / hs_offset / pll_div / 間引き / 帯域制限 / 位相)を\n\
-                         出し入れします。問題を追うときだけ開けば十分です")
-                    .changed()
-                {
-                    self.show_advanced = adv;
-                    self.mark_settings_dirty();
-                }
-            }
-        });
-        // 直前の結果はここに出す。押した場所の近くに出ないと見落とす
-        if self.auto.is_none() {
-            if let Some(d) = self.auto_done.clone() {
-                ui.weak(d);
-            }
-        }
-    }
-
     /// 配信用クリーン出力ウィンドウを1フレーム描く。
     ///
     /// 本体と同じ `paint_tube`(同じシェーダ)を、UIもベゼルも無い別ウィンドウへ
@@ -1758,14 +1807,7 @@ impl Session {
     }
 
     fn flush_settings(&mut self) {
-        if self.mon_key > 0 {
-            self.mon_bands.insert(self.mon_key, self.mon);
-        }
-        if self.band_khz > 0 {
-            let k = self.band_khz;
-            self.band_pll.insert(k, [self.tune_pll_divide.max(0) as u32,
-                                     self.tune_phase as u32]);
-        }
+        self.stash_geometry();
         if !self.mode_key.is_empty() {
             let k = self.mode_key.clone();
             self.modes.insert(k, [self.crop[0], self.crop[1], self.crop[2],
@@ -1836,7 +1878,8 @@ impl Session {
             frame_skip_fields: self.frame_skip_fields,
             ntsc_comb3d: self.ntsc_comb3d,
             tune_phase: self.tune_phase,
-            source_profile: self.source_profile.clone(),
+            input_port: self.input_port,
+            port_profiles: self.port_profiles.clone(),
         }
         .save_slot(self.slot_id);
     }
@@ -1851,85 +1894,86 @@ impl Session {
     ///   いるので、Tune が畳まれていても入力は切り替えられる。
     fn source_ui(&mut self, ui: &mut egui::Ui) {
         let mut send: Vec<(u16, u32)> = Vec::new();
-        // 映像ソースは「配線の方式」でもある。選んだらその入力設定をボードへ書く。
+        // ★**端子を選んでから、その端子の機種を選ぶ。** 端子は「どの穴に挿したか」、
+        //   機種は「その先に何が繋がっているか」。テレビの入力切り替えに機器名を
+        //   付けるのと同じで、ボタンには機種名を大きく、端子名を小さく出す
+        //   (人は「X68000 を見たい」と考え、どの穴に挿したかは覚えていない)。
         //
-        // ★**TVPのレジスタは電源で消える。** ビットストリームをSPIフラッシュに
-        //   焼いても、pixfmt・入力MUX・同期の取り方・クランプ・ゲインは
-        //   CONFIG で入れ直す必要がある。以前は毎回
-        //   `python3 -m retrocastx.videoin apply composite` を叩いていた。
-        //   同じ選択を選び直してもコンボは反応しないので、書き直しボタンも要る。
-        // 狭い画面(縦持ちのスマホ)では書き込みボタンを次の行へ折り返す。横に並べた
-        // ままだとパネルの幅をはみ出し、それ以降の節の見出しまで右へ伸びていた
-        ui.horizontal_wrapped(|ui| {
-            theme::label_col(ui, "映像ソース");
-            let cur = self.source_profile.clone();
-            let mut sel = cur.clone();
-            let name = |k: &str| -> String {
-                if k.is_empty() {
-                    "自動".into()
-                } else {
-                    profiles::by_key(k).map_or_else(|| k.to_string(), |p| p.label.to_string())
+        // ★**信号が無い端子も押せる。** 電源を入れる前に切り替えておいて待つ、
+        //   という使い方がある。
+        let mut pick: Option<(profiles::Port, String)> = None;
+        let gap = 6.0;
+        let w = ((ui.available_width() - gap) / 2.0).max(80.0);
+        egui::Grid::new("input_ports")
+            .num_columns(2)
+            .spacing([gap, gap])
+            .show(ui, |ui| {
+                for (i, port) in profiles::Port::ALL.into_iter().enumerate() {
+                    let key = self.port_profile(port);
+                    let label = self.profile_label(&key);
+                    let on = port == self.input_port;
+                    let sig = self.signal_of(port);
+                    let r = Self::port_button(ui, w, on, sig, port, &label)
+                        .on_hover_text(sig.hint(port));
+                    if r.clicked() && !on {
+                        pick = Some((port, key));
+                    }
+                    if i % 2 == 1 {
+                        ui.end_row();
+                    }
                 }
-            };
-            egui::ComboBox::from_id_salt("srcprof")
-                .width(190.0)
-                .selected_text(name(&cur))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut sel, String::new(), "自動");
-                    for p in profiles::PROFILES {
-                        ui.selectable_value(&mut sel, p.key.to_string(), p.label);
-                    }
-                });
-            let changed = sel != cur;
-            if changed {
-                self.source_profile = sel;
-                self.mark_settings_dirty();
-                // ★入力を切り替えたら音声も付いてくる(「自動」のときだけ)
-                self.apply_auto_audio();
+            });
+
+        // いまの端子の機種。汎用・組み込み・ユーザーの機種の順
+        let port = self.input_port;
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(format!("入力{} の機種", port.number()))
+            .size(11.0).color(egui::Color32::from_rgb(0x7F, 0x90, 0x8F)));
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+            let cur = self.source_profile.clone();
+            let mut opts: Vec<(String, String, String)> = Vec::new(); // (key, 表示, ホバー)
+            if port.has_generic() {
+                opts.push((String::new(), "汎用".into(),
+                           "機種を決めずに、知っている全部の機種の水晶で探す。\n\
+                            一覧に無い機種を繋いだときに。スキャンは遅くなる".into()));
             }
-            let prof = profiles::by_key(&self.source_profile);
-            let has_regs = prof.is_some_and(|p| !p.input_regs.is_empty());
-            let write = ui
-                .add_enabled(has_regs, egui::Button::new("入力設定を書き込む"))
-                .on_hover_text(
-                    "TVPの入力MUX・同期の取り方・クランプ・ゲイン・伝送形式を書く。\n\
-                     ボードの電源を入れ直すと消えるので、そのときはここを押す\n\
-                     (焼き直しは不要。全部CONFIGで済む)",
-                )
-                .clicked();
-            if let Some(p) = prof {
-                if (changed || write) && !p.input_regs.is_empty() {
-                    // ★伝送形式は、**いまのボードの値でこのソースが成立するなら
-                    //   上書きしない**。実行時に選べるようにしたので、
-                    //   X68000 RGB を RGB888 で見ているところへ入力設定を書いて
-                    //   黙って RGB555 に戻されると、選択が消えたように見える。
-                    //   YC8 が要るソース(コンポジット/S端子)や、ボードが
-                    //   別種の形式で止まっている場合は上書きする(救済が要る)。
-                    let have = self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt);
-                    let keep_fmt = !p.needs_exact_pixfmt()
-                        && p.pixfmt().is_some()
-                        && have.is_some_and(|h| p.pixfmt_ok(h));
-                    let mut n = 0;
-                    let mut wrote: Vec<(u16, u32)> = Vec::new();
-                    for (k, v) in self.input_regs_for_board(p) {
-                        if keep_fmt && k == protocol::CFG_KEY_PIXFMT {
-                            continue;
-                        }
-                        send.push((k, v));
-                        wrote.push((k, v));
-                        n += 1;
-                    }
-                    // ★書いた値で Tune欄の表示も更新する。ここを忘れると
-                    //   表示が古いまま残り、次に触ったときに古い値が飛ぶ。
-                    for (k, v) in wrote {
-                        self.set_tune_mirror(k, v);
-                    }
-                    // 書いた直後に自動の書き直しが動かないように(autowrite_input_regs)
-                    self.input_regs_written_at = Some(std::time::Instant::now());
-                    self.toasts.info(format!("{} の入力設定をボードへ書き込みました ({n}件)", p.label));
+            for p in port.profiles() {
+                // 「未検証」は水晶(ドットクロック)を実機で裏取りしていない機種の印。
+                // ビデオ端子はクロックが規格で決まる(8fsc / BT.601)ので付けない
+                let mark = if p.verified || port == profiles::Port::Video { "" } else { "\u{1}未検証" };
+                opts.push((p.key.into(), format!("{}{mark}", p.label),
+                           p.oscillators.iter().map(|c| c.name).collect::<Vec<_>>().join(" / ")));
+            }
+            for u in self.user_profiles.iter().filter(|u| u.port == port) {
+                let mut tip = format!("自作のプロファイル\n{}", u.key);
+                if !u.author.is_empty() { tip.push_str(&format!("\n作成: {}", u.author)); }
+                if !u.note.is_empty() { tip.push_str(&format!("\n{}", u.note)); }
+                opts.push((u.key.clone(), format!("{} ★", u.label), tip));
+            }
+            for (key, text, tip) in opts {
+                // "\u{1}" の後ろは注記(未検証)。小さく琥珀で添える
+                let on = cur == key;
+                let (main, note) = text.split_once('\u{1}').unwrap_or((&text, ""));
+                if panel::seg_button(ui, main, note, on).on_hover_text(tip).clicked() && !on {
+                    pick = Some((port, key));
                 }
             }
         });
+        if let Some((port, key)) = pick {
+            send.extend(self.select_input(port, key));
+        }
+
+        self.estimate_ui(ui, &mut send);
+        if !port.uses_tvp() {
+            let fh = self.signal.drgb_fh.filter(|f| *f > 0)
+                .map_or(String::new(), |f| format!("(fH {:.2}kHz を検出)", f as f32 / 1000.0));
+            ui.colored_label(
+                theme::AMBER,
+                format!("デジタルRGBの映像の取り込みはまだゲートウェアにありません。\
+                         信号の有無だけを見ています{fh}"),
+            );
+        }
         // ボードの伝送形式が**このソースで成立しない**ときだけ言う。
         //
         // ★「プロファイルの値と一致するか」で見てはいけない。伝送形式は
@@ -1943,7 +1987,7 @@ impl Session {
         //   RGB … RGB555 も RGB888 も絵になる。どちらでもよい
         // 電源断でTVPのレジスタが消えた状態は、この「種類が違う」側に出る
         // (コンポジットなのに RGB555 になっていて復調できない)。
-        if let Some(p) = profiles::by_key(&self.source_profile) {
+        if let Some(p) = self.regs_profile() {
             if let (Some(want), Some(have)) = (
                 p.pixfmt(),
                 self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt),
@@ -1961,6 +2005,364 @@ impl Session {
             }
         }
         self.queue_config(send);
+    }
+
+    /// 「入力設定を書き込む」(映像ページ)
+    fn input_write_ui(&mut self, ui: &mut egui::Ui) {
+        let mut send: Vec<(u16, u32)> = Vec::new();
+        // 選び直しても反応しないので、書き直しのボタンも要る
+        // ★**TVPのレジスタは電源で消える。** ビットストリームをSPIフラッシュに
+        //   焼いても、pixfmt・入力MUX・同期の取り方・クランプ・ゲインは
+        //   CONFIG で入れ直す必要がある。以前は毎回
+        //   `python3 -m retrocastx.videoin apply composite` を叩いていた。
+        ui.horizontal_wrapped(|ui| {
+            theme::label_col(ui, "");
+            let write = ui
+                .add_enabled(self.regs_profile().is_some(), egui::Button::new("入力設定を書き込む"))
+                .on_hover_text(
+                    "TVPの入力MUX・同期の取り方・クランプ・ゲイン・伝送形式を書く。\n\
+                     ボードの電源を入れ直すと消えるので、そのときはここを押す\n\
+                     (焼き直しは不要。全部CONFIGで済む)",
+                )
+                .clicked();
+            if write {
+                send.extend(self.input_regs_to_write());
+            }
+        });
+        self.queue_config(send);
+    }
+
+    /// 端子 `port` で選んでいる機種のキー(初めてなら端子の既定)
+    fn port_profile(&self, port: profiles::Port) -> String {
+        self.port_profiles
+            .get(&port)
+            .cloned()
+            .unwrap_or_else(|| port.default_profile().to_string())
+    }
+
+    /// 機種の表示名。空は汎用
+    fn profile_label(&self, key: &str) -> String {
+        if key.is_empty() {
+            return "汎用".into();
+        }
+        if let Some(u) = self.user_profiles.iter().find(|u| u.key == key) {
+            return u.label.clone();
+        }
+        profiles::by_key(key).map_or_else(|| key.to_string(), |p| p.label.to_string())
+    }
+
+    /// 管面と PLL を覚える単位(機種 × 帯域 の「機種」)
+    fn geo(&self) -> String {
+        profiles::geo_key(self.input_port, &self.source_profile)
+    }
+
+    /// いまの機種の水晶の候補を持つ組み込みの機種。汎用なら None(全機種から探す)。
+    /// ユーザーの機種は借りている機種(`base`)
+    fn base_profile(&self) -> Option<&'static profiles::Profile> {
+        if let Some(u) = self.user_profiles.iter().find(|u| u.key == self.source_profile) {
+            return u.base_profile();
+        }
+        profiles::by_key(&self.source_profile).filter(|p| p.port == self.input_port)
+    }
+
+    /// 入力設定(と、それに付いてくる伝送形式・音声・色空間)を決める機種。
+    ///
+    /// 入力設定を持たない機種(VGA / PC-9801 / 汎用)は端子の代表のものを借りる。
+    /// ★**借りないと、前の端子の入力MUXが残る。** 以前の「自動」と VGA / PC-9801 は
+    ///   何も書かなかったので、MSX から切り替えると 2番系統を見続けていた。
+    /// TVP を通らない端子(デジタルRGB)は None。
+    fn regs_profile(&self) -> Option<&'static profiles::Profile> {
+        if !self.input_port.uses_tvp() {
+            return None;
+        }
+        self.base_profile()
+            .filter(|p| !p.input_regs.is_empty())
+            .or_else(|| self.input_port.base_profile())
+    }
+
+    /// 端子と機種を選ぶ。書くべき入力設定を返す(呼び側が queue_config する)
+    /// 端子のボタン1つ(docs の案どおり: 暗い面に、選んだら teal の枠と地)。
+    ///
+    /// ★egui の `Button` に LayoutJob を入れると、選択時の地が既定の青のまま、
+    ///   文字の段組みもボタンの余白に引っ張られて、案と見た目が揃わなかった。
+    ///   面・点・2行の文字を自分で描く
+    fn port_button(ui: &mut egui::Ui, w: f32, on: bool, sig: Sig, port: profiles::Port,
+                   label: &str) -> egui::Response {
+        let (rect, r) = ui.allocate_exact_size(egui::vec2(w, 44.0), egui::Sense::click());
+        if !ui.is_rect_visible(rect) {
+            return r;
+        }
+        let p = ui.painter();
+        let (fill, edge, ink, sub) = if on {
+            (theme::ACCENT_BG, theme::ACCENT, egui::Color32::WHITE, theme::ACCENT)
+        } else if r.hovered() {
+            (egui::Color32::from_rgb(0x18, 0x20, 0x23), egui::Color32::from_rgb(0x3E, 0x52, 0x54),
+             egui::Color32::from_rgb(0xD5, 0xDE, 0xDD), egui::Color32::from_rgb(0x7F, 0x90, 0x8F))
+        } else {
+            (egui::Color32::from_rgb(0x18, 0x20, 0x23), egui::Color32::from_rgb(0x2B, 0x37, 0x39),
+             egui::Color32::from_rgb(0xD5, 0xDE, 0xDD), egui::Color32::from_rgb(0x7F, 0x90, 0x8F))
+        };
+        p.rect(rect, 6.0, fill, egui::Stroke::new(if on { 1.5 } else { 1.0 }, edge),
+               egui::StrokeKind::Inside);
+        let x = rect.left() + 9.0;
+        let y1 = rect.top() + 12.0;
+        let c = egui::pos2(x + 3.0, y1);
+        if sig.filled() {
+            p.circle_filled(c, 3.5, sig.color());
+        } else {
+            p.circle_stroke(c, 3.0, egui::Stroke::new(1.2, sig.color()));
+        }
+        p.text(egui::pos2(x + 11.0, y1), egui::Align2::LEFT_CENTER,
+               format!("入力{} · {}", port.number(), port.jack()),
+               egui::FontId::proportional(10.5), sub);
+        p.text(egui::pos2(x, rect.bottom() - 13.0), egui::Align2::LEFT_CENTER, label,
+               egui::FontId::proportional(14.0), ink);
+        r.on_hover_cursor(egui::CursorIcon::PointingHand)
+    }
+
+    fn select_input(&mut self, port: profiles::Port, key: String) -> Vec<(u16, u32)> {
+        // ★**いまの管面と PLL は、入力設定を書く前に前の機種へしまう。** 書くと
+        //   Tune の表示(tune_phase 等)が新しい端子の値に替わるので、follow_band
+        //   に任せると新しい端子の位相を前の機種の値としてしまう(実機で発生:
+        //   コンポジットの位相 10 が X68000 31kHz に入り、ドットが崩れた)。
+        self.stash_geometry();
+        let port_changed = port != self.input_port;
+        self.input_port = port;
+        self.port_profiles.insert(port, key.clone());
+        self.source_profile = key;
+        self.geo_prof = self.geo();
+        self.mon_key = 0;
+        self.band_khz = 0;
+        // 端子を替えたら信号の判定はやり直し(MUXを替えてから fH が落ち着くまで約3秒)。
+        // その間に届く MODE は前の端子のものなので、帯域の追従も待たせる
+        if port_changed {
+            self.signal.port = Some(port);
+            self.signal.fh = [None, None];
+            self.signal.asked = false;
+            self.band_hold_until = Some(std::time::Instant::now() + PORT_SETTLE);
+        }
+        self.mark_settings_dirty();
+        // ★入力を切り替えたら音声も付いてくる(音声が「自動」のときだけ)
+        self.apply_auto_audio();
+        self.input_regs_to_write()
+    }
+
+    /// いまの機種の入力設定を、ボードへ書く形で返す(Tune の表示も合わせる)
+    fn input_regs_to_write(&mut self) -> Vec<(u16, u32)> {
+        let Some(p) = self.regs_profile() else { return Vec::new() };
+        // ★伝送形式は、**いまのボードの値でこのソースが成立するなら
+        //   上書きしない**。実行時に選べるようにしたので、
+        //   X68000 RGB を RGB888 で見ているところへ入力設定を書いて
+        //   黙って RGB555 に戻されると、選択が消えたように見える。
+        //   YC8 が要るソース(コンポジット/S端子)や、ボードが
+        //   別種の形式で止まっている場合は上書きする(救済が要る)。
+        let have = self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt);
+        let keep_fmt = !p.needs_exact_pixfmt()
+            && p.pixfmt().is_some()
+            && have.is_some_and(|h| p.pixfmt_ok(h));
+        let wrote: Vec<(u16, u32)> = self
+            .input_regs_for_board(p)
+            .into_iter()
+            .filter(|(k, _)| !(keep_fmt && *k == protocol::CFG_KEY_PIXFMT))
+            .collect();
+        // ★書いた値で Tune欄の表示も更新する。ここを忘れると
+        //   表示が古いまま残り、次に触ったときに古い値が飛ぶ。
+        for (k, v) in &wrote {
+            self.set_tune_mirror(*k, *v);
+        }
+        // 書いた直後に自動の書き直しが動かないように(autowrite_input_regs)
+        self.input_regs_written_at = Some(std::time::Instant::now());
+        self.toasts.info(format!(
+            "入力{} {} の入力設定をボードへ書き込みました ({}件)",
+            self.input_port.number(), self.profile_label(&self.source_profile), wrote.len()));
+        wrote
+    }
+
+    /// 機種の推定。**勝手には切り替えない**(提案してボタンで選ばせる)。
+    ///
+    /// 出すのは2つの場合だけ:
+    ///   - 汎用で受けていて、端子の機種のどれかで fH が説明できる
+    ///   - 機種を選んでいるのにその水晶では説明できず、端子の別の機種なら説明できる
+    /// 信号が安定していない(未接続で漂っている)ときは何も言わない。
+    fn estimate_ui(&mut self, ui: &mut egui::Ui, send: &mut Vec<(u16, u32)>) {
+        let port = self.input_port;
+        if self.signal_of(port) != Sig::Yes {
+            return;
+        }
+        let Some(fh) = self.shared.mode.lock().unwrap().as_ref()
+            .map(|m| m.hfreq_mhz_x1000 as f64 / 1000.0) else { return };
+        let Some((guess, _)) = profiles::estimate(port, fh) else { return };
+        let base = self.base_profile();
+        let msg = match base {
+            None => format!("{} のようです", guess.label),
+            Some(p) if p.key != guess.key && profiles::best(p, fh).is_none() => format!(
+                "この信号({:.2}kHz)は {} の水晶では説明できません。{} のようです",
+                fh / 1000.0, self.profile_label(&self.source_profile), guess.label),
+            _ => return,
+        };
+        ui.horizontal_wrapped(|ui| {
+            theme::label_col(ui, "");
+            ui.colored_label(theme::OK, msg);
+            if ui.small_button(format!("{} にする", guess.label)).clicked() {
+                send.extend(self.select_input(port, guess.key.to_string()));
+            }
+        });
+    }
+
+    /// 端子 `port` に信号が来ているか(`watch_signal` の結果)
+    fn signal_of(&self, port: profiles::Port) -> Sig {
+        if port == profiles::Port::Digital {
+            return match self.signal.drgb_fh {
+                Some(f) if (10_000..=80_000).contains(&f) => Sig::Yes,
+                Some(_) => Sig::No,
+                None => Sig::Unknown,
+            };
+        }
+        if port == self.input_port {
+            let s = sig_from_pair(self.signal.fh);
+            if s != Sig::Unknown {
+                return s;
+            }
+        }
+        // ★**入力3(D-SUB15)は選んでいなくても測れる。** X68000・PC-98・VGA は
+        //   HSYNC を別線で出すので、FPGA が生のまま数えている(key 0x2A)。
+        //   CSYNC しか出さない機種(MSX)・映像に同期が乗るビデオは TVP の SOG
+        //   を通すしかなく、TVP は1系統ずつしか見られないので測れない
+        if port == profiles::Port::Rgb15 {
+            let s = sig_from_pair(self.signal.raw_fh);
+            if s != Sig::Unknown {
+                return s;
+            }
+        }
+        // 測れない端子は、最後に選んでいたときの結果を薄く出す
+        match self.signal.last.get(&port) {
+            Some(Sig::Yes) => Sig::Seen,
+            _ => Sig::Unknown,
+        }
+    }
+
+    /// 信号の有無を測る。毎フレーム呼ぶ(パネルの外。隠していても端子の判定を続ける)。
+    ///
+    /// ★**TVP の同期検出(reg 14h)は使えない。** 何も繋がっていない SOG 入力でも
+    ///   「検出」を返す(docs/design-notes.md)。使えるのは fH の安定性で、
+    ///   未接続は範囲外の値をゆっくり漂い、本物は規定値に収束して動かない。
+    ///   だから TVP の fH(0x58)を間を空けて2回読み、一致するかを見る。
+    ///   ボードは fH を1秒ごとに測り直すので、間隔は1秒より長くする(同じ測定窓を
+    ///   2回読むと、漂っていても一致してしまう)。
+    ///
+    /// デジタルRGB は TVP を通らず、FPGA が別に測っている(0x70)ので、どの端子を
+    /// 選んでいても読める。デジタルRGB に対応していないゲートウェアは 0 を返すので
+    /// 「信号なし」になる。
+    fn watch_signal(&mut self) {
+        let now = std::time::Instant::now();
+        if self.signal.next_at.is_some_and(|t| now < t) {
+            return;
+        }
+        self.signal.next_at = Some(now + SIGNAL_POLL);
+        // 前回の問い合わせの答えを拾う。拾ったら消すので、次に残っているのは
+        // 必ず今回の問い合わせへの答え(来なければ None)
+        let (fh, dfh, raw) = {
+            let mut st = self.shared.config_state.lock().unwrap();
+            (st.remove(&protocol::CFG_KEY_FH_TVP), st.remove(&protocol::CFG_KEY_DRGB_FH),
+             st.remove(&protocol::CFG_KEY_FH_RAW))
+        };
+        if self.signal.asked {
+            self.signal.fh = [self.signal.fh[1], fh];
+            self.signal.drgb_fh = dfh;
+            self.signal.raw_fh = [self.signal.raw_fh[1], raw];
+            let s = sig_from_pair(self.signal.fh);
+            if s != Sig::Unknown {
+                self.signal.last.insert(self.input_port, s);
+            }
+        }
+        self.signal.port = Some(self.input_port);
+        self.signal.asked = true;
+        self.shared.config_get_queue.lock().unwrap().extend([
+            protocol::CFG_KEY_FH_TVP,
+            protocol::CFG_KEY_DRGB_FH,
+            protocol::CFG_KEY_FH_RAW,
+        ]);
+    }
+
+    /// 映像を出さずに待つか(取り込みの無い端子を選んでいる)
+    fn standby(&self) -> bool {
+        !self.input_port.uses_tvp()
+    }
+
+    /// プロファイルのファイル(書き出し・フォルダ・読み直し)。
+    ///
+    /// 買った人が合わせた値を作者へ送る、有志の作ったファイルを読み込む、の入口
+    fn profile_files_ui(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("プロファイルのファイル")
+            .id_salt("profile_files")
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new(
+                    "いまの機種で合わせた管面と PLL を書き出せます。作者へ送ってもらえれば、\
+                     次の版で正式に採用できます。人からもらったファイルはフォルダに置いて\
+                     「読み直す」と、端子の機種一覧に ★ 付きで出ます。")
+                    .size(11.0));
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("いまの調整を書き出す").clicked() {
+                        self.export_profile();
+                    }
+                    if !MOBILE && ui.button("フォルダを開く").clicked()
+                        && !userprof::reveal(&userprof::dir())
+                    {
+                        self.toasts.notice("フォルダを開けませんでした");
+                    }
+                    if ui.button("読み直す").clicked() {
+                        self.user_profiles = userprof::load_all();
+                        self.toasts.info(format!("プロファイルを {} 件読みました",
+                                                 self.user_profiles.len()));
+                    }
+                });
+                ui.weak(egui::RichText::new(userprof::dir().display().to_string()).size(10.0));
+            });
+    }
+
+    /// いまの機種の、合わせ終えた全帯域の値をファイルへ書き出す
+    fn export_profile(&mut self) {
+        self.stash_geometry();
+        let geo = self.geo();
+        let user = self.user_profiles.iter().find(|u| u.key == self.source_profile).cloned();
+        let mut u = userprof::UserProfile {
+            key: String::new(),
+            label: match &user {
+                Some(u) => u.label.clone(),
+                None => format!("{} (調整)", self.profile_label(&self.source_profile)),
+            },
+            port: self.input_port,
+            base: match &user {
+                Some(u) => u.base.clone(),
+                None => self.source_profile.clone(),
+            },
+            author: user.as_ref().map(|u| u.author.clone()).unwrap_or_default(),
+            note: user.as_ref().map(|u| u.note.clone()).unwrap_or_default(),
+            mon: Default::default(),
+            pll: Default::default(),
+        };
+        for ((g, b), m) in &self.mon_bands {
+            if *g == geo {
+                u.mon.insert(*b, *m);
+            }
+        }
+        for ((g, b), p) in &self.band_pll {
+            if *g == geo {
+                u.pll.insert(*b, *p);
+            }
+        }
+        if u.mon.is_empty() && u.pll.is_empty() {
+            self.toasts.notice("この機種はまだ一度も合わせていないので、書き出す値がありません");
+            return;
+        }
+        let stem = geo.trim_start_matches(userprof::KEY_PREFIX).to_string();
+        match userprof::export(&u, &stem) {
+            Ok(path) => {
+                self.user_profiles = userprof::load_all();
+                self.toasts.info(format!("書き出しました: {}", path.display()));
+            }
+            Err(e) => self.toasts.notice(format!("書き出せませんでした: {e}")),
+        }
     }
 
     /// 配信用クリーン出力の操作。**配信中いちばん触るものなので上に出す。**
@@ -2093,18 +2495,16 @@ impl Session {
     ///
     ///   対応表は profiles.rs の `audio_src`。「自動」を外せば従来どおり手で選べる。
     ///
-    ///   映像ソースも「自動」のときは、ボードの入力MUX(19h)から決める
+    ///   汎用(機種を選んでいない)ときは端子の代表の機種の音声になる。TVP を
+    ///   通らない端子(デジタルRGB)だけは、ボードの入力MUX(19h)から決める
     ///   (`follow_board_input_audio`)。
     fn apply_auto_audio(&mut self) {
         if !self.audio_auto {
             return;
         }
-        if self.source_profile.is_empty() {
-            self.follow_board_input_audio();
-        } else if let Some(want) =
-            profiles::by_key(&self.source_profile).and_then(|p| p.audio_src)
-        {
-            self.set_audio_source(Some(want));
+        match self.regs_profile().and_then(|p| p.audio_src) {
+            Some(want) => self.set_audio_source(Some(want)),
+            None => self.follow_board_input_audio(),
         }
     }
 
@@ -2115,7 +2515,7 @@ impl Session {
     /// 2秒おきに問い合わせ、応答(`config_state`)が来たら合わせる。
     /// `set_audio_source` は同じ値なら何もしないので、再生器を開き直すことはない。
     fn follow_board_input_audio(&mut self) {
-        if !self.audio_auto || !self.source_profile.is_empty() {
+        if !self.audio_auto || self.regs_profile().and_then(|p| p.audio_src).is_some() {
             return;
         }
         let mux = self
@@ -2397,12 +2797,17 @@ impl Session {
         if self.audio_volume != vol0 || self.audio_muted != mute0 {
             self.mark_settings_dirty();
         }
+        let _ = astats;
+        self.apply_gain();
+    }
+
+    /// 音量とミュートを再生側へ渡す(ホームの音量と音声ページの音量で共用)
+    fn apply_gain(&mut self) {
         let g = if self.audio_muted { 0.0 } else { self.audio_volume };
         *self.shared.gain.lock().unwrap() = Some(g);
-        if let Some(a) = &astats {
+        if let Some(a) = self.shared.audio.lock().unwrap().as_ref() {
             audio::AudioPlayer::set_gain(a, g);
         }
-
     }
 
     fn audio_ui(&mut self, ui: &mut egui::Ui) {
@@ -2755,7 +3160,7 @@ impl Session {
         //
         //   なので**選んでいる映像ソースが YC8 を要求するか**も見る。こちらは
         //   ボードの応答を待たずに決まるので、書き込みと復元の順序に依存しない。
-        if profiles::by_key(&self.source_profile).is_some_and(|p| p.pll_fixed()) {
+        if self.regs_profile().is_some_and(|p| p.pll_fixed()) {
             return true;
         }
         matches!(self.shared.mode.lock().unwrap().as_ref(),
@@ -2934,7 +3339,7 @@ impl Session {
     /// **ボードを入れ直すたびに1回だけ**書く。書いても直らない場合
     /// (パケットが落ちた等)は自動では追わない — 既存の警告と「入力設定を書き込む」が残る。
     fn autowrite_input_regs(&mut self) {
-        let Some(p) = profiles::by_key(&self.source_profile) else {
+        let Some(p) = self.regs_profile() else {
             return;
         };
         if p.input_regs.is_empty() {
@@ -3020,7 +3425,7 @@ impl Session {
             self.win_applied = None;
             return;
         };
-        let want = profiles::by_key(&self.source_profile)
+        let want = self.regs_profile()
             .and_then(|p| p.send_window())
             .unwrap_or((0, 0));
         if self.win_applied != Some((mac, want)) {
@@ -3106,7 +3511,49 @@ impl Session {
     /// 管面では31kHz(同22.1µs)が42%の大きさになってしまう。帯域ごとに持てば、
     /// 同じ帯域内のモードは同じ大きさで表示される(31kHzの512x512と768x512は
     /// 有効時間がどちらも22.1µsで実際に一致する)。
+    /// いまの管面と PLL を、いまの機種 × 帯域の側へしまう
+    fn stash_geometry(&mut self) {
+        if self.geo_prof.is_empty() {
+            return;
+        }
+        if self.mon_key > 0 {
+            self.mon_bands.insert((self.geo_prof.clone(), self.mon_key), self.mon);
+        }
+        if self.band_khz > 0 {
+            self.band_pll.insert((self.geo_prof.clone(), self.band_khz),
+                                 [self.tune_pll_divide.max(0) as u32, self.tune_phase as u32]);
+        }
+    }
+
+    /// 機種 × 帯域の初期値(ユーザーが一度も合わせていないとき)。
+    /// ユーザーの機種ならそのファイルの値、組み込みなら `Profile::presets`
+    fn preset_for(&self, geo: &str, band: u32) -> (Option<[f32; 4]>, Option<[u32; 2]>) {
+        if let Some(u) = self.user_profiles.iter().find(|u| u.key == geo) {
+            return (u.mon.get(&band).copied(), u.pll.get(&band).copied());
+        }
+        profiles::by_key(geo)
+            .and_then(|p| p.presets.iter().find(|s| s.band == band))
+            .map_or((None, None), |s| (s.mon, s.pll))
+    }
+
     fn follow_band(&mut self) {
+        // 取り込みの無い端子では、届いている MODE は前の端子(TVP)のもの。
+        // 追うと前の端子の帯域を待機中の機種の値としてしまう
+        if self.standby() {
+            return;
+        }
+        // 端子を替えた直後の MODE は前の端子のもの(PORT_SETTLE)
+        if let Some(t) = self.band_hold_until {
+            if std::time::Instant::now() < t {
+                return;
+            }
+            self.band_hold_until = None;
+        }
+        // 信号が無いと分かっている端子では追わない。未接続の fH は漂うので、
+        // 追うと 40kHz・57kHz といった実在しない帯域の管面を作ってしまう
+        if self.signal_of(self.input_port) == Sig::No {
+            return;
+        }
         let khz = {
             let m = self.shared.mode.lock().unwrap().clone();
             match m {
@@ -3116,16 +3563,29 @@ impl Session {
                 _ => return,
             }
         };
+        // ★**機種が変わったら、帯域が同じでも値を出し直す。** 管面と PLL は
+        //   機種 × 帯域で持つ(31kHz の X68000 と FM-TOWNS は別の値)。いまの値を
+        //   前の機種へしまい、帯域を未確定に戻せば、下の処理が新しい機種の値を出す。
+        let geo = self.geo();
+        if geo != self.geo_prof {
+            self.stash_geometry();
+            self.geo_prof = geo;
+            self.mon_key = 0;
+            self.band_khz = 0;
+        }
+        let geo = self.geo_prof.clone();
         // ★コンポジット/S端子は管面を帯域と別に持つ。同じ15kHz帯でも、RGB(MSX・
         //   X68000)の管面はモニタに合わせて回すつまみで、NTSCの窓は規格と
         //   ビデオデッキで決まる。共用すると片方を合わせるともう片方がずれる。
         let mk = if self.pll_locked_by_format() { MON_KEY_NTSC } else { khz };
         if mk != self.mon_key {
             if self.mon_key > 0 {
-                self.mon_bands.insert(self.mon_key, self.mon);
+                self.mon_bands.insert((geo.clone(), self.mon_key), self.mon);
             }
             let default = if mk == MON_KEY_NTSC { MON_NTSC } else { [1.0, 0.0, 1.0, 0.0] };
-            self.mon = self.mon_bands.get(&mk).copied().unwrap_or(default);
+            self.mon = self.mon_bands.get(&(geo.clone(), mk)).copied()
+                .or(self.preset_for(&geo, mk).0)
+                .unwrap_or(default);
             self.mon_key = mk;
             self.mark_settings_dirty();
         }
@@ -3134,13 +3594,15 @@ impl Session {
         }
         if self.band_khz > 0 {
             let old = self.band_khz;
-            self.band_pll.insert(old, [self.tune_pll_divide.max(0) as u32,
-                                       self.tune_phase as u32]);
+            self.band_pll.insert((geo.clone(), old), [self.tune_pll_divide.max(0) as u32,
+                                                      self.tune_phase as u32]);
         }
-        // 帯域ごとの pll_divide / 位相を復元してボードへ送る。
+        // 機種 × 帯域ごとの pll_divide / 位相を復元してボードへ送る。
         // pll_divide はモードごとに正解が違い、位相も帯域ごとに最適値が変わるので、
         // 1つだけ持つと帯域を切り替えるたびに合わせ直しになる。
-        if let Some(v) = self.band_pll.get(&khz).copied() {
+        let saved = self.band_pll.get(&(geo.clone(), khz)).copied()
+            .or(self.preset_for(&geo, khz).1);
+        if let Some(v) = saved {
             let pll = (v[0] as i32).clamp(200, 2304);
             if pll != self.tune_pll_divide {
                 self.set_pll(pll as u32);
@@ -3216,43 +3678,6 @@ impl Session {
         }
     }
 
-    /// マルチスキャンモニタの周波数インジケータ。いま同期している帯域が点灯する。
-    ///
-    /// 実機のモニタは 15/24/31kHz のどれで同期しているかをLEDで示していた。
-    /// 帯域は管面のプリセットを選ぶ単位でもあるので、いまどれなのかが常に
-    /// 見えている方が分かりやすい。
-    fn band_leds(&self, ui: &mut egui::Ui) {
-        const BANDS: [u32; 3] = [15, 24, 31];
-        ui.horizontal(|ui| {
-            for b in BANDS {
-                let on = self.band_khz == b;
-                let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(52.0, 18.0), egui::Sense::hover());
-                let p = ui.painter();
-                // 消灯時も枠は見えるようにして、何段あるかが分かるようにする
-                let (fill, text) = if on {
-                    // ★点灯色はアクセントに揃える。緑のままだと見出しの teal と
-                    //   競合して、どちらが「いま効いているもの」か読めなくなる
-                    (theme::ACCENT, egui::Color32::BLACK)
-                } else {
-                    (egui::Color32::from_rgb(38, 40, 44), egui::Color32::from_gray(110))
-                };
-                p.rect_filled(rect, 3.0, fill);
-                p.rect_stroke(rect, 3.0, egui::Stroke::new(1.0,
-                              egui::Color32::from_gray(70)), egui::StrokeKind::Inside);
-                p.text(rect.center(), egui::Align2::CENTER_CENTER,
-                       format!("{b}kHz"), egui::FontId::monospace(11.0), text);
-            }
-            // 呼称の帯域に当てはまらない周波数(他機種など)はそのまま出す
-            if self.band_khz > 0 && !BANDS.contains(&self.band_khz) {
-                ui.monospace(format!("{}kHz", self.band_khz));
-            }
-            if self.band_khz == 0 {
-                ui.weak("同期なし");
-            }
-        });
-    }
-
     /// TVPが許す pll_divide の下限(8の倍数に切り上げ)。
     ///
     /// TVP7002のピクセルクロックは 12MHz 未満だと動作が保証されない(データシート)。
@@ -3299,6 +3724,10 @@ impl Session {
     ///
     /// **機種固有の分岐はここにも無い。** プロファイルの表と fH だけで決まる。
     fn scan_candidates(&self) -> Vec<profiles::ScanPoint> {
+        // 待機中の MODE は前の端子のもの。それで TVP の PLL を動かさない
+        if self.standby() {
+            return Vec::new();
+        }
         let fh_hz = self
             .shared
             .mode
@@ -3310,11 +3739,9 @@ impl Session {
         if !(fh_hz > 0.0) {
             return Vec::new();
         }
-        let p = if self.source_profile.is_empty() {
-            profiles::best_over_all(fh_hz).map(|(p, _)| p)
-        } else {
-            profiles::by_key(&self.source_profile)
-        };
+        // 汎用なら全機種から(広く探す)、機種を選んでいればその水晶だけ
+        let p = self.base_profile()
+            .or_else(|| profiles::best_over_all(fh_hz).map(|(p, _)| p));
         p.map(|p| profiles::scan_candidates(p, fh_hz))
             .unwrap_or_default()
     }
@@ -3946,11 +4373,9 @@ impl Session {
                 }
             });
             // 選んだプロファイル(空なら全部試す)での答え
-            let pick = if self.source_profile.is_empty() {
-                profiles::best_over_all(fh_hz).map(|(p, c)| (p.label, c))
-            } else {
-                profiles::by_key(&self.source_profile)
-                    .and_then(|p| profiles::best(p, fh_hz).map(|c| (p.label, c)))
+            let pick = match self.base_profile() {
+                Some(p) => profiles::best(p, fh_hz).map(|c| (p.label, c)),
+                None => profiles::best_over_all(fh_hz).map(|(p, c)| (p.label, c)),
             };
             match pick {
                 Some((label, c)) => {
@@ -5741,7 +6166,7 @@ impl Session {
         self.shared.comb3d.store(self.ntsc_comb3d, std::sync::atomic::Ordering::Relaxed);
         // コンポーネントなら RGB888 の3チャンネルを Pr/Y/Pb として RGB に直させる
         self.shared.ycbcr.store(
-            profiles::by_key(&self.source_profile).is_some_and(|p| p.ycbcr),
+            self.regs_profile().is_some_and(|p| p.ycbcr),
             std::sync::atomic::Ordering::Relaxed,
         );
         let t_tex = std::time::Instant::now();
@@ -5787,6 +6212,8 @@ impl Session {
         self.apply_send_window();
         // 同じくパネルの外。映像が「自動」のときの音声はボードの入力系統に従う
         self.follow_board_input_audio();
+        // 端子ボタンの信号表示と機種の推定に使う。パネルを開いた瞬間に分かっているように
+        self.watch_signal();
         // ★**帯域・モードの追従もパネルの外。** 以前は Tune 欄を描くときに
         //   呼んでいたので、パネルを隠したまま起動すると mon_key が 0 のままで、
         //   コンポジットの管面が NTSC の形にならなかった(レイアウトはドット比の
@@ -5867,641 +6294,21 @@ impl Session {
             // 地はうっすら透かす。管面に重ねているので、裏の映像が見えている方が
             // 「押しのけていない」ことが分かり、調整の結果もパネル越しに追える
             let frame = egui::Frame::side_top_panel(ui.style())
-                .fill(ui.visuals().panel_fill.gamma_multiply(PANEL_OPACITY))
+                .fill(ui.visuals().panel_fill.gamma_multiply(
+                    if self.peek { PANEL_OPACITY * 0.3 } else { PANEL_OPACITY }))
                 // 影は付けない。地が透けるので、裏に敷いた影まで透けて全体が暗く濁る
                 .stroke(ui.visuals().widgets.noninteractive.bg_stroke);
             let inner = egui::vec2(w, screen.height()) - frame.total_margin().sum();
             frame.show(ui, |ui| {
             ui.set_min_size(inner);
             ui.set_max_size(inner);
-            // 項目が増えて下が操作できなくなるので縦スクロールにする。
-            // auto_shrink=false でパネル幅いっぱいを使い、内容が短いときも
-            // 幅が縮まないようにする。
             // ★**横にはスクロールさせない。** 以前は全幅(縦持ちのスマホ)のときに
             //   横スクロールも付けていた。右パネルだったころは、画面幅より広い行が
             //   パネルを押し広げ、左端が画面の外へ消えたため。いまのパネルは幅を
             //   固定して重ねているので押し広げられず、横スクロールは指の縦の動きの
             //   わずかな横ずれで左右に揺れるだけだった(iPhone / Pixel)。広い行は
-            //   パネルの幅で折り返す
-            let scroll = egui::ScrollArea::vertical();
-            scroll
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.heading(egui::RichText::new("RetroCastX").color(theme::ACCENT));
-                    // Tab キーの無いモバイル向けの出口。パネルが全幅だと映像が
-                    // 見えずタップできないので、いちばん上に置く
-                    if MOBILE && ui.button("映像に戻る").clicked() {
-                        self.show_panel = false;
-                        self.mark_settings_dirty();
-                    }
-                });
-                if let Some(err) = &self.rx_error {
-                    ui.colored_label(egui::Color32::RED, err);
-                }
-                // ★**タイトルの直下に置く。** 簡易スキャンはモードが変わるたびに
-                //   押すもので、詳細トグルはパネル全体の見せ方を変えるもの。
-                //   どちらも「どの節にも属さない道具」なので、節の間に挟まって
-                //   いると迷子に見える。
-                self.quick_scan_bar(ui);
-                // 窓を増やす・別プロセスの全画面へ切り替える、はモバイルに無い
-                // (窓は1枚で最初から全画面)
-                if !MOBILE {
-                    self.window_bar(ui);
-                    // 低遅延全画面も「見せ方を変える道具」なのでここ(配信出力とは別物)
-                    self.lowlat_fs_ui(ui);
-                }
-                // ★**送れていないことを明示する。** 「何も映らない」だけだと
-                //   受信側の問題と区別できず、原因の切り分けに時間がかかる。
-                if let Some(err) = self.shared.net_error.lock().unwrap().clone() {
-                    ui.colored_label(theme::AMBER, err);
-                }
-                ui.separator();
-
-                // ★**接続先はいちばん上。** これより下は全部「いま繋がっている
-                //   ボード」の話(Mode / Stats / Tune / 個体設定)なので、
-                //   どれに繋がっているかが先に見えていないと意味が読めない。
-                //   窓を3つ並べて3台に繋ぐ使い方では、ここが最初に確認する場所。
-                Self::section(ui, "ボード");
-                self.boards_ui(ui);
-                ui.separator();
-
-                // ★**よく使う順に並べ替えてある。** 状態表示 → 入力の切り替え →
-                //   音量 → 配信出力、までがパネルを開いたまま触るもの。
-                //   Mode 以下は「見る」ための情報なのでその下に置く。
-                Self::section(ui, "入力");
-                self.source_ui(ui);
-                self.audio_src_ui(ui);
-                self.volume_ui(ui);
-                self.spdif_ui(ui);
-                ui.separator();
-
-                // 配信用の別窓は OBS で掴むためのもの。モバイルには窓が1枚しか無い
-                if !MOBILE {
-                    Self::section(ui, "配信出力");
-                    self.clean_out_ui(ui);
-                    ui.separator();
-                }
-
-                Self::section(ui, "LED");
-                self.led_ui(ui);
-                ui.separator();
-
-                Self::section(ui, "Mode");
-                // 周波数インジケータ(実機モニタのLEDに相当)。同期している帯域が点灯する
-                self.band_leds(ui);
-                if let Some(m) = self.shared.mode.lock().unwrap().clone() {
-                    // ★vactive は**スロット数**であって映像源の行数ではない。
-                    //
-                    //   行位置は常に半ライン単位のスロットに置かれる(捕捉側が
-                    //   インタレースかどうかで分岐しないための設計)。だから
-                    //   プログレッシブでは1つ飛びに並び、スロットの範囲は
-                    //   実際の行数の2倍になる。768x512 の X68000 が 768x1024 と
-                    //   表示されていたのはこれで、誤判定ではない。
-                    //
-                    //   インタレースのときは vactive がそのままフレーム行数に
-                    //   なる(フィールド行数×2 = フレーム行数)ので割らない。
-                    //   判定は assembler と同じ「mflags か、測定した交互性」。
-                    //   mflags bit0 だけでは決まらない (フィールドごとに VSYNC が
-                    //   来る本物のインタレースでは 0 になる) ことに注意。
-                    let il = m.mflags & 0x0001 != 0
-                        || self.shared.stats.lock().unwrap().interlace_measured;
-                    let vsrc = if il { m.vactive } else { m.vactive / 2 };
-                    ui.monospace(format!("{}x{} (id {})", m.hactive, vsrc, m.mode_id));
-                    if vsrc != m.vactive && self.show_advanced {
-                        ui.weak(format!("スロット {}", m.vactive));
-                    }
-                    // 実際に届いている LINE の形式。UIの設定値ではなく**電線上の値**
-                    ui.monospace(pixfmt_name(m.pixfmt));
-                    // htotal×vtotal もボードの実測値。モード表を作る調査で必要なので出す
-                    if self.show_advanced {
-                        theme::kv(ui, "total", format!("{}x{}", m.htotal, m.vtotal));
-                        theme::kv(ui, "dotclk", format!("{:.4} MHz", m.dotclk_hz as f64 / 1e6));
-                    }
-                    theme::kv(ui, "h", format!("{:.3} kHz", m.hfreq_mhz_x1000 as f64 / 1e6));
-                    theme::kv(ui, "v", format!("{:.3} Hz", m.vfreq_mhz_x1000 as f64 / 1e3));
-                } else {
-                    ui.weak("no mode yet");
-                }
-                ui.separator();
-
-                Self::section(ui, "Stats");
-                if self.show_advanced {
-                    ui.label(if self.no_vsync { "present: no-vsync" } else { "present: vsync (FIFO)" });
-                }
-                let s = self.shared.stats.lock().unwrap().clone();
-                // 描画遅延。基準は各ラインの受信時刻(≒直結の液晶が受け取る時刻)
-                let lat = *self.shared.latency.lock().unwrap();
-                if lat.frames > 0 {
-                    ui.monospace(lat.describe(self.frame_ms())).on_hover_text(
-                        "信号が届いてからの遅れ。上/中/下は画面のその位置のライン。\n\
-                         液晶は届いたラインをすぐ出すが、こちらはフレームが揃ってから\n\
-                         出すので、上ほど遅れる。\n\
-                         走査: 最初〜最後のライン / 待ち: 次フレームの先頭が来て確定するまで /\n\
-                         組立: 復調など / UI: 描画側が拾うまで(ウィンドウは60Hzで回る)\n\
-                         ウィンドウ表示はここまで。この先に macOS のコンポジタ(通常1フレーム\n\
-                         前後)と液晶自身の遅延が乗る。--fullscreen なら画面に出た時刻まで測る");
-                }
-                if !self.pace.summary.is_empty() {
-                    // ★**「53Hz」だけ出すと「12%描画できていない」と読める。**
-                    //   実際には publish を取りこぼしても**絵の情報は失われない**
-                    //   (フレームバッファは累積で、各publishはその全体のコピー。
-                    //    次のpublishが上位互換)。効くのは動きの滑らかさだけ。
-                    //   受信レートと並べ、意味はホバーで説明する。
-                    let disp = self.pace.new_frame_hz;
-                    let pct = if s.fps > 1.0 { 100.0 * disp / s.fps } else { 0.0 };
-                    ui.monospace(format!("表示 {disp:.1}Hz / 受信 {:.1}Hz ({pct:.0}%)",
-                                         s.fps))
-                        .on_hover_text(
-                            "画面に出せた新フレームの割合。\n\
-                             ★**取りこぼしても絵の情報は失われない。** フレーム\n\
-                             バッファは累積で、各フレームはその全体のコピーなので、\n\
-                             次のフレームが前のものを含んでいる。効くのは動きの\n\
-                             滑らかさだけ。\n\
-                             \n\
-                             そもそもソース59.75Hzに対しディスプレイは60Hzなので、\n\
-                             完璧に拾っても4秒に1回は重複か欠落が出る(原理的)。");
-                    if !self.pace.cpu_summary.is_empty() {
-                        ui.monospace(&self.pace.cpu_summary)
-                            .on_hover_text(
-                                "描画=ui()の呼び出し回数(=新フレームを見に行った\n\
-                                 回数)。**画面の更新回数ではない。** 画面は\n\
-                                 ディスプレイのrefresh(60Hz)で更新される。\n\
-                                 到着の揺らぎより細かく見に行くために多めに回す。");
-                    }
-                }
-                theme::kv(ui, "rate", format!("{:.1} fps  {:.1} Mbps", s.fps, s.mbps));
-                // ★自動では戻さないので、落としていることは常に見えるようにする
-                if self.auto_skipped {
-                    ui.colored_label(theme::AMBER, format!("自動で間引き中 {}", self.frame_skip_label()))
-                        .on_hover_text("パケットの取りこぼしや復調の遅れが続いたので、\n\
-                                        映像を自動で 1/2 にしています(音声は間引きません)。\n\
-                                        自動では戻しません。端末が熱いときやバッテリーが\n\
-                                        少ないときに起きやすいので、落ち着いたら\n\
-                                        Tune の「間引き」を 0 に戻してください");
-                }
-                if self.show_advanced {
-                    theme::kv(ui, "frames", format!("{}", s.frames));
-                    // 復調(コンポジット)が追いつかず、飛ばしたフィールドの数
-                    if s.decode_skipped > 0 {
-                        theme::kv(ui, "skipped", format!("{}", s.decode_skipped));
-                    }
-                }
-                // lost はOSのUDPバッファ溢れ、qdrop は組立が追いつかず受信スレッドの
-                // キューが満杯で捨てた分。分けて出さないとどちらが詰まっているのか
-                // 判断できない
-                theme::kv(ui, "pkts", format!("{}  lost {}", s.packets, s.lost_packets));
-                self.netcheck_ui(ui, &s);
-                if s.queue_drops > 0 {
-                    ui.monospace(format!("queue drops {}", s.queue_drops))
-                        .on_hover_text("組立が追いつかず、受信スレッドのキューが\n\
-                                        満杯で捨てた数。ここが増えるなら組立側が、\n\
-                                        lost だけ増えるなら受信側が詰まっています");
-                }
-                if self.show_advanced {
-                    theme::kv(ui, "orphan", format!("{}", s.orphan_lines));
-                }
-                // 太らせても埋まらなかった行数。0でないと前フレームの残りが減衰して
-                // 薄い影として見える。プログレッシブでは0になるべき
-                // インタレースかどうかは mflags では決まらないので測定で判定している。
-                // ここが「プログレッシブ扱い」のまま実際はインタレースだと、
-                // 太らせが別フィールドの行を複製して縞が交互にちらつく
-                if s.interlace_measured {
-                    // **インタレースでは半分が未充填なのが正常**(残りは前フィールドの
-                    // 内容 = 織り込み)。ここで警告色にすると毎回不具合に見える
-                    ui.colored_label(
-                        theme::OK,
-                        format!("インタレース(測定): 1フィールドずつ / 太らせ停止・減衰なし\n\
-                                 前フィールド保持 {}行(半分が正常)", s.unfilled_rows),
-                    );
-                } else if s.unfilled_rows > 0 {
-                    ui.colored_label(
-                        theme::AMBER,
-                        format!("未充填の行 {}", s.unfilled_rows),
-                    );
-                }
-                // NTSC復調(YC8のときだけ)。位相差が180°から離れたらコムが
-                // 効いていない=色が出ない。コム間隔は測って決めているので、
-                // 織り込み設定が変わっても追従する
-                if s.ntsc_comb_step > 0 {
-                    if s.publish_wait_max_ms > 1.0 {
-                        ui.colored_label(
-                            theme::AMBER,
-                            format!("フレーム差し替えのUI待ち 合計{:.0}ms 最大{:.0}ms",
-                                    s.publish_wait_ms, s.publish_wait_max_ms));
-                    }
-                    ui.colored_label(
-                        theme::OK,
-                        if s.ntsc_svideo {
-                            format!("NTSC復調 {}行 コム間隔{} 位相差{:.0}°\n\
-                                     S端子(赤chのバースト検出) コム未使用",
-                                    s.ntsc_locked, s.ntsc_comb_step, s.ntsc_phase_deg)
-                        } else {
-                            format!("NTSC復調 {}行 コム間隔{} 位相差{:.0}°\n\
-                                     3次元コム {}行 動き {:.1}% 位相ズレ{:.1}°\n\
-                                     TBC {:.3}サンプル",
-                                    s.ntsc_locked, s.ntsc_comb_step, s.ntsc_phase_deg,
-                                    s.ntsc_lines_3d, 100.0 * s.ntsc_motion_frac,
-                                    s.ntsc_phase_drift_deg, s.ntsc_tbc_rms)
-                        },
-                    );
-                } else if s.ntsc_mono {
-                    ui.colored_label(
-                        theme::OK,
-                        "NTSC 白黒(バーストなし) 黒レベルのみ校正",
-                    );
-                } else if matches!(self.shared.mode.lock().unwrap().as_ref(),
-                                   Some(m) if protocol::is_raw8(m.pixfmt)) {
-                    ui.colored_label(
-                        theme::AMBER,
-                        "NTSC復調 未ロック(Yのグレースケール表示)",
-                    );
-                }
-                // 暗部のフレーム間差分=点状ノイズの量。配線やパスコンの効果を数値で見る
-                ui.monospace(format!(
-                    "noise {:.1}%  lvl {:.1}",
-                    s.noise_flicker, s.noise_level
-                ));
-                ui.separator();
-
-                Self::section(ui, "Audio");
-                self.audio_ui(ui);
-                ui.separator();
-
-                // MimicX へのキー転送は macOS だけ(CoreMIDI)
-                if !MOBILE {
-                    Self::section(ui, "Remote input");
-                    self.remote_ui(ui);
-                    ui.separator();
-                }
-
-                Self::section(ui, "Tune");
-                self.tune_ui(ui);
-                ui.separator();
-
-                // 管面(ブラウン管の物理的な表示領域)。
-                //
-                // 管面(ブラウン管の物理的な表示領域)。
-                //
-                // 3モードディスプレイの偏向は「1HSYNC周期でブラウン管の左右をちょうど
-                // 掃引する」ように周波数ごとに速度が切り替わる。だから管面の横幅は
-                // 1/fH そのもので、掃引時間は設定項目ではない。縦も 1VSYNC周期が
-                // 管面の高さになる。
-                //
-                // ここで決めるのは「1周期のうち実際に管面へ出る割合」と「位置」だけ。
-                // 1.0 なら周期全体が見えるので何も切れない。実際のCRTは帰線の間ビームが
-                // 戻っているので 0.85〜0.95 あたりが現実に近い。
-                //
-                // 掃引時間を絶対時間で持つ方式も試したが実機と違った。横のサイズは
-                // 1/fH に比例するのに、X68000はどのモードも fV が53〜61Hzで1フレームの
-                // 時間がほぼ一定なので縦は変わらない。実測で24kHzが横51%・縦95%になり
-                // 縦長に潰れた。
-                ui.horizontal(|ui| {
-                    if ui.checkbox(&mut self.tube_time_based, "時間ベース")
-                        .on_hover_text("1HSYNC周期を管面の横幅、1VSYNC周期を高さとする\n\
-                                        (3モードディスプレイの偏向と同じ)。\n\
-                                        切ると旧方式(割合を直接指定)になる")
-                        .changed()
-                    {
-                        self.mark_settings_dirty();
-                    }
-                    if let Some(m) = self.shared.mode.lock().unwrap().as_ref() {
-                        let fh_khz = m.hfreq_mhz_x1000 as f32 / 1_000_000.0;
-                        if fh_khz > 1.0 {
-                            ui.weak(format!("1ライン {:.1}µs = 管面の横幅", 1000.0 / fh_khz));
-                        }
-                    }
-                });
-                if self.tube_time_based {
-                    // 実CRTのH幅/H位置/V幅/V位置つまみに相当する。スライダーにして
-                    // 「回して合わせる」操作にしている。
-                    //
-                    // 絵の内容から自動で中央へ寄せる方法は採らない。幾何が内容に依存して
-                    // しまい、「幾何は同期信号だけで決まる」という原則が崩れる。実CRTの
-                    // H位置もモードごとに一度合わせる固定値であって、絵に追従はしない。
-                    // 帯域ごとに保存されるので一度合わせれば以後は再現される。
-                    let mut ch = false;
-                    theme::align_sliders(ui);
-                    ui.horizontal(|ui| {
-                        theme::label_col(ui, "H幅");
-                        ch |= ui.add(egui::Slider::new(&mut self.mon[0], 0.2..=2.0)
-                                     .fixed_decimals(3).show_value(true))
-                            .on_hover_text("1HSYNC周期のうち管面に出る割合。\n\
-                                            1.0で帰線期間まで全部見える")
-                            .changed();
-                    });
-                    ui.horizontal(|ui| {
-                        theme::label_col(ui, "H位置");
-                        ch |= ui.add(egui::Slider::new(&mut self.mon[1], -0.5..=0.5)
-                                     .fixed_decimals(3).show_value(true))
-                            .on_hover_text("右へ動かすと絵が右へ動く。\n\
-                                            信号は左右非対称(バックポーチが長い)なので、\n\
-                                            0だと絵が右に寄る(負の値で左へ戻す)")
-                            .changed();
-                    });
-                    ui.horizontal(|ui| {
-                        theme::label_col(ui, "V幅");
-                        ch |= ui.add(egui::Slider::new(&mut self.mon[2], 0.2..=2.0)
-                                     .fixed_decimals(3).show_value(true))
-                            .on_hover_text("1VSYNC周期のうち管面に出る割合")
-                            .changed();
-                    });
-                    ui.horizontal(|ui| {
-                        theme::label_col(ui, "V位置");
-                        ch |= ui.add(egui::Slider::new(&mut self.mon[3], -0.5..=0.5)
-                                     .fixed_decimals(3).show_value(true))
-                            .on_hover_text("右へ動かすと絵が下へ動く")
-                            .changed();
-                    });
-                    if ch {
-                        self.mark_settings_dirty();
-                    }
-                    // 有効映像が管面のどれだけを占めるか。モードごとに違って当然で、
-                    // 15kHzはラインの0.842を占めるので大きく、31kHzは0.696なので小さい
-                    let (aw, ah) = {
-                        let st = self.shared.stats.lock().unwrap();
-                        (st.span_w as f32, st.span_h as f32)
-                    };
-                    if let Some(m) = self.shared.mode.lock().unwrap().as_ref() {
-                        if m.htotal > 0 && m.vtotal > 0 && aw > 0.0 {
-                            let fw = aw / m.htotal as f32 / self.mon[0].max(0.01) * 100.0;
-                            // 縦はスロット目盛り。1ラインが何スロットを占めるかは
-                            // 織り込みの有無で変わる(mflags bit0)
-                            let k = if m.mflags & 0x0001 != 0 { 1.0 } else { 2.0 };
-                            let vt = m.vtotal as f32 * k;
-                            let fh = ah / vt / self.mon[2].max(0.01) * 100.0;
-                            ui.weak(format!("有効映像は管面の {fw:.0}% x {fh:.0}%"));
-                        }
-                    }
-                } else {
-                    ui.horizontal(|ui| {
-                        ui.monospace("H位置");
-                        let mut c = (self.window[0] + self.window[1]) * 0.5;
-                        let mut w = self.window[1] - self.window[0];
-                        let a = ui.add(egui::DragValue::new(&mut c).speed(0.002).range(0.0..=1.0)
-                                       .fixed_decimals(3));
-                        ui.monospace("H幅");
-                        let b = ui.add(egui::DragValue::new(&mut w).speed(0.002).range(0.05..=1.0)
-                                       .fixed_decimals(3));
-                        if a.changed() || b.changed() {
-                            self.window[0] = (c - w * 0.5).clamp(-0.5, 1.5);
-                            self.window[1] = self.window[0] + w;
-                            self.mark_settings_dirty();
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.monospace("V位置");
-                        let mut c = (self.window[2] + self.window[3]) * 0.5;
-                        let mut h = self.window[3] - self.window[2];
-                        let a = ui.add(egui::DragValue::new(&mut c).speed(0.002).range(0.0..=1.0)
-                                       .fixed_decimals(3));
-                        ui.monospace("V幅");
-                        let b = ui.add(egui::DragValue::new(&mut h).speed(0.002).range(0.05..=1.0)
-                                       .fixed_decimals(3));
-                        if a.changed() || b.changed() {
-                            self.window[2] = (c - h * 0.5).clamp(-0.5, 1.5);
-                            self.window[3] = self.window[2] + h;
-                            self.mark_settings_dirty();
-                        }
-                    });
-                }
-                ui.horizontal(|ui| {
-                    // 縦画面のゲーム(ドラゴンスピリット等)向け
-                    ui.monospace("回転");
-                    let mut rot = self.rotate;
-                    egui::ComboBox::from_id_salt("rotate")
-                        .width(72.0)
-                        .selected_text(["0°", "90°", "180°", "270°"][rot as usize])
-                        .show_ui(ui, |ui| {
-                            for (i, t) in ["0°", "90°", "180°", "270°"].iter().enumerate() {
-                                ui.selectable_value(&mut rot, i as u32, *t);
-                            }
-                        });
-                    if rot != self.rotate {
-                        self.rotate = rot;
-                        self.mark_settings_dirty();
-                    }
-                });
-                ui.horizontal(|ui| {
-                    // 管面(表示領域)の縦横比。実際のCRTと同じで、ドット数ではなく
-                    // 管面の形が表示を決める。4:3 にすれば 512x256 でも 768x512 でも
-                    // 同じ形に映る。
-                    ui.monospace("管面");
-                    let cur = self.tube_aspect;
-                    let mut sel = cur;
-                    let name = |a: f32| -> &'static str {
-                        if a <= 0.0 { "そのまま" }
-                        else if (a - 4.0 / 3.0).abs() < 0.01 { "4:3" }
-                        else if (a - 1.0).abs() < 0.01 { "1:1" }
-                        else if (a - 16.0 / 9.0).abs() < 0.01 { "16:9" }
-                        else { "任意" }
-                    };
-                    egui::ComboBox::from_id_salt("tube")
-                        .width(96.0)
-                        .selected_text(name(cur))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut sel, 0.0, "そのまま");
-                            ui.selectable_value(&mut sel, 4.0 / 3.0, "4:3");
-                            ui.selectable_value(&mut sel, 1.0, "1:1");
-                            ui.selectable_value(&mut sel, 16.0 / 9.0, "16:9");
-                        });
-                    if sel != cur {
-                        self.tube_aspect = sel;
-                        self.mark_settings_dirty();
-                    }
-                    if self.mon_key == MON_KEY_NTSC && self.tube_time_based {
-                        ui.weak(format!("NTSCは規格の画素比 {:.3}", self.tube_aspect_eff()))
-                            .on_hover_text("コンポジット/S端子は画素の形が規格で決まるので、\n\
-                                            ここの設定ではなく、初期の窓(ビデオデッキと\n\
-                                            同じ範囲)を 720サンプル×480ライン = 4:3 で\n\
-                                            映した形に固定する。H幅/V幅は実機の振幅\n\
-                                            つまみと同じく、絵を伸び縮みさせる");
-                    }
-                });
-                ui.horizontal(|ui| {
-                    // モニタの枠。実在モニタのイラストの開口部に管面をはめる。
-                    // 実機のCRTと同じで「管面の形が表示を決める」ので、管面モデルの
-                    // 映像はそのまま開口部に入る。
-                    ui.monospace("枠");
-                    let cur = self.bezel.clone();
-                    let mut sel = cur.clone();
-                    let name = |k: &str| -> String {
-                        if k.is_empty() { "なし".into() }
-                        else { bezel::by_key(k).map_or_else(|| k.to_string(),
-                                                           |b| b.label.to_string()) }
-                    };
-                    egui::ComboBox::from_id_salt("bezel")
-                        .width(150.0)
-                        .selected_text(name(&cur))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut sel, String::new(), "なし");
-                            for b in bezel::BEZELS {
-                                ui.selectable_value(&mut sel, b.key.to_string(), b.label);
-                            }
-                        });
-                    if sel != cur {
-                        self.bezel = sel;
-                        self.bezel_tex = None;   // 幅が同じでも作り直す
-                        self.mark_settings_dirty();
-                    }
-                    // 選択は保ったまま出し入れする。機種を選び直さずに見比べられる
-                    let mut on = !self.bezel_off;
-                    if ui.checkbox(&mut on, "表示")
-                        .on_hover_text("筐体の枠を出し入れします (B キー)")
-                        .changed()
-                    {
-                        self.bezel_off = !on;
-                        self.mark_settings_dirty();
-                    }
-                });
-                ui.horizontal(|ui| {
-                    // 管面の外(窓と管面の縦横比が違うと余る領域)の描き方
-                    ui.monospace("余白");
-                    let mut sel = self.letterbox;
-                    egui::ComboBox::from_id_salt("letterbox")
-                        .width(96.0)
-                        .selected_text(sel.label())
-                        .show_ui(ui, |ui| {
-                            for s in letterbox::Style::ALL {
-                                ui.selectable_value(&mut sel, s, s.label());
-                            }
-                        })
-                        .response
-                        .on_hover_text("管面の外に描くもの。\n\
-                                        斜線: 映像ではない場所であることだけを示す\n\
-                                        計測帯: 管面の辺にドット座標の目盛りを打ち、\n\
-                                        空いた帯にモードと表示倍率を出す");
-                    if sel != self.letterbox {
-                        self.letterbox = sel;
-                        self.mark_settings_dirty();
-                    }
-                });
-                ui.horizontal(|ui| {
-                    // 拡大時の補間。sharp-bilinear は非整数倍でもドット幅が不揃いに
-                    // ならず、かつ全体がぼやけない。高解像度モニタ向けの既定。
-                    ui.monospace("補間");
-                    let mut f = self.filter;
-                    egui::ComboBox::from_id_salt("filter")
-                        .width(120.0)
-                        .selected_text(["ニアレスト", "バイリニア", "sharp-bilinear"][f as usize])
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut f, 0, "ニアレスト");
-                            ui.selectable_value(&mut f, 1, "バイリニア");
-                            ui.selectable_value(&mut f, 2, "sharp-bilinear");
-                        });
-                    if f != self.filter {
-                        self.filter = f;
-                        self.mark_settings_dirty();
-                    }
-                });
-                ui.horizontal(|ui| {
-                    // 伝送形式。RGB888 は 3B/px で帯域は 1.5 倍だが、
-                    // X68000 の 65536色モードのように元が5bitを超える階調を
-                    // 持つ場合に丸めが乗らない。RGB555 は 2B/px で帯域が軽い。
-                    // ゲートウェアは実行時に切り替えるので再ビルドは要らない。
-                    ui.monospace("伝送形式");
-                    let mut f = self.tune_pixfmt;
-                    // 帯域を減らす形式(YCC422 / CVBS8)は対応しているボードにだけ出す
-                    let compact = self.board_compact();
-                    egui::ComboBox::from_id_salt("pixfmt")
-                        .selected_text(pixfmt_name(f as u8))
-                        .show_ui(ui, |ui| {
-                            for v in [protocol::PIXFMT_RGB888, protocol::PIXFMT_RGB555,
-                                      protocol::PIXFMT_YC8] {
-                                ui.selectable_value(&mut f, v as i32, pixfmt_name(v));
-                            }
-                            if compact {
-                                for v in [protocol::PIXFMT_YCC422, protocol::PIXFMT_CVBS8] {
-                                    ui.selectable_value(&mut f, v as i32, pixfmt_name(v));
-                                }
-                            }
-                        });
-                    if f != self.tune_pixfmt {
-                        self.tune_pixfmt = f;
-                        self.send_cfg(protocol::CFG_KEY_PIXFMT, f as u32);
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    // 狭い画面では右の説明を次の行へ折り返す(縦持ちのスマホで切れていた)
-                    // ★**ドット復元(1タップ逆フィルタ)。**
-                    //   X68000 768x512 では本体の出力段で既に1ドットのパルスが
-                    //   立ち切っておらず、実測で 1ドット=白の64% / 2ドット=82% /
-                    //   4ドット以上=100%(2026-09-02, v0.9.0)。オシロでコネクタ
-                    //   直後と基板フィルタ後に差が無かったので、基板ではなく
-                    //   信号源側が原因と確定している。
-                    //
-                    //   一次ローパスの逆演算なので、係数が合っていれば
-                    //   オーバーシュート(輪郭のリンギング)は出ない。
-                    //   孤立1ドットの到達率が (1-a) なので a = 1 - 0.64 = 0.36 が理論値。
-                    //   ただし★**この式は「1サンプル=1ドット」でしか成立しない**
-                    //   (一次ローパスの逆演算なので、オーバーサンプリングだと前提が崩れる)。
-                    //   pll_divide を合わせた状態(X68000の512ドット系なら736)で
-                    //   実測すると、飽和ゼロで1pxが白に届くのは a=0.20 だった。既定はこちら。
-                    ui.monospace("ドット復元");
-                    let mut a = self.dot_a_milli as f32 / 1000.0;
-                    if ui.add(egui::Slider::new(&mut a, 0.0..=0.9).fixed_decimals(2)).changed() {
-                        self.dot_a_milli = (a * 1000.0).round() as u32;
-                        self.mark_settings_dirty();
-                    }
-                    ui.monospace(if self.dot_a_milli == 0 {
-                        "切".to_string()
-                    } else {
-                        format!("1px を {:.0}% → 100% へ", 100.0 * (1.0 - a))
-                    });
-                });
-                ui.horizontal(|ui| {
-                    // インターレースの残光。
-                    //
-                    // インターレースでは毎フレーム半分の行しか来ないのが正常なので、
-                    // パケットロス用の減衰をそのまま掛けると全行が 100%⇄80% を
-                    // フィールドレートで往復して面全体がちらつく。既定は 1.00 =
-                    // 減衰なし(前フィールドの行をそのまま残す = 素直な weave)。
-                    // 下げるとCRTの残光に近い見え方になる。好みで選べるようにしてある。
-                    ui.monospace("残光");
-                    let mut d = self.interlace_decay;
-                    if ui.add(egui::Slider::new(&mut d, 0.5..=1.0).fixed_decimals(2))
-                        .on_hover_text("インターレース時に、前のフィールドの行を\n\
-                                        次のフィールドでどれだけ残すか。\n\
-                                        1.00 = そのまま残す(チラつき無し)\n\
-                                        下げるとCRTの残光に近づくがチラつく")
-                        .changed()
-                    {
-                        self.interlace_decay = d;
-                        *self.shared.interlace_decay.lock().unwrap() = Some(d);
-                        self.mark_settings_dirty();
-                    }
-                });
-                // 縦倍率(と 4:3 / 1.0 / integer scaling)は撤去した。表示の形は
-                // 管面が決めるので、ドット数に対する倍率という概念が要らない。
-                // 512x256 も 768x512 も、管面を 4:3 にすれば同じ形で映る。
-                // ★**ウィンドウの大きさは変えない。** 以前はウィンドウを画の等倍に
-                //   合わせるボタンだったが、窓は利用者が決めるもの(#45)。いまは
-                //   実CRTの技術者が一度だけつまみを回すのと同じく、管面の幾何を合わせる
-                if ui.button("画に合わせる")
-                    .on_hover_text("H幅/H位置/V幅/V位置を一度だけ合わせます。\n\
-                                    コンポジット/S端子: ビデオデッキと同じ既定の窓に戻す\n\
-                                    RGB: いま映っている絵の範囲が管面にちょうど収まるようにする\n\
-                                    (ウィンドウの大きさは変えません)")
-                    .clicked()
-                {
-                    self.fit_geometry();
-                }
-                ui.separator();
-                let hide = if MOBILE { "パネルを隠す" } else { "パネルを隠す (Tab)" };
-                if ui.button(hide)
-                    .on_hover_text(if MOBILE {
-                        "操作パネルを隠して映像だけにします。\n\
-                         映像をタップすると戻ります"
-                    } else {
-                        "操作パネルを隠して映像だけにします。\n\
-                         Tab キーで戻せます"
-                    })
-                    .clicked()
-                {
-                    self.show_panel = false;
-                    self.mark_settings_dirty();
-                }
-                });
+            //   パネルの幅で折り返す。縦スクロールはページ本体だけ(`panel_ui`)
+            self.panel_ui(ui);
             });
         });
         }   // if self.show_panel
@@ -6596,10 +6403,24 @@ impl Session {
                                  self.letterbox, &info);
                 // 管面 → 枠。枠は開口部が抜けているので後から重ねる。
                 // 前面を離れているあいだは映像を止めているので黒(lifecycle.rs)
-                if has_video && !lifecycle::paused() {
+                // ★**取り込みの無い端子(デジタルRGB)では前の端子の絵を出さない。**
+                //   TVP は前の系統を見続けているので、そのまま描くと「入力4 を
+                //   選んだのに X68000 が映っている」ことになる
+                if has_video && !lifecycle::paused() && !self.standby() {
                     self.paint_tube(ui, tube);
                 } else {
                     ui.painter().rect_filled(tube, 0.0, egui::Color32::BLACK);
+                }
+                if self.standby() {
+                    ui.painter().text(
+                        tube.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("入力{} {} {}\n待機中(映像の取り込みは未対応)",
+                                self.input_port.number(), self.input_port.jack(),
+                                self.profile_label(&self.source_profile)),
+                        egui::FontId::proportional(16.0),
+                        egui::Color32::from_gray(150),
+                    );
                 }
                 if bez.is_some() {
                     if let Some((tex, _)) = self.bezel_tex.as_ref() {
