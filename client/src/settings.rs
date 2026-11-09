@@ -23,6 +23,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+use crate::profiles::{self, Port};
+
 /// 環境変数より優先する置き場所。Android は環境変数に何も無いので、入口
 /// (android_main)がアプリの内部データ領域を入れる
 static BASE_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -147,8 +149,11 @@ pub struct Settings {
     pub frame_skip_fields: bool,
     /// コンポジットの3次元コム。既定は使う(モバイルでは重くて追いつかないことがある)
     pub ntsc_comb3d: bool,
-    /// 映像ソースのプロファイル名。空文字は「自動」(全プロファイルを試す)
-    pub source_profile: String,
+    /// 選んでいる入力端子
+    pub input_port: Port,
+    /// 端子ごとに選んでいる機種(プロファイルのキー)。空文字は「汎用」
+    /// (機種を決めずに広く探す)。端子を切り替えて戻ってきたとき、前の機種に戻る。
+    pub port_profiles: BTreeMap<Port, String>,
     /// 画面回転 0/1/2/3 = 時計回りに 0/90/180/270 度(縦画面のゲーム用)
     pub rotate: u32,
     /// 管面(表示領域)の縦横比 幅/高さ。0 なら有効映像の比をそのまま使う。
@@ -207,16 +212,21 @@ pub struct Settings {
     /// 掃引時間は自由パラメータではない。ここで持つのは「その周期のうち実際に
     /// 管面へ出る割合」と「位置」だけ。1.0なら周期全体が見えるので何も切れない。
     pub mon: [f32; 4],
-    /// 帯域ごとのモニタプロファイル(CZ-612Dのような3モードディスプレイに相当)
-    pub mon_bands: BTreeMap<u32, [f32; 4]>,
-    /// 帯域ごとの [pll_divide, 位相]。
+    /// 機種 × 帯域ごとのモニタプロファイル(CZ-612Dのような3モードディスプレイに相当)。
+    /// キーは (`profiles::geo_key`, 帯域[kHz])。
+    ///
+    /// ★**帯域だけをキーにしていた頃は、同じ帯域の別機種が値を共有していた。**
+    ///   31kHz で X68000 に合わせた管面が、31kHz の FM-TOWNS にもそのまま使われ、
+    ///   横位置や幅が大きくずれた。機種を足すたびに起きるので、機種もキーに入れる。
+    pub mon_bands: BTreeMap<(String, u32), [f32; 4]>,
+    /// 機種 × 帯域ごとの [pll_divide, 位相]。キーは `mon_bands` と同じ。
     ///
     /// pll_divide はモードごとに正解が違い(31kHz 768x512 は1104、15kHz 512x512 は
     /// 1216 など)、位相も帯域ごとに最適値が変わる(ケーブルとTVP内部の遅延は固定[ns]
     /// だが、位相レジスタはドット周期の1/32刻みなのでドットクロックが変われば
     /// 同じ遅延が別の目盛りになる)。1つだけ持つと帯域を切り替えるたびに合わせ直しに
     /// なるので、帯域ごとに覚える。
-    pub band_pll: BTreeMap<u32, [u32; 2]>,
+    pub band_pll: BTreeMap<(String, u32), [u32; 2]>,
     /// 管面の位置合わせ(実CRTのH位置/V位置つまみ)
 
     /// モードごとの設定。キーは "fH[100Hz単位]_vtotal_htotal"。
@@ -298,7 +308,10 @@ impl Default for Settings {
             tune_frame_skip: 0,
             frame_skip_fields: false,
             ntsc_comb3d: true,
-            source_profile: String::new(),
+            // 既定は D-SUB15 の汎用。配っている基板で一番多く使われる端子で、
+            // 機種を選ばなくても X68000 / VGA / PC-9801 のどれかとして探せる
+            input_port: Port::Rgb15,
+            port_profiles: BTreeMap::new(),
             rotate: 0,
             window: [0.22, 0.94, 0.07, 0.98],
             tube_time_based: true,
@@ -341,6 +354,18 @@ impl Default for Settings {
             window_h: 820.0,
         }
     }
+}
+
+/// `mon` の値(H幅, H位置, V幅, V位置)
+pub fn parse_mon(v: &str) -> Option<[f32; 4]> {
+    let n: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    (n.len() >= 4).then(|| [n[0], n[1], n[2], n[3]])
+}
+
+/// `bandpll` の値(pll_divide, 位相)
+pub fn parse_pll(v: &str) -> Option<[u32; 2]> {
+    let n: Vec<u32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    (n.len() >= 2).then(|| [n[0], n[1].min(31)])
 }
 
 /// これだけ離れていたら「別のとき」。1つ閉じてしばらく使い続けたなら、その
@@ -430,6 +455,12 @@ impl Settings {
 
     fn parse(text: &str) -> Self {
         let mut s = Self::default();
+        // 端子を持つ前の設定ファイル(source_profile と帯域だけのキー)。読み終えてから
+        // 新しい形へ移す(行の順序に依らないように)
+        let mut legacy_profile: Option<String> = None;
+        let mut has_port = false;
+        let mut legacy_mon: BTreeMap<u32, [f32; 4]> = BTreeMap::new();
+        let mut legacy_pll: BTreeMap<u32, [u32; 2]> = BTreeMap::new();
         let text = text.to_string();
         for line in text.lines() {
             let line = line.trim();
@@ -462,7 +493,20 @@ impl Settings {
                     | "tune_field_src" => {}
                 "tune_video_bw" => { if let Ok(x) = v.parse() { s.tune_video_bw = x } }
                 "tune_phase" => { if let Ok(x) = v.parse::<u8>() { s.tune_phase = x.min(31) } }
-                "source_profile" => s.source_profile = v.to_string(),
+                // 古い版へ戻したときのために書き続けている。新しい版は input_port と
+                // port_profile.* を正とし、これは端子を持たない設定からの移行にだけ使う
+                "source_profile" => legacy_profile = Some(v.to_string()),
+                "input_port" => {
+                    if let Some(p) = Port::from_key(v) {
+                        s.input_port = p;
+                        has_port = true;
+                    }
+                }
+                k if k.starts_with("port_profile.") => {
+                    if let Some(p) = Port::from_key(&k[13..]) {
+                        s.port_profiles.insert(p, v.to_string());
+                    }
+                }
                 "tune_full_line" => s.tune_full_line = v == "true",
                 "tune_frame_skip" => { if let Ok(x) = v.parse::<u8>() { s.tune_frame_skip = x.min(7) } }
                 "frame_skip_fields" => s.frame_skip_fields = v == "true",
@@ -492,22 +536,28 @@ impl Settings {
                         v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                     if n.len() >= 4 { s.mon = [n[0], n[1], n[2], n[3]] }
                 }
-                k if k.starts_with("bandpll.") => {
-                    if let Ok(khz) = k[8..].parse::<u32>() {
-                        let n: Vec<u32> =
-                            v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
-                        if n.len() >= 2 {
-                            s.band_pll.insert(khz, [n[0], n[1].min(31)]);
+                // 機種 × 帯域: `bandpll@x68000.31` / `mon@auto-rgb15.24`
+                k if k.starts_with("bandpll@") || k.starts_with("mon@") => {
+                    let rest = &k[k.find('@').unwrap() + 1..];
+                    let Some((geo, khz)) = rest.rsplit_once('.') else { continue };
+                    let Ok(khz) = khz.parse::<u32>() else { continue };
+                    if k.starts_with("mon@") {
+                        if let Some(m) = parse_mon(v) {
+                            s.mon_bands.insert((geo.to_string(), khz), m);
                         }
+                    } else if let Some(p) = parse_pll(v) {
+                        s.band_pll.insert((geo.to_string(), khz), p);
+                    }
+                }
+                // 帯域だけのキー(旧形式)
+                k if k.starts_with("bandpll.") => {
+                    if let (Ok(khz), Some(p)) = (k[8..].parse::<u32>(), parse_pll(v)) {
+                        legacy_pll.insert(khz, p);
                     }
                 }
                 k if k.starts_with("mon.") => {
-                    if let Ok(khz) = k[4..].parse::<u32>() {
-                        let n: Vec<f32> =
-                            v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
-                        if n.len() >= 4 {
-                            s.mon_bands.insert(khz, [n[0], n[1], n[2], n[3]]);
-                        }
+                    if let (Ok(khz), Some(m)) = (k[4..].parse::<u32>(), parse_mon(v)) {
+                        legacy_mon.insert(khz, m);
                     }
                 }
                 "window" => {
@@ -592,11 +642,71 @@ impl Settings {
                 _ => {}
             }
         }
+        // 端子を持たない設定からの移行。選んでいた機種の端子へ置く
+        // (「自動」は D-SUB15 の汎用)
+        if !has_port {
+            if let Some(key) = legacy_profile {
+                let port = profiles::by_key(&key).map_or(Port::Rgb15, |p| p.port);
+                s.input_port = port;
+                s.port_profiles.insert(port, key);
+            }
+        }
+        // ★**旧形式の帯域ごとの値は、全部の機種へ写す。** どの機種で合わせた値かは
+        //   ファイルに残っていないので、選んでいた機種にだけ渡すと、ほかの機種へ
+        //   切り替えたときに合わせ直しになる。全部へ写せば、更新した直後は以前と
+        //   同じ見え方で始まり、以後は機種ごとに分かれていく。
+        //
+        // ★**ただし漂った帯域は写さない。** 何も繋がっていない入力では fH が
+        //   範囲外をゆっくり漂うので、`mon.40`〜`mon.75` のような実在しない帯域が
+        //   既定値のまま大量に残っている(実際の設定ファイルで37帯域あった)。
+        //   既定値の管面は写さなくても同じ既定値が使われるので、捨てても何も
+        //   失わない。PLL は、意味のある管面を持つ帯域と標準の 15/24/31kHz だけ写す。
+        //
+        // ★**`input_port` のあるファイル(この版が書いたもの)では写さない。** 旧形式の
+        //   値は古い版へ戻したとき用にいまの機種の分だけ書いているので、写すと
+        //   その機種の値がほかの機種の空いている帯域へ毎回染み出す。
+        legacy_mon.retain(|_, m| *m != Self::default().mon);
+        legacy_pll.retain(|b, _| legacy_mon.contains_key(b) || [15, 24, 31].contains(b));
+        if !has_port && (!legacy_mon.is_empty() || !legacy_pll.is_empty()) {
+            let geos = profiles::PROFILES
+                .iter()
+                .map(|p| p.key.to_string())
+                .chain(Port::ALL.into_iter().filter(|p| p.has_generic())
+                           .map(|p| profiles::geo_key(p, "")));
+            for g in geos {
+                for (khz, m) in &legacy_mon {
+                    s.mon_bands.entry((g.clone(), *khz)).or_insert(*m);
+                }
+                for (khz, p) in &legacy_pll {
+                    s.band_pll.entry((g.clone(), *khz)).or_insert(*p);
+                }
+            }
+        }
         s
     }
 
+    /// いま選んでいる機種のキー。空文字は汎用
+    pub fn source_profile(&self) -> &str {
+        self.port_profiles
+            .get(&self.input_port)
+            .map_or(self.input_port.default_profile(), |s| s.as_str())
+    }
+
+    /// いまの機種の、帯域ごとの管面(低遅延全画面へ渡す)
+    pub fn mon_bands_for_current(&self) -> BTreeMap<u32, [f32; 4]> {
+        let geo = profiles::geo_key(self.input_port, self.source_profile());
+        self.mon_bands
+            .iter()
+            .filter(|((g, _), _)| *g == geo)
+            .map(|((_, k), v)| (*k, *v))
+            .collect()
+    }
+
     pub fn save_slot(&self, id: u32) {
-        let path = Self::path_for_slot(id);
+        self.save_to(&Self::path_for_slot(id));
+    }
+
+    fn save_to(&self, path: &std::path::Path) {
         if let Some(dir) = path.parent() {
             if std::fs::create_dir_all(dir).is_err() {
                 return;
@@ -664,7 +774,7 @@ impl Settings {
             self.tune_pll_divide,
             self.tune_video_bw,
             self.tune_phase,
-            self.source_profile,
+            self.source_profile(),
             self.tune_full_line,
             self.tune_frame_skip,
             self.frame_skip_fields,
@@ -709,12 +819,29 @@ impl Settings {
             self.leds.idle.key(),
         );
         let mut body = body;
-        for (khz, v) in &self.band_pll {
-            body.push_str(&format!("bandpll.{khz} = {},{}\n", v[0], v[1]));
+        body.push_str(&format!("input_port = {}\n", self.input_port.key()));
+        for (port, key) in &self.port_profiles {
+            body.push_str(&format!("port_profile.{} = {key}\n", port.key()));
         }
-        for (khz, v) in &self.mon_bands {
+        for ((geo, khz), v) in &self.band_pll {
+            body.push_str(&format!("bandpll@{geo}.{khz} = {},{}\n", v[0], v[1]));
+        }
+        for ((geo, khz), v) in &self.mon_bands {
             body.push_str(&format!(
-                "mon.{khz} = {},{},{},{}\n", v[0], v[1], v[2], v[3]));
+                "mon@{geo}.{khz} = {},{},{},{}\n", v[0], v[1], v[2], v[3]));
+        }
+        // ★**古い版の形でも、いまの機種の分だけ書く。** 0.14 以前の Viewer は
+        //   `mon@…` を知らず、無いと管面を全帯域とも既定値(1,0,1,0)で始めて
+        //   そのまま保存する(実機で発生: この版を試したあと入れてある版に戻したら、
+        //   X68000 の管面が消えた)。読むときは `mon@…` が優先なので害は無い
+        let geo = profiles::geo_key(self.input_port, self.source_profile());
+        for ((g, khz), v) in &self.band_pll {
+            if *g == geo {
+                body.push_str(&format!("bandpll.{khz} = {},{}\n", v[0], v[1]));
+            }
+        }
+        for (khz, v) in self.mon_bands_for_current() {
+            body.push_str(&format!("mon.{khz} = {},{},{},{}\n", v[0], v[1], v[2], v[3]));
         }
         for (k, v) in &self.modes {
             body.push_str(&format!(
@@ -722,7 +849,7 @@ impl Settings {
                 v[0], v[1], v[2], v[3], v[4], v[5]));
         }
         // 書けなくても致命的ではないので黙って諦める(次回は既定値で起動する)
-        if let Ok(mut f) = std::fs::File::create(&path) {
+        if let Ok(mut f) = std::fs::File::create(path) {
             let _ = f.write_all(body.as_bytes());
         }
     }
@@ -773,6 +900,82 @@ mod tests {
         }
         // 読めない値は既定へ落とさず None を返す(呼び側が既定を保つ)
         assert_eq!(BoardSel::parse("zzz"), None);
+    }
+
+    /// 端子を持つ前の設定ファイルを読んだとき、選んでいた機種の端子へ移り、
+    /// 帯域だけの管面・PLL が全部の機種へ写ること。
+    #[test]
+    fn migrates_band_only_settings_to_every_profile() {
+        let s = Settings::parse(
+            "source_profile = msx\nmon.15 = 0.9,0.1,0.95,0\nbandpll.31 = 1104,12\n");
+        assert_eq!(s.input_port, Port::Rgb21);
+        assert_eq!(s.source_profile(), "msx");
+        for geo in ["msx", "x68000", "pc98", "auto-rgb15", "auto-rgb21"] {
+            assert_eq!(s.mon_bands.get(&(geo.into(), 15)), Some(&[0.9, 0.1, 0.95, 0.0]), "{geo}");
+            assert_eq!(s.band_pll.get(&(geo.into(), 31)), Some(&[1104, 12]), "{geo}");
+        }
+        // 「自動」は D-SUB15 の汎用
+        let s = Settings::parse("source_profile = \n");
+        assert_eq!((s.input_port, s.source_profile()), (Port::Rgb15, ""));
+    }
+
+    /// 未接続で漂ってできた帯域(既定値の管面)は写さない。実在の帯域は写す
+    #[test]
+    fn migration_drops_drifted_bands() {
+        let s = Settings::parse(
+            "source_profile = composite\n\
+             mon.31 = 0.697,-0.086,0.788,-0.022\nmon.47 = 1,0,1,0\nmon.1000 = 0.8,0,1,0\n\
+             bandpll.31 = 1104,16\nbandpll.47 = 1104,16\nbandpll.15 = 1820,10\n");
+        assert_eq!(s.input_port, Port::Video);
+        assert!(s.mon_bands.contains_key(&("x68000".into(), 31)));
+        assert!(s.mon_bands.contains_key(&("composite".into(), 1000)));
+        assert!(s.band_pll.contains_key(&("msx".into(), 15)));
+        assert!(!s.mon_bands.keys().any(|(_, b)| *b == 47), "漂った帯域の管面が残った");
+        assert!(!s.band_pll.keys().any(|(_, b)| *b == 47), "漂った帯域の PLL が残った");
+    }
+
+    /// 新しい形は書いて読み直しても同じになる。機種ごとの値が混ざらないこと
+    #[test]
+    fn port_and_per_profile_geometry_roundtrip() {
+        let mut s = Settings::default();
+        s.input_port = Port::Video;
+        s.port_profiles.insert(Port::Video, "svideo".into());
+        s.port_profiles.insert(Port::Rgb15, "pc98".into());
+        s.mon_bands.insert(("x68000".into(), 31), [0.9, -0.05, 0.95, 0.0]);
+        s.mon_bands.insert(("vga".into(), 31), [1.0, 0.0, 1.0, 0.0]);
+        s.band_pll.insert(("auto-rgb15".into(), 24), [848, 7]);
+        let dir = std::env::temp_dir().join(format!("rcx-settings-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("viewer.conf");
+        s.save_to(&path);
+        let r = Settings::parse(&std::fs::read_to_string(&path).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(r.input_port, Port::Video);
+        assert_eq!(r.source_profile(), "svideo");
+        assert_eq!(r.port_profiles.get(&Port::Rgb15).map(|s| s.as_str()), Some("pc98"));
+        assert_eq!(r.mon_bands, s.mon_bands);
+        assert_eq!(r.band_pll, s.band_pll);
+    }
+
+    /// 古い版へ戻しても管面が残るよう旧形式も書く。読み直しても他機種へ染み出さない
+    #[test]
+    fn writes_legacy_keys_for_downgrade_without_spilling() {
+        let mut s = Settings::default();
+        s.input_port = Port::Rgb15;
+        s.port_profiles.insert(Port::Rgb15, "x68000".into());
+        s.mon_bands.insert(("x68000".into(), 31), [0.697, -0.086, 0.788, -0.022]);
+        s.band_pll.insert(("x68000".into(), 31), [1104, 16]);
+        let dir = std::env::temp_dir().join(format!("rcx-legacy-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("viewer.conf");
+        s.save_to(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(text.contains("\nmon.31 = 0.697,-0.086,0.788,-0.022\n"));
+        assert!(text.contains("\nbandpll.31 = 1104,16\n"));
+        let r = Settings::parse(&text);
+        assert_eq!(r.mon_bands, s.mon_bands);
+        assert_eq!(r.band_pll, s.band_pll);
     }
 
     /// ★**番号0は従来どおり `viewer.conf`。** ボードを1枚しか持っていない人は

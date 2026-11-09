@@ -430,6 +430,20 @@ pub const CFG_KEY_SOG_HLEN: u16 = 0x0060;
 ///   効いたかどうかは `rawok` ではなく織り込みの成立で判断すること。
 pub const CFG_KEY_NO_RAW_PHASE: u16 = 0x006A;
 
+/// TVP の HSOUT 周波数[Hz](sys クロック基準の絶対値)。読み出し専用。
+/// ボードが1秒ごとに測り直す。未接続の SOG 入力ではゆっくり漂い、本物の信号では
+/// 収束して動かないので、信号の有無の判定に使う(docs/design-notes.md)。
+pub const CFG_KEY_FH_TVP: u16 = 0x0058;
+
+/// D-SUB15 の生HSYNC の周波数[Hz]。読み出し専用。TVP を通らない経路を sys
+/// ドメインで1秒数えた値なので、TVP の入力MUXに依らず読める。HSYNC を別線で
+/// 出さない(CSYNC・SOG の)機種では 0(docs/composite-video-plan.md)。
+pub const CFG_KEY_FH_RAW: u16 = 0x002A;
+
+/// デジタルRGB の水平同期の実測[Hz]。読み出し専用(gateware/retrocastx_drgb.py)。
+/// TVP を通らないので、どの端子を選んでいても読める。対応していないゲートウェアは 0
+pub const CFG_KEY_DRGB_FH: u16 = 0x0070;
+
 /// 小亀基板のアナログスイッチの選択。0=コンポジット/コンポーネント(既定) / 1=S端子。
 ///
 /// 1本の選択線で Y/CVBS(→Gin1・SOGin1)と C/Pr(→Rin1)が一緒に切り替わる。

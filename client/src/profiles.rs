@@ -109,6 +109,163 @@ pub struct Profile {
     /// 赤ch=Pr / 緑ch=Y / 青ch=Pb を RGB888 の枠でそのまま送り、Viewer が
     /// RGB に直す(`assembler` の `ycbcr`)。
     pub ycbcr: bool,
+    /// どの端子に繋ぐ機種か。パネルでは端子を選んでから、その端子の機種を選ぶ。
+    pub port: Port,
+    /// 周波数帯ごとの管面と PLL の初期値。ユーザーが一度も合わせていない
+    /// (機種 × 周波数帯)の組で使う。
+    ///
+    /// ★**ここを埋めるのが「正式採用」。** 買った人が合わせた値をプロファイルの
+    ///   ファイル(`userprof`)で送ってもらい、裏が取れたらここへ写す。書き出した
+    ///   ファイルの末尾に、ここへそのまま貼れる形を添えてある。
+    pub presets: &'static [Preset],
+}
+
+/// 機種ごとの初期値の1帯域分。値の意味は設定ファイルの `mon` / `bandpll` と同じ。
+#[derive(Clone, Copy, Debug)]
+pub struct Preset {
+    /// 周波数帯[kHz](15/24/31…)。コンポジット/S端子の管面は `MON_KEY_NTSC`
+    pub band: u32,
+    /// 管面 [H幅, H位置, V幅, V位置]
+    pub mon: Option<[f32; 4]>,
+    /// [pll_divide, 位相]
+    pub pll: Option<[u32; 2]>,
+}
+
+/// ボードの映像入力端子。
+///
+/// ★**端子と機種を分けて持つ。** 端子は「どの穴にケーブルが挿さっているか」で、
+///   機種(プロファイル)は「その先に何が繋がっているか」。X68000 / PC-9801 /
+///   FM-TOWNS はどれも同じ D-SUB15 に挿すので、端子だけでは機種が決まらない。
+///   逆に機種だけを選ばせると、同じ機種を2台繋いだときに区別できず、どの穴の
+///   絵を見ているのかも画面から分からなくなる。
+///
+/// TVP の系統との対応は `MUX_ALL*` のコメント。デジタルRGB は TVP を通らず
+/// FPGA に直結している(`gateware/retrocastx_drgb.py`)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Port {
+    /// 入力1: コンポジット / S端子 / コンポーネント(小亀基板、TVP 1番系統)
+    Video,
+    /// 入力2: アナログRGB 21ピン(ミニDIN8、TVP 2番系統)
+    Rgb21,
+    /// 入力3: アナログRGB 15ピン(D-SUB15、TVP 3番系統)
+    Rgb15,
+    /// 入力4: デジタルRGB(TTL RGBI + HS/VS、FPGA 直結)
+    Digital,
+}
+
+impl Port {
+    pub const ALL: [Port; 4] = [Port::Video, Port::Rgb21, Port::Rgb15, Port::Digital];
+
+    /// パネルの表記の番号(入力1〜4)
+    pub fn number(self) -> u32 {
+        self as u32 + 1
+    }
+
+    /// 端子の呼び名
+    pub fn jack(self) -> &'static str {
+        match self {
+            Port::Video => "ビデオ",
+            Port::Rgb21 => "RGB 21ピン",
+            Port::Rgb15 => "RGB 15ピン",
+            Port::Digital => "デジタルRGB",
+        }
+    }
+
+    /// 設定ファイルに書く名前
+    pub fn key(self) -> &'static str {
+        match self {
+            Port::Video => "video",
+            Port::Rgb21 => "rgb21",
+            Port::Rgb15 => "rgb15",
+            Port::Digital => "digital",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<Port> {
+        Port::ALL.into_iter().find(|p| p.key() == k)
+    }
+
+    /// 「汎用」(機種を決めずに広く探す)を選べるか。
+    ///
+    /// ビデオ端子の3つは機種ではなく信号の方式なので、汎用に当たるものが無い。
+    /// デジタルRGBはまだ取り込みが無く、広く探す仕組みも無い。
+    pub fn has_generic(self) -> bool {
+        matches!(self, Port::Rgb21 | Port::Rgb15)
+    }
+
+    /// TVP を通るか(入力設定を書くか)。デジタルRGB は FPGA 直結なので書かない
+    pub fn uses_tvp(self) -> bool {
+        self != Port::Digital
+    }
+
+    /// 機種を選んでいないとき(汎用)に入力設定を借りるプロファイル。
+    ///
+    /// 入力設定のうち端子で決まる部分(入力MUX・同期の取り方・クランプ・ゲイン)は
+    /// 同じ端子の機種なら共通なので、代表の機種のものを書く。pll_divide の起点も
+    /// 一緒に入るが、簡易スキャンが詰めるので問題にならない。
+    pub fn base_profile(self) -> Option<&'static Profile> {
+        match self {
+            Port::Video => by_key("composite"),
+            Port::Rgb21 => by_key("msx"),
+            Port::Rgb15 => by_key("x68000"),
+            Port::Digital => None,
+        }
+    }
+
+    /// 初めてこの端子を選んだときの機種。汎用があれば汎用、無ければ先頭の機種
+    pub fn default_profile(self) -> &'static str {
+        if self.has_generic() {
+            ""
+        } else {
+            self.profiles().next().map_or("", |p| p.key)
+        }
+    }
+
+    /// この端子の機種(組み込みのもの)。並びは PROFILES の順
+    pub fn profiles(self) -> impl Iterator<Item = &'static Profile> {
+        PROFILES.iter().filter(move |p| p.port == self)
+    }
+}
+
+/// 管面と PLL を覚える単位の名前(機種 × 周波数帯 の「機種」の側)。
+///
+/// 機種を選んでいれば機種のキー、汎用なら端子ごとに分ける。汎用どうしでも、
+/// 21ピンに繋いだアーケード基板と 15ピンに繋いだ不明な機種は別物なので。
+pub fn geo_key(port: Port, profile: &str) -> String {
+    if profile.is_empty() {
+        format!("auto-{}", port.key())
+    } else {
+        profile.to_string()
+    }
+}
+
+/// 端子 `port` に信号が来ているとき、fH から機種を推定する。
+///
+/// `best_over_all` と同じ順位付けを、**その端子の機種の中だけ**でやる。端子が
+/// 分かっていれば候補は1〜4個に減り、別の端子の機種(31.5kHz の X68000 と
+/// コンポジットの 8fsc など)に横取りされることもない。勝手には切り替えず、
+/// パネルで「〜のようです」と提案するのに使う。
+///
+/// ★**`best()` の許容では緩すぎる。** 残差 0.15カウントは htotal 341 なら相対
+///   4.4e-4 で、MSX の水晶(21.477MHz/2)が 31.5kHz を htotal 341 として「説明」
+///   してしまう。人に「〜のようです」と言う以上、水晶が本当に合っているものだけに
+///   絞る。正しい水晶の相対誤差は実測 3〜5e-5、違う水晶は 1.6e-4 以上
+///   (`Candidate::rel_err`)なので、その間で切る。
+pub fn estimate(port: Port, fh_hz: f64) -> Option<(&'static Profile, Candidate)> {
+    const MAX_REL_ERR: f64 = 1e-4;
+    let mut ranked: Vec<(&'static Profile, Candidate)> = port
+        .profiles()
+        .filter(|p| p.auto_pick)
+        .filter_map(|p| best(p, fh_hz).map(|c| (p, c)))
+        .filter(|(_, c)| c.rel_err() <= MAX_REL_ERR)
+        .collect();
+    ranked.sort_by(|a, b| {
+        b.1.multiple_ok
+            .cmp(&a.1.multiple_ok)
+            .then(b.0.verified.cmp(&a.0.verified))
+            .then(a.1.rel_err().partial_cmp(&b.1.rel_err()).unwrap())
+    });
+    ranked.into_iter().next()
 }
 
 /// 入力MUX(19h)。[7:6]=SOG [5:4]=R [3:2]=G [1:0]=B、各 00=_1 / 01=_2 / 10=_3
@@ -389,7 +546,7 @@ const REGS_COMPONENT: InputRegs = &[
 pub const PROFILES: &[Profile] = &[
     Profile {
         key: "x68000",
-        label: "X68000 RGB",
+        label: "X68000",
         input_regs: REGS_X68000,
         auto_pick: true,
         // ★**XEiJ(X68000エミュレータ)の CRTC.java の実装表から起こした。**
@@ -429,10 +586,12 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(0),
         verified: true,
         ycbcr: false,
+        port: Port::Rgb15,
+        presets: &[],
     },
     Profile {
         key: "msx",
-        label: "MSX RGB",
+        label: "MSX",
         // 水晶 21.477270MHz = NTSCカラーサブキャリア 3.579545MHz × 6。
         // VDP(V9938/V9958)のドットクロックはこの 1/4 = 5.3693MHz(256ドット系)と
         // 1/2 = 10.7386MHz(512ドット系 SCREEN 6/7)。どちらも htotal は
@@ -460,10 +619,12 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(1),
         verified: true,
         ycbcr: false,
+        port: Port::Rgb21,
+        presets: &[],
     },
     Profile {
         key: "vga",
-        label: "VGA互換 (未検証)",
+        label: "VGA互換",
         input_regs: &[],
         auto_pick: true,
         oscillators: &[
@@ -474,10 +635,12 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(0),
         verified: false,
         ycbcr: false,
+        port: Port::Rgb15,
+        presets: &[],
     },
     Profile {
         key: "pc98",
-        label: "PC-9801 (未検証)",
+        label: "PC-9801",
         input_regs: &[],
         auto_pick: true,
         oscillators: &[
@@ -488,6 +651,8 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(0),
         verified: false,
         ycbcr: false,
+        port: Port::Rgb15,
+        presets: &[],
     },
     // --- ここから下は「配線の方式」で決まる映像ソース。選ぶと入力設定を書く ---
     //
@@ -497,7 +662,7 @@ pub const PROFILES: &[Profile] = &[
     // 「自動」に混ぜるとRGB機の選択を横取りしてしまう。
     Profile {
         key: "composite",
-        label: "コンポジットビデオ (NTSC)",
+        label: "コンポジット",
         input_regs: REGS_COMPOSITE,
         auto_pick: false,
         oscillators: &[Clock {
@@ -509,10 +674,12 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(3),
         verified: true,
         ycbcr: false,
+        port: Port::Video,
+        presets: &[],
     },
     Profile {
         key: "svideo",
-        label: "S端子 (NTSC)",
+        label: "S端子",
         input_regs: REGS_SVIDEO,
         auto_pick: false,
         oscillators: &[Clock {
@@ -524,10 +691,12 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(3),
         verified: false,
         ycbcr: false,
+        port: Port::Video,
+        presets: &[],
     },
     Profile {
         key: "component",
-        label: "コンポーネント (YPbPr 240p/480i/480p)",
+        label: "コンポーネント",
         input_regs: REGS_COMPONENT,
         auto_pick: false,
         oscillators: &[
@@ -538,6 +707,43 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(3),
         verified: false,
         ycbcr: true,
+        port: Port::Video,
+        presets: &[],
+    },
+    // --- デジタルRGB(入力4)。TVP を通らないので入力設定は無い ---
+    Profile {
+        key: "pc6001mk2sr",
+        label: "PC-6001mkIISR",
+        input_regs: &[],
+        // 汎用の候補には入れない。fH が NTSC そのもの(15.734kHz)なので、
+        // アナログ端子の汎用に混ぜるとコンポジット系の値と区別が付かない
+        auto_pick: false,
+        // ★**実機も回路図も無いまま書いた予想。** 裏を取ったら verified を立て、
+        //   違っていたら直すこと。
+        //
+        //   根拠は「コンポジット出力を持つ機種は NTSC 準拠でないと成立しない」の
+        //   1点だけで、PC-8001 と同じ推論(gateware/retrocastx_drgb.py)。
+        //   ドットクロックを NTSC 副搬送波の4倍 14.31818MHz と置くと:
+        //
+        //     SR の 640ドット系 … 14.31818MHz /1  htotal 910 → fH 15.734kHz
+        //     SR の 320ドット系 … 14.31818MHz /2  htotal 455 → 同
+        //     mkII 互換(MC6847 の 256x192)… 7.15909MHz で htotal 455 → 同
+        //
+        //   どのモードも fH は同じなので、取り込み側の設定は htotal の違いだけ。
+        //   vtotal は 262(ノンインタレースの NTSC、fV 60.05Hz)と見ている。
+        //   **デジタルRGB(RGBI)出力であることも予想**で、ここが違えば端子ごと変わる。
+        oscillators: &[Clock {
+            name: "14.31818MHz (予想)",
+            hz: 14.318_18e6,
+            dividers: &[1, 2],
+        }],
+        htotal_multiple: 1,
+        // デジタルRGB の端子(J6)には音声の線が無い。どの音声入力に繋ぐかは未定
+        audio_src: None,
+        verified: false,
+        ycbcr: false,
+        port: Port::Digital,
+        presets: &[],
     },
 ];
 
@@ -1160,7 +1366,8 @@ mod tests {
     /// 片方だけ直すと「絵は出るが音は隣のコネクタ」になる。
     #[test]
     fn audio_src_follows_video_input_v100() {
-        for p in PROFILES {
+        // デジタルRGB は TVP を通らないので 19h とは関係しない
+        for p in PROFILES.iter().filter(|p| p.port.uses_tvp()) {
             let mux = p
                 .input_regs
                 .iter()
@@ -1200,6 +1407,79 @@ mod tests {
         assert_eq!(p.pixfmt(), Some(crate::protocol::PIXFMT_YC8));
         assert_eq!(by_key("x68000").unwrap().pixfmt(),
                    Some(crate::protocol::PIXFMT_RGB555));
+    }
+
+    /// プロファイルの端子と、入力設定が選ぶ TVP の系統が一致していること。
+    ///
+    /// ずれていると、「入力3 の X68000」を選んだのに2番系統の絵を見にいく。
+    /// 入力設定を持たない機種(VGA / PC-9801)は端子の代表の設定を借りるので、
+    /// 代表の方で確かめる。
+    #[test]
+    fn profile_port_matches_input_mux() {
+        let mux_of = |p: &Profile| {
+            p.input_regs
+                .iter()
+                .find(|(k, _, _)| *k == proto::CFG_KEY_IN_MUX1)
+                .map(|(_, v, _)| *v)
+        };
+        for p in PROFILES {
+            let regs = if p.input_regs.is_empty() { p.port.base_profile() } else { Some(p) };
+            let want = match p.port {
+                Port::Video => Some(MUX_ALL1),
+                Port::Rgb21 => Some(MUX_ALL2),
+                Port::Rgb15 => Some(MUX_ALL3),
+                Port::Digital => None,
+            };
+            assert_eq!(regs.and_then(mux_of), want, "{} の端子と 19h が合わない", p.key);
+            if let Some(b) = p.port.base_profile() {
+                assert_eq!(b.port, p.port, "{} の代表 {} が別の端子", p.key, b.key);
+            }
+        }
+        // どの端子にも機種が1つはある(ボタンを押して何も選べない端子を作らない)
+        for port in Port::ALL {
+            assert!(port.profiles().next().is_some(), "{port:?} に機種が無い");
+            assert_eq!(Port::from_key(port.key()), Some(port));
+        }
+    }
+
+    /// 機種の推定は端子の中だけで決まる。
+    ///
+    /// ★**31.5kHz を 15ピンで受けたら X68000、21ピンで受けたら(MSX は 31kHz を
+    ///   出さないので)答えない。** 全機種から選ぶ `best_over_all` だと、どの端子
+    ///   でも同じ答えになってしまい、端子を選んだ意味が無い。
+    #[test]
+    fn estimate_stays_within_the_port() {
+        let (p, c) = estimate(Port::Rgb15, 31499.0).expect("15ピンで候補なし");
+        assert_eq!(p.key, "x68000");
+        assert_eq!(c.pll_divide, 1104);
+        // X68000 の3帯域とも、絞った許容で答えが出ること(実測の fH)
+        for fh in [15980.0, 24699.0] {
+            let (p, _) = estimate(Port::Rgb15, fh).unwrap_or_else(|| panic!("{fh} で候補なし"));
+            assert_eq!(p.key, "x68000", "fH={fh}");
+        }
+        let (p, _) = estimate(Port::Rgb21, 15699.0).expect("21ピンで候補なし");
+        assert_eq!(p.key, "msx");
+        assert!(estimate(Port::Rgb21, 31499.0).is_none(), "MSX が 31kHz を説明した");
+        // ビデオ端子は方式を選ぶもので、fH からは決まらない(auto_pick が無い)
+        assert!(estimate(Port::Video, 15734.0).is_none());
+    }
+
+    /// PC-6001mkIISR(予想)の候補が、予想した htotal 910 / 455 になること。
+    /// 実機で違っていたら、この試験ごと直す。
+    #[test]
+    fn pc6001mk2sr_prediction_is_ntsc() {
+        let p = by_key("pc6001mk2sr").unwrap();
+        assert!(!p.verified, "実機で確かめるまでは未検証のまま");
+        let fh = 14.318_18e6 / 910.0;
+        let hts: Vec<i32> = candidates(p, fh, 0.15, LINE_BUFFER_W).iter().map(|c| c.htotal).collect();
+        assert!(hts.contains(&910) && hts.contains(&455), "{hts:?}");
+    }
+
+    /// 汎用の管面は端子ごとに分ける。機種を選べば機種のキー
+    #[test]
+    fn geo_key_separates_generic_by_port() {
+        assert_eq!(geo_key(Port::Rgb15, "x68000"), "x68000");
+        assert_ne!(geo_key(Port::Rgb15, ""), geo_key(Port::Rgb21, ""));
     }
 
     /// ラインバッファに入らない値は出さない(1ラインが入り切らないと
