@@ -1,6 +1,12 @@
 {
   "bitstreams": [
     {
+      "name": "v1.4.0",
+      "file": "retrocastx_v1.4.0.bit",
+      "date": "2026-11-09",
+      "note": "gw-v1.4.0: 小亀のLEDの「Viewer 切断中」の動作\n\n- **Viewer が繋がっていないあいだの小亀基板のLEDを選べるようにした。**\n  そのまま光らせる / 呼吸 / 消灯(CONFIG 0x0097)。映像を送っていないあいだ、\n  ボードが自分で切り替える\n  - 呼吸は弱い明るさ(通常の1/4)で約6秒周期の明滅。色はいまの効果のまま\n    (レインボーなら色を回しながら明滅する)\n  - 設定はボードの EEPROM に保存され、電源を入れた直後から効く\n- EEPROM へ焼く(0x004C)に 2 を書くと LED の欄だけを焼く。名前・IP の\n  保存していない変更を巻き込まない\n- ANNOUNCE caps bit2 = CAP_LED_IDLE\n\n設定するには Viewer 0.14.3 以降が要る。古い Viewer でも以前どおり使える\n(「そのまま光らせる」の動きになる)。\n\n\n---\nビルド: seed 4 / oss-cad-suite 2026-09-03 / litex 93c8d230e"
+    },
+    {
       "name": "v1.3.0",
       "file": "retrocastx_v1.3.0.bit",
       "date": "2026-11-08",
