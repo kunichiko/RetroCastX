@@ -533,7 +533,14 @@ impl Settings {
                 "fullscreen_vsync" => s.fullscreen_vsync = v == "true",
                 "led_control" => s.led_control = v != "false",
                 "leds" => {
-                    if let Some(l) = crate::leds::LedSettings::parse(v) { s.leds = l }
+                    // led_idle が先に読まれていることもあるので、切断中は残す
+                    if let Some(l) = crate::leds::LedSettings::parse(v) {
+                        s.leds = crate::leds::LedSettings { idle: s.leds.idle, ..l };
+                    }
+                }
+                // 小亀のLEDの切断中の動作。leds の行とは分けてある(leds.rs の format)
+                "led_idle" => {
+                    if let Some(i) = crate::leds::Idle::from_key(v) { s.leds.idle = i }
                 }
                 "spdif_volume" => {
                     if let Ok(x) = v.parse::<f32>() { s.spdif_volume = x.clamp(0.0, 1.5) }
@@ -645,7 +652,8 @@ impl Settings {
              spdif_volume = {:.3}\n\
              fullscreen_vsync = {}\n\
              led_control = {}\n\
-             leds = {}\n",
+             leds = {}\n\
+             led_idle = {}\n",
             self.volume,
             self.muted,
             self.audio_source.map(|v| v.to_string()).unwrap_or_else(|| "off".into()),
@@ -698,6 +706,7 @@ impl Settings {
             self.fullscreen_vsync,
             self.led_control,
             self.leds.format(),
+            self.leds.idle.key(),
         );
         let mut body = body;
         for (khz, v) in &self.band_pll {
@@ -768,6 +777,19 @@ mod tests {
 
     /// ★**番号0は従来どおり `viewer.conf`。** ボードを1枚しか持っていない人は
     ///   ずっと0番なので、ファイル名が変わって設定が消えたように見えるのを防ぐ。
+    /// 小亀のLEDの切断中の動作は leds の行と別のキー。どちらが先に来ても残ること
+    #[test]
+    fn led_idle_survives_either_order() {
+        use crate::leds::Idle;
+        let line = "leds = solid,ff0000,4000,50,3,64,32";
+        let a = Settings::parse(&format!("led_idle = off\n{line}\n"));
+        assert_eq!((a.leds.idle, a.leds.count), (Idle::Off, 3));
+        let b = Settings::parse(&format!("{line}\nled_idle = breathe\n"));
+        assert_eq!((b.leds.idle, b.leds.count), (Idle::Breathe, 3));
+        // 無ければ「そのまま」
+        assert_eq!(Settings::parse(&format!("{line}\n")).leds.idle, Idle::Keep);
+    }
+
     #[test]
     fn slot_zero_keeps_the_original_filename() {
         assert_eq!(Settings::path_for_slot(0), Settings::path());

@@ -156,20 +156,23 @@ impl Default for LedSettings {
 }
 
 impl LedSettings {
-    /// 設定ファイルの1行。
-    /// `効果,RRGGBB,周期ms,ずらし%,個数,明るさ,状態LEDの明るさ,切断中`
+    /// 設定ファイルの1行。`効果,RRGGBB,周期ms,ずらし%,個数,明るさ,状態LEDの明るさ`
+    ///
+    /// ★**切断中(idle)はこの行に入れない**(settings.rs の `led_idle`)。項目を
+    ///   足すと、7項目しか読めない古い Viewer がこの行ごと捨てて LED の設定が
+    ///   既定に戻る。別のキーなら古い Viewer は読み飛ばすだけで済む
     pub fn format(&self) -> String {
         format!(
-            "{},{:06x},{},{},{},{},{},{}",
+            "{},{:06x},{},{},{},{},{}",
             self.effect.key(), rgb(self.color), self.period_ms, self.spread_pct,
-            self.count, self.bright, self.status_bright, self.idle.key()
+            self.count, self.bright, self.status_bright
         )
     }
 
-    /// 切断中の欄が無い古い7項目の行も読む(そのまま光らせる)
+    /// idle は Keep で返す(settings.rs が `led_idle` から入れ直す)
     pub fn parse(v: &str) -> Option<Self> {
         let f: Vec<&str> = v.split(',').map(str::trim).collect();
-        if f.len() != 7 && f.len() != 8 {
+        if f.len() != 7 {
             return None;
         }
         let c = u32::from_str_radix(f[1], 16).ok()?;
@@ -181,10 +184,7 @@ impl LedSettings {
             count: f[4].parse::<u8>().ok()?.clamp(1, MAX_LEDS),
             bright: f[5].parse().ok()?,
             status_bright: f[6].parse().ok()?,
-            idle: match f.get(7) {
-                Some(k) => Idle::from_key(k)?,
-                None => Idle::Keep,
-            },
+            idle: Idle::Keep,
         })
     }
 }
@@ -516,17 +516,22 @@ mod tests {
 
     #[test]
     fn settings_line_round_trips() {
-        let s = LedSettings { effect: Effect::Breathe, color: [1, 2, 3], idle: Idle::Off,
-                              ..Default::default() };
+        let s = LedSettings { effect: Effect::Breathe, color: [1, 2, 3], ..Default::default() };
         assert_eq!(LedSettings::parse(&s.format()), Some(s));
     }
 
-    /// 切断中の欄が無い古い設定ファイルも読めて、「そのまま」になること
+    /// ★**LED の行は7項目のまま。** 増やすと古い Viewer がこの行を捨てる
     #[test]
-    fn old_settings_line_without_idle() {
-        let s = LedSettings::parse("rainbow,0080ff,4000,50,4,64,32").unwrap();
-        assert_eq!(s.idle, Idle::Keep);
-        assert_eq!(s.count, 4);
+    fn settings_line_stays_seven_fields() {
+        let s = LedSettings { idle: Idle::Off, ..Default::default() };
+        assert_eq!(s.format().split(',').count(), 7);
+    }
+
+    #[test]
+    fn idle_keys_round_trip() {
+        for e in Idle::ALL {
+            assert_eq!(Idle::from_key(e.key()), Some(e));
+        }
     }
 
     #[test]
