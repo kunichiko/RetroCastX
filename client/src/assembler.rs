@@ -13,6 +13,9 @@ pub struct CompletedFrame {
     pub fill_ratio: f32,
     /// 遅延計測用の時刻。受信側が Shared へ渡す直前に埋める
     pub stamps: Option<crate::latency::FrameStamps>,
+    /// このフレームで届いた最大のライン番号 + 1(受信側が埋める)。
+    /// モードの切り替わりを MODE より早く知るのに使う(modeswitch.rs)
+    pub lines: u32,
 }
 
 #[derive(Default)]
@@ -55,6 +58,13 @@ pub struct FrameAssembler {
     line_seen: Vec<bool>, // このフレームで各lineを受信したか
     /// 太らせても埋まらなかった行数(診断用)
     pub unfilled_rows: u32,
+    /// 直前に閉じたフレームで届いた最大のライン番号 + 1。
+    ///
+    /// ★**バッファの範囲外の行も数える。** MODE は1秒おきなので、モードが
+    ///   変わった直後はバッファが前のモードの大きさのまま。範囲外の行は捨てるが、
+    ///   届いたこと自体が「ライン数が変わった」印になる
+    pub last_frame_lines: u32,
+    frame_max_line: u32,
     /// 直前のフレームで埋まっていた行のパリティ(None=偏りが無く判定不能)
     last_parity: Option<usize>,
     /// パリティが交互になった確度。閾値を超えたらインタレースとみなす
@@ -172,6 +182,8 @@ impl FrameAssembler {
             last_seq: None,
             line_seen: Vec::new(),
             unfilled_rows: 0,
+            last_frame_lines: 0,
+            frame_max_line: 0,
             last_parity: None,
             parity_alt: 0,
             interlace_measured: false,
@@ -453,6 +465,7 @@ impl FrameAssembler {
                 // 前のフレームを閉じてから、このラインの形式に生サンプルの置き場を合わせる
                 // (先に合わせると、閉じるフレームを新しい形式で扱ってしまう)
                 self.match_raw_to(l.pixfmt == proto::PIXFMT_YC8);
+                self.frame_max_line = self.frame_max_line.max(l.line as u32 + 1);
                 if l.line >= vactive {
                     return completed; // 行がモードの範囲外
                 }
@@ -666,6 +679,7 @@ impl FrameAssembler {
         // ロックしなかったとき(バーストが無い信号など)は fb を触らないので、
         // ライン受信時に書いてあるYのグレースケールがそのまま残る。
         let (w, h) = (self.width, self.height);
+        self.last_frame_lines = std::mem::take(&mut self.frame_max_line);
         // 太らせるかどうかはインタレースの判定で決まる(finish_frame のコメント)
         self.update_interlace_measure();
         let woven = self.mode.as_ref().map_or(false, |m| m.mflags & 0x0001 != 0);
@@ -758,6 +772,7 @@ impl FrameAssembler {
             rgba: out,
             fill_ratio,
             stamps: None,
+            lines: 0,
         })
     }
 
@@ -972,7 +987,7 @@ mod tests {
             mode_id: 1, pixfmt: PIXFMT_RGB555, mflags: 0,
             hactive: 4, htotal: 5, vactive: 2, vtotal: 3,
             dotclk_hz: 450, hfreq_mhz_x1000: 90_000, vfreq_mhz_x1000: 30_000,
-            seq: 0,
+            frame_clocks: 0, frame_lines: 0, frame_vsyncs: 0, sys_clk_hz: 0, seq: 0,
         }
     }
 

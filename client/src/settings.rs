@@ -227,6 +227,15 @@ pub struct Settings {
     /// 同じ遅延が別の目盛りになる)。1つだけ持つと帯域を切り替えるたびに合わせ直しに
     /// なるので、帯域ごとに覚える。
     pub band_pll: BTreeMap<(String, u32), [u32; 2]>,
+    /// 機種ごとに、ユーザーが Viewer で変えた入力設定(伝送形式・ゲインなど)。
+    /// キーは (機種のキー, CONFIG キー)。プロファイルの値と同じものは持たない。
+    ///
+    /// ★**入力設定は Viewer が持ち主。** ボードのレジスタは電源や FPGA の書き直しで
+    ///   既定値に戻る。以前は起動時にボードの値を読み込んで受け入れていたので、
+    ///   既定値のまま(X68000 の VSOUT がフィールドごとにならず、フィールド極性も
+    ///   反転しない)で映し、15kHz のインターレースの偶奇が入れ替わった(2026-11-10)。
+    ///   いまはボードを掴むたびに「プロファイル + ここ」を送る
+    pub reg_overrides: BTreeMap<(String, u16), u32>,
     /// 管面の位置合わせ(実CRTのH位置/V位置つまみ)
 
     /// モードごとの設定。キーは "fH[100Hz単位]_vtotal_htotal"。
@@ -319,6 +328,7 @@ impl Default for Settings {
             mon: [1.0, 0.0, 1.0, 0.0],
             mon_bands: BTreeMap::new(),
             band_pll: BTreeMap::new(),
+            reg_overrides: BTreeMap::new(),
             modes: BTreeMap::new(),
             tube_aspect: 0.0,
             show_panel: true,
@@ -547,6 +557,14 @@ impl Settings {
                         }
                     } else if let Some(p) = parse_pll(v) {
                         s.band_pll.insert((geo.to_string(), khz), p);
+                    }
+                }
+                // 機種ごとの入力設定の変更: `reg@x68000.0x0036 = 0`
+                k if k.starts_with("reg@") => {
+                    let Some((prof, key)) = k[4..].rsplit_once('.') else { continue };
+                    let key = key.trim_start_matches("0x");
+                    if let (Ok(key), Ok(v)) = (u16::from_str_radix(key, 16), v.parse::<u32>()) {
+                        s.reg_overrides.insert((prof.to_string(), key), v);
                     }
                 }
                 // 帯域だけのキー(旧形式)
@@ -826,6 +844,9 @@ impl Settings {
         for ((geo, khz), v) in &self.band_pll {
             body.push_str(&format!("bandpll@{geo}.{khz} = {},{}\n", v[0], v[1]));
         }
+        for ((prof, key), v) in &self.reg_overrides {
+            body.push_str(&format!("reg@{prof}.0x{key:04x} = {v}\n"));
+        }
         for ((geo, khz), v) in &self.mon_bands {
             body.push_str(&format!(
                 "mon@{geo}.{khz} = {},{},{},{}\n", v[0], v[1], v[2], v[3]));
@@ -955,6 +976,22 @@ mod tests {
         assert_eq!(r.port_profiles.get(&Port::Rgb15).map(|s| s.as_str()), Some("pc98"));
         assert_eq!(r.mon_bands, s.mon_bands);
         assert_eq!(r.band_pll, s.band_pll);
+    }
+
+    /// 機種ごとの入力設定の変更は、書いて読み直しても残る
+    #[test]
+    fn reg_overrides_roundtrip() {
+        let mut s = Settings::default();
+        s.reg_overrides.insert(("x68000".into(), 0x0036), 0);
+        s.reg_overrides.insert(("msx".into(), 0x0013), 61);
+        let dir = std::env::temp_dir().join(format!("rcx-regs-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("viewer.conf");
+        s.save_to(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(text.contains("\nreg@x68000.0x0036 = 0\n"), "{text}");
+        assert_eq!(Settings::parse(&text).reg_overrides, s.reg_overrides);
     }
 
     /// 古い版へ戻しても管面が残るよう旧形式も書く。読み直しても他機種へ染み出さない

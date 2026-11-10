@@ -573,6 +573,33 @@ pub fn upsert_board(
     );
 }
 
+/// MODE パケット1つぶんの帯域の記録。
+///
+/// ★**同じ帯域が続いた回数を数える。** ボードは fH を1秒窓で数えるので、モードを
+///   切り替えた直後に1回だけ「混ざった値」(15kHz と 31kHz の間で約24kHz)が来る。
+///   2回続いた帯域だけを使えば、それを採らずに済む(modeswitch.rs)
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ModeBand {
+    pub band: u32,
+    pub repeats: u32,
+    pub vactive: u32,
+    /// MODE を受けた通し番号(UI が同じ MODE を2回数えないため)
+    pub seq: u64,
+}
+
+/// ログに付ける時刻[ms](最初に呼んだときから)。モード切り替えのように、
+/// 受信スレッドと UI のどちらで何が先に起きたかを並べて見るため
+pub fn log_ms() -> u64 {
+    static T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    T0.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+/// 届いた MODE を1つ残らずログに出すか(環境変数 RCX_MODE_LOG)
+fn mode_log_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("RCX_MODE_LOG").is_some())
+}
+
 #[derive(Default)]
 pub struct Shared {
     /// ドット復元(1タップ逆フィルタ)の係数 a ×1000。0 = 無効。
@@ -587,6 +614,8 @@ pub struct Shared {
     /// 描画遅延の集計(描画側が1秒ごとに書く)。パネル/端末の表示用
     pub latency: Mutex<crate::latency::LatencySnapshot>,
     pub mode: Mutex<Option<proto::Mode>>,
+    /// 届いた MODE の帯域と、同じ帯域が何回続いたか(modeswitch.rs が使う)
+    pub mode_band: Mutex<ModeBand>,
     pub stats: Mutex<StatsSnapshot>,
     /// 見つかっているボード。**キーはMAC。**
     ///
@@ -1354,7 +1383,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 proto::CFG_KEY_FIELD_SWAP => "field_swap",
                 _ => "key",
             };
-            eprintln!("config reply: {name}(0x{key:04x}) = {val}");
+            eprintln!("[{:7}] config reply: {name}(0x{key:04x}) = {val}", log_ms());
             shared.config_state.lock().unwrap().insert(key, val);
         }
 
@@ -1363,6 +1392,24 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         // 操作できるように、専用ツールではなくここで記録する。
         if n >= 3 && buf[2] == proto::TYPE_MODE {
             if let Ok(Packet::Mode(m)) = proto::parse(&buf[..n]) {
+                {
+                    let band = crate::geometry::band_of(m.hfreq_mhz_x1000 as f32 / 1_000_000.0);
+                    let mut mb = shared.mode_band.lock().unwrap();
+                    mb.repeats = if mb.seq > 0 && mb.band == band { mb.repeats + 1 } else { 1 };
+                    mb.band = band;
+                    mb.vactive = m.vactive as u32;
+                    mb.seq += 1;
+                    // RCX_MODE_LOG=1 のときは1つ残らず出す(切り替えの途中に何が
+                    // 届いたかを見るため。毎秒2本ほど出るので普段は出さない)。
+                    // fc/fl は1フレームの組の生の値(0 = 付いていない/測れていない)
+                    if mode_log_enabled() {
+                        eprintln!(
+                            "[{:7}] MODE  h {:.3}kHz v {:.2}Hz  fc {} fl {}  vact {} htot {}  band {} x{}",
+                            log_ms(), m.hfreq_mhz_x1000 as f64 / 1e6,
+                            m.vfreq_mhz_x1000 as f64 / 1e3, m.frame_clocks, m.frame_lines,
+                            m.vactive, m.htotal, band, mb.repeats);
+                    }
+                }
                 // 実測値は測定分解能のぶん常に揺れる(fHは1秒窓の計数なので±1Hz、
                 // fVは8秒積算で0.125Hz刻み)。量子化では境界で必ずばたつくので、
                 // 相対誤差のしきい値で「本当にモードが変わったか」を判定する。
@@ -1458,6 +1505,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             // 生産側がUIを待った時間。**落ちる原因を切り分けるために測る。**
             // ここが長いと、その間フレームを差し替えられず受信側が詰まる。
             let t_wait = Instant::now();
+            frame.lines = asm.last_frame_lines;
             frame.stamps = edges.map(|(first, last, trigger)| crate::latency::FrameStamps {
                 first, last, trigger, published: t_wait,
             });
