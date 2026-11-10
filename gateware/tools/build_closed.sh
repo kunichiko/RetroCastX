@@ -20,11 +20,10 @@
 #
 # やること
 # --------
-#   1. 通常どおり1回ビルドする(yosys → nextpnr → ecppack)
-#   2. タイミングが閉じていればそれで終わり
-#   3. 閉じていなければ **yosys の結果を使い回して nextpnr だけ**シードを変えて回す
+#   1. LiteX で Verilog とビルド用スクリプトを作り、yosys を1回だけ回す
 #      (yosys は数分かかるので、ここを繰り返さないのが肝)
-#   4. 閉じたシードで ecppack し直し、採用シードと達成周波数を表示する
+#   2. nextpnr をシードを変えて回し、タイミングが閉じた最初のシードで止める
+#   3. そのシードで ecppack する
 #
 # nextpnr/ecppack のコマンドは LiteX が生成した build_*.sh から取り出すので、
 # LiteX 側のオプションが変わっても追従する(ここに複製しない)。
@@ -32,6 +31,7 @@
 # 使い方:
 #   ./tools/build_closed.sh --eth-phy 1          # 以降の引数はそのまま渡る
 #   SEEDS="3 1 4 6" ./tools/build_closed.sh      # 試す順番を変える
+#   SEED_TIMEOUT=600 ./tools/build_closed.sh     # 1シードの上限(秒)
 #
 set -euo pipefail
 
@@ -50,15 +50,40 @@ seed_log() { echo "$PWD/$GW/build_closed_seed$1.log"; }
 # 環境変数で差し替えられるようにしてある。
 PYTHON="${PYTHON:-./.venv/bin/python}"
 
-# 最初に試す順。過去に余裕が大きかったものを前に置いてある(2026-09-03 実測:
-# seed 4=143.7 / 6=140.1 / 7=137.9 / 1=137.8 MHz)。あくまで初期値で、
-# 論理が変われば当たり外れは変わるので「通るまで振る」ことに意味がある。
-SEEDS="${SEEDS:-4 6 7 1 9 12 11 10 5 3 8 13 2}"
+# ★**前回のリリースで閉じたシードを最初に試す。** tools/closed_seed は
+#   gateware-release.yml がリリースのたびに書いて main にコミットする。論理の
+#   変更が小さければ、同じシードがまた閉じる見込みが高い。
+#   以前は固定の順で振っていて、gw-v1.5.0 のタグビルドは先頭の seed 4 の配線が
+#   収束せず1時間止まった。
+#   ★**手元で閉じたシードは CI では役に立たない。** 配置は「ネットリスト・nextpnr
+#   の版・シード」に加えて**OS/CPU でも変わる**。oss-cad-suite を CI と同じ
+#   2026-09-03 に揃えた macOS arm64 で seed 6 が eth_rx 132.89MHz で閉じたのに、
+#   CI(Linux x64)の seed 6 は 121.60MHz で落ちた(2026-11-10)。だからこの
+#   スクリプトはファイルを読むだけで、書くのは CI に任せている。
+SEED_FILE=tools/closed_seed
+HINT=""
+if [ -f "$SEED_FILE" ]; then
+    HINT=$(grep -v '^#' "$SEED_FILE" | awk 'NF {print $1; exit}')
+fi
+
+# 既定の順。過去に余裕が大きかったものを前に置いてある(2026-09-03 実測:
+# seed 4=143.7 / 6=140.1 / 7=137.9 / 1=137.8 MHz)。論理が変われば当たり外れは
+# 変わるので、あくまで「通るまで振る」ための候補。
+SEEDS="${SEEDS:-$(printf '%s ' $HINT; for s in 4 6 7 1 9 12 11 10 5 3 8 13 2; do
+    [ "$s" = "$HINT" ] || printf '%s ' "$s"; done)}"
+
+# ★**1シードあたりの上限(秒)。** nextpnr の配線は、外れのシードだと収束せずに
+#   延々と回り続けることがある(gw-v1.5.0 の seed 4 は CI で40分を超えた)。
+#   普段は手元で1〜2分、CI でも yosys 込みで4〜8分なので、それを十分超えたら
+#   次へ進む。macOS には timeout(1) が無いので自前で見張る。
+SEED_TIMEOUT="${SEED_TIMEOUT:-900}"
 
 # タイミング判定: nextpnr が出す各クロックの**最後の**報告を見て FAIL が無いこと。
 # (最初の報告は配線前の見積もりなので、必ず最後を採る)
 timing_ok() {
     local log="$1"
+    # 配線を終えていなければ、最後の報告も配置後の見積もりなので採らない
+    grep -q "Info: Program finished normally" "$log" || return 1
     # クロック名ごとに最後の行だけ残して FAIL を数える
     local fails
     fails=$(grep "Max frequency for clock" "$log" \
@@ -77,41 +102,59 @@ report() {
         | sed 's/^/  /' | sort
 }
 
-set -- "$@"
-FIRST_SEED="${SEEDS%% *}"
-REST="${SEEDS#* }"
+# 上限つきでコマンドを走らせる。上限を超えたら止めて 124 を返す(timeout(1) と同じ)
+run_limited() {
+    local limit="$1" out="$2" cmd="$3"
+    # exec で置き換えるので、$! が nextpnr 自身になり kill が確実に届く
+    ( cd "$GW" && eval "exec $cmd" ) > "$out" 2>&1 &
+    local pid=$! t=0
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$t" -ge "$limit" ]; then
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return 124
+        fi
+        sleep 5
+        t=$((t + 5))
+    done
+    wait "$pid"
+}
 
-echo "=== 1回目のビルド (seed $FIRST_SEED) ==="
-"$PYTHON" retrocastx_stream.py --build --seed "$FIRST_SEED" "$@" \
-    > "$LOG" 2>&1 || {
-        echo "ビルドが失敗しました。$LOG を見てください" >&2
-        tail -20 "$LOG" >&2
-        exit 1
-    }
-
-if timing_ok "$LOG"; then
-    echo "タイミング成立 (seed $FIRST_SEED)"
-    report "$LOG"
-    exit 0
-fi
-
-echo "seed $FIRST_SEED では閉じませんでした。nextpnr だけ振り直します"
-report "$LOG"
-
-# LiteX が生成したコマンドを取り出す(オプションを複製しないため)
-NEXTPNR_CMD=$(grep '^nextpnr-ecp5' "$GW/build_colorlight_i5.sh")
-ECPPACK_CMD=$(grep '^ecppack'      "$GW/build_colorlight_i5.sh")
-[ -n "$NEXTPNR_CMD" ] && [ -n "$ECPPACK_CMD" ] || {
-    echo "build_colorlight_i5.sh から nextpnr/ecppack の行を取れませんでした" >&2
+echo "=== 生成と論理合成 ==="
+# --build を付けないと LiteX は Verilog と build_*.sh を書くだけで止まる
+"$PYTHON" retrocastx_stream.py "$@" > "$LOG" 2>&1 || {
+    echo "生成が失敗しました。$LOG を見てください" >&2
+    tail -20 "$LOG" >&2
     exit 1
 }
 
-for s in $REST; do
-    echo "--- seed $s ---"
+# LiteX が生成したコマンドを取り出す(オプションを複製しないため)
+YOSYS_CMD=$(grep '^yosys'          "$GW/build_colorlight_i5.sh" || true)
+NEXTPNR_CMD=$(grep '^nextpnr-ecp5' "$GW/build_colorlight_i5.sh" || true)
+ECPPACK_CMD=$(grep '^ecppack'      "$GW/build_colorlight_i5.sh" || true)
+[ -n "$YOSYS_CMD" ] && [ -n "$NEXTPNR_CMD" ] && [ -n "$ECPPACK_CMD" ] || {
+    echo "build_colorlight_i5.sh から yosys/nextpnr/ecppack の行を取れませんでした" >&2
+    exit 1
+}
+
+( cd "$GW" && eval "$YOSYS_CMD" ) >> "$LOG" 2>&1 || {
+    echo "論理合成が失敗しました。$LOG を見てください" >&2
+    tail -20 "$LOG" >&2
+    exit 1
+}
+
+echo "試す順: $SEEDS(1シードの上限 ${SEED_TIMEOUT} 秒)"
+for s in $SEEDS; do
+    echo "--- seed ${s} ---"
     # 既存の --seed を差し替える
     cmd=$(printf '%s' "$NEXTPNR_CMD" | sed -E "s/--seed [0-9]+/--seed $s/")
     slog=$(seed_log "$s")
-    ( cd "$GW" && eval "$cmd" ) > "$slog" 2>&1 || true
+    rc=0
+    run_limited "$SEED_TIMEOUT" "$slog" "$cmd" || rc=$?
+    if [ "$rc" -eq 124 ]; then
+        echo "  ${SEED_TIMEOUT} 秒で配線が終わらないので次へ"
+        continue
+    fi
     report "$slog"
     if timing_ok "$slog"; then
         # ★**波括弧が要る。** macOS の bash は 3.2 で、`$s` の直後に全角文字が
@@ -120,10 +163,11 @@ for s in $REST; do
         #   実際、シードを見つけたのに ecppack を実行できずに終わった。
         echo "=== タイミング成立: seed ${s}。ecppack します ==="
         ( cd "$GW" && eval "$ECPPACK_CMD" )
-        echo
-        echo "採用シード: $s"
-        echo "次回から --seed $s を既定にしておくと1回で通る見込みが高いです"
-        echo "(ただし論理を足すと当たり外れは変わります)"
+        # 生成された build_*.sh にも採用シードを反映しておく(手で再実行したとき用)
+        sed -i.bak -E "s/--seed [0-9]+/--seed $s/" "$GW/build_colorlight_i5.sh"
+        rm -f "$GW/build_colorlight_i5.sh.bak"
+        cp "$slog" "$LOG.nextpnr"
+        echo "採用シード: ${s}"
         exit 0
     fi
 done

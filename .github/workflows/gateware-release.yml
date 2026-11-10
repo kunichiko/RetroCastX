@@ -299,12 +299,26 @@ jobs:
           JS
           node /tmp/update-manifest.mjs
 
+          # ★閉じたシードを残し、次のビルドで build_closed.sh が最初に試すようにする。
+          #   手元(macOS)で閉じたシードは CI では閉じるとは限らないので、ここで書く
+          #   (build_closed.sh の SEED_FILE のコメント参照)
+          if [ -n "${SEED:-}" ]; then
+            {
+              echo "# 前回のリリースのビルド(CI)でタイミングが閉じた配置シード。"
+              echo "# tools/build_closed.sh はこれを最初に試す。gateware-release.yml が書くので手で直さない。"
+              echo "# gw-${VERSION}"
+              echo "${SEED}"
+            } > gateware/tools/closed_seed
+            git add gateware/tools/closed_seed
+          fi
+
           git add docs/flash/bitstreams
           git commit -s -m "ゲートウェア ${VERSION} をフラッシャの配布一覧に追加
 
           gw-${VERSION} タグのビルド成果物。GitHub Release のアセットは
           access-control-allow-origin を返さないので、Pages 上のフラッシャから
           fetch できるよう同一オリジンに実体を置いている。
+          閉じた配置シード(${SEED:-?})を gateware/tools/closed_seed に残す。
 
           gateware-release.yml による自動コミット。"
           git push origin main
