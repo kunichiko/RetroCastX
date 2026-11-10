@@ -146,6 +146,7 @@ fn run(fb: &mut Vec<u8>, mut job: Job) -> Done {
             rgba: out,
             fill_ratio: job.fill_ratio,
             stamps: None,
+            lines: 0,
         },
         info,
         unfilled_rows,

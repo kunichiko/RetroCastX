@@ -228,7 +228,8 @@ mod tests {
         Mode {
             mode_id: 1, pixfmt: 0, mflags, hactive: 2048, htotal: 1104,
             vactive: 1136, vtotal, dotclk_hz: 34_775_400,
-            hfreq_mhz_x1000: 31_500_000, vfreq_mhz_x1000: 55_500, seq: 0,
+            hfreq_mhz_x1000: 31_500_000, vfreq_mhz_x1000: 55_500,
+            frame_clocks: 0, frame_lines: 0, frame_vsyncs: 0, sys_clk_hz: 0, seq: 0,
         }
     }
 

@@ -61,6 +61,7 @@ mod theme;
 mod toast;
 mod userprof;
 mod panel;
+mod modeswitch;
 #[cfg_attr(not(any(target_os = "ios", target_os = "android")), allow(dead_code))]
 mod touch;
 
@@ -1224,13 +1225,11 @@ struct Session {
     /// 直近で入力設定を書き込んだソース(ラベル, 件数, 自動か)。パネルの確認表示用。
     /// 一時通知(スナックバー)
     toasts: toast::Toasts,
-    /// 伝送形式が映像ソースと食い違ったので `input_regs` を自動で書いたか。
-    /// **食い違いが解消したら false に戻す**ので、ボードの電源を入れ直すたびに
-    /// 1回だけ書き直す。書いてから MODE が変わるまでの間に何度も書かないための掛け金。
-    input_regs_autowritten: bool,
-    /// 入力設定を最後にボードへ書いた時刻(手でも自動でも)。直後は MODE が
-    /// まだ古い伝送形式を言ってくるので、自動の書き直しを待たせる
-    input_regs_written_at: Option<std::time::Instant>,
+    /// 入力設定を送り済みのボード(MAC)。ボードが消えたら None に戻すので、
+    /// 掴み直すたび・電源を入れ直すたびに1回送る(`apply_input_regs_on_connect`)
+    input_regs_applied: Option<[u8; 6]>,
+    /// 機種ごとに、ユーザーが Viewer で変えた入力設定(settings.rs の reg_overrides)
+    reg_overrides: std::collections::BTreeMap<(String, u16), u32>,
     /// いまの端子で選んでいる機種のキー(組み込みは profiles::PROFILES の key、
     /// ユーザーの機種は `u:…`)。空文字は「汎用」。
     /// pll_divide を絵の内容ではなく fH とドットクロック候補から決めるのに使う。
@@ -1403,9 +1402,14 @@ struct Session {
     band_hold_until: Option<std::time::Instant>,
     /// パネルのいまのページ(ホーム / 詳細)
     page: panel::Page,
-    /// 管面のつまみを動かしている(パネルを薄くする)。`peek_next` は今フレームの判定
-    peek: bool,
-    peek_next: bool,
+    /// モードの切り替わりの間は管面を黒にする(modeswitch.rs)
+    mode_switch: modeswitch::ModeSwitch,
+    /// 最後に取り込んだ MODE の通し番号(`ModeBand::seq`)
+    mode_band_seq: u64,
+    /// 調査用ログで最後に出したライン数(変わったときだけ出す)
+    mode_log_lines: u32,
+    /// 調査用ログで最後に出した(黒か, 帯域)
+    mode_log_prev: (bool, Option<u32>),
     /// いまの周波数帯[kHz]。0 は未確定
     band_khz: u32,
     /// `mon_bands` を引くキー。普段は `band_khz` と同じで、コンポジット/S端子
@@ -1530,8 +1534,8 @@ impl Session {
             vtotal_last_t: std::cell::Cell::new(None),
             vtotal_mode_id: std::cell::Cell::new(u16::MAX),
             toasts: toast::Toasts::default(),
-            input_regs_autowritten: false,
-            input_regs_written_at: None,
+            input_regs_applied: None,
+            reg_overrides: cfg.reg_overrides.clone(),
             source_profile: cfg.source_profile().to_string(),
             input_port: cfg.input_port,
             port_profiles: cfg.port_profiles.clone(),
@@ -1611,8 +1615,10 @@ impl Session {
             geo_prof: String::new(),
             band_hold_until: None,
             page: panel::Page::Home,
-            peek: false,
-            peek_next: false,
+            mode_switch: modeswitch::ModeSwitch::default(),
+            mode_band_seq: 0,
+            mode_log_lines: 0,
+            mode_log_prev: (false, None),
             auto: None,
             auto_done: None,
             modes: cfg.modes.clone(),
@@ -1675,6 +1681,7 @@ impl Session {
             let guard = self.shared.frame.lock().unwrap();
             let Some(frame) = guard.as_ref() else { return };
             self.frame_size = (frame.width as u32, frame.height as u32);
+            self.mode_switch.on_frame(frame.lines, picked);
             // ★ウィンドウ表示は eframe が present するので、測れるのは拾うまで。
             //   この先にコンポジタと液晶の遅延が乗る(パネルにそう書く)
             if let Some(st) = frame.stamps.as_ref() {
@@ -1689,6 +1696,7 @@ impl Session {
             let guard = self.shared.frame.lock().unwrap();
             if let Some(frame) = guard.as_ref() {
                 self.frame_size = (frame.width as u32, frame.height as u32);
+                self.mode_switch.on_frame(frame.lines, picked);
             }
         }
         let _ = ctx;
@@ -1761,6 +1769,13 @@ impl Session {
     /// Retina では論理座標と実画素が違う。sharp-bilinear は出力画素数を基準に
     /// 境目の幅を決めるので、実画素で渡す。
     fn paint_tube(&self, ui: &mut egui::Ui, rect: egui::Rect) {
+        // ★**モードの切り替わりの間は黒。** 実機のマルチスキャンモニタも偏向を
+        //   切り替える間は絵を出さない。前のモードの PLL で取り込んだ崩れた絵を
+        //   見せない(modeswitch.rs)
+        if self.mode_switch.blanking() {
+            ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
+            return;
+        }
         let ppp = ui.ctx().pixels_per_point();
         ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
             rect,
@@ -1857,6 +1872,7 @@ impl Session {
             mon: self.mon,
             mon_bands: self.mon_bands.clone(),
             band_pll: self.band_pll.clone(),
+            reg_overrides: self.reg_overrides.clone(),
             modes: self.modes.clone(),
             crop_x: self.crop[0],
             crop_y: self.crop[1],
@@ -2150,28 +2166,16 @@ impl Session {
     /// いまの機種の入力設定を、ボードへ書く形で返す(Tune の表示も合わせる)
     fn input_regs_to_write(&mut self) -> Vec<(u16, u32)> {
         let Some(p) = self.regs_profile() else { return Vec::new() };
-        // ★伝送形式は、**いまのボードの値でこのソースが成立するなら
-        //   上書きしない**。実行時に選べるようにしたので、
-        //   X68000 RGB を RGB888 で見ているところへ入力設定を書いて
-        //   黙って RGB555 に戻されると、選択が消えたように見える。
-        //   YC8 が要るソース(コンポジット/S端子)や、ボードが
-        //   別種の形式で止まっている場合は上書きする(救済が要る)。
-        let have = self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt);
-        let keep_fmt = !p.needs_exact_pixfmt()
-            && p.pixfmt().is_some()
-            && have.is_some_and(|h| p.pixfmt_ok(h));
-        let wrote: Vec<(u16, u32)> = self
-            .input_regs_for_board(p)
-            .into_iter()
-            .filter(|(k, _)| !(keep_fmt && *k == protocol::CFG_KEY_PIXFMT))
-            .collect();
+        // ★伝送形式などユーザーが選んだ値は、**ボードではなく Viewer が覚えている**
+        //   (reg_overrides)。X68000 RGB を RGB888 で見ているなら、それごと書く
+        let wrote = self.input_regs_with_overrides(p);
         // ★書いた値で Tune欄の表示も更新する。ここを忘れると
         //   表示が古いまま残り、次に触ったときに古い値が飛ぶ。
         for (k, v) in &wrote {
             self.set_tune_mirror(*k, *v);
         }
-        // 書いた直後に自動の書き直しが動かないように(autowrite_input_regs)
-        self.input_regs_written_at = Some(std::time::Instant::now());
+        // 掴んでいるボードへは送り済み(apply_input_regs_on_connect が重ねて送らない)
+        self.input_regs_applied = self.claimed();
         self.toasts.info(format!(
             "入力{} {} の入力設定をボードへ書き込みました ({}件)",
             self.input_port.number(), self.profile_label(&self.source_profile), wrote.len()));
@@ -2217,6 +2221,20 @@ impl Session {
                 Some(_) => Sig::No,
                 None => Sig::Unknown,
             };
+        }
+        // ★**選んでいる端子は、MODE に1フレームの組が付いていれば信号あり。**
+        //   組は VSYNC と HSYNC が3フレーム続いたときだけ付く(VSYNC が約1.5秒
+        //   来なければ 0)。下の1秒窓の fH は、モードを切り替えた直後に前後が
+        //   混ざって2回続けて合わず、数秒「信号なし」になる。その間 follow_band が
+        //   止まり、31kHz に切り替えたのに PLL が 15kHz のまま7.5秒残った
+        //   (2026-11-10 実機)
+        if port == self.input_port && !self.standby() {
+            let framed = self.shared.mode.lock().unwrap().as_ref().is_some_and(|m| {
+                m.frame_clocks > 0 && (10_000_000..=80_000_000).contains(&m.hfreq_mhz_x1000)
+            });
+            if framed {
+                return Sig::Yes;
+            }
         }
         if port == self.input_port {
             let s = sig_from_pair(self.signal.fh);
@@ -2282,6 +2300,49 @@ impl Session {
             protocol::CFG_KEY_DRGB_FH,
             protocol::CFG_KEY_FH_RAW,
         ]);
+    }
+
+    /// 届いた MODE を切り替わりの判定へ渡し、黒を解く条件を見る。毎フレーム呼ぶ
+    fn track_mode_switch(&mut self) {
+        let now = std::time::Instant::now();
+        let fresh = self.claimed().is_some_and(|mac| {
+            self.shared.boards.lock().unwrap().get(&mac)
+                .is_some_and(|b| b.caps & protocol::CAP_FRAME_CLOCKS != 0)
+        });
+        self.mode_switch.set_fresh(fresh);
+        let mb = *self.shared.mode_band.lock().unwrap();
+        let before = self.mode_log_prev;
+        if mb.seq != self.mode_band_seq {
+            self.mode_band_seq = mb.seq;
+            self.mode_switch.on_mode(mb.band, mb.repeats, mb.vactive, now);
+        }
+        // 黒を解くのは、確定した帯域の PLL・位相を follow_band が書き終え、MODE の
+        // htotal がその PLL と合ってから(modeswitch.rs)。フレームの幅と横位置は
+        // htotal で決まる。★**書き終えたことも見る。** htotal だけを見ていると、
+        // follow_band が止まって PLL を書いていないとき(前の帯域の PLL と htotal が
+        // 合ってしまう)に、31kHz の信号を 15kHz の PLL のまま映した
+        let applied = self.mode_switch.band().is_some_and(|b| b == self.band_khz)
+            || self.pll_locked_by_format();
+        let htotal_ok = applied && (self.tune_pll_divide <= 0
+            || self.shared.mode.lock().unwrap().as_ref()
+                .is_some_and(|m| m.htotal as i32 == self.tune_pll_divide));
+        self.mode_switch.tick(now, htotal_ok);
+        // 調査用: 黒にした・帯域を決めた・黒を解いた、と届いたライン数の変化
+        let after = (self.mode_switch.blanking(), self.mode_switch.band());
+        let cand = self.mode_switch.cand();
+        if before != after || cand.0 != self.mode_log_lines {
+            let ev = match (before.0, after.0) {
+                (false, true) => "黒にする",
+                (true, false) => "黒を解く",
+                _ if before.1 != after.1 => "帯域を決める",
+                _ => "ライン数",
+            };
+            eprintln!("[{:7}] SWITCH {ev}  band {:?}  applied {}  lines {} x{}  htotal_ok {}  pll {}",
+                      crate::receiver::log_ms(), after.1, self.band_khz, cand.0, cand.1,
+                      htotal_ok, self.tune_pll_divide);
+            self.mode_log_lines = cand.0;
+            self.mode_log_prev = after;
+        }
     }
 
     /// 映像を出さずに待つか(取り込みの無い端子を選んでいる)
@@ -2452,6 +2513,7 @@ impl Session {
         if send.is_empty() {
             return;
         }
+        self.remember_user_regs(&send);
         let now = std::time::Instant::now();
         for (k, v) in &send {
             self.tune_pending.insert(*k, (*v, now));
@@ -3150,7 +3212,7 @@ impl Session {
         //
         //   実機で踏んだ(2026-09-06、コンポジット)。電源投入直後のボードは
         //   RGB555 を流していて、同じフレームの中で
-        //     1. autowrite_input_regs が pll_divide=1820 と pixfmt=YC8 を送る
+        //     1. apply_input_regs_on_connect が pll_divide=1820 と pixfmt=YC8 を送る
         //     2. follow_band が「15kHz帯の保存値」を復元する。**15kHz帯は MSX と
         //        共有**なので 1368 が入る。MODE はまだ RGB555 なのでここが素通しで、
         //        1820 を上書きしてしまう
@@ -3317,76 +3379,82 @@ impl Session {
         }
     }
 
-    /// ボードの伝送形式が映像ソースと食い違っていたら `input_regs` を自動で書く。
+    /// ボードを掴んだら(起動時・ボードの電源を入れ直したあと)、いまの機種の
+    /// 入力設定を1回送る。ユーザーが Viewer で変えた値(reg_overrides)も含める。
     ///
-    /// ★**TVPのレジスタはボードの電源で消える。** ビットストリームはフラッシュに
-    ///   残るが、入力MUX・同期の取り方・クランプ・ゲイン・伝送形式は毎回 CONFIG で
-    ///   入れ直す必要がある。Viewer は映像ソースを**選び直したとき**にしか書かないので、
-    ///   前回の選択が保存されたまま起動すると誰も書かず、**選んであるのに映らない**
-    ///   状態になる(2026-09-05 に実機で踏んだ。コンポジットへ切り替えてから
-    ///   S端子へ戻すと「変化」になって書かれ、直ったように見えるので分かりにくい)。
+    /// ★**TVPのレジスタはボードの電源や FPGA の書き直しで既定値に戻る。** 以前は
+    ///   伝送形式の**種類**が食い違ったとき(RGB の機種なのに YC8 が流れている等)
+    ///   だけ書き直していた。X68000 は既定値と同じ RGB555 なので書き直されず、
+    ///   VSOUT がフィールドごとにならない・フィールド極性が反転しないまま映し、
+    ///   15kHz のインターレースの偶奇が入れ替わった(2026-11-10 実機)。起動時は
+    ///   ボードの値を読み込んで受け入れていたので、Viewer を起動し直しても直らない。
     ///
-    /// 条件は既にある警告と同じ「伝送形式の**種類**が成立しない」だけにしてある:
+    /// 入力設定の持ち主は Viewer にする。ボードに覚えさせると、スマホのような
+    /// 機種で開いたときにも引き継げる利点はあるが、その値が何だったかを
+    /// Viewer が知らないまま上書き・受け入れを繰り返すことになる。
     ///
-    ///   - YC8 が要るソース(コンポジット/S端子)なのにボードが RGB を流している
-    ///   - RGB のソースなのにボードが YC8 を流している
-    ///
-    /// **値の一致では判定しない。** 伝送形式は実行時に選べるので、X68000 RGB を
-    /// RGB888 で見るのは正当な選択であって異常ではない。ここで一致を要求すると、
-    /// 起動のたびに手で選んだ形式を RGB555 へ戻してしまう。
-    ///
-    /// 掛け金(`input_regs_autowritten`)は食い違いが解消したら外れるので、
-    /// **ボードを入れ直すたびに1回だけ**書く。書いても直らない場合
-    /// (パケットが落ちた等)は自動では追わない — 既存の警告と「入力設定を書き込む」が残る。
-    fn autowrite_input_regs(&mut self) {
-        let Some(p) = self.regs_profile() else {
+    /// 送るとTVPが同期を取り直すので、掴んだ直後に一瞬ノイズが入る。
+    fn apply_input_regs_on_connect(&mut self) {
+        // MODE が来ていないうちは送らない。ボードが消えたら送り済みも外す
+        // (次に上がってきたときが「新しい電源投入」かもしれないので、また送る)
+        let up = self.shared.mode.lock().unwrap().is_some();
+        let Some(mac) = (if up { self.claimed() } else { None }) else {
+            self.input_regs_applied = None;
             return;
         };
-        if p.input_regs.is_empty() {
+        if self.input_regs_applied == Some(mac) {
             return;
         }
-        if p.pixfmt().is_none() {
-            return;
+        self.input_regs_applied = Some(mac);
+        let Some(p) = self.regs_profile() else { return };
+        let wrote = self.input_regs_with_overrides(p);
+        for (k, v) in &wrote {
+            self.send_cfg(*k, *v);
+            self.set_tune_mirror(*k, *v);
         }
-        // MODE が来ていないうちは判定できない。ボードが落ちたら掛け金も外す
-        // (次に上がってきたときが「新しい電源投入」なので、また1回書く)
-        let Some(have) = self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt) else {
-            self.input_regs_autowritten = false;
-            return;
-        };
-        // 形式が絵になっていても、帯域を減らせる形式に替えられるなら書く
-        // (CAP_COMPACT を持つボードで、コンポーネントが RGB888 のまま流れている等)
-        let want = p.pixfmt_for(self.board_compact());
-        let ok = p.pixfmt_ok(have) && (!p.needs_exact_pixfmt() || want == Some(have));
-        if ok {
-            self.input_regs_autowritten = false;
-            return;
+        // PLL・位相・VCOレンジは follow_band が帯域ごとに送る。ボードは既定値に
+        // 戻っているかもしれないので、帯域を未確定に戻して送り直させる
+        self.band_khz = 0;
+        eprintln!("[{:7}] 入力設定を送りました: {} ({}件)",
+                  receiver::log_ms(), p.label, wrote.len());
+    }
+
+    /// いまの機種の入力設定に、ユーザーが Viewer で変えた値を重ねたもの
+    fn input_regs_with_overrides(&self, p: &profiles::Profile) -> Vec<(u16, u32)> {
+        self.input_regs_for_board(p)
+            .into_iter()
+            .map(|(k, v)| {
+                let o = self.reg_overrides.get(&(p.key.to_string(), k)).copied();
+                // 伝送形式は、このソースで絵になるものだけ採る(ボードが
+                // CAP_COMPACT を持たなくなった等で成立しない値は捨てる)
+                match o {
+                    Some(o) if k == protocol::CFG_KEY_PIXFMT && !p.pixfmt_ok(o as u8) => (k, v),
+                    Some(o) => (k, o),
+                    None => (k, v),
+                }
+            })
+            .collect()
+    }
+
+    /// ユーザーが Viewer から送った値のうち、いまの機種の入力設定にあるキーを覚える。
+    /// プロファイルの値と同じなら忘れる(設定ファイルに残さない)
+    fn remember_user_regs(&mut self, send: &[(u16, u32)]) {
+        let Some(p) = self.regs_profile() else { return };
+        let base = self.input_regs_for_board(p);
+        for (k, v) in send {
+            // PLL と VCOレンジは帯域ごとに follow_band が持つ(band_pll)。機種ごとに
+            // 覚えると、15kHz で合わせた値が 31kHz で掴み直したときにも送られる
+            if matches!(*k, protocol::CFG_KEY_PLL_DIVIDE | protocol::CFG_KEY_PLL_CTL) {
+                continue;
+            }
+            let Some((_, def)) = base.iter().find(|(bk, _)| bk == k) else { continue };
+            let key = (p.key.to_string(), *k);
+            if v == def {
+                self.reg_overrides.remove(&key);
+            } else {
+                self.reg_overrides.insert(key, *v);
+            }
         }
-        if self.input_regs_autowritten {
-            return;
-        }
-        // ★**書いた直後は待つ。** MODE は1秒ごとなので、映像ソースを切り替えて
-        //   入力設定を書いた直後は、まだ前の伝送形式を言ってくる。それを「電源を
-        //   入れ直して設定が消えた」と取り違えて約30件をもう一度書いていた。TVP が
-        //   初期化し直されて同期を取り直すので、切り替えのたびにしばらくライン
-        //   ノイズが入った(X68000 ⇄ コンポジット)。3秒経っても食い違っていれば、
-        //   書き込みが落ちたとみなして書く
-        if self.input_regs_written_at
-            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3))
-        {
-            return;
-        }
-        self.input_regs_autowritten = true;
-        self.input_regs_written_at = Some(std::time::Instant::now());
-        for (k, v) in self.input_regs_for_board(p) {
-            self.send_cfg(k, v);
-            self.set_tune_mirror(k, v);
-        }
-        // ★頼まれていないのにボードのレジスタを書き換えた。黙ってやるのは
-        //   良くないので必ず伝える(ただし数秒で消す。状態ではなく出来事なので)
-        self.toasts.notice(format!(
-            "伝送形式が食い違っていたため、{} の入力設定を自動で書き込みました ({}件)",
-            p.label, p.input_regs.len()));
     }
 
     /// 掴んでいるボードが帯域を減らす形式(CAP_COMPACT)に対応しているか
@@ -3554,14 +3622,15 @@ impl Session {
         if self.signal_of(self.input_port) == Sig::No {
             return;
         }
-        let khz = {
-            let m = self.shared.mode.lock().unwrap().clone();
-            match m {
-                Some(m) if m.hfreq_mhz_x1000 > 1_000_000 => {
-                    Self::band_of(m.hfreq_mhz_x1000 as f32 / 1_000_000.0)
-                }
-                _ => return,
-            }
+        // ★**帯域は確定したものだけを使う**(同じ帯域の MODE が2回続いたもの)。
+        //   ボードの fH は1秒窓なので、切り替えの途中に1回だけ混ざった値が来る。
+        //   それをそのまま使うと、15→31kHz の途中で一瞬 24kHz の管面と PLL に
+        //   なっていた(modeswitch.rs)
+        let up = self.shared.mode.lock().unwrap().as_ref()
+            .is_some_and(|m| m.hfreq_mhz_x1000 > 1_000_000);
+        let khz = match self.mode_switch.band() {
+            Some(b) if up => b,
+            _ => return,
         };
         // ★**機種が変わったら、帯域が同じでも値を出し直す。** 管面と PLL は
         //   機種 × 帯域で持つ(31kHz の X68000 と FM-TOWNS は別の値)。いまの値を
@@ -6204,7 +6273,7 @@ impl Session {
         self.flush_settings();
         // ★パネルの外に置く。Tab で隠していても全画面でも、電源を入れ直したあとに
         //   入力設定が入り直さないと「選んであるのに映らない」ままになる。
-        self.autowrite_input_regs();
+        self.apply_input_regs_on_connect();
         // 間引きはこの Viewer の設定。掴んだボードへ書く(パネルの外。隠していても効く)
         self.apply_frame_skip();
         self.watch_auto_skip();
@@ -6214,6 +6283,7 @@ impl Session {
         self.follow_board_input_audio();
         // 端子ボタンの信号表示と機種の推定に使う。パネルを開いた瞬間に分かっているように
         self.watch_signal();
+        self.track_mode_switch();
         // ★**帯域・モードの追従もパネルの外。** 以前は Tune 欄を描くときに
         //   呼んでいたので、パネルを隠したまま起動すると mon_key が 0 のままで、
         //   コンポジットの管面が NTSC の形にならなかった(レイアウトはドット比の
@@ -6294,8 +6364,7 @@ impl Session {
             // 地はうっすら透かす。管面に重ねているので、裏の映像が見えている方が
             // 「押しのけていない」ことが分かり、調整の結果もパネル越しに追える
             let frame = egui::Frame::side_top_panel(ui.style())
-                .fill(ui.visuals().panel_fill.gamma_multiply(
-                    if self.peek { PANEL_OPACITY * 0.3 } else { PANEL_OPACITY }))
+                .fill(ui.visuals().panel_fill.gamma_multiply(PANEL_OPACITY))
                 // 影は付けない。地が透けるので、裏に敷いた影まで透けて全体が暗く濁る
                 .stroke(ui.visuals().widgets.noninteractive.bg_stroke);
             let inner = egui::vec2(w, screen.height()) - frame.total_margin().sum();

@@ -282,6 +282,7 @@ bandpll.31 = 1104,12                    # 帯域ごとの [pll_divide, 位相]
 - `src/receiver.rs` — UDP受信スレッド + SUBSCRIBEキープアライブ(2秒ごと)
 - `src/main.rs` — eframe UI(映像表示と、パネルの各部品)
 - `src/panel.rs` — 操作パネルの並べ方(ホーム + 詳細の2階層)
+- `src/modeswitch.rs` — 映像のモードが切り替わる間は管面を黒にし、途中の帯域を採らない
 - `src/remote_input.rs` — MimicX へのキー転送(CoreMIDI SysEx)
 - `src/keytap.rs` — 物理キーの取り出し(macOS の AppKit イベント監視)
 - `src/netcheck.rs` — NIC受信バッファーの確認(Windows、レジストリを読む)

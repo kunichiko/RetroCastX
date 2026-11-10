@@ -43,6 +43,11 @@ pub const CAP_COMPACT: u16 = 1 << 1;
 /// ANNOUNCE caps bit2: 小亀のLEDの「Viewer が居ないあいだ」の動作(CONFIG 0x0097)に
 /// 対応している(gw-v1.4.0 以降)
 pub const CAP_LED_IDLE: u16 = 1 << 2;
+/// ANNOUNCE caps bit3: MODE の末尾に、1フレームの sys クロック数・ライン数・sys クロック
+/// 周波数が付く(gw-v1.5.0 以降)。同じフレームの組なので、そこから出した fH・fV は
+/// 前後のモードが混ざらない。parse がそれで `hfreq_mhz_x1000` などを出し直す。
+/// これがあれば、届いたラインと合う MODE を1回で信用してよい(modeswitch.rs)
+pub const CAP_FRAME_CLOCKS: u16 = 1 << 3;
 
 pub fn bytes_per_px(pixfmt: u8) -> Option<usize> {
     match pixfmt {
@@ -72,7 +77,41 @@ pub struct Mode {
     pub dotclk_hz: u32,
     pub hfreq_mhz_x1000: u32,
     pub vfreq_mhz_x1000: u32,
+    /// 末尾(caps bit3)。1フレームの sys クロック数と、同じフレームのライン数。
+    /// 0 = 付いていない/測れていない(VSYNC が来ない等)
+    pub frame_clocks: u32,
+    pub frame_lines: u16,
+    /// 上の2つが何回分の VSYNC 間の合計か(実機は 2。0 は 1 とみなす)。
+    /// インターレースは VSYNC 間の HSYNC 数が 260/261 と交互になるので、2回分を
+    /// 足さないと fH が ±0.2% 揺れる
+    pub frame_vsyncs: u16,
+    /// ボードの sys クロック[Hz]。0 = 末尾が付いていない
+    pub sys_clk_hz: u32,
     pub seq: u16,
+}
+
+impl Mode {
+    /// 末尾の組から fH・fV・dotclk を出し直す。組が無ければ何もしない
+    /// (1秒窓で測った値のまま)。
+    ///
+    /// ★**1秒窓の fH は、モードを切り替えた直後に前後が混ざる。** 窓の途中で
+    ///   切り替わると 15.98kHz と 31.5kHz の間の約24kHz になり、ライン数だけ
+    ///   新しく fH は古い MODE も届いた(2026-11-10 実機)。組は同じフレームから
+    ///   取っているので、ライン数と fH・fV が必ず合う
+    fn apply_frame_clocks(&mut self) {
+        if self.frame_clocks == 0 || self.sys_clk_hz == 0 || self.frame_lines == 0 {
+            return;
+        }
+        let (clk, sys) = (self.frame_clocks as u64, self.sys_clk_hz as u64);
+        let lines = self.frame_lines as u64;
+        let fh_mhz = lines * sys * 1000 / clk;
+        self.hfreq_mhz_x1000 = fh_mhz.min(u32::MAX as u64) as u32;
+        let n = self.frame_vsyncs.max(1) as u64;
+        self.vfreq_mhz_x1000 = (sys * 1000 * n / clk).min(u32::MAX as u64) as u32;
+        if self.htotal > 0 {
+            self.dotclk_hz = (self.htotal as u64 * fh_mhz / 1000).min(u32::MAX as u64) as u32;
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -174,7 +213,9 @@ pub fn parse(d: &[u8]) -> Result<Packet<'_>, &'static str> {
             if body.len() < 24 {
                 return Err("short MODE packet");
             }
-            Ok(Packet::Mode(Mode {
+            // 末尾(caps bit3)。古いボードの MODE は 24 バイトで終わる
+            let tail = body.len() >= 36;
+            let mut m = Mode {
                 mode_id: body[0],
                 pixfmt: body[1],
                 mflags: u16le(body, 2),
@@ -185,8 +226,14 @@ pub fn parse(d: &[u8]) -> Result<Packet<'_>, &'static str> {
                 dotclk_hz: u32le(body, 12),
                 hfreq_mhz_x1000: u32le(body, 16),
                 vfreq_mhz_x1000: u32le(body, 20),
+                frame_clocks: if tail { u32le(body, 24) } else { 0 },
+                frame_lines: if tail { u16le(body, 28) } else { 0 },
+                frame_vsyncs: if tail { u16le(body, 30) } else { 0 },
+                sys_clk_hz: if tail { u32le(body, 32) } else { 0 },
                 seq,
-            }))
+            };
+            m.apply_frame_clocks();
+            Ok(Packet::Mode(m))
         }
         TYPE_AUDIO => {
             if body.len() < 12 {
@@ -556,6 +603,12 @@ pub mod testutil {
         p.extend_from_slice(&m.dotclk_hz.to_le_bytes());
         p.extend_from_slice(&m.hfreq_mhz_x1000.to_le_bytes());
         p.extend_from_slice(&m.vfreq_mhz_x1000.to_le_bytes());
+        if m.sys_clk_hz != 0 {
+            p.extend_from_slice(&m.frame_clocks.to_le_bytes());
+            p.extend_from_slice(&m.frame_lines.to_le_bytes());
+            p.extend_from_slice(&m.frame_vsyncs.to_le_bytes());
+            p.extend_from_slice(&m.sys_clk_hz.to_le_bytes());
+        }
         p
     }
 }
@@ -597,12 +650,43 @@ mod tests {
             mode_id: 1, pixfmt: PIXFMT_RGB555, mflags: 0,
             hactive: 512, htotal: 655, vactive: 512, vtotal: 542,
             dotclk_hz: 10_650_300, hfreq_mhz_x1000: 16_260_000,
-            vfreq_mhz_x1000: 30_000, seq: 3,
+            vfreq_mhz_x1000: 30_000, frame_clocks: 0, frame_lines: 0, frame_vsyncs: 0,
+            sys_clk_hz: 0, seq: 3,
         };
         let d = testutil::pack_mode(&m, 0, 3);
         match parse(&d).unwrap() {
             Packet::Mode(got) => assert_eq!(got, m),
             _ => panic!("wrong type"),
         }
+    }
+
+    /// 末尾の組があれば、fH・fV はそこから出す(1秒窓の値は使わない)。
+    /// 実機の 31kHz: 45MHz で 1フレーム 811,413 クロック、568 ライン
+    #[test]
+    fn mode_frame_clocks_override_window_values() {
+        let m = Mode {
+            mode_id: 1, pixfmt: PIXFMT_RGB555, mflags: 0,
+            hactive: 2048, htotal: 1104, vactive: 1136, vtotal: 568,
+            // 1秒窓はまだ 15kHz の古い値
+            dotclk_hz: 29_083_400, hfreq_mhz_x1000: 15_980_000, vfreq_mhz_x1000: 61_500,
+            frame_clocks: 811_413, frame_lines: 568, frame_vsyncs: 1,
+            sys_clk_hz: 45_000_000, seq: 3,
+        };
+        let d = testutil::pack_mode(&m, 0, 3);
+        let Packet::Mode(got) = parse(&d).unwrap() else { panic!("wrong type") };
+        assert!((got.hfreq_mhz_x1000 as i64 - 31_500_000).abs() < 1_000,
+                "fH {}", got.hfreq_mhz_x1000);
+        assert!((got.vfreq_mhz_x1000 as i64 - 55_459).abs() < 2, "fV {}", got.vfreq_mhz_x1000);
+        assert!((got.dotclk_hz as i64 - 34_776_000).abs() < 2_000, "dotclk {}", got.dotclk_hz);
+        // 2回分の合計(実機)でも同じ値になる
+        let d = testutil::pack_mode(&Mode { frame_clocks: 1_622_826, frame_lines: 1136,
+                                            frame_vsyncs: 2, ..m.clone() }, 0, 3);
+        let Packet::Mode(got2) = parse(&d).unwrap() else { panic!("wrong type") };
+        assert!((got2.hfreq_mhz_x1000 as i64 - 31_500_000).abs() < 1_000);
+        assert!((got2.vfreq_mhz_x1000 as i64 - 55_459).abs() < 2, "fV {}", got2.vfreq_mhz_x1000);
+        // 組が 0(VSYNC が来ない)なら1秒窓の値のまま
+        let d = testutil::pack_mode(&Mode { frame_clocks: 0, ..m.clone() }, 0, 3);
+        let Packet::Mode(got) = parse(&d).unwrap() else { panic!("wrong type") };
+        assert_eq!(got.hfreq_mhz_x1000, 15_980_000);
     }
 }

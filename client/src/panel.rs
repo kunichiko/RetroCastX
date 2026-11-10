@@ -69,13 +69,10 @@ fn label(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).size(11.0).color(LABEL));
 }
 
-/// まとまり1つを角丸の面で囲む。`dim` のときは薄くする(管面を合わせている間)
-fn group<R>(ui: &mut egui::Ui, title: &str, dim: bool,
+/// まとまり1つを角丸の面で囲む
+fn group<R>(ui: &mut egui::Ui, title: &str,
             add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
     ui.scope(|ui| {
-        if dim {
-            ui.multiply_opacity(0.25);
-        }
         egui::Frame::new()
             .fill(GROUP_BG)
             .stroke(egui::Stroke::new(1.0, GROUP_EDGE))
@@ -180,9 +177,6 @@ impl Session {
         {
             self.page = Page::Home;
         }
-        // 管面を合わせている間は、前のフレームの判定でパネルを薄くする
-        self.peek = std::mem::take(&mut self.peek_next);
-
         self.panel_head(ui);
         self.status_card(ui);
         self.banners(ui);
@@ -326,8 +320,10 @@ impl Session {
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
+                        // 切り替わりの最中はどれも点けない(途中の帯域を見せない)
+                        let lit = (!self.mode_switch.blanking()).then_some(self.band_khz);
                         for b in [31u32, 24, 15] {
-                            band_led(ui, b, self.band_khz == b);
+                            band_led(ui, b, lit == Some(b));
                         }
                     });
                 });
@@ -615,7 +611,7 @@ impl Session {
     // ---------------------------------------------------------------- 詳細
 
     fn video_page(&mut self, ui: &mut egui::Ui) {
-        group(ui, "入力", false, |ui| {
+        group(ui, "入力", |ui| {
             theme::kv(ui, "端子", format!("入力{} {}", self.input_port.number(), self.input_port.jack()));
             theme::kv(ui, "機種", self.profile_label(&self.source_profile));
             ui.label(egui::RichText::new(
@@ -624,66 +620,60 @@ impl Session {
             self.profile_files_ui(ui);
         });
         ui.add_space(6.0);
-        group(ui, "画の仕上げ", false, |ui| {
+        group(ui, "画の仕上げ", |ui| {
             self.finish_ui(ui);
         });
     }
 
     fn display_page(&mut self, ui: &mut egui::Ui) {
-        // ★**つまみを動かしている間はパネルを薄くする。** 管面は映像を見ながら
-        //   合わせるもので、パネルが重なっていると結果が見えない。つまみの面
-        //   だけは残す(何を動かしているかは見えている必要がある)
-        let dim = self.peek;
-        let r = group(ui, "管面(CRT のつまみ)", false, |ui| {
+        // ★**つまみを動かしている間にパネルを薄くするのはやめた。** 案では裏の
+        //   管面を見せるためにそうしていたが、地を薄くすると前のフレームの描画が
+        //   うっすら残って見え、かえって見づらかった(2026-11-10)
+        group(ui, "管面(CRT のつまみ)", |ui| {
             self.geometry_ui(ui);
             ui.add_space(2.0);
             self.fit_button_ui(ui);
         });
-        if ui.ctx().dragged_id().is_some()
-            && r.response.rect.contains(ui.ctx().pointer_interact_pos().unwrap_or_default())
-        {
-            self.peek_next = true;
-        }
         ui.add_space(6.0);
-        group(ui, "形と見せ方", dim, |ui| {
+        group(ui, "形と見せ方", |ui| {
             self.shape_ui(ui);
         });
     }
 
     fn audio_page(&mut self, ui: &mut egui::Ui) {
-        group(ui, "音源", false, |ui| {
+        group(ui, "音源", |ui| {
             self.audio_src_ui(ui);
             self.volume_ui(ui);
             self.spdif_ui(ui);
         });
         ui.add_space(6.0);
-        group(ui, "出力", false, |ui| {
+        group(ui, "出力", |ui| {
             self.audio_ui(ui);
         });
     }
 
     fn board_page(&mut self, ui: &mut egui::Ui) {
-        group(ui, "接続", false, |ui| {
+        group(ui, "接続", |ui| {
             self.boards_ui(ui);
         });
         ui.add_space(6.0);
-        group(ui, "LED", false, |ui| {
+        group(ui, "LED", |ui| {
             self.led_ui(ui);
         });
     }
 
     fn output_page(&mut self, ui: &mut egui::Ui) {
-        group(ui, "ウィンドウ", false, |ui| {
+        group(ui, "ウィンドウ", |ui| {
             self.window_bar(ui);
             self.lowlat_fs_ui(ui);
         });
         ui.add_space(6.0);
-        group(ui, "配信(OBS 用)", false, |ui| {
+        group(ui, "配信(OBS 用)", |ui| {
             self.clean_out_ui(ui);
         });
         ui.add_space(6.0);
         // MimicX へのキー転送は macOS だけ(CoreMIDI)
-        group(ui, "リモート入力", false, |ui| {
+        group(ui, "リモート入力", |ui| {
             self.remote_ui(ui);
         });
     }
@@ -695,7 +685,7 @@ impl Session {
         ui.add_space(4.0);
         self.advanced_toggle(ui);
         ui.add_space(4.0);
-        group(ui, "", false, |ui| {
+        group(ui, "", |ui| {
             self.tune_ui(ui);
         });
     }
@@ -703,11 +693,11 @@ impl Session {
     fn diag_page(&mut self, ui: &mut egui::Ui) {
         self.advanced_toggle(ui);
         ui.add_space(4.0);
-        group(ui, "映像", false, |ui| {
+        group(ui, "映像", |ui| {
             self.diag_mode_ui(ui);
         });
         ui.add_space(6.0);
-        group(ui, "受信と表示", false, |ui| {
+        group(ui, "受信と表示", |ui| {
             self.diag_stats_ui(ui);
         });
     }
@@ -1191,6 +1181,8 @@ impl Session {
                 });
             if f != self.tune_pixfmt {
                 self.tune_pixfmt = f;
+                // 選んだ形式は Viewer が覚え、ボードを掴むたびに送り直す
+                self.remember_user_regs(&[(protocol::CFG_KEY_PIXFMT, f as u32)]);
                 self.send_cfg(protocol::CFG_KEY_PIXFMT, f as u32);
             }
         });
