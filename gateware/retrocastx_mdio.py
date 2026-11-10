@@ -137,8 +137,13 @@ class MdioPoller(Module):
 
     regs は Signal か定数の並び。`data[i]` が regs[i] の最新値になる。
     ホストから番地を振れるようにしたいので、Signal を混ぜられる作りにした。
+
+    phyads を渡すと、枠ごとに PHY アドレスも切り替える(regs と同じ長さの並び。
+    Signal を混ぜてよい)。**2つの PHY が1本の MDIO バスに相乗りしている**ので、
+    両ポートのリンクを1つのマスタで見るのに使う。省略時は reader.phyad に
+    触らない(呼び側が決める)。
     """
-    def __init__(self, reader, regs, gap_cycles=2048):
+    def __init__(self, reader, regs, gap_cycles=2048, phyads=None):
         self.data = [Signal(16) for _ in regs]
 
         idx = Signal(max=max(len(regs), 2))
@@ -155,6 +160,9 @@ class MdioPoller(Module):
             reader.start.eq(due),
             reader.regad.eq(Array(regs)[idx]),
         ]
+        if phyads is not None:
+            assert len(phyads) == len(regs)
+            self.comb += reader.phyad.eq(Array(phyads)[idx])
         self.sync += [
             If(reader.busy,
                 gap.eq(0),
