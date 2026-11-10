@@ -43,6 +43,15 @@ const STABLE_FRAMES: u32 = 3;
 const SETTLE_FRAMES: u32 = 4;
 /// これを超えたら黒をやめる(信号が抜けた等で永久に黒のままにならないように)
 const TIMEOUT: Duration = Duration::from_secs(5);
+/// 端子を替えてから、前の信号と同じ組の MODE を無視する時間。両方の端子に同じ
+/// 信号が来ていると違う組は来ないので、これを過ぎたら同じ組でも信じる
+const STALE_FOR: Duration = Duration::from_secs(1);
+
+/// 1フレームの組の sys クロック数が同じ信号のものか。組は ppm 単位で揃うので、
+/// 1/1024 あれば十分(X68000 15kHz と NTSC でも 2% 違う)
+fn same_frame(a: u32, b: u32) -> bool {
+    a.abs_diff(b) <= a.max(b) / 1024
+}
 
 /// ライン数が「同じ」とみなす幅。インターレースの半ライン違いや、フレームの
 /// 最後の行を取りこぼした程度では切り替わりと見ない
@@ -85,6 +94,10 @@ pub struct ModeSwitch {
     settle: u32,
     /// ボードが1フレームごとの組で fH を出すか(CAP_FRAME_CLOCKS)
     fresh: bool,
+    /// 直近の MODE の1フレームの組の sys クロック数(0 = 付いていない)
+    frame_clocks: u32,
+    /// 端子を替えたときの組と、それを無視する期限(`restart`)
+    stale: Option<(u32, Instant)>,
 }
 
 impl ModeSwitch {
@@ -115,6 +128,21 @@ impl ModeSwitch {
         }
     }
 
+    /// 入力の端子を替えた。ライン数や帯域が同じでも、絵は別の信号なので黒にし、
+    /// 替えた後の MODE で確かめ直す(X68000 15kHz → コンポジットは帯域もライン数も
+    /// ほぼ同じで、ライン数の変化では黒にならない)。
+    ///
+    /// ★**替えた時点の組と同じ MODE は、前の信号のものとして採らない。** 替えてから
+    ///   200ms ほどは、届くラインも MODE もまだ前の信号で、両者が合ってしまう。
+    ///   これで解いていたので、前の端子の帯域と管面で3〜6フレーム映ってから黒に
+    ///   戻っていた(2026-11-10 実機: X68000 31kHz → コンポジット)
+    pub fn restart(&mut self, now: Instant) {
+        self.since = Some(now);
+        self.confirmed_since = false;
+        self.settle = 0;
+        self.stale = (self.frame_clocks != 0).then_some((self.frame_clocks, now + STALE_FOR));
+    }
+
     /// 1フレーム届いた。`lines` はそのフレームの最大のライン番号 + 1
     pub fn on_frame(&mut self, lines: u32, now: Instant) {
         if lines == 0 {
@@ -136,7 +164,15 @@ impl ModeSwitch {
     }
 
     /// MODE が1つ届いた。`repeats` は同じ帯域が続いた回数(この MODE を含む)
-    pub fn on_mode(&mut self, band: u32, repeats: u32, vactive: u32, now: Instant) {
+    pub fn on_mode(&mut self, band: u32, repeats: u32, vactive: u32, frame_clocks: u32,
+                   now: Instant) {
+        self.frame_clocks = frame_clocks;
+        if let Some((fc, until)) = self.stale {
+            if now < until && same_frame(frame_clocks, fc) {
+                return;
+            }
+            self.stale = None;
+        }
         self.vactive = vactive;
         let fits = mode_fits(self.cand.0, vactive);
         let need = if self.fresh { CONFIRM_FRESH } else { CONFIRM };
@@ -204,9 +240,9 @@ mod tests {
         let mut s = ModeSwitch::default();
         let mut t = Instant::now();
         frames(&mut s, &mut t, 250, 5);
-        s.on_mode(15, 1, 260, t);
+        s.on_mode(15, 1, 260, 0, t);
         frames(&mut s, &mut t, 250, 30);
-        s.on_mode(15, 2, 260, t);
+        s.on_mode(15, 2, 260, 0, t);
         frames(&mut s, &mut t, 250, 30);
         assert_eq!(s.band(), Some(15));
         assert!(!s.blanking());
@@ -221,17 +257,17 @@ mod tests {
         frames(&mut s, &mut t, 560, 1);
         assert!(s.blanking(), "ライン数が変わった瞬間に黒にする");
         // 古い MODE(15kHz、まだ続けて届く)。ラインと合わないので確定に使わない
-        s.on_mode(15, 3, 260, t);
+        s.on_mode(15, 3, 260, 0, t);
         frames(&mut s, &mut t, 560, 50);
         assert!(s.blanking(), "古い MODE では解かない");
-        s.on_mode(24, 1, 440, t);
+        s.on_mode(24, 1, 440, 0, t);
         frames(&mut s, &mut t, 560, 50);
         assert_eq!(s.band(), Some(15), "混ざった 24kHz は確定しない");
         assert!(s.blanking());
-        s.on_mode(31, 1, 568, t);
+        s.on_mode(31, 1, 568, 0, t);
         frames(&mut s, &mut t, 560, 50);
         assert!(s.blanking(), "1回目の 31kHz ではまだ確定しない");
-        s.on_mode(31, 2, 568, t);
+        s.on_mode(31, 2, 568, 0, t);
         assert_eq!(s.band(), Some(31));
         frames(&mut s, &mut t, 560, 3);
         assert!(s.blanking(), "確定してすぐは PLL を書き直す時間を待つ");
@@ -244,7 +280,7 @@ mod tests {
     fn same_line_count_does_not_blank() {
         let (mut s, mut t) = settled_15k();
         frames(&mut s, &mut t, 252, 50);
-        s.on_mode(15, 3, 260, t);
+        s.on_mode(15, 3, 260, 0, t);
         frames(&mut s, &mut t, 248, 50);
         assert!(!s.blanking());
     }
@@ -256,12 +292,12 @@ mod tests {
         let mut s = ModeSwitch::default();
         let mut t = Instant::now();
         frames(&mut s, &mut t, 1000, 5);
-        s.on_mode(31, 2, 1050, t);
+        s.on_mode(31, 2, 1050, 0, t);
         frames(&mut s, &mut t, 1000, 30);
         assert!(!s.blanking());
         frames(&mut s, &mut t, 830, 1);
         assert!(s.blanking());
-        s.on_mode(31, 3, 1050, t); // 古い MODE。830 は 1050 に収まるが、確定は続く
+        s.on_mode(31, 3, 1050, 0, t); // 古い MODE。830 は 1050 に収まるが、確定は続く
         frames(&mut s, &mut t, 830, 20);
         assert!(!s.blanking(), "ラインと合う同じ帯域の MODE で解ける");
     }
@@ -284,10 +320,10 @@ mod tests {
         s.set_fresh(true);
         frames(&mut s, &mut t, 560, 1);
         assert!(s.blanking());
-        s.on_mode(15, 4, 260, t);
+        s.on_mode(15, 4, 260, 0, t);
         frames(&mut s, &mut t, 560, 20);
         assert!(s.blanking(), "ラインと合わない古い MODE では解かない");
-        s.on_mode(31, 1, 568, t);
+        s.on_mode(31, 1, 568, 0, t);
         assert_eq!(s.band(), Some(31));
         frames(&mut s, &mut t, 560, 12);
         assert!(!s.blanking());
@@ -300,7 +336,7 @@ mod tests {
         let (mut s, mut t) = settled_15k();
         s.set_fresh(true);
         frames(&mut s, &mut t, 560, 1);
-        s.on_mode(31, 1, 568, t);
+        s.on_mode(31, 1, 568, 0, t);
         for _ in 0..20 {
             t += Duration::from_millis(18);
             s.on_frame(560, t);
@@ -323,12 +359,12 @@ mod tests {
         let (mut s, mut t) = settled_15k();
         s.set_fresh(true);
         frames(&mut s, &mut t, 1135, 1);
-        s.on_mode(31, 1, 1136, t);
+        s.on_mode(31, 1, 1136, 0, t);
         frames(&mut s, &mut t, 1135, 10);
         assert!(!s.blanking());
         frames(&mut s, &mut t, 519, 1);
         assert!(s.blanking());
-        s.on_mode(15, 1, 1042, t);
+        s.on_mode(15, 1, 1042, 0, t);
         frames(&mut s, &mut t, 519, 10);
         assert!(!s.blanking(), "タイムアウトを待たずに解く");
     }
@@ -341,16 +377,66 @@ mod tests {
         let (mut s, mut t) = settled_15k();
         s.set_fresh(true);
         frames(&mut s, &mut t, 1135, 1);
-        s.on_mode(31, 1, 1136, t);
+        s.on_mode(31, 1, 1136, 0, t);
         frames(&mut s, &mut t, 1135, 10);
         assert!(!s.blanking());
         frames(&mut s, &mut t, 525, 1);
         assert!(s.blanking());
-        s.on_mode(15, 1, 1136, t); // 最初の MODE の vactive はまだ前のモード
+        s.on_mode(15, 1, 1136, 0, t); // 最初の MODE の vactive はまだ前のモード
         assert_eq!(s.band(), Some(15), "帯域の変更はラインと照合せずに採る");
-        s.on_mode(15, 2, 522, t);
+        s.on_mode(15, 2, 522, 0, t);
         frames(&mut s, &mut t, 525, 10);
         assert!(!s.blanking(), "タイムアウトを待たずに解く");
+    }
+
+    /// 端子を替えたら、帯域もライン数も同じでも黒にし、替えた後の MODE で解く
+    #[test]
+    fn port_change_blanks_even_with_the_same_band_and_lines() {
+        let (mut s, mut t) = settled_15k();
+        s.set_fresh(true);
+        s.restart(t);
+        assert!(s.blanking());
+        frames(&mut s, &mut t, 250, 20);
+        assert!(s.blanking(), "替えた後の MODE が来るまで解かない");
+        s.on_mode(15, 5, 262, 0, t);
+        frames(&mut s, &mut t, 250, 1);
+        assert!(!s.blanking());
+    }
+
+    /// 端子を替えた直後に届く、前の信号と同じ組の MODE では解かない
+    /// (X68000 31kHz → コンポジットで、前の帯域のまま数フレーム映っていた)
+    #[test]
+    fn port_change_ignores_modes_from_the_previous_signal() {
+        const X68K: u32 = 1_467_158; // X68000 15kHz の2フィールド分
+        const NTSC: u32 = 1_501_500;
+        let (mut s, mut t) = settled_15k();
+        s.set_fresh(true);
+        s.on_mode(15, 6, 262, X68K, t);
+        s.restart(t);
+        s.on_mode(15, 7, 262, X68K + 3, t);
+        frames(&mut s, &mut t, 250, 10);
+        assert!(s.blanking(), "前の信号の組の MODE では解かない");
+        s.on_mode(15, 8, 262, NTSC, t);
+        frames(&mut s, &mut t, 250, 1);
+        assert!(!s.blanking(), "組が変わった MODE で解く");
+    }
+
+    /// 両方の端子に同じ信号が来ていると組は変わらない。1秒過ぎたら同じ組でも信じる
+    #[test]
+    fn port_change_with_the_same_signal_clears_after_a_second() {
+        const X68K: u32 = 1_467_158;
+        let (mut s, mut t) = settled_15k();
+        s.set_fresh(true);
+        s.on_mode(15, 6, 262, X68K, t);
+        s.restart(t);
+        frames(&mut s, &mut t, 250, 30);
+        s.on_mode(15, 7, 262, X68K, t);
+        frames(&mut s, &mut t, 250, 5);
+        assert!(s.blanking(), "1秒以内は同じ組を採らない");
+        frames(&mut s, &mut t, 250, 30);
+        s.on_mode(15, 8, 262, X68K, t);
+        frames(&mut s, &mut t, 250, 1);
+        assert!(!s.blanking(), "1秒を過ぎたら同じ組でも解く(5秒のタイムアウトは待たない)");
     }
 
     /// 起動直後(帯域が未確定)は黒にしない。最初の帯域は2回目の MODE で決まる
@@ -359,10 +445,10 @@ mod tests {
         let mut s = ModeSwitch::default();
         let mut t = Instant::now();
         frames(&mut s, &mut t, 560, 5);
-        s.on_mode(31, 1, 568, t);
+        s.on_mode(31, 1, 568, 0, t);
         assert_eq!(s.band(), None);
         frames(&mut s, &mut t, 560, 30);
-        s.on_mode(31, 2, 568, t);
+        s.on_mode(31, 2, 568, 0, t);
         assert_eq!(s.band(), Some(31));
         assert!(!s.blanking());
     }

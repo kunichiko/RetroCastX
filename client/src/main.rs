@@ -1043,7 +1043,8 @@ const SIGNAL_POLL: std::time::Duration = std::time::Duration::from_millis(2200);
 const SIGNAL_FH_TOL_HZ: u32 = 4;
 
 /// 端子を替えてから TVP の fH が落ち着くまで(docs/composite-video-plan.md の実測で
-/// 約3秒)。その間に届く MODE は前の端子のものなので、帯域を追わない
+/// 約3秒)。その間に届く MODE は前の端子のものなので、帯域を追わない。
+/// fH を1秒窓で測る古いゲートウェアのときだけ使う(`select_input`)
 const PORT_SETTLE: std::time::Duration = std::time::Duration::from_millis(3500);
 
 /// 端子に信号が来ているか
@@ -2003,7 +2004,11 @@ impl Session {
         //   RGB … RGB555 も RGB888 も絵になる。どちらでもよい
         // 電源断でTVPのレジスタが消えた状態は、この「種類が違う」側に出る
         // (コンポジットなのに RGB555 になっていて復調できない)。
-        if let Some(p) = self.regs_profile() {
+        //
+        // ★**切り替えの黒の間は言わない。** 端子を替えた直後は、伝送形式を書いても
+        //   届く MODE はまだ前の端子のもの(X68000 → コンポジットで RGB555)なので、
+        //   一瞬だけ警告が出ていた。黒は新しい信号の MODE が届くまで解けない
+        if let Some(p) = self.regs_profile().filter(|_| !self.mode_switch.blanking()) {
             if let (Some(want), Some(have)) = (
                 p.pixfmt(),
                 self.shared.mode.lock().unwrap().as_ref().map(|m| m.pixfmt),
@@ -2149,13 +2154,25 @@ impl Session {
         self.geo_prof = self.geo();
         self.mon_key = 0;
         self.band_khz = 0;
-        // 端子を替えたら信号の判定はやり直し(MUXを替えてから fH が落ち着くまで約3秒)。
-        // その間に届く MODE は前の端子のものなので、帯域の追従も待たせる
+        // 端子を替えたら信号の判定はやり直し
         if port_changed {
             self.signal.port = Some(port);
             self.signal.fh = [None, None];
             self.signal.asked = false;
-            self.band_hold_until = Some(std::time::Instant::now() + PORT_SETTLE);
+            // ★**端子を替えたら黒にする。** X68000 15kHz → コンポジットは帯域もライン数も
+            //   ほぼ同じなので、ライン数の変化では黒にならない。黒にしないと、前の
+            //   機種の管面のままコンポジットの絵が映り、follow_band が新しい管面に
+            //   替えるまで小さく出ていた(2026-11-10 実機)
+            let now = std::time::Instant::now();
+            if port.uses_tvp() {
+                self.mode_switch.restart(now);
+            }
+            // 1秒窓のゲートウェアでは、替えてからしばらく届く MODE は前の端子のもの
+            // (fH が落ち着くまで約3秒)なので、帯域の追従を待たせる。1フレームごとの
+            // 組を送るゲートウェアは新しい信号の MODE がすぐ来るので待たない
+            if !self.board_fresh() {
+                self.band_hold_until = Some(now + PORT_SETTLE);
+            }
         }
         self.mark_settings_dirty();
         // ★入力を切り替えたら音声も付いてくる(音声が「自動」のときだけ)
@@ -2305,25 +2322,26 @@ impl Session {
     /// 届いた MODE を切り替わりの判定へ渡し、黒を解く条件を見る。毎フレーム呼ぶ
     fn track_mode_switch(&mut self) {
         let now = std::time::Instant::now();
-        let fresh = self.claimed().is_some_and(|mac| {
-            self.shared.boards.lock().unwrap().get(&mac)
-                .is_some_and(|b| b.caps & protocol::CAP_FRAME_CLOCKS != 0)
-        });
+        let fresh = self.board_fresh();
         self.mode_switch.set_fresh(fresh);
         let mb = *self.shared.mode_band.lock().unwrap();
         let before = self.mode_log_prev;
         if mb.seq != self.mode_band_seq {
             self.mode_band_seq = mb.seq;
-            self.mode_switch.on_mode(mb.band, mb.repeats, mb.vactive, now);
+            self.mode_switch.on_mode(mb.band, mb.repeats, mb.vactive, mb.frame_clocks, now);
         }
         // 黒を解くのは、確定した帯域の PLL・位相を follow_band が書き終え、MODE の
         // htotal がその PLL と合ってから(modeswitch.rs)。フレームの幅と横位置は
         // htotal で決まる。★**書き終えたことも見る。** htotal だけを見ていると、
         // follow_band が止まって PLL を書いていないとき(前の帯域の PLL と htotal が
         // 合ってしまう)に、31kHz の信号を 15kHz の PLL のまま映した
-        let applied = self.mode_switch.band().is_some_and(|b| b == self.band_khz)
-            || self.pll_locked_by_format();
-        let htotal_ok = applied && (self.tune_pll_divide <= 0
+        //   ★**PLL が形式で決まる端子(コンポジット)でも、follow_band を待つ。** 管面
+        //   (mon_key)を新しい端子の値にするのも follow_band なので、待たずに解くと
+        //   前の機種の管面のまま映る(2026-11-10 実機: X68000 → コンポジットで
+        //   小さく出て、端子替えの待ち 3.5 秒後に正しい大きさになった)
+        let applied = self.mon_key != 0
+            && self.mode_switch.band().is_some_and(|b| b == self.band_khz);
+        let htotal_ok = applied && (self.pll_locked_by_format() || self.tune_pll_divide <= 0
             || self.shared.mode.lock().unwrap().as_ref()
                 .is_some_and(|m| m.htotal as i32 == self.tune_pll_divide));
         self.mode_switch.tick(now, htotal_ok);
@@ -2343,6 +2361,15 @@ impl Session {
             self.mode_log_lines = cand.0;
             self.mode_log_prev = after;
         }
+    }
+
+    /// 掴んでいるボードが fH を1フレームごとの組で送るか(CAP_FRAME_CLOCKS)。
+    /// 送るなら MODE は信号が変わってすぐ新しくなる
+    fn board_fresh(&self) -> bool {
+        self.claimed().is_some_and(|mac| {
+            self.shared.boards.lock().unwrap().get(&mac)
+                .is_some_and(|b| b.caps & protocol::CAP_FRAME_CLOCKS != 0)
+        })
     }
 
     /// 映像を出さずに待つか(取り込みの無い端子を選んでいる)

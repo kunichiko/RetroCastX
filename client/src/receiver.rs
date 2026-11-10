@@ -583,6 +583,9 @@ pub struct ModeBand {
     pub band: u32,
     pub repeats: u32,
     pub vactive: u32,
+    /// 1フレームの組の sys クロック数(0 = 付いていない古いゲートウェア)。
+    /// 端子を替えた直後に届く、前の信号の MODE を見分けるのに使う(modeswitch.rs)
+    pub frame_clocks: u32,
     /// MODE を受けた通し番号(UI が同じ MODE を2回数えないため)
     pub seq: u64,
 }
@@ -1398,6 +1401,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                     mb.repeats = if mb.seq > 0 && mb.band == band { mb.repeats + 1 } else { 1 };
                     mb.band = band;
                     mb.vactive = m.vactive as u32;
+                    mb.frame_clocks = m.frame_clocks;
                     mb.seq += 1;
                     // RCX_MODE_LOG=1 のときは1つ残らず出す(切り替えの途中に何が
                     // 届いたかを見るため。毎秒2本ほど出るので普段は出さない)。
