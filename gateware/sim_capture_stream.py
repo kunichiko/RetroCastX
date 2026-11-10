@@ -135,10 +135,17 @@ def main():
         clocks={"sys": 10, "pix": 10})
 
     lines = []
+    modes = []
     for payload in grams:
         ptype, pkt = proto.parse(payload)
         if ptype == proto.TYPE_LINE:
             lines.append(pkt)
+        if ptype == proto.TYPE_MODE:
+            modes.append(pkt)
+    # MODE の末尾(caps bit3)が付いていること。この試験のフレームは短い(64行未満)
+    # ので組は測れず 0。組そのものは sim_capture_frameclk.py で見る
+    assert modes and all(m.sys_clk_hz == int(SYS) for m in modes), \
+        "MODE の末尾に sys クロックが付いていない"
     print(f"datagrams={len(grams)} LINE packets={len(lines)}")
     rows_seen = sorted(set(p.line for p in lines))
     print("rows seen:", rows_seen)

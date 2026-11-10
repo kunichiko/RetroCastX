@@ -30,6 +30,7 @@ from migen import *
 
 from litex.build.generic_platform import IOStandard, Pins, Subsignal, Misc
 from litex.gen import LiteXModule
+from litex.soc.interconnect import stream
 from litex.soc.cores.clock import ECP5PLL
 from litex.soc.integration.soc_core import SoCMini
 from litex.soc.integration.builder import Builder
@@ -57,6 +58,9 @@ CAP_COMPACT = 1 << 1
 # ANNOUNCE caps bit2: 小亀のLEDの「Viewer が居ないあいだ」の動作(CONFIG 0x97、
 # EEPROM に焼ける)に対応している
 CAP_LED_IDLE = 1 << 2
+# ANNOUNCE caps bit3: MODE の末尾に「1フレームの sys クロック数・ライン数・sys クロック
+# 周波数」が付く(1フレームごとに測った同じフレームの組)。受信側が割って fH/fV を出す
+CAP_FRAME_CLOCKS = 1 << 3
 SCROLL_PX   = 4               # テストパターンのカラーバー横スクロール量[px/frame](host pattern.pyと一致必須)
 
 # パケットタイプ(FSM内部コード。プロトコル上のtype値とは別)
@@ -350,7 +354,7 @@ class RetroCastXStreamer(LiteXModule):
         px_max = ((width + PX_ALIGN - 1) // PX_ALIGN) * PX_ALIGN
         nw_555_max = _nw(min(FRAG_PX_555, px_max))
         nw_888_max = 5 + 3 * min(FRAG_PX_888, px_max) // 4
-        max_nwords = max(10, 8, aud_nwords if n_aud else 0,
+        max_nwords = max(10, 11, aud_nwords if n_aud else 0,   # ANNOUNCE 10 / MODE 11
                          *(_nw(n) for _, n in frags),
                          nw_555_max, nw_888_max)
 
@@ -408,9 +412,22 @@ class RetroCastXStreamer(LiteXModule):
         # 送出する行数。vtotalが小さいモードでは512行送ると下が空くので実測に従う
         mode_vactive = Signal(16)
         mode_dotclk = Signal(32); mode_hfreq = Signal(32); mode_vfreq = Signal(32)
+        # MODE の末尾(caps bit3)。測っていなければ 0 = 受信側は fH/fV の欄を使う。
+        # mode_fvs は上の2つが何回分の VSYNC 間の合計か
+        mode_fclk = Signal(32); mode_flines = Signal(16); mode_fvs = Signal(16)
+        # TVP に実際に書いている pll_divide(= 1ライン当たりの DATACLK 数)。SoC が
+        # つなぐ。0 なら1秒窓で測った htotal を送る(シミュレーションなど)。
+        # ★**htotal は測った値ではなく書いた値を送る。** 1秒窓の値は PLL を
+        #   書き換えてから最大1秒古いままで、受信側はその htotal でフレームの幅と
+        #   横位置を決めている。15→31kHz で PLL を 1104 にした後も 1820 が届き、
+        #   絵が 0.61 倍に縮んだ。31→15kHz では幅 1104 のバッファに 1820 サンプルが
+        #   来て右側が切れた(2026-11-10 実機)。PLL が合っていれば
+        #   DATACLK ÷ HSOUT は分周比そのものなので、書いた値で正しい
+        self.htotal_applied = Signal(16)
         if cap_mode:
             self.comb += [
-                mode_htotal.eq(capture.meas_htotal),
+                mode_htotal.eq(Mux(self.htotal_applied != 0,
+                                   self.htotal_applied, capture.meas_htotal)),
                 # ★生の meas_vtotal ではなく、フレーム連続一致で濾した方を出す。
                 #   生値には偽VSYNC由来の単発異常(実機で 210/311/367/1136/2446)が
                 #   混ざり、Viewer 側はそれをモード変更と受け取ってウィンドウの
@@ -422,6 +439,11 @@ class RetroCastXStreamer(LiteXModule):
                 mode_hfreq.eq(capture.meas_hfreq * 1000),
                 mode_vfreq.eq(capture.meas_vfreq),   # 既にmHz(8秒積算で0.125Hz分解能)
             ]
+            if hasattr(capture, "meas_frame_clocks"):
+                from retrocastx_capture import MEAS_FRAME_VSYNCS
+                self.comb += [mode_fclk.eq(capture.meas_frame_clocks),
+                              mode_flines.eq(capture.meas_frame_lines),
+                              mode_fvs.eq(MEAS_FRAME_VSYNCS)]
         else:
             self.comb += [
                 mode_htotal.eq(htotal), mode_vtotal.eq(vtotal),
@@ -1113,6 +1135,18 @@ class RetroCastXStreamer(LiteXModule):
             If((ann_cnt == 0) | sub_hit_any_d, ann_pending.eq(1)),
             If((sub_valid & (mode_cnt == 0)) | sub_hit, mode_pending.eq(1)),
         ]
+        if capture is not None and hasattr(capture, "meas_frame_new"):
+            # ★**新しいモードを測れたらすぐ MODE を送る。** 1秒タイマだけでは、
+            #   測った値が届くまで最大1秒遅れていた
+            _timer += [If(sub_valid & capture.meas_frame_new, mode_pending.eq(1))]
+            # vactive(スロット数)は vtotal の追従を待って変わるので、上の組より
+            # 数フレーム遅れる。変わったときにも送らないと、受信側は「fH は新しく
+            # vactive は古い」MODE しか持たないまま次の1秒タイマまで待つことになる。
+            # htotal(書いた PLL)も同じ。受信側はこれでフレームの幅を決める
+            shape = Cat(mode_vactive, mode_htotal)
+            shape_prev = Signal(len(shape))
+            self.sync += shape_prev.eq(shape)
+            _timer += [If(sub_valid & (shape_prev != shape), mode_pending.eq(1))]
         if cap_mode:
             # capture: FIFOに実データが有る間だけ送出要求(組合せ)。
             # sticky レジスタにすると、送信中ずっと line_valid=1 で再セットされ、
@@ -1209,7 +1243,16 @@ class RetroCastXStreamer(LiteXModule):
         nwords   = Signal(max=max_nwords + 1)
         word_idx = Signal(max=max_nwords)
 
-        sink = udp_port.sink
+        # ★**UDP の手前で ready を1段レジスタに受ける**(スキッドバッファ)。
+        #   無いと MAC 送信側(プリアンブル・CRC・パディング)→ IP クロスバーの
+        #   ready → ここの送出FSM → キャプチャの読み出しアドレスの加算器 → BRAM の
+        #   アドレス、が1クロックに繋がる(約22ns)。sys 45MHz に対し配置次第で
+        #   44.8〜47.6MHz と当たり外れが出て、seed 4 では配線が収束しなかった
+        #   (2026-11-10)。遅れは1クロック増えるだけ
+        self.submodules.tx_buf = tx_buf = stream.Buffer(
+            udp_port.sink.description, pipe_valid=True, pipe_ready=True)
+        self.comb += tx_buf.source.connect(udp_port.sink)
+        sink = tx_buf.sink
         self.comb += [
             sink.ip_address.eq(dst_ip),
             sink.src_port.eq(udp_port_nr),
@@ -1259,6 +1302,9 @@ class RetroCastXStreamer(LiteXModule):
                 5: hdr.eq(mode_dotclk),
                 6: hdr.eq(mode_hfreq),                             # mHz
                 7: hdr.eq(mode_vfreq),                             # mHz
+                8: hdr.eq(mode_fclk),                              # 1フレームのsysクロック数
+                9: hdr.eq(Cat(mode_flines, mode_fvs)),             # ライン数, VSYNC回数
+                10: hdr.eq(C(int(sys_clk_freq), 32)),              # sysクロック[Hz]
             }),
             _T_LINE: Case(word_idx, {
                 0: hdr.eq(Cat(C(0x52, 8), C(0, 8), C(0, 8), line_flags)),
@@ -1419,8 +1465,8 @@ class RetroCastXStreamer(LiteXModule):
             NextValue(ptype, _T_MODE),
             NextValue(dst_ip, sub_ip),
             NextValue(dst_port, sub_port),
-            NextValue(length, 32),
-            NextValue(nwords, 8),
+            NextValue(length, 44),
+            NextValue(nwords, 11),
             NextState("SEND"),
         )
         # 送る範囲(ライン内の「黒でない範囲」)を決める。
@@ -2231,8 +2277,8 @@ class RetroCastXStream(SoCMini):
             # ★Ethernet コアと同じ MAC を渡すこと。食い違うと SUBSCRIBE/CONFIG の
             #   宛先照合(自MACと一致するか)が通らなくなる。
             mac_address=my_mac, my_ip=my_ip,
-            # bit1 = CAP_COMPACT / bit2 = CAP_LED_IDLE
-            caps=Cat(self.status.mac_valid, C(1, 1), C(1, 1), C(0, 13)),
+            # bit1 = CAP_COMPACT / bit2 = CAP_LED_IDLE / bit3 = CAP_FRAME_CLOCKS
+            caps=Cat(self.status.mac_valid, C(1, 1), C(1, 1), C(1, 1), C(0, 12)),
             audio_sources=[(self.i2s.sources[0], 48000),
                            (self.i2s.sources[1], 48000),
                            (self.spdif.source, self.spdif.rate_hz),
@@ -2332,6 +2378,8 @@ class RetroCastXStream(SoCMini):
             ).Else(
                 pll_use.eq(self.streamer.cfg_pll_divide),
             )
+            # MODE の htotal は、TVP に書いているこの値を送る(streamer の htotal_applied)
+            self.comb += self.streamer.htotal_applied.eq(pll_use)
 
             # hs_offset は必ずラインの前半に収める。これを超えるとキャプチャ窓が
             # ライン終端より後ろから始まり、x >= hs_offset が一度も成立せずライン

@@ -180,6 +180,9 @@ def scenario_a():
     assert first_stream_types and first_stream_types[0] == proto.TYPE_MODE
     m = modes[0]
     assert (m.hactive, m.vactive, m.mflags) == (W, H, 0)
+    # MODE の末尾(caps bit3)。テストパターンは測っていないので組は 0、sys クロックは付く
+    assert (m.frame_clocks, m.frame_lines, m.sys_clk_hz) == (0, 0, int(SYS)), \
+        f"MODE の末尾が違う: {(m.frame_clocks, m.frame_lines, m.sys_clk_hz)}"
 
     # MAC不一致のSUBSCRIBEは完全に無視される(応答もストリームも無し)
     assert not any((ip, port) == STRANGER for _, ip, port, _ in datagrams), \

@@ -37,6 +37,10 @@ def _meta_layout(nface_bits, row_bits, entry_bits):
             ("x_lo", entry_bits), ("x_hi", entry_bits)]
 
 
+# meas_frame_clocks / meas_frame_lines が何回分の VSOUT 間の合計か(MODE で受信側へ伝える)
+MEAS_FRAME_VSYNCS = 2
+
+
 class TvpCapture(Module):
     """pads: r(8) g(8) b(8) hs vs [fid] を持つ Record。dataclk は呼び出し側で
     cd_pix に接続済みであること。width は偶数(2px/entry)。"""
@@ -236,6 +240,23 @@ class TvpCapture(Module):
         self.meas_fh_tvp = Signal(32)             # TVP HSOUT周波数 [Hz]
         self.meas_fv_tvp = Signal(32)             # TVP VSOUT周波数 [mHz](8秒積算)
         self.meas_lines_tvp = Signal(16)          # VSOUT間のHSOUT数(=vtotal)
+        # 1フレーム(VSOUT 間)の長さを sys クロックで数えた値と、その間の HSOUT 数。
+        # **同じフレームから取った組**なので、受信側で fV = sys_clk / clocks、
+        # fH = fV × lines と割れば3つの値が必ず合う。1秒窓の fH は、窓の途中で
+        # モードが切り替わると前後の数が混ざった値(15.98kHz と 31.5kHz で約24kHz)や、
+        # ライン数だけ新しく fH は古い値を出していた(2026-11-10 実機)。
+        # 割り算はボードでせず受信側でする(sys は 45MHz で余裕が小さい)。
+        # 同じ組が3フレーム続いたときだけ更新する(偽VSYNCで割れたフレームを通さない)。
+        # VSOUT が約1.5秒来なければ 0(受信側は1秒窓の値に戻る)。
+        # ★**直近2回の VSOUT 間の合計を出す**(MEAS_FRAME_VSYNCS)。インターレースでは
+        #   1フィールドが 260.5 ラインで、VSOUT 間の HSOUT 数が 260/261 と交互になる。
+        #   1回分だと fH が 15.949/16.011kHz と交互に揺れた(2026-11-10 実機)。
+        #   2回分なら必ず 521 で揃う。プログレッシブでも害は無い
+        self.meas_frame_clocks = Signal(32)
+        self.meas_frame_lines = Signal(16)
+        # 上の組が新しいモードになった(フレームが続いて初めて採った)ときに1サイクル立つ。
+        # MODE をすぐ送るのに使う
+        self.meas_frame_new = Signal()
 
         # --- ラインバッファ(true dual-port: write=pix / read=sys)---
         # 32bit→64bit へ広げた(2画素/エントリは維持、各画素32bitスロット)。
@@ -1137,6 +1158,60 @@ class TvpCapture(Module):
                 ).Else(
                     If(the, tch.eq(tch + 1)),
                     If(tve, tcv.eq(tcv + 1)),
+                ),
+            ]
+
+            # --- 1フレームの長さ(sys クロック数)とライン数を、同じ VSOUT で取る ---
+            # 精度: 31kHz 568 ラインで約81万クロック、±1 で 1.2ppm(1秒窓の ±1Hz は
+            # 32ppm)。17ms ごとに更新できる。
+            # 比較は2段のパイプラインで取る(継ぎ足しで2回タイミング未達を出している)。
+            # VSOUT の後 fr_chk が 3→2→1 と下がる間に、差 → 比較 → 判定 と進む。
+            FR_GUARD = 64           # 等化パルス除け(vs_meas と同じ)
+            FR_HOLD = 2             # 前と同じ組が2回続いたら採る(3フレーム)
+            FR_MAX = (1 << 26) - 1  # 45MHz で約1.5秒。これを超えたら VSOUT 無し
+            fr_cnt = Signal(26); fr_lines = Signal(13)
+            fr_clk = Signal(26); fr_ln = Signal(13); fr_chk = Signal(2)
+            c_clk = Signal(26); c_ln = Signal(13); c_n = Signal(max=FR_HOLD + 1)
+            fr_d = Signal(26); fr_same = Signal(); reported = Signal()
+            # 直近2回の合計(1段目で前のフレームの値と足しておく)
+            sum_clk = Signal(27); sum_ln = Signal(14)
+            fr_vs = Signal()
+            self.comb += fr_vs.eq(tve & (fr_lines >= FR_GUARD))
+            self.sync += [
+                self.meas_frame_new.eq(0),
+                If(fr_cnt != FR_MAX, fr_cnt.eq(fr_cnt + 1)),
+                If(fr_vs,
+                    fr_clk.eq(fr_cnt), fr_ln.eq(fr_lines),
+                    # 同じサイクルの HSOUT は次のフレームに数える(取りこぼさない)
+                    fr_cnt.eq(1), fr_lines.eq(the),
+                    fr_chk.eq(3),
+                ).Else(
+                    If(the & (fr_lines != 0x1FFF), fr_lines.eq(fr_lines + 1)),
+                    If(fr_chk != 0, fr_chk.eq(fr_chk - 1)),
+                ),
+                # 1段目: 前のフレームとのクロック数の差と、2回分の合計
+                If(fr_clk >= c_clk,
+                    fr_d.eq(fr_clk - c_clk),
+                ).Else(fr_d.eq(c_clk - fr_clk)),
+                sum_clk.eq(fr_clk + c_clk), sum_ln.eq(fr_ln + c_ln),
+                # 2段目: 1/64 以内で、ライン数が ±1 以内(NTSC は 262/263 が交互)か
+                fr_same.eq((fr_d <= c_clk[6:])
+                           & ((fr_ln == c_ln) | (fr_ln == c_ln + 1) | (fr_ln + 1 == c_ln))),
+                If(fr_chk == 1,
+                    If(fr_same & (c_clk != 0),
+                        If(c_n != FR_HOLD, c_n.eq(c_n + 1)),
+                        If(c_n >= FR_HOLD - 1,
+                            self.meas_frame_clocks.eq(sum_clk),
+                            self.meas_frame_lines.eq(sum_ln),
+                            If(~reported, self.meas_frame_new.eq(1), reported.eq(1)),
+                        ),
+                    ).Else(c_n.eq(0), reported.eq(0)),
+                    c_clk.eq(fr_clk), c_ln.eq(fr_ln),
+                ),
+                # VSOUT が来ない(無信号・DATACLK停止)。後ろに置いて優先させる
+                If(fr_cnt == FR_MAX,
+                    self.meas_frame_clocks.eq(0), self.meas_frame_lines.eq(0),
+                    c_clk.eq(0), c_n.eq(0), reported.eq(0),
                 ),
             ]
 
