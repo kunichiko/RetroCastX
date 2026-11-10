@@ -38,6 +38,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 GW=build/colorlight_i5/gateware
 
+# ★**ログはこの checkout の build フォルダに置く。** 以前は /tmp/build_closed.log と
+#   決まった名前だったので、別の worktree で同時にビルドすると互いのログを
+#   上書きし、タイミングの判定が相手のログを読んだ(2026-11-10: 相手の「配置
+#   しきれない」エラーを自分のものと取り違え、収束していない配線と誤読した)
+mkdir -p "$GW"
+LOG="$PWD/$GW/build_closed.log"
+seed_log() { echo "$PWD/$GW/build_closed_seed$1.log"; }
+
 # 手元は専用 venv、CI は素の python。決め打ちにすると CI から使えないので
 # 環境変数で差し替えられるようにしてある。
 PYTHON="${PYTHON:-./.venv/bin/python}"
@@ -75,20 +83,20 @@ REST="${SEEDS#* }"
 
 echo "=== 1回目のビルド (seed $FIRST_SEED) ==="
 "$PYTHON" retrocastx_stream.py --build --seed "$FIRST_SEED" "$@" \
-    > /tmp/build_closed.log 2>&1 || {
-        echo "ビルドが失敗しました。/tmp/build_closed.log を見てください" >&2
-        tail -20 /tmp/build_closed.log >&2
+    > "$LOG" 2>&1 || {
+        echo "ビルドが失敗しました。$LOG を見てください" >&2
+        tail -20 "$LOG" >&2
         exit 1
     }
 
-if timing_ok /tmp/build_closed.log; then
+if timing_ok "$LOG"; then
     echo "タイミング成立 (seed $FIRST_SEED)"
-    report /tmp/build_closed.log
+    report "$LOG"
     exit 0
 fi
 
 echo "seed $FIRST_SEED では閉じませんでした。nextpnr だけ振り直します"
-report /tmp/build_closed.log
+report "$LOG"
 
 # LiteX が生成したコマンドを取り出す(オプションを複製しないため)
 NEXTPNR_CMD=$(grep '^nextpnr-ecp5' "$GW/build_colorlight_i5.sh")
@@ -102,9 +110,10 @@ for s in $REST; do
     echo "--- seed $s ---"
     # 既存の --seed を差し替える
     cmd=$(printf '%s' "$NEXTPNR_CMD" | sed -E "s/--seed [0-9]+/--seed $s/")
-    ( cd "$GW" && eval "$cmd" ) > /tmp/build_closed_seed$s.log 2>&1 || true
-    report /tmp/build_closed_seed$s.log
-    if timing_ok /tmp/build_closed_seed$s.log; then
+    slog=$(seed_log "$s")
+    ( cd "$GW" && eval "$cmd" ) > "$slog" 2>&1 || true
+    report "$slog"
+    if timing_ok "$slog"; then
         # ★**波括弧が要る。** macOS の bash は 3.2 で、`$s` の直後に全角文字が
         #   来ると1バイト目まで変数名として読み、`s\xe3: unbound variable` で
         #   落ちる(set -u のため)。CI の bash 5 では通るので気付きにくい:
