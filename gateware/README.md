@@ -201,6 +201,18 @@ LiteX は nextpnr に `--timing-allow-fail` を渡すので、**タイミング�
 CI(`.github/workflows/gateware-release.yml`)はこれを自動で検査して落とす。
 判定結果はジョブサマリに表で出る。
 
+### シードを振るのは `tools/build_closed.sh`
+
+タイミングが閉じるまで nextpnr のシードを振る。最初に試すのは
+`tools/closed_seed`(前回のリリースで CI が閉じたシード。CI がリリースのたびに
+書いて main にコミットする)。外れのシードは配線が収束せず回り続けることがあるので、
+1シードに上限(`SEED_TIMEOUT`、既定 900 秒)を付けて次へ進む。
+
+★**手元で閉じたシードを CI に持ち込んでも効かない。** oss-cad-suite の版を
+揃えても、macOS arm64 と CI の Linux x64 では配置が別物になる(同じ seed 6 が
+手元 eth_rx 132.89MHz、CI 121.60MHz)。手元で試した `.bit` とリリースの `.bit` は、
+論理が同じでも配置は違うものになる。
+
 ## リリース
 
 `gw-vX.Y.Z` の注釈付きタグを push すると、`gateware-release.yml` が
