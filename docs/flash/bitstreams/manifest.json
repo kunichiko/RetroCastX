@@ -1,6 +1,12 @@
 {
   "bitstreams": [
     {
+      "name": "v1.5.0",
+      "file": "retrocastx_v1.5.0.bit",
+      "date": "2026-11-10",
+      "note": "gw-v1.5.0: fH・fV を1フレームごとに測る / モードを変えたらすぐ知らせる\n\n- **fH・fV を1フレームごとに測る。** VSYNC 間の sys クロック数と HSYNC 数を組で\n  MODE に付け、受信側が割る。以前の1秒窓は、モードを切り替えた直後に前後が\n  混ざった値(15kHz と 31kHz の間の約24kHz)や、ライン数だけ新しく fH は古い値を\n  出していた。精度も1フレームで 1〜2ppm(1秒窓は 32〜63ppm)。インターレースでも\n  揺れないよう直近2回分の合計\n- **MODE の htotal は TVP に書いている pll_divide を送る。** 1秒窓で測った値は\n  PLL を書き換えてから最大1秒古く、Viewer の絵が縮んだり切れたりした\n- **モードが変わったら1秒を待たずに MODE を送る**(新しい組を採ったとき・\n  vactive や htotal が変わったとき)\n- ANNOUNCE caps bit3 = CAP_FRAME_CLOCKS\n- sys クロックの余裕を増やした(UDP の手前に ready を受けるバッファ。\n  44.8〜47.6MHz → 52.48MHz、目標 45MHz)\n\nモードの切り替えを速く・きれいにするには Viewer 0.16.0 以降が要る。古い Viewer\nでも以前どおり使える(MODE の末尾は無視される)。\n\n\n---\nビルド: seed 7 / oss-cad-suite 2026-09-03 / litex 93c8d230e"
+    },
+    {
       "name": "v1.4.0",
       "file": "retrocastx_v1.4.0.bit",
       "date": "2026-11-09",
