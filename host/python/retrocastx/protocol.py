@@ -184,6 +184,9 @@ PIXFMT_CVBS8 = 5
 CAP_COMPACT = 1 << 1
 # caps bit2: 小亀のLEDの切断中の動作(CONFIG 0x0097)に対応している(gw-v1.4.0 以降)
 CAP_LED_IDLE = 1 << 2
+# caps bit3: MODE の末尾に、1フレームの sys クロック数・ライン数・sys クロック周波数が
+# 付く(gw-v1.5.0 以降)。同じフレームの組なので fH = lines × sys_clk_hz / frame_clocks
+CAP_FRAME_CLOCKS = 1 << 3
 
 BYTES_PER_PX = {PIXFMT_RGB888: 3, PIXFMT_RGB555: 2, PIXFMT_RGB565: 2,
                 PIXFMT_YC8: 2, PIXFMT_YCC422: 2, PIXFMT_CVBS8: 1}
@@ -192,6 +195,8 @@ _COMMON = struct.Struct("<BBBBHH")        # magic, version, type, flags, frame, 
 _LINE = struct.Struct("<HHHBBI")          # line, offset_px, count_px, pixfmt, mode_id, timestamp
 _MODE = struct.Struct("<BBHHHHHIII")      # mode_id, pixfmt, mflags, hactive, htotal,
                                           # vactive, vtotal, dotclk_hz, hfreq_mhz, vfreq_mhz
+_MODE_TAIL = struct.Struct("<IHHI")       # frame_clocks, frame_lines, frame_vsyncs, sys_clk_hz
+                                          # (caps bit3。無いボードの MODE はここで終わる)
 _INFO = struct.Struct("<6s4sHHH16s")      # mac, ip, udp_port, fw_version, caps, name
 _AUDIO = struct.Struct("<BBHII")          # source, format, nsamples, rate_hz, timestamp
 _SUB = struct.Struct("<6s2x")             # 宛先mac + 予約2B
@@ -201,6 +206,7 @@ _CONFIG = struct.Struct("<6s2xBBHI")      # 宛先mac(応答時=ボード自身)
 COMMON_SIZE = _COMMON.size               # 8
 LINE_HDR_SIZE = _LINE.size               # 12
 MODE_HDR_SIZE = _MODE.size               # 24
+MODE_TAIL_SIZE = _MODE_TAIL.size         # 12
 INFO_SIZE = _INFO.size                   # 32
 AUDIO_HDR_SIZE = _AUDIO.size             # 12
 SUB_SIZE = _SUB.size                     # 8
@@ -219,15 +225,31 @@ class Mode:
     dotclk_hz: int
     hfreq_mhz_x1000: int
     vfreq_mhz_x1000: int
+    # 末尾(caps bit3)。1フレームの sys クロック数とライン数(同じフレームの組)、
+    # sys クロック周波数。0 = 付いていない/測れていない
+    frame_clocks: int = 0
+    frame_lines: int = 0
+    frame_vsyncs: int = 0
+    sys_clk_hz: int = 0
     # From the common header; filled in by parse(), unused by pack().
     frame: int = 0
     seq: int = 0
 
     def pack(self, frame: int, seq: int) -> bytes:
-        return _COMMON.pack(MAGIC, VERSION, TYPE_MODE, 0, frame & 0xFFFF, seq & 0xFFFF) + _MODE.pack(
+        p = _COMMON.pack(MAGIC, VERSION, TYPE_MODE, 0, frame & 0xFFFF, seq & 0xFFFF) + _MODE.pack(
             self.mode_id & 0xFF, self.pixfmt, self.mflags,
             self.hactive, self.htotal, self.vactive, self.vtotal,
             self.dotclk_hz, self.hfreq_mhz_x1000, self.vfreq_mhz_x1000)
+        if self.sys_clk_hz:
+            p += _MODE_TAIL.pack(self.frame_clocks, self.frame_lines, self.frame_vsyncs,
+                                 self.sys_clk_hz)
+        return p
+
+    def frame_hfreq_hz(self) -> float:
+        """末尾の組から出した fH [Hz]。付いていなければ 0"""
+        if not (self.frame_clocks and self.sys_clk_hz):
+            return 0.0
+        return self.frame_lines * self.sys_clk_hz / self.frame_clocks
 
 
 @dataclass
@@ -391,7 +413,9 @@ def parse(datagram: bytes) -> Tuple[int, object]:
     if ptype == TYPE_MODE:
         if len(body) < MODE_HDR_SIZE:
             raise ValueError("short MODE packet")
-        return ptype, Mode(*_MODE.unpack_from(body, 0), frame=frame, seq=seq)
+        tail = (_MODE_TAIL.unpack_from(body, MODE_HDR_SIZE)
+                if len(body) >= MODE_HDR_SIZE + MODE_TAIL_SIZE else (0, 0, 0, 0))
+        return ptype, Mode(*_MODE.unpack_from(body, 0), *tail, frame=frame, seq=seq)
     if ptype == TYPE_INFO:
         if len(body) < INFO_SIZE:
             raise ValueError("short INFO packet")
