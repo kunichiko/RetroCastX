@@ -1,4 +1,4 @@
 # 前回のリリースのビルド(CI)でタイミングが閉じた配置シード。
 # tools/build_closed.sh はこれを最初に試す。gateware-release.yml が書くので手で直さない。
-# gw-v1.5.0
+# gw-v1.6.0
 7
