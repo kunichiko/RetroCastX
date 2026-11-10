@@ -486,11 +486,11 @@ SO-DIMM 直結で使う独立実装)も同一だった。Bob-Smith の構成(75�
 
 ```
 LAN0 = J11 (y=58.5, 上側)  eth2_* = SO-DIMM 偶数ピン 16/18/24/22/28/30/36/34
-LAN1 = J12 (y=77.0, 下側)  eth1_* = SO-DIMM 奇数ピン 15/17/23/21/27/29/35/33  ← gateware 既定
+LAN1 = J12 (y=77.0, 下側)  eth1_* = SO-DIMM 奇数ピン 15/17/23/21/27/29/35/33
 ```
 
-**番号は litex の eth index に揃えてある**ので、シルクの数字がそのまま
-`--eth-phy` の値になり、MDIO の PHY アドレスとも一致する。
+**番号は litex の eth index に揃えてある**ので、シルクの数字が MDIO の PHY アドレス
+とも一致する。ゲートウェアは両ポートを常に動かし、受けたポートへ返す。
 
 ★**i5モジュールの印刷 ETH1/ETH2 はこの番号と逆順**(i5のETH2 = LAN0)。
 資料間でも呼び名が食い違っている: `docs/sodimm-pinmap.html`(出典: wuxx ext-board 図)は
@@ -509,15 +509,14 @@ LAN1 = J12 (y=77.0, 下側)  eth1_* = SO-DIMM 奇数ピン 15/17/23/21/27/29/35/
 
 ```
 platform.request("eth", 0) = LAN0 = eth2_*(偶数ピン) = J11  (i5の印刷は ETH2)
-platform.request("eth", 1) = LAN1 = eth1_*(奇数ピン) = J12  (i5の印刷は ETH1) ← gateware 既定
+platform.request("eth", 1) = LAN1 = eth1_*(奇数ピン) = J12  (i5の印刷は ETH1)
 ```
 
 手組み試作機では配線がたまたま index=1 と一致していたので露見せず、v0.9.0 で J11 に
 挿した瞬間に「リンクはするのに ARP も ping も返らない」という形で出た。
 **判断はコネクタ表記ではなく SO-DIMM ピン番号の偶奇で行うこと。**
-`retrocastx_stream.py --eth-phy {0,1}` で切り替えられる(既定 1 = J12)。
-J11 へ移す場合は **seed 3 では index=0 の eth_rx が 122.55MHz(制約125)で閉じない**
-のでシード探索が要る(index=1 は seed 3 で 131.51MHz PASS)。
+当時は `--eth-phy {0,1}` で片方を選んでいたが、今のゲートウェアは両ポートを常に
+動かすのでこの引数は無い(`docs/design-notes.md`「2ポートを同時に動かす」)。
 
 **2. センタータップのネット名が入れ違っていた(2026-09-02 に main.ato 側を修正済み)。**
 

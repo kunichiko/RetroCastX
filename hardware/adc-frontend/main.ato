@@ -937,12 +937,11 @@ module EthernetPort:
     ## ★この基板では LAN0 / LAN1 と呼ぶ(ETH1 / ETH2 は使わない)
 
         LAN0 = lan0 = J11 = litex eth index 0 = PHYアドレス 0
-               (将来のデュアルリンク/2.5G化用。現状 seed 3 ではタイミングが閉じない)
         LAN1 = lan1 = J12 = litex eth index 1 = PHYアドレス 1
-               (映像ストリーム既定。gateware の --eth-phy 1)
+        (gateware は両方を常に動かし、受けたポートへ返す)
 
-    **番号は litex の eth index に揃えてある**ので、シルクの数字がそのまま
-    `--eth-phy` の値になる。MDIO の PHY アドレスとも一致する(実測 2026-09-11)。
+    **番号は litex の eth index に揃えてある**ので、シルクの数字が
+    MDIO の PHY アドレスとも一致する(実測 2026-09-11)。
 
     ★**i5モジュールの印刷 "ETH1"/"ETH2" は、この番号と逆順**に並んでいる。
 
@@ -966,7 +965,7 @@ module EthernetPort:
 
       ・LEDのランプテストで **io_r1 を点けると J11 の緑が光る**。
         io_r1 は lan0 側なので **lan0 = J11**
-      ・LANケーブルは **J12** に挿してあり、それが --eth-phy 1 で通る。
+      ・LANケーブルは **J12** に挿してあり、それが当時の --eth-phy 1 で通った。
         よって **litex eth1 = J12 = LAN1**
       ・MDIO バスを走査すると PHYAD 0 / 1 の2つだけが応答し、ケーブルの
         挿さっている J12 側が PHYAD 1 だった(= index と PHY アドレスが一致)

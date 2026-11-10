@@ -29,7 +29,7 @@
 # LiteX 側のオプションが変わっても追従する(ここに複製しない)。
 #
 # 使い方:
-#   ./tools/build_closed.sh --eth-phy 1          # 以降の引数はそのまま渡る
+#   ./tools/build_closed.sh --no-mclk-out        # 以降の引数はそのまま渡る
 #   SEEDS="3 1 4 6" ./tools/build_closed.sh      # 試す順番を変える
 #   SEED_TIMEOUT=600 ./tools/build_closed.sh     # 1シードの上限(秒)
 #

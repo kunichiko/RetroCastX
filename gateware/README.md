@@ -8,6 +8,7 @@ export PATH="$HOME/opt/oss-cad-suite/bin:$PATH"
 .venv/bin/python retrocastx_stream.py --build   # -> build/colorlight_i5/gateware/colorlight_i5.bit
 .venv/bin/python sim_stream.py                  # 実機不要のプロトコル検証(Migenシミュレーション)
 .venv/bin/python sim_arp.py                     # 受信からのARP学習(retrocastx_net.py)の検証
+.venv/bin/python sim_dualport.py                # LAN0 / LAN1 の2ポート MAC(受けたポートへ返す)の検証
 .venv/bin/python sim_status.py                  # 共有I2C(TVP7002 + OLED)の検証
 .venv/bin/python sim_eeprom_cfg.py              # 個体設定ページ(EEPROM)の読み書き検証
 .venv/bin/python sim_drgb.py                    # デジタルRGB(生成器→測定器のループバック)

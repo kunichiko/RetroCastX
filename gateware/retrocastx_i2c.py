@@ -223,8 +223,18 @@ class StatusDisplay(Module):
         # ★**「読めなかった」だけでは何も分からない。** 未実装なのか、別アドレスなのか、
         #   バスが死んでいるのかで対処が全く違う。
         self.mac_err   = Signal(2)
-        # 使ったEEPROM。0=0x50(ETH0側) 1=0x51(ETH1側)
+        # 使ったEEPROM。0=0x50(LAN0側) 1=0x51(LAN1側)
         self.mac_alt   = Signal()
+        # ポートごとの EUI-48。eui[0] = 0x50 = LAN0、eui[1] = 0x51 = LAN1。
+        # ★**ポートごとに別の MAC を名乗るために2個とも読んでおく。** 同じ
+        #   スイッチに両方挿すと、同じ MAC が2つのポートに見えてスイッチの
+        #   学習が暴れる。基板の EEPROM が2個あるのはこのため。ただし電線上で
+        #   ポートごとに変えるのは、送信の CRC をポートごとに持つときまで
+        #   保留している(retrocastx_net.DualPortMAC の説明)。
+        #   上の mac(ボードの名乗り)はこれとは別に「先に読めた方」のまま残す。
+        #   Viewer はボードを MAC で見分けるので、名乗りを変えると別のボードに見える。
+        self.eui       = [Signal(48, name=f"eui{i}") for i in range(2)]
+        self.eui_valid = Signal(2)
 
         # --- 個体設定(ボード名 / 静的IP)---
         # 起動時に EEPROM の設定ページから読み込み、CONFIG で上書きできる。
@@ -755,11 +765,17 @@ class StatusDisplay(Module):
         # FORMAT
         fi = Signal(5)   # 0..20 (NFMT=21)
         ee_idx = Signal(3)   # EUI-48 の読み出し位置 0..5
-        # ★**2個とも試す。** 基板には ETH0=0x50 / ETH1=0x51 の2個あり、
-        #   どちらの EUI-48 でも一意性は保たれる。片方しか実装していない基板でも
-        #   拾えるようにする。
+        # ★**2個とも読む。** 基板には LAN0=0x50 / LAN1=0x51 の2個あり、
+        #   ポートごとに自分の EUI-48 を名乗る。片方しか実装していない基板でも
+        #   ボードの名乗り(mac)は拾えるようにする。
+        ee_sel = Signal()    # EUI-48 を読んでいる EEPROM。0=0x50 1=0x51
+        ee_buf = Signal(48)
+        ee_eui_w = Signal(8); ee_eui_r = Signal(8)
+        # 個体設定ページは名乗りを読めた方(mac_alt)の EEPROM に置く
         ee_w = Signal(8); ee_r = Signal(8)
         self.comb += [
+            ee_eui_w.eq(Mux(ee_sel, EE_A1, EE_A0)),
+            ee_eui_r.eq(Mux(ee_sel, EE_A1 | 1, EE_A0 | 1)),
             ee_w.eq(Mux(self.mac_alt, EE_A1, EE_A0)),
             ee_r.eq(Mux(self.mac_alt, EE_A1 | 1, EE_A0 | 1)),
         ]
@@ -886,44 +902,59 @@ class StatusDisplay(Module):
         #   死んでいる基板でも起動は続ける(mac_valid=0 のままにして、
         #   呼び側がローカル管理アドレスへ落ちる)。ここで止めると
         #   「映像も出ない」になって原因が分からなくなる。
+        # ★**名乗り(mac)は先に読めた方。** 0x50 が読めればそれ、読めなければ
+        #   0x51。2個とも読んだ後で、ポートごとの eui[] も揃う。
         fsm.act("EE_START", self.resetb.eq(1), *issue(OP_START),
             If(m.done, NextState("EE_ADDRW")))
-        fsm.act("EE_ADDRW", self.resetb.eq(1), *issue(OP_WRITE, ee_w),
+        fsm.act("EE_ADDRW", self.resetb.eq(1), *issue(OP_WRITE, ee_eui_w),
             If(m.done,
                 If(m.ackr,
-                    NextValue(self.mac_err, 1),
-                    NextState("EE_RETRY"),
+                    If(~self.mac_valid, NextValue(self.mac_err, 1)),
+                    # 0x50 が居なければ設定ページも 0x51 に置く(従来どおり)
+                    If(~ee_sel, NextValue(self.mac_alt, 1)),
+                    NextState("EE_STOP"),
                 ).Else(NextState("EE_REG"))))
-        # 0x50 が居なければ 0x51 を試す。両方だめなら諦める
-        fsm.act("EE_RETRY", self.resetb.eq(1), *issue(OP_STOP),
-            If(m.done,
-                If(self.mac_alt,
-                    NextState("CP_START"),
-                ).Else(NextValue(self.mac_alt, 1), NextState("EE_START"))))
         fsm.act("EE_REG", self.resetb.eq(1), *issue(OP_WRITE, EE_EUI_REG),
             If(m.done,
                 If(m.ackr,
-                    NextValue(self.mac_err, 2), NextState("EE_STOP"),
+                    If(~self.mac_valid, NextValue(self.mac_err, 2)),
+                    NextState("EE_STOP"),
                 ).Else(NextState("EE_RSTART"))))
         fsm.act("EE_RSTART", self.resetb.eq(1), *issue(OP_START),
             If(m.done, NextState("EE_ADDRR")))
-        fsm.act("EE_ADDRR", self.resetb.eq(1), *issue(OP_WRITE, ee_r),
+        fsm.act("EE_ADDRR", self.resetb.eq(1), *issue(OP_WRITE, ee_eui_r),
             If(m.done,
                 If(m.ackr,
-                    NextValue(self.mac_err, 3), NextState("EE_STOP"),
+                    If(~self.mac_valid, NextValue(self.mac_err, 3)),
+                    NextState("EE_STOP"),
                 ).Else(NextValue(ee_idx, 0), NextState("EE_READ"))))
         # 6バイトを MSB から詰める(0xFA が OUI の先頭 = 電線上の最初のバイト)
         fsm.act("EE_READ", self.resetb.eq(1),
             *issue(OP_READ, nack=(ee_idx == 5)),
             If(m.done,
-                NextValue(self.mac, Cat(m.rdata, self.mac[:40])),
+                NextValue(ee_buf, Cat(m.rdata, ee_buf[:40])),
                 If(ee_idx == 5,
-                    NextValue(self.mac_valid, 1),
-                    NextValue(self.mac_err, 0),
+                    If(ee_sel,
+                        NextValue(self.eui[1], Cat(m.rdata, ee_buf[:40])),
+                        NextValue(self.eui_valid[1], 1),
+                    ).Else(
+                        NextValue(self.eui[0], Cat(m.rdata, ee_buf[:40])),
+                        NextValue(self.eui_valid[0], 1),
+                    ),
+                    If(~self.mac_valid,
+                        NextValue(self.mac, Cat(m.rdata, ee_buf[:40])),
+                        NextValue(self.mac_valid, 1),
+                        NextValue(self.mac_err, 0),
+                        NextValue(self.mac_alt, ee_sel),
+                    ),
                     NextState("EE_STOP"),
                 ).Else(NextValue(ee_idx, ee_idx + 1))))
+        # 0x50 の次は 0x51。両方済んだら設定ページへ
         fsm.act("EE_STOP", self.resetb.eq(1), *issue(OP_STOP),
-            If(m.done, NextState("CP_START")))
+            If(m.done,
+                If(ee_sel,
+                    NextState("CP_START"),
+                ).Else(NextValue(ee_sel, 1), NextState("EE_START"))))
 
         # 1.6) 個体設定ページを読む: S,0xA0,0x00,Sr,0xA1,READ×32,P
         #

@@ -19,6 +19,9 @@
 7. LED の欄だけ焼く(save_sel=1)と、名前・IP は**EEPROM にあった値のまま**になる
    (動作中の未保存の試しを巻き込まない)
 8. 未設定の EEPROM に LED の欄だけ焼くと、既定の名前で妥当なページができる
+9. EEPROM が2個(0x50 / 0x51)あれば、ポートごとの EUI-48 を両方読む。
+   名乗り(mac)は 0x50 の方
+10. 0x51 しか無い基板では、名乗りも設定ページも 0x51 から読む
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
@@ -28,6 +31,7 @@ from retrocastx_i2c import (StatusDisplay, DEFAULT_BOARD_NAME, CFG_PAGE_MAGIC,
                             CFG_FLAG_STATIC_IP)
 
 EUI = [0x74, 0xC9, 0x0F, 0x7C, 0x84, 0x29]
+EUI1 = [0x74, 0xC9, 0x0F, 0x7C, 0x84, 0x2A]     # 0x51(LAN1)側
 # 書込み中を模す長さ[ポーリング回数]。0なら即座にACK
 BUSY_POLLS = 3
 
@@ -49,14 +53,15 @@ def make_page(name, ip=(0, 0, 0, 0), flags=0, ver=CFG_PAGE_VER, magic=CFG_PAGE_M
 
 
 class Eeprom24AA02:
-    """I2C スレーブ(0x50)。open-drainバスのビットを直接叩く。"""
+    """I2C スレーブ(既定 0x50)。open-drainバスのビットを直接叩く。"""
 
-    def __init__(self, mem=None):
+    def __init__(self, mem=None, addr=0x50, eui=EUI):
+        self.i2c_addr = addr
         self.mem = bytearray(256)
         self.mem[0:] = bytes([0xFF]) * 256
         if mem:
             self.mem[0:len(mem)] = mem
-        self.mem[0xFA:0x100] = bytes(EUI) + bytes(2)
+        self.mem[0xFA:0x100] = bytes(eui) + bytes(2)
         self.scl = 1
         self.line = 1
         self.slave_low = 0
@@ -101,11 +106,19 @@ class Eeprom24AA02:
 
     def _accept(self, byte):
         """アドレスバイトを受けた。ACKするなら True。"""
-        if byte >> 1 != 0x50:
-            self.saw_other = True
+        if byte >> 1 != self.i2c_addr:
+            # 0x50〜0x53 は EEPROM 同士(相方)。それ以外が呼ばれたら起動時の
+            # 読み出しが終わった
+            if not 0x50 <= byte >> 1 <= 0x53:
+                self.saw_other = True
+            # ★**自分宛でなければ STOP まで黙る。** ADDR のままだと、続く
+            #   レジスタ番地(0xFA など)をアドレスと取り違えて「他所が呼ばれた」
+            #   と誤判定する。相方の EEPROM が読まれている最中に起きる
+            self.mode = 'IDLE'
             return False
         if self.busy:               # 書込み中: アドレスにも応答しない
             self.busy -= 1
+            self.mode = 'IDLE'
             return False
         self.addr = byte >> 1
         if byte & 1:
@@ -169,7 +182,7 @@ def _name_of(v):
     return v.to_bytes(16, "little").split(b"\0")[0].decode()
 
 
-def run(mem, steps=50000, actions=None, until=None):
+def run(mem, steps=50000, actions=None, until=None, eeproms=None):
     """actions: [(何ステップ目で, ジェネレータ)] を流し込む。
 
     ★**打ち切り条件を渡せるようにしてある。** OLEDの1フレーム(1024バイト)
@@ -177,9 +190,15 @@ def run(mem, steps=50000, actions=None, until=None):
       読み書き)に対して桁違いに待たされる。CIで回せる時間に収めるため、
       見たいことが起きたら止める。
     """
+    """eeproms: バスに載せる EEPROM の並び。省略時は 0x50 の1個(mem を持つ)。"""
     dut = StatusDisplay(pads=None, sys_clk_freq=4000, i2c_freq=1000)
-    ee = Eeprom24AA02(mem)
+    ees = eeproms if eeproms is not None else [Eeprom24AA02(mem)]
+    ee = ees[0]
     res = {}
+
+    def bus_step(scl, m_sda):
+        # open-drain: 誰か1つでも引けば Low
+        return min(e.step(scl, m_sda) for e in ees)
 
     def tb():
         pending = list(actions or [])
@@ -187,7 +206,7 @@ def run(mem, steps=50000, actions=None, until=None):
         for i in range(steps):
             scl = 0 if (yield dut.scl_low) else 1
             m_sda = 0 if (yield dut.sda_low) else 1
-            yield dut.m.sda_in.eq(ee.step(scl, m_sda))
+            yield dut.m.sda_in.eq(bus_step(scl, m_sda))
             while pending and pending[0][0] == i:
                 _, gen = pending.pop(0)
                 yield from gen(dut)
@@ -201,6 +220,10 @@ def run(mem, steps=50000, actions=None, until=None):
         res['hit'] = hit or until is None
         res['mac'] = (yield dut.mac)
         res['mac_valid'] = (yield dut.mac_valid)
+        res['mac_alt'] = (yield dut.mac_alt)
+        res['eui0'] = (yield dut.eui[0])
+        res['eui1'] = (yield dut.eui[1])
+        res['eui_valid'] = (yield dut.eui_valid)
         res['name'] = _name_of((yield dut.cfg_name))
         res['ip'] = (yield dut.cfg_ip)
         res['flags'] = (yield dut.cfg_flags)
@@ -353,8 +376,29 @@ def main():
     assert r4['valid'] == 1 and r4['name'] == DEFAULT_BOARD_NAME and r4['ip'] == 0 \
         and r4['led_idle'] == 1
 
+    # --- 9) EEPROM が2個: ポートごとの EUI-48 を両方読む ---
+    e48 = lambda b: int.from_bytes(bytes(b), "big")
+    r = run(None, until=boot_read_done,
+            eeproms=[Eeprom24AA02(page), Eeprom24AA02(None, 0x51, EUI1)])
+    print(f"9) 2個: eui0={r['eui0']:#014x} eui1={r['eui1']:#014x} "
+          f"valid={r['eui_valid']:#04b} mac={r['mac']:#014x} alt={r['mac_alt']}")
+    assert r['eui_valid'] == 0b11, f"両方読めていない {r['eui_valid']:#b}"
+    assert r['eui0'] == e48(EUI) and r['eui1'] == e48(EUI1)
+    assert r['mac_valid'] == 1 and r['mac'] == e48(EUI) and r['mac_alt'] == 0, \
+        "名乗りが 0x50 の EUI-48 になっていない"
+    assert r['valid'] == 1 and r['name'] == "x68k-desk", "設定ページを 0x50 から読んでいない"
+
+    # --- 10) 0x51 しか無い ---
+    r = run(None, until=boot_read_done,
+            eeproms=[Eeprom24AA02(page, 0x51, EUI1)])
+    print(f"10) 0x51のみ: eui1={r['eui1']:#014x} valid={r['eui_valid']:#04b} "
+          f"mac={r['mac']:#014x} alt={r['mac_alt']} name={r['name']!r}")
+    assert r['eui_valid'] == 0b10
+    assert r['mac_valid'] == 1 and r['mac'] == e48(EUI1) and r['mac_alt'] == 1
+    assert r['valid'] == 1 and r['name'] == "x68k-desk", "設定ページを 0x51 から読んでいない"
+
     print("\n[OK] 設定ページ: 読み込み/破損検出/未設定/書込み(8バイトページ+ACKポーリング)"
-          "/commit-last/焼き直し後の再読込/LEDの欄だけ焼く を確認")
+          "/commit-last/焼き直し後の再読込/LEDの欄だけ焼く/EUI-48 を2個とも読む を確認")
 
 
 if __name__ == "__main__":

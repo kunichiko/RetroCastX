@@ -130,6 +130,19 @@ CFG_KEY_ARP_MISSES = 0x0042       # 本物のARPへ委譲した回数
 CFG_KEY_ARP_LAST_IP = 0x0043      # 最後に学習した相手のIP(ネットワークバイト順の整数)
 CFG_KEY_ARP_LAST_MAC_LO = 0x0044  # 同 MACの下位4バイト
 CFG_KEY_ARP_LAST_MAC_HI = 0x0045  # 同 MACの上位2バイト
+# LAN ポートの状態(読み取り専用)。gw は LAN0/LAN1 の両方から受け、相手が見えた
+# ポートへ返す(gateware/retrocastx_net.py の DualPortMAC)
+#   bit0 = 宛先の分からないフレームを出すポート(最後に自分宛が来たポート)
+#   bit4 = LAN0 のリンク / bit5 = LAN1 のリンク
+#   bit8 = LAN0 の EUI-48 を読めた / bit9 = LAN1 の EUI-48 を読めた
+CFG_KEY_NET_PORTS = 0x004E
+# ポートごとのフレーム数(読み取り専用、8bit で一周)
+#   [7:0] LAN0 受信 / [15:8] LAN1 受信 / [23:16] LAN0 送信 / [31:24] LAN1 送信
+CFG_KEY_NET_FRAMES = 0x004F
+# MDIO の覗き窓。[4:0]=PHYAD [12:8]=REGAD [19:16]=リンクのビット位置。
+# PHYAD の bit0 は、0x006D / 0x006E / 0x007F をどちらの LAN ポートの値として
+# 返すかも兼ねる
+CFG_KEY_MDIO_SEL = 0x006C
 # 個体設定(ボード名 / 静的IP)。実体は基板のEUI-48 EEPROMの空き領域(0x00..0x1F)。
 # SETは即座に効き、0x004C で焼くまでは電源で消える(試してから決められる)。
 CFG_KEY_NET_MODE = 0x0046         # bit0=静的IPを使う(0=MAC由来のリンクローカル)

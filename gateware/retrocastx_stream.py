@@ -1704,6 +1704,39 @@ class _CRG(LiteXModule):
         pll.create_clkout(self.cd_sys, sys_clk_freq)
 
 
+_ETH_SHARED = ("rst_n", "mdio", "mdc")
+
+
+def _split_eth_io(platform):
+    """platform の "eth" 0/1 を「ポートごとのデータ線」と「共有の管理線」に分ける。
+
+    2つの PHY は MDIO/MDC/リセットを同じピンで共有しているので、"eth" を
+    2つとも request すると同じピンが2つの信号に割り当たる。ピン番号はここに
+    書き写さず platform の定義から作る(写すと食い違ったときに気付けない)。
+
+        ("eth_data", i)  rx_ctl/rx_data/tx_ctl/tx_data
+        ("eth_mgmt", 0)  rst_n/mdio/mdc
+    """
+    ios = []
+    mgmt = None
+    for res in platform.constraint_manager.available:
+        if res[0] != "eth":
+            continue
+        subs   = [x for x in res[2:] if isinstance(x, Subsignal)]
+        others = [x for x in res[2:] if not isinstance(x, Subsignal)]
+        ios.append(("eth_data", res[1],
+                    *[x for x in subs if x.name not in _ETH_SHARED], *others))
+        shared = [x for x in subs if x.name in _ETH_SHARED]
+        key = [(x.name, tuple(x.constraints[0].identifiers)) for x in shared]
+        if mgmt is None:
+            mgmt = key
+            ios.append(("eth_mgmt", 0, *shared, *others))
+        else:
+            assert key == mgmt, "2つの PHY の管理線が同じピンでない"
+    assert len(ios) == 3, ios
+    return ios
+
+
 # TVP7002 映像出力(RGB[9:2]=RGB888, DATACLK, HSOUT/VSOUT/FIDOUT)。
 # ボール割当は hardware/adc-frontend/main.ato と一致(sodimm io_* 名=ボール名)。
 # r/g/b の Pins は bit0(=TVP r2/g2/b2, LSB)→bit7(=r9/g9/b9, MSB)の順。
@@ -1772,7 +1805,7 @@ class RetroCastXStream(SoCMini):
                  green_input=3, red_input=3, blue_input=3,
                  pll_divide=1104, hs_offset=0, vs_row_at_sync=525,
                  measure=True, mclk_out=True, auto_vtotal=True, vbp=0,
-                 interlace_cap=0, eth_phy=1):
+                 interlace_cap=0):
         from litex_boards.platforms import colorlight_i5
         from liteeth.phy.ecp5rgmii import LiteEthPHYRGMII
         from retrocastx_net import RetroCastXUDPIPCore
@@ -1796,29 +1829,46 @@ class RetroCastXStream(SoCMini):
         #     eth 1 (U19/U20) = i5のETH1 = SO-DIMM eth1_* = 基板の LAN1 = J12
         #
         #   ★**RetroCastX の基板は LAN0 / LAN1 と刷ってある**(v1.0)。番号は
-        #     litex の index と同じなので、シルクの数字をそのまま --eth-phy に
-        #     渡せる。ETH1/ETH2 という呼び方はこちらの資料では使わない。
+        #     litex の index とも MDIO の PHY アドレスとも同じ。
+        #     ETH1/ETH2 という呼び方はこちらの資料では使わない。
         #     i5モジュールの印刷を指すときだけ「i5のETH1」と明示する。
         #
         #   以前ここには「eth 1 = i5のETH2側PHY」と書いてあったが**逆だった**
-        #   (2026-09-02 修正)。手組み試作機が動いていたのは index=1 = i5のETH1側で、
-        #   v0.9.0 でそこに繋がるのは J12 = LAN1。LAN0 で使うには index=0 にする。
+        #   (2026-09-02 修正)。
         #
-        #   既定は 1 (=J12) のまま。2026-09-02 の v0.9.0 実機確認で、J12 の
-        #   はんだ不良を直したところ index=1 のまま ping/発見/ストリームが
-        #   全て通った(26フレーム, lost_pkts=0)。index=0 は seed 3 で
-        #   eth_rx 122.55MHz(制約125)で閉じないため、J11 へ移すならシード探索が要る。
+        # ★**両ポートを常に動かす。** 以前は --eth-phy で片方だけを選び、既定は
+        #   LAN1 だった。利用者がどちらに挿したかで「繋がるのに何も来ない」に
+        #   なるので、両ポートから受け、相手が見えたポートへ返す
+        #   (retrocastx_net.DualPortMAC)。
+        #
+        # ★**MDIO/MDC/PHYリセットは2つの PHY で同じピン**(P5/N5/P4)。
+        #   platform の "eth" 0/1 はどちらもこの3本を含むので、両方を request すると
+        #   同じピンが2つの信号に割り当たる。データ線だけの資源を作り直し、
+        #   共有の3本は "eth_mgmt" として1回だけ取る。PHYリセットは LAN0 側の
+        #   PHY に任せる(LAN1 側は pads に rst_n を見せない)。
         # ★**mdc/mdio は LiteEth に渡さない。** 渡すと LiteEth が
         #   `LiteEthPHYMDIO` を勝手に生やして pads.mdc を駆動し、pads.mdio に
         #   Tristate を張る。こちらで MDIO を持つので二重駆動になる。
         #   リンク状態は MDIO でしか取れない(retrocastx_mdio.py 冒頭に、
         #   in-band status / RXCの生存 / RXCの周波数を実機で潰した記録がある)。
         from retrocastx_mdio import PadsWithoutMdio, MdioReader, MdioPoller
-        eth_pads = platform.request("eth", eth_phy)
-        self.ethphy = LiteEthPHYRGMII(
-            clock_pads = platform.request("eth_clocks", eth_phy),
-            pads       = PadsWithoutMdio(eth_pads),
-            tx_delay   = 0e-9)
+        platform.add_extension(_split_eth_io(platform))
+        eth_mgmt = platform.request("eth_mgmt")
+        # ★**クロックドメインはポートごとに改名する**(eth0_rx/eth0_tx, eth1_rx/
+        #   eth1_tx)。LiteEth は "eth_rx"/"eth_tx" 決め打ちなので、2つ置くと
+        #   同名のドメインが2つできる。PHY とコアを同じ名前で包む。
+        self.ethphys = []
+        for i in range(2):
+            cd = {"eth_rx": f"eth{i}_rx", "eth_tx": f"eth{i}_tx"}
+            pads = PadsWithoutMdio(platform.request("eth_data", i))
+            if i == 0:
+                pads.rst_n = eth_mgmt.rst_n
+            phy = ClockDomainsRenamer(cd)(LiteEthPHYRGMII(
+                clock_pads = platform.request("eth_clocks", i),
+                pads       = pads,
+                tx_delay   = 0e-9))
+            setattr(self, f"ethphy{i}", phy)
+            self.ethphys.append(phy)
         # --- 自MAC: 基板の EUI-48 を使う ---
         #
         # ★**全基板で同じ MAC は製品として出せない。** 同じ LAN に2枚繋ぐと
@@ -1831,6 +1881,9 @@ class RetroCastXStream(SoCMini):
         # ★**読めなければ従来のローカル管理アドレスへ落ちる。** EEPROM 未実装や
         #   I2C が死んでいる基板でも、1枚だけなら従来どおり動く方がよい。
         #   起動から約1ms で確定するので、最初のパケットより前に決まる。
+        # ★**電線上の MAC は両ポートで同じ**(retrocastx_net.DualPortMAC の説明)。
+        #   EEPROM は2個とも読む(LAN1 側 0x51 は、ポートごとに MAC を変えるときの
+        #   ために読んでおく。いまは 0x004E で読めたかだけ見える)。
         my_mac = Signal(48, reset=MAC_ADDRESS)
 
         # --- 自IP: MAC から導いたリンクローカル(169.254.x.y)---
@@ -1874,8 +1927,11 @@ class RetroCastXStream(SoCMini):
         # ICMP + UDP)で、受信パケットから相手のMACを学習する層を挟んである。
         # ARPに応答しない相手(別サブネットのWindows)へ返せるようにするため。
         # 理由と挟む位置は retrocastx_net.py の冒頭を参照。
+        #
+        # ★**2ポートで1組を共有する。** PHY を2つ渡すと、ポートごとの前段だけを
+        #   持つ DualPortMAC になる(コアを2組置くと FPGA に入らなかった)。
         self.ethcore = RetroCastXUDPIPCore(
-            phy         = self.ethphy,
+            phy         = self.ethphys,
             mac_address = my_mac,
             ip_address  = my_ip,
             clk_freq    = sys_clk_freq,
@@ -2012,11 +2068,12 @@ class RetroCastXStream(SoCMini):
         # {duplex, speed[1:0], link} の並び(RGMII の RXD[3:0] そのもの)。
         # ★**速度も一緒に見る。** 100BASE-T で繋がっていると帯域が足りず
         #   パケットを落とすが、「リンクはある」ので原因に辿り着きにくい。
-        inband = self.ethphy.rx.inband_status.fields
-        inband_raw = Signal(4)
-        self.specials += MultiReg(
-            Cat(inband.link_status, inband.clock_speed, inband.duplex_status),
-            inband_raw, "sys")
+        inband_raw = [Signal(4, name=f"inband_raw{i}") for i in range(2)]
+        for i in range(2):
+            inband = self.ethphys[i].rx.inband_status.fields
+            self.specials += MultiReg(
+                Cat(inband.link_status, inband.clock_speed, inband.duplex_status),
+                inband_raw[i], "sys")
         # ★**この基板の PHY は in-band status を出していない。**
         #   実機で 0x7F を読むと [3:0] が常に 0(link/speed/duplex 全部0)で、
         #   一方で RXC は回っており(トグル1130回)パケットも流れていた
@@ -2029,69 +2086,56 @@ class RetroCastXStream(SoCMini):
         #   残してあるので、将来 in-band を有効にできたら切り替えられる。
         # --- MDIO で PHY のレジスタを読み続ける ---
         #
-        # PHYアドレスとレジスタ番号、リンクを表すビット位置は CONFIG 0x6C で
-        # 差し替えられる。**アドレスは実測でしか分からない**(基板の PHYA[0]
-        # ストラップで決まり、2つのPHYがバスを共有している)ので、ホストから
-        # 番地を振れるようにしてある。焼き直さずに走査できる。
+        # ★**2つの PHY は1本の MDIO バスに相乗り**しているので、1つのマスタで
+        #   両方の BMSR / Auxiliary Status を順に読む(PHYAD = litex の index)。
+        #
+        # 5枠目だけはホストから PHYアドレスとレジスタ番号を振れる(CONFIG 0x6C)。
+        # 0x6C の PHYAD の bit0 は、0x6D/0x6E/0x7F の診断値を**どちらのポートの
+        # ものとして出すか**も兼ねる。
         #
         #   0x6C  [4:0] PHYAD / [12:8] REGAD / [19:16] リンクのビット位置
-        #   0x6D  読めた16bit(読み取り専用)
+        #   0x6D  下位16 = 選んだポートの BMSR / 上位16 = 0x6C で指定した番地の値
         #
         # 既定は BMSR(reg 1)の bit2 = Link Status。PHYAD の既定は 0。
         from migen.fhdl.specials import Tristate
         mdio_o = Signal(); mdio_oe = Signal(); mdio_i = Signal()
-        self.specials += Tristate(eth_pads.mdio, mdio_o, mdio_oe, mdio_i)
+        self.specials += Tristate(eth_mgmt.mdio, mdio_o, mdio_oe, mdio_i)
         self.submodules.mdio = mdio = MdioReader(
-            eth_pads.mdc, mdio_o, mdio_oe, mdio_i, sys_clk_freq)
+            eth_mgmt.mdc, mdio_o, mdio_oe, mdio_i, sys_clk_freq)
         # ★**PHYアドレスは litex の index と同じだった**(2026-09-11 実測)。
         #   MDIOバスを走査したら 0 と 1 の2つだけが応答し(どちらも Broadcom、
         #   PHYID 0x0362/0x5E62 = B50612D)、ケーブルを挿してある J12 =
         #   litex eth1 側が **PHYAD 1** で BMSR=0x796D(link=1)、もう片方の
         #   PHYAD 0 は BMSR=0x7949(link=0)だった。
-        self.cfg_mdio_sel = Signal(20, reset=(2 << 16) | (1 << 8) | eth_phy)
-        self.comb += mdio.phyad.eq(self.cfg_mdio_sel[0:5])
-        # 巡回して読む番地。BMSR は LED が常に要るので固定枠を持たせ、
-        # 3枠目はホストから振れるようにして立ち上げ・切り分けに使う。
+        self.cfg_mdio_sel = Signal(20, reset=(2 << 16) | (1 << 8) | 0)
+        # 巡回して読む番地。BMSR は LED が常に要るので固定枠を持たせる。
         #   reg 1    BMSR。bit2 = Link Status(ラッチロー)
         #   reg 0x19 Broadcom の Auxiliary Status。[10:8] が確定した速度で、
         #            7 = 1000BASE-T 全二重(実測 0x871C)
         self.submodules.mdio_poll = mdio_poll = MdioPoller(
-            mdio, [1, 0x19, self.cfg_mdio_sel[8:13]])
-        bmsr, aux, sel = mdio_poll.data
+            mdio, [1, 0x19, 1, 0x19, self.cfg_mdio_sel[8:13]],
+            phyads=[0, 0, 1, 1, self.cfg_mdio_sel[0:5]])
+        bmsr = [mdio_poll.data[0], mdio_poll.data[2]]
+        aux  = [mdio_poll.data[1], mdio_poll.data[3]]
+        sel  = mdio_poll.data[4]
+        diag = self.cfg_mdio_sel[0]          # 診断値を出すポート
         self.stat_mdio_data = Signal(32)
-        self.comb += self.stat_mdio_data.eq(Cat(bmsr, sel))
-        self.stat_mdio_aux = aux
-        # ★**レジスタで受ける。** 16bitの可変シフタと比較器をLEDの論理まで
-        #   組合せで引きずると sys のクリティカルパスに乗る(実際、足した直後の
-        #   ビルドで crg_clkout が 45.21MHz = 余裕0.5% まで落ちた)。
-        #   LEDは1クロック遅れても何も困らない。
-        link_inband = Signal()
-        speed_ok = Signal()
+        self.stat_mdio_aux = Signal(16)
         self.sync += [
-            link_inband.eq((bmsr >> self.cfg_mdio_sel[16:20]) & 1),
-            # 1000BASE-T 全二重のときだけ「速度は期待どおり」。
-            # それ以外は緑をゆっくり点滅させて気付けるようにする。
-            speed_ok.eq(aux[8:11] == 7),
+            self.stat_mdio_data.eq(Cat(Mux(diag, bmsr[1], bmsr[0]), sel)),
+            self.stat_mdio_aux.eq(Mux(diag, aux[1], aux[0])),
         ]
-        # 送受信どちらかが動いたら黄を点ける。**eth_rx/eth_tx に足すのは
+        # 送受信どちらかが動いたら黄を点ける。**ethN_rx/ethN_tx に足すのは
         # FF 1個ずつだけ**にしてある(この2つは LiteEth の CDC FIFO が
         # 配線律速でクリティカルパスになっており、論理を足すと配置の
         # 当たり外れが変わる。上の SEEDS のコメント参照)。
-        self.submodules.eth_act_rx = act_rx = ActivityTap(
-            "eth_rx", self.ethphy.source.valid)
-        self.submodules.eth_act_tx = act_tx = ActivityTap(
-            "eth_tx", self.ethphy.sink.valid)
         # ランプテスト(CONFIG 0x7E)。意味は retrocastx_ethled.LampTest を参照。
         # ★**これが無いと立ち上げで詰む。** 光らないときに、ピン割り当てが
         #   違うのか論理が0なのかを分けられない。しかも**使っていない側の
         #   ポートも点けられないと基板の不良と切り分けられない**
         #   (実機で J12 の緑だけ点かず、J11 の緑を点けて初めて分かった)。
         self.eth_led_force = Signal(8)
-        self.submodules.eth_leds = eth_leds = EthLeds(
-            sys_clk_freq, link_inband, act_rx.pulse | act_tx.pulse,
-            speed_ok=speed_ok)
         # 診断値(CONFIG 0x7F)。光らないときに何が0なのかを実機から引く。
-        act_cnt = Signal(8)
         # ★**一度でも RXC が途絶えたかを覚えておく(スティッキー)。**
         #   「リンクが切れたら RXC も止まる」PHY なら RXC をリンクの代わりに
         #   使えるが、リンク無しでも RXC を出し続ける PHY だと使えない。
@@ -2100,32 +2144,53 @@ class RetroCastXStream(SoCMini):
         # RXC が動いているかは残す(「クロックが来ない = リンク無し」は
         # PHYの実装に依らず正しい)。ただし**それだけでは足りない**ことが
         # 実機で分かっているので、リンクの主判定は MDIO(上記)。
-        rxclk_was_dead = Signal()
-        self.sync += [
-            If(act_rx.pulse | act_tx.pulse, act_cnt.eq(act_cnt + 1)),
-            If(~eth_leds.rxclk_alive, rxclk_was_dead.eq(1)),
-            # 3 を書いている間はクリア。3→0 と戻して計測を始める
-            If(self.eth_led_force == 3, rxclk_was_dead.eq(0)),
-        ]
+        self.eth_leds = []
+        link_stat = []
+        for i in range(2):
+            # ★**レジスタで受ける。** 16bitの可変シフタと比較器をLEDの論理まで
+            #   組合せで引きずると sys のクリティカルパスに乗る(実際、足した直後の
+            #   ビルドで crg_clkout が 45.21MHz = 余裕0.5% まで落ちた)。
+            #   LEDは1クロック遅れても何も困らない。
+            link_inband = Signal(name=f"link_inband{i}")
+            speed_ok = Signal(name=f"speed_ok{i}")
+            self.sync += [
+                link_inband.eq((bmsr[i] >> self.cfg_mdio_sel[16:20]) & 1),
+                # 1000BASE-T 全二重のときだけ「速度は期待どおり」。
+                # それ以外は緑をゆっくり点滅させて気付けるようにする。
+                speed_ok.eq(aux[i][8:11] == 7),
+            ]
+            act_rx = ActivityTap(f"eth{i}_rx", self.ethphys[i].source.valid)
+            act_tx = ActivityTap(f"eth{i}_tx", self.ethphys[i].sink.valid)
+            leds = EthLeds(sys_clk_freq, link_inband, act_rx.pulse | act_tx.pulse,
+                           rx_cd=f"eth{i}_rx", speed_ok=speed_ok)
+            setattr(self.submodules, f"eth{i}_act_rx", act_rx)
+            setattr(self.submodules, f"eth{i}_act_tx", act_tx)
+            setattr(self.submodules, f"eth{i}_leds", leds)
+            self.eth_leds.append(leds)
+            act_cnt = Signal(8, name=f"act_cnt{i}")
+            rxclk_was_dead = Signal(name=f"rxclk_was_dead{i}")
+            self.sync += [
+                If(act_rx.pulse | act_tx.pulse, act_cnt.eq(act_cnt + 1)),
+                If(~leds.rxclk_alive, rxclk_was_dead.eq(1)),
+                # 3 を書いている間はクリア。3→0 と戻して計測を始める
+                If(self.eth_led_force == 3, rxclk_was_dead.eq(0)),
+            ]
+            link_stat.append(Cat(
+                inband_raw[i],              # [3:0]  {duplex, speed[1:0], link}
+                leds.rxclk_alive,           # [4]    RXCが動いているか
+                leds.green,                 # [5]
+                leds.yellow,                # [6]
+                rxclk_was_dead,             # [7]    一度でもRXCが途絶えたか
+                act_cnt,                    # [15:8]  通信の印を数えた回数
+                bmsr[i],                    # [31:16] BMSR(リンクの生値)
+            ))
         self.eth_link_stat = Signal(32)
-        self.comb += self.eth_link_stat.eq(Cat(
-            inband_raw,                 # [3:0]  {duplex, speed[1:0], link}
-            eth_leds.rxclk_alive,       # [4]    RXCが動いているか
-            eth_leds.green,             # [5]
-            eth_leds.yellow,            # [6]
-            rxclk_was_dead,             # [7]    一度でもRXCが途絶えたか
-            act_cnt,                    # [15:8]  通信の印を数えた回数
-            bmsr,                       # [31:16] BMSR(リンクの生値)
-        ))
+        self.sync += self.eth_link_stat.eq(Mux(diag, link_stat[1], link_stat[0]))
         # 4本ぶんをまとめて作る。並びは下から
         #   bit0 = eth0 緑 / bit1 = eth0 黄 / bit2 = eth1 緑 / bit3 = eth1 黄
-        # 通常は使っている側だけ動かし、使っていない側は消灯する
-        # (未使用ピンは既定で弱プルアップになるので、明示的に0を出す)。
         normal = Signal(4)
-        if eth_phy == 0:
-            self.comb += normal.eq(Cat(eth_leds.green, eth_leds.yellow, 0, 0))
-        else:
-            self.comb += normal.eq(Cat(0, 0, eth_leds.green, eth_leds.yellow))
+        self.comb += normal.eq(Cat(self.eth_leds[0].green, self.eth_leds[0].yellow,
+                                   self.eth_leds[1].green, self.eth_leds[1].yellow))
         self.submodules.eth_lamp = lamp = LampTest(self.eth_led_force, normal)
         pads0 = platform.request("eth_led", 0)
         pads1 = platform.request("eth_led", 1)
@@ -2204,10 +2269,7 @@ class RetroCastXStream(SoCMini):
 
         # EEPROM から読めたらそちらを使う(StatusDisplay の生成後に繋ぐ)
         self.comb += If(self.status.mac_valid, my_mac.eq(self.status.mac))
-        self.comb += [
-            static_ip.eq(self.status.cfg_ip),
-            use_static.eq(self.status.cfg_flags[0]),
-        ]
+
 
         # --- TVP7002 映像キャプチャ(cd_pix=DATACLK)---
         capture_obj = None
@@ -2272,10 +2334,22 @@ class RetroCastXStream(SoCMini):
         # 0x40 が増えない = 受信から学習できていない、
         # 0x41 が増えて 0x42 が止まっている = 学習した表だけで解決できている。
         learner = self.ethcore.arp_learner
+        dual = self.ethcore.mac.core
+        # 送信クロックは各 PHY の RXC。止まったポートへは出さない
+        self.comb += dual.tx_ok.eq(Cat(self.eth_leds[0].rxclk_alive,
+                                       self.eth_leds[1].rxclk_alive))
+        # 送り先の選択はリンクで見る(ケーブルが抜けていても RXC は出続ける)
+        self.comb += dual.link_ok.eq(Cat(self.eth_leds[0].link,
+                                         self.eth_leds[1].link))
+        # LAN ポートの状態(key 0x4E、読み取り専用)
+        #   bit0 = 宛先が分からないフレームを出すポート(最後に自分宛が来たポート)
+        #   bit5:4 = リンク(LAN1, LAN0) / bit9:8 = EUI-48 を読めた(LAN1, LAN0)
+        self.net_port_stat = Signal(16)
         self.streamer = RetroCastXStreamer(
             udp_port, sys_clk_freq, width=2048, height=2048, fps=60.0,
-            # ★Ethernet コアと同じ MAC を渡すこと。食い違うと SUBSCRIBE/CONFIG の
-            #   宛先照合(自MACと一致するか)が通らなくなる。
+            # ★**ボードの名乗りの MAC を渡す**(電線上のポートごとの MAC ではない)。
+            #   SUBSCRIBE/CONFIG の宛先照合と ANNOUNCE はこちらで、Viewer は
+            #   これでボードを見分ける。
             mac_address=my_mac, my_ip=my_ip,
             # bit1 = CAP_COMPACT / bit2 = CAP_LED_IDLE / bit3 = CAP_FRAME_CLOCKS
             caps=Cat(self.status.mac_valid, C(1, 1), C(1, 1), C(1, 1), C(0, 12)),
@@ -2333,10 +2407,18 @@ class RetroCastXStream(SoCMini):
                 0x43: learner.last_ip,
                 0x44: learner.last_mac[:32],
                 0x45: learner.last_mac[32:],
+                0x4E: self.net_port_stat,
+                # ポートごとのフレーム数(8bit で一周)
+                #   [7:0] LAN0 受信 / [15:8] LAN1 受信 / [23:16] LAN0 送信 / [31:24] LAN1 送信
+                0x4F: dual.frame_counts,
                 # 状態LEDの状態(0=赤 1=橙 2=青)
                 0x95: self.led_status.state,
             },
             )
+        self.sync += self.net_port_stat.eq(Cat(
+            dual.table.last_port, C(0, 3),
+            self.eth_leds[0].link, self.eth_leds[1].link, C(0, 2),
+            self.status.eui_valid))
         # 状態LEDの入力と、キーフレーム表の書き込み/読み返し(キー 0x0400〜0x05FF)
         kled = self.led_kokame
         self.comb += [
@@ -2554,10 +2636,6 @@ def main():
                          "既定0=VSYNC直後から全行取り込む。水平を hs_offset=0 で"
                          "ラインの頭から取り込むのと同じ方針で、垂直位置は管面の"
                          "V位置で決める。0以外にすると上が切れるモードが出る")
-    ap.add_argument("--eth-phy", type=int, default=1, choices=(0, 1),
-                    help="litex の eth index。基板シルクの LAN 番号と同じ数字。"
-                         "1=LAN1=J12(既定), 0=LAN0=J11。LAN0 で使うにはシード探索が要る "
-                         "(seed 3 では eth_rx 122.55MHz で閉じない)")
     ap.add_argument("--no-mclk-out", action="store_true",
                     help="P3 147のMCLK出力を0固定にする(音声は止まる)。ノイズ切り分け用")
     args = ap.parse_args()
@@ -2571,8 +2649,7 @@ def main():
                            measure=not args.no_measure,
                            mclk_out=not args.no_mclk_out,
                            auto_vtotal=not args.no_auto_vtotal,
-                           vbp=args.vbp, interlace_cap=args.interlace,
-                           eth_phy=args.eth_phy)
+                           vbp=args.vbp, interlace_cap=args.interlace)
     builder = Builder(soc, output_dir="build/colorlight_i5", compile_software=False)
     builder.build(run=args.build, seed=args.seed)
 
