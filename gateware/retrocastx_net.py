@@ -77,10 +77,12 @@ class ArpLearner(LiteXModule):
         self.learn    = stream.Endpoint(ARP_LEARN_LAYOUT)           # ArpSniffer から
 
         # 診断(CONFIG key 0x40..0x45 で読む)。実機で「学習できているのか」
-        # 「学習した表で答えているのか」を切り分けるために出す
-        self.learn_count = Signal(32)   # 学習した回数
-        self.hit_count   = Signal(32)   # 学習済みの表で即答した回数
-        self.miss_count  = Signal(32)   # 本物のARPへ委譲した回数
+        # 「学習した表で答えているのか」を切り分けるために出す。
+        # 回数は 16bit で一周する(増えているかを見るだけなので足りる。32bit の
+        # カウンタ3本は加算器と読み出しの選択で LUT を食う)
+        self.learn_count = Signal(16)   # 学習した回数
+        self.hit_count   = Signal(16)   # 学習済みの表で即答した回数
+        self.miss_count  = Signal(16)   # 本物のARPへ委譲した回数
         self.last_ip     = Signal(32)   # 最後に学習した相手
         self.last_mac    = Signal(48)
 
@@ -309,7 +311,6 @@ class RetroCastXUDPIPCore(LiteXModule):
                 ip_address      = ip_address,
                 udp_port_nr     = udp_port_nr,
                 dw              = dw,
-                tx_cdc_depth    = tx_cdc_depth,
                 tx_cdc_buffered = tx_cdc_buffered,
                 rx_cdc_depth    = rx_cdc_depth,
                 rx_cdc_buffered = rx_cdc_buffered,
@@ -452,9 +453,16 @@ class DualPortMACCore(LiteXModule):
     link_ok も呼び側が繋ぐ(ポートごとに「リンクがある」)。送り先を選ぶのに使う。
     **B50612D はケーブルが抜けていても RXC を出し続ける**ので、tx_ok だけでは
     両ポートとも生きて見え、起動直後の ANNOUNCE がリンクの無い側へ出ていた。
+
+    tx_cdc_depth は **16**(LiteEth の既定は 32)。ECP5 の LUT RAM は16段なので、
+    32段だと読み出しに2つの RAM を選ぶ LUT が1段増える。この読み出しは eth_rx
+    (送信クロックも RXC から作る)のクリティカルパスで、2ポートにしてから CI で
+    eth1_rx が 120.83MHz まで落ちた。16段でも足りる: sys 側は 32bit × 45MHz で
+    PHY の 1Gbps より速く、フレームの途中で止まらない(ストリーマは SEND の間
+    valid を立てっぱなし、下の層も1語/サイクル)ので FIFO は満杯近くで回る。
     """
     def __init__(self, phys, mac_address, ip_address, udp_port_nr, dw=32,
-                 tx_cdc_depth=32, tx_cdc_buffered=True,
+                 tx_cdc_depth=16, tx_cdc_buffered=True,
                  rx_cdc_depth=32, rx_cdc_buffered=True,
                  eth_mtu=eth_mtu_default, table_entries=4):
         assert len(phys) == 2 and dw == 32

@@ -83,9 +83,13 @@ class Ws2812Chain(LiteXModule):
     `start` で1回送る(busy の間は無視)。色は 0x00RRGGBB で受け、線上では
     GRB の順で MSB から出す。1ビット 1.25µs、H 幅 0=0.35µs / 1=0.75µs。
     フレームの後に 300µs の Low(リセット)を入れてから busy を落とす。
+
+    with_mem=True なら色は `colors` ではなく小さな LUT RAM に置き、
+    `wr_adr`/`wr_dat`/`wr_we` で書く。★LED 8個ぶんをレジスタで持つと 192 個の
+    FF と、送るLEDを選ぶ 24bit の8→1選択が要り、小亀の LED だけで LUT 約1,000
+    を食っていた(配線の混雑で配置が収束しなくなった一因)。
     """
-    def __init__(self, pad, sys_clk_freq, n_max):
-        self.colors = [Signal(24, name=f"color{i}") for i in range(n_max)]
+    def __init__(self, pad, sys_clk_freq, n_max, with_mem=False):
         self.n      = Signal(max=n_max + 1, reset=n_max)
         self.start  = Signal()
         self.busy   = Signal()
@@ -104,7 +108,21 @@ class Ws2812Chain(LiteXModule):
         out   = Signal()
         grb = lambda c: Cat(c[0:8], c[16:24], c[8:16])   # → [23:16]=G [15:8]=R [7:0]=B
         cur = Signal(24)
-        self.comb += Case(idx, {i: cur.eq(grb(c)) for i, c in enumerate(self.colors)})
+        if with_mem:
+            self.wr_adr = Signal(max=max(n_max, 2))
+            self.wr_dat = Signal(24)
+            self.wr_we  = Signal()
+            self.specials.mem = mem = Memory(24, n_max)
+            wp = mem.get_port(write_capable=True)
+            rp = mem.get_port(async_read=True)
+            self.specials += wp, rp
+            self.comb += [
+                wp.adr.eq(self.wr_adr), wp.dat_w.eq(self.wr_dat), wp.we.eq(self.wr_we),
+                rp.adr.eq(idx), cur.eq(grb(rp.dat_r)),
+            ]
+        else:
+            self.colors = [Signal(24, name=f"color{i}") for i in range(n_max)]
+            self.comb += Case(idx, {i: cur.eq(grb(c)) for i, c in enumerate(self.colors)})
         self.sync += pad.eq(out)        # 出力はレジスタから出す(グリッチを外へ出さない)
 
         self.fsm = fsm = FSM(reset_state="IDLE")
@@ -239,7 +257,7 @@ class KeyframeLeds(LiteXModule):
             wp.dat_w.eq(self.tbl_dat_w), self.tbl_dat_r.eq(wp.dat_r),
         ]
 
-        self.chain = chain = Ws2812Chain(pad, sys_clk_freq, n_max)
+        self.chain = chain = Ws2812Chain(pad, sys_clk_freq, n_max, with_mem=True)
         n_led = Signal(4)
         self.comb += [
             n_led.eq(Mux(self.n_led == 0, 1, Mux(self.n_led > n_max, n_max, self.n_led))),
@@ -419,9 +437,12 @@ class KeyframeLeds(LiteXModule):
                     ),
                 ),
             ))
+        self.comb += [
+            chain.wr_adr.eq(i),
+            chain.wr_dat.eq(Mux((self.frames == 0) | off, 0, out)),
+        ]
         fsm.act("STORE",
-            *[If(i == k, NextValue(chain.colors[k], Mux((self.frames == 0) | off, 0, out)))
-              for k in range(n_max)],
+            chain.wr_we.eq(1),
             If(i == n_led - 1,
                 NextState("SEND"),
             ).Else(
