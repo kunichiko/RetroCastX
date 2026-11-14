@@ -1386,7 +1386,10 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 proto::CFG_KEY_FIELD_SWAP => "field_swap",
                 _ => "key",
             };
-            eprintln!("[{:7}] config reply: {name}(0x{key:04x}) = {val}", log_ms());
+            // 表示遅延の計測は集計を数百msおきに読むので、端末を埋めないよう出さない
+            if !(proto::CFG_KEY_PLAT_CTL..=proto::CFG_KEY_PLAT_SUM).contains(&key) {
+                eprintln!("[{:7}] config reply: {name}(0x{key:04x}) = {val}", log_ms());
+            }
             shared.config_state.lock().unwrap().insert(key, val);
         }
 

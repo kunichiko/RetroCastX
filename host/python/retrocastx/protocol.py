@@ -200,6 +200,8 @@ CAP_LED_IDLE = 1 << 2
 # caps bit3: MODE の末尾に、1フレームの sys クロック数・ライン数・sys クロック周波数が
 # 付く(gw-v1.5.0 以降)。同じフレームの組なので fH = lines × sys_clk_hz / frame_clocks
 CAP_FRAME_CLOCKS = 1 << 3
+# caps bit4: 表示遅延の計測(フォトトランジスタ、CONFIG 0x00A0〜0x00A6)に対応している
+CAP_PHOTO_LAT = 1 << 4
 
 BYTES_PER_PX = {PIXFMT_RGB888: 3, PIXFMT_RGB555: 2, PIXFMT_RGB565: 2,
                 PIXFMT_YC8: 2, PIXFMT_YCC422: 2, PIXFMT_CVBS8: 1}

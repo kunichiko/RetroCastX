@@ -7,6 +7,7 @@
 //! - VRR対応パネル(ProMotion / Adaptive-Sync)ならパネルがソースレートに追従する
 //!
 //! UIはなし(統計はstderrに毎秒出力)。ESCまたはウィンドウクローズで終了。
+//! ⌘L(Windows/Linux は Ctrl+L)で表示遅延の計測を開始/停止する(photo_lat.rs)。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -31,7 +32,7 @@ use crate::render;
 pub fn run(port: u16, bind: String, subscribe_to: Option<String>, target_mac: Option<[u8; 6]>, decay: f32,
            interlace_decay: f32,
            audio: receiver::AudioOpts, params: FsGeom, vsync: bool,
-           return_window: bool) -> ! {
+           return_window: bool, photo_lat_high: bool) -> ! {
     let shared = Arc::new(receiver::Shared::default());
     // 受信(=再生器を開く)より前に入れる。後からだと開いた直後に 100% で鳴る
     *shared.gain.lock().unwrap() = Some(params.gain);
@@ -67,12 +68,18 @@ pub fn run(port: u16, bind: String, subscribe_to: Option<String>, target_mac: Op
     shared.aux.set(params.spdif.0, params.spdif.1);
     let event_loop = EventLoop::new().unwrap();
     let shared_at_exit = shared.clone();
-    let mut app = App { shared: Some((shared, rx)), window: None,
+    let mut app = App { lat_shared: shared.clone(), lat_on: false, lat_high: photo_lat_high,
+                        shared: Some((shared, rx)), window: None,
                         size: Arc::new(AtomicU64::new(0)), params, vsync,
                         remote: remote_input::RemoteInput::default(),
                         remote_toggle: Default::default(), remote_mods: Default::default(),
                         awake: crate::awake::KeepAwake::new() };
     event_loop.run_app(&mut app).unwrap();
+    // 計測したまま抜けたら止める。切り替えのあいだの点滅を測らない
+    if app.lat_on {
+        app.toggle_photo_lat();
+        crate::photo_lat::flush(&shared_at_exit, Duration::from_millis(300));
+    }
     // パネルの「低遅延全画面」から来たときは、ウィンドウ表示へ戻す。
     // 受信中のボードを指定して戻る(戻った先で別のボードを掴まないように)
     if return_window {
@@ -144,6 +151,11 @@ impl FsGeom {
 
 struct App {
     shared: Option<(Arc<receiver::Shared>, Receiver<()>)>,
+    /// 表示遅延の計測(⌘L)。受信の Shared は render スレッドへ渡すので別に持つ
+    lat_shared: Arc<receiver::Shared>,
+    lat_on: bool,
+    /// センサーが光ると High(`--photo-lat-high`)
+    lat_high: bool,
     window: Option<Arc<Window>>,
     size: Arc<AtomicU64>, // (w<<32)|h — リサイズをrenderスレッドへ伝える
     params: FsGeom,
@@ -159,6 +171,37 @@ struct App {
     /// 前面にある間は OS のスリープを止める(awake.rs)。全画面は映像を見るための
     /// 起動形態なので、受信の有無は見ずにフォーカスだけで決める
     awake: crate::awake::KeepAwake,
+}
+
+impl App {
+    /// ⌘L。止めたら少し待って集計を読み、stderr に出す
+    /// (パネルが無いので。ウィンドウ表示に戻ればパネルでも読める)
+    fn toggle_photo_lat(&mut self) {
+        use crate::photo_lat;
+        let sh = &self.lat_shared;
+        self.lat_on = !self.lat_on;
+        if self.lat_on {
+            photo_lat::send_start(sh, self.lat_high);
+            eprintln!("表示遅延: 計測を開始(⌘L で停止)");
+        } else {
+            photo_lat::send_stop(sh, self.lat_high);
+            eprintln!("表示遅延: 計測を停止");
+            let sh = sh.clone();
+            // 応答が1つでも落ちると揃わないので、揃うまで何度か頼み直す
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                for _ in 0..10 {
+                    photo_lat::request_stats(&sh);
+                    std::thread::sleep(Duration::from_millis(300));
+                    if let Some(t) = photo_lat::summary(&sh) {
+                        eprintln!("表示遅延: {t}");
+                        return;
+                    }
+                }
+                eprintln!("表示遅延: 集計を読めませんでした");
+            });
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -243,6 +286,14 @@ impl ApplicationHandler for App {
                 };
                 // 転送のON/OFF(⌘+ESC / F12)。転送中でも必ず効く(唯一の抜け道)。
                 // ESC 単独は横取りされないので、下の終了判定と実機への転送へ流れる
+                // ⌘L で表示遅延の計測を開始/停止。⌘ 付きの押下は実機へ送らないので、
+                // キー転送中でも横取りしてよい
+                if code == Some(KeyCode::KeyL) && self.remote_mods.command
+                    && event.state.is_pressed() && !event.repeat
+                {
+                    self.toggle_photo_lat();
+                    return;
+                }
                 if let Some(code) = code {
                     remote_input::log_key(code, vk, event.state.is_pressed(), self.remote_mods);
                     let (toggle, eat) =
