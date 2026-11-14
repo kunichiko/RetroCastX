@@ -51,6 +51,7 @@ mod metal_present;
 mod netcheck;
 mod ntsc;
 mod perf_hint;
+mod photo_lat;
 mod profiles;
 mod remote_input;
 mod render;
@@ -113,6 +114,7 @@ fn main() -> eframe::Result {
     let mut fullscreen_mode = false;
     let mut fullscreen_vsync = false;
     let mut return_window = false;
+    let mut photo_lat_high = false;
     let mut rotate: u32 = u32::MAX;   // 未指定なら設定ファイルの値を使う
     let mut target_mac: Option<[u8; 6]> = None;
     let mut decay = 0.8f32;
@@ -168,6 +170,8 @@ fn main() -> eframe::Result {
             "--vsync" => fullscreen_vsync = true,
             // 全画面を ESC で抜けたらウィンドウ表示で起動し直す(パネルから入ったとき)
             "--return-window" => return_window = true,
+            // 表示遅延のセンサーが光ると High(パネルの設定を全画面へ渡す)
+            "--photo-lat-high" => photo_lat_high = true,
             // 画面回転(縦画面のゲーム用)。0/90/180/270 度、時計回り
             "--rotate" => {
                 let v: u32 = args.next().expect("--rotate needs 0|90|180|270").parse().unwrap();
@@ -263,9 +267,10 @@ fn main() -> eframe::Result {
             mon_ntsc: MON_NTSC,
             gain: if cfg.muted { 0.0 } else { cfg.volume },
             spdif: (cfg.spdif_mix, cfg.spdif_volume),
+            slices: cfg.fullscreen_slices,
         };
         fullscreen::run(port, bind, subscribe_to, target_mac, decay, interlace_decay, audio, p,
-                        fullscreen_vsync, return_window); // 戻らない
+                        fullscreen_vsync, return_window, photo_lat_high); // 戻らない
     }
 
     audio::prepare_session();
@@ -492,7 +497,7 @@ fn relaunch_args(orig: impl Iterator<Item = String>, extra: &[String]) -> Vec<St
     let mut it = orig;
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--fullscreen" | "--vsync" | "--return-window" => {}
+            "--fullscreen" | "--vsync" | "--return-window" | "--photo-lat-high" => {}
             "--mac" => { it.next(); }
             _ => args.push(a),
         }
@@ -1331,6 +1336,8 @@ struct Session {
     seen_gen: u64,
     /// 低遅延全画面で vsync を使うか(設定に保存)
     fs_vsync: bool,
+    /// 低遅延全画面で、1フレームを何本の帯に分けて出すか(0 = 分けない。設定に保存)
+    fs_slices: u32,
     /// 低遅延全画面への切り替えが押された(App が起動し直す)
     want_lowlat_fs: bool,
     /// ウィンドウがこれ1枚か(低遅延全画面は全部を閉じて起動し直すので、1枚のときだけ)
@@ -1430,6 +1437,8 @@ struct Session {
     /// MimicX へのキー転送。起動時は常にOFF(保存しない)。ONのまま起動すると
     /// キーが黙って実機へ流れるので、毎回明示的に入るようにしている
     remote: remote_input::RemoteInput,
+    /// 表示遅延の計測(フォトトランジスタ)。⌘L でも開始/停止する
+    photo_lat: photo_lat::PhotoLat,
     /// 転送ON/OFF操作(⌘+Shift+ESC / F12)の検出。押下の瞬間だけを拾う
     remote_toggle: remote_input::ToggleDetect,
     /// 物理キーの取り出し口。egui の Key では JIS の ¥/_/かな が落ちるので、
@@ -1577,6 +1586,7 @@ impl Session {
             render_state,
             seen_gen: 0,
             fs_vsync: cfg.fullscreen_vsync,
+            fs_slices: cfg.fullscreen_slices,
             want_lowlat_fs: false,
             only_window: true,
             latency_meter: Default::default(),
@@ -1629,6 +1639,7 @@ impl Session {
             no_vsync,
             pace: PaceMeter::new(),
             remote: remote_input::RemoteInput::default(),
+            photo_lat: Default::default(),
             remote_toggle: Default::default(),
             // ★**キー横取りは1つだけ。** AppKit のイベント監視をウィンドウの数だけ
             //   仕掛けると同じキーが何度も実機へ飛ぶ。転送するのは主ウィンドウだけ。
@@ -1843,6 +1854,7 @@ impl Session {
             audio_device: self.audio_device_sel.clone(),
             audio_buffer_ms: self.audio_buffer_ms,
             fullscreen_vsync: self.fs_vsync,
+            fullscreen_slices: self.fs_slices,
             rotate: self.rotate,
             tube_aspect: self.tube_aspect,
             dot_a_milli: self.dot_a_milli,
@@ -2483,6 +2495,29 @@ impl Session {
                      60Hz で +約22ms。120Hz 以上のモニタなら差は小さい")
                 .changed()
             {
+                self.mark_settings_dirty();
+            }
+        });
+        ui.horizontal(|ui| {
+            theme::label_col(ui, "描き方");
+            let label = |n: u32| if n == 0 { "1フレームずつ".to_string() }
+                                 else { format!("{n} 分割") };
+            let before = self.fs_slices;
+            egui::ComboBox::from_id_salt("fs_slices")
+                .selected_text(label(self.fs_slices))
+                .show_ui(ui, |ui| {
+                    for n in [0, 2, 4, 8, 16] {
+                        ui.selectable_value(&mut self.fs_slices, n, label(n));
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "低遅延全画面で、届いたラインから順に画面へ出す。\n\
+                     「1フレームずつ」はフレームが全部届いてから出すので、画面の上端でも\n\
+                     1フレーム(55Hz なら 18ms)待つ。分割するとその待ちが 1/分割数 になる。\n\
+                     まだ届いていない行は前のフレームのまま残るので、動きの速い場面では\n\
+                     帯の境目に継ぎ目が出る(vsync なしのティアリングと同じ種類)");
+            if self.fs_slices != before {
                 self.mark_settings_dirty();
             }
         });
@@ -5008,6 +5043,22 @@ impl Session {
         *self.shared.claimed.lock().unwrap()
     }
 
+    /// 表示遅延の計測に要るもの: (caps, pixfmt, vfreq[Hz])
+    fn photo_lat_inputs(&self) -> (u16, Option<u8>, Option<f32>) {
+        let caps = self.claimed()
+            .and_then(|mac| self.shared.boards.lock().unwrap().get(&mac).map(|b| b.caps))
+            .unwrap_or(0);
+        let mode = self.shared.mode.lock().unwrap().clone();
+        let pixfmt = mode.as_ref().map(|m| m.pixfmt);
+        let vfreq = mode.as_ref().map(|m| m.vfreq_mhz_x1000 as f32 / 1e3);
+        (caps, pixfmt, vfreq)
+    }
+
+    fn photo_lat_ui(&mut self, ui: &mut egui::Ui) {
+        let (caps, pixfmt, vfreq) = self.photo_lat_inputs();
+        self.photo_lat.ui(ui, &self.shared, caps, pixfmt, vfreq);
+    }
+
     /// 接続先の指定を変える。**保存もする**(次の起動で並びが戻るように)。
     fn set_board_sel(&mut self, sel: settings::BoardSel) {
         if self.board_sel == sel {
@@ -6166,6 +6217,15 @@ impl eframe::App for App {
                 if s.fs_vsync {
                     extra.push("--vsync".into());
                 }
+                if s.photo_lat.active_high {
+                    extra.push("--photo-lat-high".into());
+                }
+                // 計測中なら止めてから移る。切り替えのあいだの点滅を測らない
+                // (全画面に入ってから ⌘L で始め直す)
+                if s.photo_lat.running() {
+                    s.photo_lat.stop(&s.shared);
+                    photo_lat::flush(&s.shared, std::time::Duration::from_millis(300));
+                }
                 if let Some(m) = mac {
                     extra.push("--mac".into());
                     extra.push(format_mac(&m));
@@ -6342,6 +6402,11 @@ impl Session {
         // ⌘W で自分を閉じる(macOS の作法。⌘Q はアプリ全体)
         if root.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
             root.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        // ⌘L で表示遅延の計測を開始/停止(低遅延全画面でも同じキー)
+        if root.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::L)) {
+            let (caps, pixfmt, _) = self.photo_lat_inputs();
+            self.photo_lat.toggle(&self.shared, caps, pixfmt);
         }
         if root.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
             self.show_panel = !self.show_panel;

@@ -700,6 +700,11 @@ impl Session {
         group(ui, "受信と表示", |ui| {
             self.diag_stats_ui(ui);
         });
+        ui.add_space(6.0);
+        // 画面に貼ったフォトトランジスタで、液晶が光るまでを測る(photo_lat.rs)
+        group(ui, "表示遅延(センサー)", |ui| {
+            self.photo_lat_ui(ui);
+        });
     }
 
     /// ★**調査用の数値と細かい設定の出し入れ。** 以前はパネル最上部にあり、
