@@ -6278,6 +6278,8 @@ impl App {
     fn add_session(&mut self, ctx: &egui::Context, id: u32, mac: Option<[u8; 6]>) {
         let mut cfg = settings::Settings::load_slot(id);
         if let Some(m) = mac {
+            // 新しくこのボードに割り当てた番号なら、見た目の好みを揃える
+            launcher::inherit_look(id, m, &mut cfg);
             cfg.board_sel = settings::BoardSel::Mac(m);
         }
         // モバイルの「ボードのIP」は一覧の欄が正(番号ごとに入れ直させない)
