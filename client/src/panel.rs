@@ -782,6 +782,14 @@ impl Session {
                  ウィンドウ表示はここまで。この先に macOS のコンポジタ(通常1フレーム\n\
                  前後)と液晶自身の遅延が乗る。--fullscreen なら画面に出た時刻まで測る");
         }
+        if let Some(line) = self.shared.rtt.lock().unwrap().describe() {
+            ui.monospace(line).on_hover_text(
+                "ボードとの往復時間。CONFIG の問い合わせ(build_id)を100msおきに送り、\n\
+                 応答が届くまでを数える。ボードはハードウェアで即答するので、\n\
+                 ネットワークと OS の送受信の往復になる。映像の片道はこの半分が目安。\n\
+                 時間切れは応答が返らなかった回数(他の問い合わせと重なると返らない\n\
+                 ことがある)");
+        }
         if !self.pace.summary.is_empty() {
             // ★**「53Hz」だけ出すと「12%描画できていない」と読める。**
             //   実際には publish を取りこぼしても**絵の情報は失われない**

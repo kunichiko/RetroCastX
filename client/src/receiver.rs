@@ -620,6 +620,8 @@ pub struct Shared {
     pub frame_gen: AtomicU64,
     /// 描画遅延の集計(描画側が1秒ごとに書く)。パネル/端末の表示用
     pub latency: Mutex<crate::latency::LatencySnapshot>,
+    /// ボードとの往復時間(rtt.rs)。受信スレッドが問い合わせて数える
+    pub rtt: Mutex<crate::rtt::Rtt>,
     pub mode: Mutex<Option<proto::Mode>>,
     /// 届いた MODE の帯域と、同じ帯域が何回続いたか(modeswitch.rs が使う)
     pub mode_band: Mutex<ModeBand>,
@@ -1323,6 +1325,19 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             }
         }
 
+        // 往復時間の問い合わせ(rtt.rs)。繋がっている相手にだけ、1つずつ送る
+        {
+            let mut rtt = shared.rtt.lock().unwrap();
+            if (targets.is_empty() && extra.is_none()) || quiet {
+                rtt.reset();
+            } else if rtt.due(Instant::now()) {
+                let mac = claim.as_ref().map(|c| c.mac).unwrap_or(proto::WILDCARD_MAC);
+                let pkt = proto::pack_config(sub_seq, 0, 1, proto::CFG_KEY_BUILD_ID, 0, &mac);
+                send_all(&send_sock, cfg.port, &targets, extra.as_deref(), &pkt);
+                sub_seq = sub_seq.wrapping_add(1);
+            }
+        }
+
         // ★**選んだデバイスを開けなかったら、後から開けるようになったか見に行く。**
         //   起動直後は CoreAudio の列挙が揃っていないことがあり、保存した名前が
         //   見つからずに既定デバイス(別物)が開かれる。ユーザーからは「音が
@@ -1390,8 +1405,11 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 proto::CFG_KEY_FIELD_SWAP => "field_swap",
                 _ => "key",
             };
+            // 往復時間の問い合わせへの応答なら数える(100msおきなので端末には出さない)
+            let probe = key == proto::CFG_KEY_BUILD_ID
+                && shared.rtt.lock().unwrap().on_reply(rx_t);
             // 表示遅延の計測は集計を数百msおきに読むので、端末を埋めないよう出さない
-            if !(proto::CFG_KEY_PLAT_CTL..=proto::CFG_KEY_PLAT_SUM).contains(&key) {
+            if !probe && !(proto::CFG_KEY_PLAT_CTL..=proto::CFG_KEY_PLAT_SUM).contains(&key) {
                 eprintln!("[{:7}] config reply: {name}(0x{key:04x}) = {val}", log_ms());
             }
             shared.config_state.lock().unwrap().insert(key, val);

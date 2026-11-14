@@ -28,6 +28,8 @@ pub struct Slice {
     pub height: usize,
     pub y0: usize,
     pub rgba: Vec<u8>,
+    /// 切り出した時刻(=帯の最後の行が届いた時刻)。調査用
+    pub t: std::time::Instant,
 }
 
 #[derive(Default)]
@@ -726,6 +728,7 @@ impl FrameAssembler {
             height: self.height,
             y0: self.slice_next,
             rgba: self.fb[self.slice_next * w4..y1 * w4].to_vec(),
+            t: std::time::Instant::now(),
         });
         self.slice_next = y1;
     }

@@ -52,6 +52,7 @@ mod netcheck;
 mod ntsc;
 mod perf_hint;
 mod photo_lat;
+mod rtt;
 mod profiles;
 mod remote_input;
 mod render;
@@ -821,6 +822,8 @@ struct PaceMeter {
     ui_since: std::time::Instant,
     /// 表示できた新フレームのレート[Hz]。受信レートと並べて出す
     pub new_frame_hz: f32,
+    /// ボードとの往復時間の1行(rtt.rs)。毎秒のログに並べる
+    pub rtt_line: Option<String>,
 }
 
 impl PaceMeter {
@@ -837,6 +840,7 @@ impl PaceMeter {
             ui_rate_hz: 0.0,
             ui_since: std::time::Instant::now(),
             new_frame_hz: 0.0,
+            rtt_line: None,
         }
     }
 
@@ -895,6 +899,9 @@ impl PaceMeter {
             //   「マウスを動かしている最中」の数字はログでしか取れない
             //   (実機で「ウィンドウ上でマウスを動かすとレートが下がる」を追うのに要った)
             eprintln!("pace: {} | {}", self.summary, self.cpu_summary);
+            if let Some(l) = &self.rtt_line {
+                eprintln!("{l}");
+            }
             self.last_log = std::time::Instant::now();
         }
     }
@@ -1681,6 +1688,7 @@ impl Session {
         }
         self.seen_gen = generation;
         let picked = std::time::Instant::now();
+        self.pace.rtt_line = self.shared.rtt.lock().unwrap().describe();
         self.pace.on_new_frame();
         // ★**ロックの順序が逆だった。** 以前はフレームのロックを持ったまま
         //   `rs.renderer.write()` を取りに行っていた。描画中はレンダラのロックが
@@ -2479,7 +2487,8 @@ impl Session {
             let r = if self.only_window {
                 r.on_hover_text(
                     "映像だけを全画面に出し、遅延を最小にする(画面中央で約1フレーム)。\n\
-                     切り替え時に一瞬途切れる。ESC でこのウィンドウに戻る。\n\
+                     切り替え時に一瞬途切れる。⌘F で入り、ESC か ⌘F でこのウィンドウに戻る。\n\
+                     全画面の中の ⌘I で Metal の性能表示(HUD)を出し入れできる。\n\
                      ウィンドウの全画面(緑ボタン)は macOS の合成を通るので遅い")
             } else {
                 r.on_disabled_hover_text(
@@ -6402,6 +6411,13 @@ impl Session {
         // ⌘W で自分を閉じる(macOS の作法。⌘Q はアプリ全体)
         if root.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
             root.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        // ⌘F で低遅延全画面へ(全画面の中の ⌘F / ESC で戻る)。ボタンと同じく、
+        // ウィンドウが1枚のときだけ(全部を閉じて起動し直すため)
+        if !MOBILE && root.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F))
+            && self.only_window
+        {
+            self.want_lowlat_fs = true;
         }
         // ⌘L で表示遅延の計測を開始/停止(低遅延全画面でも同じキー)
         if root.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::L)) {
