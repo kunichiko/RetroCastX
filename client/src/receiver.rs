@@ -824,7 +824,9 @@ pub fn spawn(
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
             raw.bind(&std::net::SocketAddr::from((bind_ip, 0)).into())?;
             eprintln!(
-                "UDP {} は使用中なので空きポートで待ち受けます\n                 (ボードは送信元ポートへ返すので動作に支障はありません。\n                 　2台目のボードを見るときは「ボード」欄で1枚を指名してください)",
+                "UDP {} は使用中なので空きポートで待ち受けます\n\
+                 (ボードは送信元ポートへ返すので動作に支障はありません。\n\
+                 2つ目の Viewer の窓や、同じ機械のほかのツールが使っています)",
                 cfg.port
             );
         }
