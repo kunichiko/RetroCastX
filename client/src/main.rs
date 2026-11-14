@@ -1295,6 +1295,11 @@ struct Session {
     input_port: profiles::Port,
     /// 端子ごとに選んでいる機種。端子を切り替えて戻ると前の機種に戻る
     port_profiles: std::collections::BTreeMap<profiles::Port, String>,
+    /// ボードごとの端子と機種(settings.rs の board_inputs)。いま掴んでいるボードの
+    /// 分は `input_port` / `port_profiles` が正で、ボードを替えるときと保存時に写す
+    board_inputs: std::collections::BTreeMap<[u8; 6], settings::BoardInput>,
+    /// `input_port` / `port_profiles` がどのボードの値か(`follow_board_input`)
+    input_owner: Option<[u8; 6]>,
     /// `userprof` のフォルダから読んだ機種
     user_profiles: Vec<userprof::UserProfile>,
     /// いまの端子に信号が来ているかの判定(`watch_signal`)
@@ -1604,6 +1609,8 @@ impl Session {
             source_profile: cfg.source_profile().to_string(),
             input_port: cfg.input_port,
             port_profiles: cfg.port_profiles.clone(),
+            board_inputs: cfg.board_inputs.clone(),
+            input_owner: None,
             user_profiles: userprof::load_all(),
             signal: SignalWatch::default(),
             tune_pending: Default::default(),
@@ -1911,6 +1918,9 @@ impl Session {
             return;
         }
         self.settings_dirty = None;
+        if let Some(m) = self.input_owner {
+            self.board_inputs.insert(m, self.board_input_now());
+        }
         settings::Settings {
             volume: self.audio_volume,
             muted: self.audio_muted,
@@ -1974,6 +1984,7 @@ impl Session {
             tune_phase: self.tune_phase,
             input_port: self.input_port,
             port_profiles: self.port_profiles.clone(),
+            board_inputs: self.board_inputs.clone(),
         }
         .save_slot(self.slot_id);
     }
@@ -2211,6 +2222,51 @@ impl Session {
     }
 
     fn select_input(&mut self, port: profiles::Port, key: String) -> Vec<(u16, u32)> {
+        self.switch_input(port, key);
+        self.input_regs_to_write()
+    }
+
+    /// いまの端子と機種(ボードごとに覚える形)
+    fn board_input_now(&self) -> settings::BoardInput {
+        settings::BoardInput { port: self.input_port, profiles: self.port_profiles.clone() }
+    }
+
+    /// 掴んでいるボードが替わったら、そのボードで選んでいた端子と機種に替える。
+    ///
+    /// ★**ボードへは書かない。** 書くのは `apply_input_regs_on_connect` に任せる
+    ///   (MODE が来てから、掴んだボードへ1回)。ここで書くと、まだ前のボードの
+    ///   購読が残っているうちに飛ぶことがある。
+    /// ★**初めて掴んだボードは、いまの値を引き継ぐ。** 1枚しか持っていない人が
+    ///   この版に上げたとき、選んであった入力が消えないように。
+    fn follow_board_input(&mut self) {
+        let Some(mac) = self.claimed() else { return };
+        if self.input_owner == Some(mac) {
+            return;
+        }
+        if let Some(prev) = self.input_owner {
+            self.board_inputs.insert(prev, self.board_input_now());
+        }
+        self.input_owner = Some(mac);
+        let Some(bi) = self.board_inputs.get(&mac).cloned() else {
+            self.board_inputs.insert(mac, self.board_input_now());
+            self.mark_settings_dirty();
+            return;
+        };
+        if bi == self.board_input_now() {
+            return;
+        }
+        self.port_profiles = bi.profiles;
+        let key = self.port_profile(bi.port);
+        self.switch_input(bi.port, key);
+        let name = self.shared.boards.lock().unwrap().get(&mac).map(|b| b.name.clone());
+        self.toasts.info(format!(
+            "{} で前に選んでいた 入力{} {} に切り替えました",
+            name.unwrap_or_else(|| claim::mac_string(&mac)),
+            self.input_port.number(), self.profile_label(&self.source_profile)));
+    }
+
+    /// 端子と機種を切り替える(Viewer の側の状態だけ。ボードへ書くものは作らない)
+    fn switch_input(&mut self, port: profiles::Port, key: String) {
         // ★**いまの管面と PLL は、入力設定を書く前に前の機種へしまう。** 書くと
         //   Tune の表示(tune_phase 等)が新しい端子の値に替わるので、follow_band
         //   に任せると新しい端子の位相を前の機種の値としてしまう(実機で発生:
@@ -2246,7 +2302,6 @@ impl Session {
         self.mark_settings_dirty();
         // ★入力を切り替えたら音声も付いてくる(音声が「自動」のときだけ)
         self.apply_auto_audio();
-        self.input_regs_to_write()
     }
 
     /// いまの機種の入力設定を、ボードへ書く形で返す(Tune の表示も合わせる)
@@ -6467,6 +6522,8 @@ impl Session {
         self.flush_settings();
         // ★パネルの外に置く。Tab で隠していても全画面でも、電源を入れ直したあとに
         //   入力設定が入り直さないと「選んであるのに映らない」ままになる。
+        //   ボードを替えたなら、先にそのボードの端子と機種へ替えておく
+        self.follow_board_input();
         self.apply_input_regs_on_connect();
         // 間引きはこの Viewer の設定。掴んだボードへ書く(パネルの外。隠していても効く)
         self.apply_frame_skip();

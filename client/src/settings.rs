@@ -142,6 +142,36 @@ pub const DEFAULT_FULLSCREEN_SLICES: u32 = 8;
 #[cfg(not(any(target_os = "macos", windows)))]
 pub const DEFAULT_FULLSCREEN_SLICES: u32 = 0;
 
+/// 1枚のボードで選んでいる端子と、端子ごとの機種(`Settings::board_inputs`)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoardInput {
+    pub port: Port,
+    pub profiles: BTreeMap<Port, String>,
+}
+
+impl Default for BoardInput {
+    /// 端子の行より機種の行が先に来たとき用。既定の端子は `Settings` と同じ
+    fn default() -> Self {
+        Self { port: Settings::default().input_port, profiles: BTreeMap::new() }
+    }
+}
+
+/// 設定ファイルのキーに入れる MAC(区切りなしの16進12桁)
+fn mac_key(mac: &[u8; 6]) -> String {
+    mac.map(|x| format!("{x:02x}")).concat()
+}
+
+fn parse_mac_key(k: &str) -> Option<[u8; 6]> {
+    if k.len() != 12 {
+        return None;
+    }
+    let mut m = [0u8; 6];
+    for (i, b) in m.iter_mut().enumerate() {
+        *b = u8::from_str_radix(k.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(m)
+}
+
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub volume: f32,
@@ -177,6 +207,14 @@ pub struct Settings {
     /// 端子ごとに選んでいる機種(プロファイルのキー)。空文字は「汎用」
     /// (機種を決めずに広く探す)。端子を切り替えて戻ってきたとき、前の機種に戻る。
     pub port_profiles: BTreeMap<Port, String>,
+    /// ボードごとの端子と機種。キーは MAC。
+    ///
+    /// ★**入力の選択はボードに付く。** 2枚目のボードを持つのは別の機械を繋ぐ
+    ///   ためなので、ボード1をコンポジット・ボード2をアナログRGBで使う。ウィンドウに
+    ///   1つだけ持っていると、ボードを替えてもコンポジットのまま繋がった。
+    ///   `input_port` / `port_profiles` は「いま掴んでいるボードの値」で、初めて
+    ///   掴んだボードはそれを引き継ぐ(1枚だけの人の設定がそのまま残るように)
+    pub board_inputs: BTreeMap<[u8; 6], BoardInput>,
     /// 画面回転 0/1/2/3 = 時計回りに 0/90/180/270 度(縦画面のゲーム用)
     pub rotate: u32,
     /// 管面(表示領域)の縦横比 幅/高さ。0 なら有効映像の比をそのまま使う。
@@ -348,6 +386,7 @@ impl Default for Settings {
             // 機種を選ばなくても X68000 / VGA / PC-9801 のどれかとして探せる
             input_port: Port::Rgb15,
             port_profiles: BTreeMap::new(),
+            board_inputs: BTreeMap::new(),
             rotate: 0,
             window: [0.22, 0.94, 0.07, 0.98],
             tube_time_based: true,
@@ -543,6 +582,18 @@ impl Settings {
                 k if k.starts_with("port_profile.") => {
                     if let Some(p) = Port::from_key(&k[13..]) {
                         s.port_profiles.insert(p, v.to_string());
+                    }
+                }
+                // ボードごとの端子と機種: `board_input@<mac>` / `board_profile@<mac>.<端子>`
+                k if k.starts_with("board_input@") => {
+                    if let (Some(m), Some(p)) = (parse_mac_key(&k[12..]), Port::from_key(v)) {
+                        s.board_inputs.entry(m).or_default().port = p;
+                    }
+                }
+                k if k.starts_with("board_profile@") => {
+                    let Some((m, port)) = k[14..].split_once('.') else { continue };
+                    if let (Some(m), Some(p)) = (parse_mac_key(m), Port::from_key(port)) {
+                        s.board_inputs.entry(m).or_default().profiles.insert(p, v.to_string());
                     }
                 }
                 "tune_full_line" => s.tune_full_line = v == "true",
@@ -879,6 +930,13 @@ impl Settings {
         for (port, key) in &self.port_profiles {
             body.push_str(&format!("port_profile.{} = {key}\n", port.key()));
         }
+        for (mac, bi) in &self.board_inputs {
+            let m = mac_key(mac);
+            body.push_str(&format!("board_input@{m} = {}\n", bi.port.key()));
+            for (port, key) in &bi.profiles {
+                body.push_str(&format!("board_profile@{m}.{} = {key}\n", port.key()));
+            }
+        }
         for ((geo, khz), v) in &self.band_pll {
             body.push_str(&format!("bandpll@{geo}.{khz} = {},{}\n", v[0], v[1]));
         }
@@ -1014,6 +1072,29 @@ mod tests {
         assert_eq!(r.port_profiles.get(&Port::Rgb15).map(|s| s.as_str()), Some("pc98"));
         assert_eq!(r.mon_bands, s.mon_bands);
         assert_eq!(r.band_pll, s.band_pll);
+    }
+
+    /// ボードごとの端子と機種は、書いて読み直しても混ざらない
+    #[test]
+    fn board_inputs_roundtrip() {
+        let mut s = Settings::default();
+        let (a, b) = ([0x02, 0, 0, 0, 0, 0x0a], [0x02, 0, 0, 0, 0, 0x0b]);
+        s.board_inputs.insert(a, BoardInput {
+            port: Port::Video,
+            profiles: [(Port::Video, "composite".to_string())].into(),
+        });
+        s.board_inputs.insert(b, BoardInput {
+            port: Port::Rgb15,
+            profiles: [(Port::Rgb15, "x68000".to_string()), (Port::Video, "svideo".to_string())]
+                .into(),
+        });
+        let dir = std::env::temp_dir().join(format!("rcx-board-inputs-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("viewer.conf");
+        s.save_to(&path);
+        let r = Settings::parse(&std::fs::read_to_string(&path).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(r.board_inputs, s.board_inputs);
     }
 
     /// 機種ごとの入力設定の変更は、書いて読み直しても残る
