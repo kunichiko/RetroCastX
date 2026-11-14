@@ -183,22 +183,26 @@ Windows ですら NIC の受信リングが足りずに落ちた実績がある(
 ### 4.2 iOS のブロードキャスト
 
 iOS 14 以降、**ブロードキャスト/マルチキャストの送信には Apple の許可
-(`com.apple.developer.networking.multicast` entitlement)が要る**。申請して
-審査を通る必要がある(用途を説明するフォーム)。無いと発見用の SUBSCRIBE が
-送れない。
+(`com.apple.developer.networking.multicast` entitlement)が要る**。無いと発見用の
+SUBSCRIBE が送れない。**2026-11-14 に許可が下りた**(申請は 11-08、Request ID
+6P7MRHV9ZK)。許可の入った開発版で、同じ LAN の2台のボードが「ボードのIP」欄を
+空のまま両方見つかることを確かめた。
 
-- 申請は developer.apple.com/contact/request/networking-multicast から出す。
+- 申請は developer.apple.com/contact/request/networking-multicast から出した。
   Apple から「どのプロトコル(IP とポート)で何をやり取りするのか」を聞き返された
   例があるので、パケット形式まで書いた説明を付けた(`ios-multicast-request.pdf`)
-- 暫定策として「ボードのIP」欄を付けた。IP が分かればユニキャストで繋がる
-- ただしボードの既定 IP はリンクローカル(`169.254.x.x`)。**iOS が Wi-Fi の
-  上でリンクローカルへユニキャストを出せるか(on-link の経路があるか)は未確認。**
-  出せないなら、ボードに静的 IP を焼くか、ゲートウェアに DHCP を入れる必要がある
-  (protocol-v0.md の「DHCP」)
-- entitlement が下りたら、プロビジョニングプロファイルに入る。`bundle.sh` は
-  プロファイルの entitlements をそのまま使うので、スクリプトの変更は要らない
-- 「ローカルネットワーク」の許可ダイアログで拒否されると同じ症状になる。
-  そのときの案内は送信失敗のメッセージに入れた
+- 許可はチーム単位で下り、**ID を明示した App ID でしか有効にできない。** 配布版
+  `jp.ohnaka.RetroCastX` と開発版 `jp.ohnaka.RetroCastX.dev` の両方で
+  Additional Capabilities の Multicast Networking を有効にし、プロファイルを
+  作り直した。Xcode が自動で作るワイルドカードのプロファイル(`<チーム>.*`)には
+  入らないので、手元の開発版も `.dev` の開発用プロファイルで署名する
+- `bundle.sh` はプロファイルの entitlements をそのまま使うので、スクリプトの
+  変更は要らなかった。入ったかは `codesign -d --entitlements :- <.app>` で見られる
+- 「ボードのIP」欄は残してある。ボードが別のセグメントにいるなど、ブロード
+  キャストが届かないときの逃げ道になる。入れると SUBSCRIBE をブロードキャストに
+  **加えて**そこへも送る
+- 「ローカルネットワーク」の許可ダイアログで拒否されると、許可が無いときと同じ
+  症状(送信自体が失敗)になる。そのときの案内は送信失敗のメッセージに入れた
 
 Android はブロードキャストの送信に制限が無い(INTERNET 権限だけ)。ボードからの
 返信はユニキャストなので、マルチキャストロックも要らない。
@@ -255,8 +259,8 @@ Android はブロードキャストの送信に制限が無い(INTERNET 権限�
    `KEYCHAIN_PASSWORD` と `APPSTORE_ISSUER_ID` / `APPSTORE_KEY_ID` /
    `APPSTORE_PRIVATE_KEY` は macOS の公証用に入っているものを使う
 
-マルチキャストの許可が下りたら、3 のプロファイルを作り直して Secret を差し替える
-(許可はプロファイル経由で署名に入る)。
+マルチキャストの許可はプロファイル経由で署名に入る。App ID の capability を
+変えたら、3 のプロファイルを作り直して Secret を差し替える。
 
 #### Android の APK を Release に添付するための準備(一度だけ)
 
