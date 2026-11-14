@@ -118,7 +118,6 @@ fn main() -> eframe::Result {
     let mut fullscreen_vsync = false;
     let mut return_window = false;
     let mut photo_lat_high = false;
-    let mut rotate: u32 = u32::MAX;   // 未指定なら設定ファイルの値を使う
     let mut target_mac: Option<[u8; 6]> = None;
     let mut decay = 0.8f32;
     // インターレース時の減衰率。既定1.0=減衰しない。
@@ -131,10 +130,11 @@ fn main() -> eframe::Result {
     //   どの番号の設定(管面・音量)で映すかを受け取るためのもの
     let slot_id: u32 = slot_arg(std::env::args().skip(1));
 
-    // 保存済み設定を読み、CLI引数があればそれで上書きする(その回だけ有効)
+    // 保存済み設定を読み、CLI引数があればそれで上書きする(その回だけ有効)。
+    // 上書きは ov に集めておき、あとで開く Viewer の窓にも同じものを当てる
     let mut cfg = settings::Settings::load_slot(slot_id);
     eprintln!("settings: {}", settings::Settings::path_for_slot(slot_id).display());
-    let mut audio = audio_opts(&cfg);
+    let mut ov = CliOverrides::default();
     let mut bind = String::from("0.0.0.0");
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -154,7 +154,7 @@ fn main() -> eframe::Result {
             "--dot-restore" => {
                 let a: f32 = args.next().expect("--dot-restore needs a (e.g. 0.36)")
                     .parse().expect("--dot-restore は 0.0〜0.9 の数値");
-                cfg.dot_a_milli = (a.clamp(0.0, 0.9) * 1000.0).round() as u32;
+                ov.dot_a_milli = Some((a.clamp(0.0, 0.9) * 1000.0).round() as u32);
             }
             "--dump-seq" => {
                 dump_seq = Some(args.next().expect("--dump-seq needs a count")
@@ -181,10 +181,10 @@ fn main() -> eframe::Result {
             // 画面回転(縦画面のゲーム用)。0/90/180/270 度、時計回り
             "--rotate" => {
                 let v: u32 = args.next().expect("--rotate needs 0|90|180|270").parse().unwrap();
-                rotate = match v {
+                ov.rotate = Some(match v {
                     0 => 0, 90 => 1, 180 => 2, 270 => 3,
                     _ => panic!("--rotate は 0/90/180/270 のいずれか"),
-                };
+                });
             }
             // 欠損ライン減衰率(1.0=前フレーム保持のまま, 0.8=毎フレーム80%へ暗転して消える)
             "--interlace-decay" => {
@@ -196,9 +196,8 @@ fn main() -> eframe::Result {
             }
             // 音声: 再生するsource(0=RGB端子音声, 1=MSX(ミニDIN8), 2=S/PDIF, 3=コンポジット)
             "--audio" => {
-                audio.source =
-                    Some(args.next().expect("--audio needs 0|1|2|3").parse().unwrap());
-                cfg.audio_source = audio.source;
+                ov.audio_source =
+                    Some(Some(args.next().expect("--audio needs 0|1|2|3").parse().unwrap()));
             }
             // MimicX への経路だけを確かめて終了する(GUIは起動しない)。
             // 「キーが効かない」ときに、宛先が無いのか送れているのかを切り分ける
@@ -248,21 +247,16 @@ fn main() -> eframe::Result {
             "--log-keys" => {
                 remote_input::LOG_KEYS.store(true, Ordering::Relaxed);
             }
-            "--no-audio" => {
-                audio.source = None;
-                cfg.audio_source = None;
-            }
+            "--no-audio" => ov.audio_source = Some(None),
             // 音量[%]。保存値より優先(その回だけ)
             "--volume" => {
                 let pct: f32 = args.next().expect("--volume needs 0..150").parse().unwrap();
-                cfg.volume = (pct / 100.0).clamp(0.0, 1.5);
+                ov.volume = Some((pct / 100.0).clamp(0.0, 1.5));
             }
             // 音声バッファ[ms]。小さいほど低遅延だが枯渇(音切れ)しやすい
             "--audio-buffer" => {
-                audio.prebuffer_ms =
-                    args.next().expect("--audio-buffer needs ms").parse().unwrap();
-                audio.max_ms = receiver::audio_max_ms(audio.prebuffer_ms);
-                cfg.audio_buffer_ms = audio.prebuffer_ms;
+                ov.audio_buffer_ms =
+                    Some(args.next().expect("--audio-buffer needs ms").parse().unwrap());
             }
             other => {
                 eprintln!("unknown arg: {other}");
@@ -271,14 +265,15 @@ fn main() -> eframe::Result {
         }
     }
 
+    ov.apply(&mut cfg);
+    let audio = audio_opts(&cfg);
     if let Some(secs) = headless_secs {
         return run_headless(port, bind, subscribe_to, target_mac, secs, decay, interlace_decay,
                             audio, dump_frame, dump_seq, cfg.dot_a_milli);
     }
     if fullscreen_mode {
-        let rot = if rotate == u32::MAX { cfg.rotate } else { rotate };
         let p = fullscreen::FsGeom {
-            rotate: rot,
+            rotate: cfg.rotate,
             tube_aspect: cfg.tube_aspect,
             time_based: cfg.tube_time_based,
             filter: cfg.filter,
@@ -304,9 +299,45 @@ fn main() -> eframe::Result {
     run_gui(
         GuiLaunch {
             port, subscribe_to, target_mac, bind, no_vsync, decay, interlace_decay, cfg, slot_id,
+            ov,
         },
         |_| {},
     )
+}
+
+/// 起動時の引数による設定の上書き。**その回に開く窓すべてに当てる。**
+///
+/// ★**主ウィンドウの設定だけに当てていた頃は、ランチャーにしたら効かなくなった。**
+///   Viewer の窓は番号ごとの設定をあとから読むので、上書きを持ち回して、窓を
+///   開くたびに当て直す(App::add_session)。
+#[derive(Clone, Debug, Default)]
+struct CliOverrides {
+    dot_a_milli: Option<u32>,
+    /// `--audio N` は Some(Some(N))、`--no-audio` は Some(None)
+    audio_source: Option<Option<u8>>,
+    volume: Option<f32>,
+    audio_buffer_ms: Option<u32>,
+    rotate: Option<u32>,
+}
+
+impl CliOverrides {
+    fn apply(&self, cfg: &mut settings::Settings) {
+        if let Some(v) = self.dot_a_milli {
+            cfg.dot_a_milli = v;
+        }
+        if let Some(v) = self.audio_source {
+            cfg.audio_source = v;
+        }
+        if let Some(v) = self.volume {
+            cfg.volume = v;
+        }
+        if let Some(v) = self.audio_buffer_ms {
+            cfg.audio_buffer_ms = v;
+        }
+        if let Some(v) = self.rotate {
+            cfg.rotate = v;
+        }
+    }
 }
 
 /// 保存済み設定から音声の開き方を作る
@@ -334,6 +365,8 @@ struct GuiLaunch {
     cfg: settings::Settings,
     /// `--no-subscribe` で開く窓の番号
     slot_id: u32,
+    /// 起動時の引数による上書き(開く窓すべてに当てる)
+    ov: CliOverrides,
 }
 
 /// eframe を起動する。`tweak` は起動直前の NativeOptions に手を入れる口
@@ -341,6 +374,7 @@ struct GuiLaunch {
 fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> eframe::Result {
     let GuiLaunch {
         port, subscribe_to, target_mac, bind, no_vsync, decay, interlace_decay, cfg, slot_id,
+        ov,
     } = l;
     let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
     // ★**モバイルでは GPU が申告する上限をそのまま要求する。** eframe の既定は
@@ -442,6 +476,7 @@ fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> efra
                 decay,
                 interlace_decay,
                 render_state: cc.wgpu_render_state.clone(),
+                ov,
                 launcher: launcher::Launcher::new(disc, cfg.board_ip.clone()),
                 launcher_geom: launcher::GeomTracker::new(launcher::Geom::load()),
                 awake: awake::KeepAwake::new(),
@@ -488,6 +523,7 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
         interlace_decay: 1.0,
         cfg,
         slot_id,
+        ov: CliOverrides::default(),
     };
     if let Err(e) = run_gui(l, |o| o.android_app = Some(app)) {
         eprintln!("eframe: {e}");
@@ -6221,6 +6257,8 @@ struct App {
     decay: f32,
     interlace_decay: f32,
     render_state: Option<eframe::egui_wgpu::RenderState>,
+    /// 起動時の引数による上書き。窓を開くたびに当てる
+    ov: CliOverrides,
     launcher: launcher::Launcher,
     /// ランチャー窓の位置と大きさ(次の起動で戻す。デスクトップだけ)
     launcher_geom: launcher::GeomTracker,
@@ -6246,6 +6284,7 @@ impl App {
         if MOBILE {
             cfg.board_ip = self.launcher.board_ip.clone();
         }
+        self.ov.apply(&mut cfg);
         let audio = audio_opts(&cfg);
         let mut s = Session::new(
             id, ctx, self.render_state.clone(), self.port, self.subscribe_to.clone(), mac,
