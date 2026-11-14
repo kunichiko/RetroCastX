@@ -18,6 +18,18 @@ pub struct CompletedFrame {
     pub lines: u32,
 }
 
+/// フレームの途中で切り出した行の帯(届いたラインから順に描く用)。
+///
+/// `rgba` は `y0` 行目から `rgba.len() / (width * 4)` 行ぶん。fb の写しなので、
+/// まだ届いていない行は含まない(描画側は前のフレームの行をそのまま残す)。
+pub struct Slice {
+    pub frame_idx: u16,
+    pub width: usize,
+    pub height: usize,
+    pub y0: usize,
+    pub rgba: Vec<u8>,
+}
+
 #[derive(Default)]
 pub struct Stats {
     pub lost_packets: u64,
@@ -142,6 +154,17 @@ pub struct FrameAssembler {
     /// 公開用バッファの使い回し先。UIが使い終わったものを recycle() で戻す。
     /// 毎フレームの確保をなくすためだけのもので、中身に意味は無い。
     spare: Option<Vec<u8>>,
+    /// **1フレームを何本の帯に分けて渡すか。0 = 分けない(フレーム全体だけ)。**
+    ///
+    /// フレーム全体は次のフレームの先頭が届いたときにしか閉じられないので、
+    /// 画面の上端でも1フレームぶん(55Hz なら 18ms)待つ。帯で渡せば、
+    /// 低遅延全画面はそのたびに画面へ出せる(fullscreen.rs)。帯の高さは
+    /// 前のフレームのライン数 / slices。YC8 は復調がフィールド単位なので分けない
+    pub slices: u32,
+    /// このフレームで、まだ帯として渡していない最初の行
+    slice_next: usize,
+    /// 切り出した帯。受信側が take_slice() で持っていく
+    slice_out: Option<Slice>,
     /// 復調を任せる常駐スレッド。None なら emit() の中で復調する
     worker: Option<DecodeWorker>,
     /// まだ復調へ渡せていないフィールドの届いた行
@@ -171,6 +194,9 @@ impl FrameAssembler {
             hist_n: Vec::new(),
             ntsc_info: None,
             spare: None,
+            slices: 0,
+            slice_next: 0,
+            slice_out: None,
             worker: None,
             pending_seen: Vec::new(),
             pending: None,
@@ -419,6 +445,7 @@ impl FrameAssembler {
                     self.last_x = vec![usize::MAX; self.height];
                     self.cur_frame = None;
                     self.px_filled = 0;
+                    self.slice_next = 0;
                 }
                 // 諸元(dotclk/hfreq/vfreq/htotal/vtotal)はボードが毎秒実測して送るので
                 // mode_idが同じでも必ず取り込む。以前はmode_id変化時のみ更新していたため
@@ -642,6 +669,7 @@ impl FrameAssembler {
                 if (l.line as usize) < self.line_seen.len() {
                     self.line_seen[l.line as usize] = true;
                 }
+                self.cut_slice(l.frame, l.line as usize + 1);
                 completed
             }
             Packet::Other { ptype, flags, seq } => {
@@ -669,7 +697,41 @@ impl FrameAssembler {
         }
     }
 
+    /// 直前の feed() で切り出した帯があれば返す
+    pub fn take_slice(&mut self) -> Option<Slice> {
+        self.slice_out.take()
+    }
+
+    /// `y1` 行目の手前まで届いた。帯1本ぶん溜まったか、前のフレームの最後の行に
+    /// 達したら切り出す
+    fn cut_slice(&mut self, frame_idx: u16, y1: usize) {
+        if self.slices == 0 || !self.raw.is_empty() || crate::lifecycle::paused() {
+            return;
+        }
+        let y1 = y1.min(self.height);
+        if y1 <= self.slice_next {
+            return;
+        }
+        // 前のフレームのライン数で割る。バッファの高さ(キャプチャ窓の最大)で割ると、
+        // 実際の絵の行数よりずっと大きく、最後の帯がフレームの終わりまで出ない
+        let lines = (self.last_frame_lines as usize).clamp(1, self.height.max(1));
+        let rows = lines.div_ceil(self.slices as usize).max(1);
+        if y1 < self.slice_next + rows && y1 < lines {
+            return;
+        }
+        let w4 = self.width * 4;
+        self.slice_out = Some(Slice {
+            frame_idx,
+            width: self.width,
+            height: self.height,
+            y0: self.slice_next,
+            rgba: self.fb[self.slice_next * w4..y1 * w4].to_vec(),
+        });
+        self.slice_next = y1;
+    }
+
     fn emit(&mut self) -> Option<CompletedFrame> {
+        self.slice_next = 0;
         // --- YC8 なら、まず復調して fb を RGB に置き換える ---
         //
         // ここでやるのは、Y/C分離のコムが上下のラインを要るのでフィールドが
@@ -1037,6 +1099,33 @@ mod tests {
         seq += 1;
         send(&mut asm, pack_line(1, seq, 0, 0, PIXFMT_RGB555, 9, 0, &px));
         assert_eq!(asm.stats.orphan_lines, 1);
+    }
+
+    /// 帯(届いたラインから順に描く用)。高さは前のフレームのライン数 / slices で、
+    /// 最後の行に達したらフレームの終わりを待たずに残りを出す
+    #[test]
+    fn slices_follow_previous_frame_lines() {
+        let mut asm = FrameAssembler::new();
+        let mut m = test_mode();
+        m.vactive = 8; // バッファは 8 行、実際の絵は 6 行
+        asm.feed(&pack_mode(&m, 0, 0));
+        asm.slices = 2;
+        let px: Vec<u8> = (0..4).flat_map(|x| rgb555(x * 8, 0, 0)).collect();
+        let mut seq = 0u16;
+        let mut got: Vec<(u16, usize, usize)> = Vec::new();
+        for frame in 0..3u16 {
+            for line in 0..6u16 {
+                seq += 1;
+                asm.feed(&pack_line(frame, seq, line, 0, PIXFMT_RGB555, 1, 0, &px));
+                if let Some(sl) = asm.take_slice() {
+                    assert_eq!((sl.width, sl.height), (4, 8));
+                    got.push((sl.frame_idx, sl.y0, sl.rgba.len() / (4 * 4)));
+                }
+            }
+        }
+        // 1フレーム目は前のライン数が分からないので1行ずつ出る。
+        // 前のフレームの 6 行が分かってからは 3 行ずつの帯が2本
+        assert_eq!(&got[got.len() - 4..], &[(1, 0, 3), (1, 3, 3), (2, 0, 3), (2, 3, 3)]);
     }
 
     /// YC8(生8bit)は byte0(緑ch=CVBS/Y)をグレースケールに置く。

@@ -275,6 +275,8 @@ pub struct Settings {
     pub spdif_volume: f32,
     /// 低遅延全画面で present をリフレッシュに合わせるか(`--vsync`)
     pub fullscreen_vsync: bool,
+    /// 低遅延全画面で、1フレームを何本の帯に分けて届いたそばから出すか(0 = 分けない)
+    pub fullscreen_slices: u32,
     /// ボードのLEDを Viewer から設定するか。false ならボードの既定に任せる
     pub led_control: bool,
     /// ボードのLEDの設定。**ボードには残らない**(電源で既定に戻る)ので、
@@ -345,6 +347,7 @@ impl Default for Settings {
             spdif_mix: false,
             spdif_volume: 1.0,
             fullscreen_vsync: false,
+            fullscreen_slices: 0,
             led_control: true,
             leds: Default::default(),
             filter: 2,
@@ -599,6 +602,7 @@ impl Settings {
                 "audio_auto" => s.audio_auto = v != "false",
                 "spdif_mix" => s.spdif_mix = v == "true",
                 "fullscreen_vsync" => s.fullscreen_vsync = v == "true",
+                "fullscreen_slices" => s.fullscreen_slices = v.parse().unwrap_or(0).min(32),
                 "led_control" => s.led_control = v != "false",
                 "leds" => {
                     // led_idle が先に読まれていることもあるので、切断中は残す
@@ -779,6 +783,7 @@ impl Settings {
              spdif_mix = {}\n\
              spdif_volume = {:.3}\n\
              fullscreen_vsync = {}\n\
+             fullscreen_slices = {}\n\
              led_control = {}\n\
              leds = {}\n\
              led_idle = {}\n",
@@ -832,6 +837,7 @@ impl Settings {
             self.spdif_mix,
             self.spdif_volume,
             self.fullscreen_vsync,
+            self.fullscreen_slices,
             self.led_control,
             self.leds.format(),
             self.leds.idle.key(),

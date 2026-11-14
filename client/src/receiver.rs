@@ -612,6 +612,10 @@ pub struct Shared {
     /// UI が選んでいる映像ソースから毎フレーム書く(詳細は assembler の ycbcr)。
     pub ycbcr: AtomicBool,
     pub frame: Mutex<Option<CompletedFrame>>,
+    /// 1フレームを何本の帯に分けて渡すか(0 = 分けない)。低遅延全画面が書く
+    /// (assembler の `slices`)。帯は `slices_q` に積み、frame と同じく repaint で知らせる
+    pub slices: AtomicU32,
+    pub slices_q: Mutex<std::collections::VecDeque<crate::assembler::Slice>>,
     /// フレーム更新の世代カウンタ(UIはこれでテクスチャ再アップロードを判定)
     pub frame_gen: AtomicU64,
     /// 描画遅延の集計(描画側が1秒ごとに書く)。パネル/端末の表示用
@@ -1488,8 +1492,20 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         asm.dot_a_milli = shared.dot_a_milli.load(Ordering::Relaxed);
         asm.ycbcr = shared.ycbcr.load(Ordering::Relaxed);
         asm.comb3d = shared.comb3d.load(Ordering::Relaxed);
+        asm.slices = shared.slices.load(Ordering::Relaxed);
         let is_line = n >= 3 && buf[2] == proto::TYPE_LINE;
         let fed = asm.feed(&buf[..n]);
+        if let Some(sl) = asm.take_slice() {
+            let mut q = shared.slices_q.lock().unwrap();
+            // 描画側が止まっている(画面が隠れている等)なら溜めない。
+            // フレーム全体が届けばそれで追いつく
+            if q.len() >= 64 {
+                q.clear();
+            }
+            q.push_back(sl);
+            drop(q);
+            repaint();
+        }
         let field_end = asm.take_field_end();
         let edges = if is_line { line_clock.on_line(rx_t, fed.is_some() || field_end) } else { None };
         if field_end {

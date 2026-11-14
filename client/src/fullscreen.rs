@@ -110,6 +110,8 @@ pub struct FsGeom {
     pub gain: f32,
     /// S/PDIF を混ぜるか・その音量
     pub spdif: (bool, f32),
+    /// 1フレームを何本の帯に分けて、届いたそばから出すか(0 = フレーム全体だけ)
+    pub slices: u32,
 }
 
 impl FsGeom {
@@ -430,6 +432,29 @@ impl Gpu {
     }
 }
 
+/// テクスチャの `y0` 行目から `rgba` の行数ぶんを書き換える
+fn write_rows(queue: &wgpu::Queue, tex: &wgpu::Texture, w: u32, y0: u32, rgba: &[u8]) {
+    let rows = (rgba.len() / (w as usize * 4)) as u32;
+    if rows == 0 {
+        return;
+    }
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d { x: 0, y: y0, z: 0 },
+            aspect: wgpu::TextureAspect::All,
+        },
+        &rgba[..(rows * w * 4) as usize],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * w),
+            rows_per_image: Some(rows),
+        },
+        wgpu::Extent3d { width: w, height: rows, depth_or_array_layers: 1 },
+    );
+}
+
 fn render_thread(
     mut gpu: Gpu,
     shared: Arc<receiver::Shared>,
@@ -458,6 +483,19 @@ fn render_thread(
         "wgpu(画面に出た時刻は測れない)"
     });
     let mut meter = crate::latency::LatencyMeter::default();
+    // 届いたラインから順に描く(帯)。受信側に分け方を伝える
+    shared.slices.store(geom.slices, Ordering::Relaxed);
+    // 帯を描いたフレームと、そのフレームで描き終えた行の末尾。
+    // ★**フレーム全体は「次のフレームの先頭」が届いて初めて閉じるので、
+    //   次のフレームの帯より後に来ることがある。** そのまま全部書くと、描いた
+    //   ばかりの上の帯が1つ前のフレームに戻って一瞬ちらつく。帯が先へ進んで
+    //   いる行は書かない
+    let mut slice_at: Option<(u16, usize)> = None;
+    // 最後に書いたフレーム全体。これより古い帯(同じフレームの帯)は捨てる
+    let mut last_full: Option<u16> = None;
+    // 前の1枚が画面に出るのを待って出しそびれたか、そのとき拾ったフレームの時刻
+    let mut owed = false;
+    let mut carry_pick: Option<(crate::latency::FrameStamps, Instant)> = None;
     // 調査用: RCX_PRESENT_CSV=パス で、フレームごとの present 呼び出しと画面に出た
     // 時刻を書き出す(ms, 起動からの経過)。present→画面 の分布や、出る時刻が
     // モニタのリフレッシュ格子に乗っているか(=vsync待ち/コンポジタ経由)を見る
@@ -488,7 +526,8 @@ fn render_thread(
             crate::audio::AudioPlayer::set_gain(a, geom.gain);
         }
         // 新フレーム到着まで待つ(タイムアウトでハートビート描画: 統計・黒画面維持)
-        let _ = rx.recv_timeout(Duration::from_millis(250));
+        // 出しそびれた絵があるときは、前の1枚が画面に出たらすぐ出せるよう短く待つ
+        let _ = rx.recv_timeout(Duration::from_millis(if owed { 1 } else { 250 }));
         let generation = shared.frame_gen.load(Ordering::Acquire);
         let fresh = generation != seen_gen;
         seen_gen = generation;
@@ -540,21 +579,36 @@ fn render_thread(
                     gpu.blit.write_uniforms(&gpu.queue, &gpu.uniform, &p, w, h, r.2, r.3);
                 }
                 let (tex, _, _, _) = texture.as_ref().unwrap();
-                gpu.queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: tex,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &frame.rgba,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(4 * w),
-                        rows_per_image: Some(h),
-                    },
-                    wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                );
+                let y0 = match slice_at {
+                    Some((f, end)) if f != frame.frame_idx => (end as u32).min(h),
+                    _ => 0,
+                };
+                if slice_at.is_some_and(|(f, _)| f == frame.frame_idx) {
+                    slice_at = None;
+                }
+                last_full = Some(frame.frame_idx);
+                if y0 < h {
+                    write_rows(&gpu.queue, tex, w, y0,
+                               &frame.rgba[(y0 * w * 4) as usize..]);
+                }
+            }
+        }
+        // 届いている帯を描く。大きさが違う(モードが変わった直後)ものは捨てる
+        let slices: Vec<crate::assembler::Slice> =
+            shared.slices_q.lock().unwrap().drain(..).collect();
+        if let Some((tex, _, tw, th)) = texture.as_ref() {
+            for sl in slices {
+                if (sl.width as u32, sl.height as u32) != (*tw, *th)
+                    || last_full == Some(sl.frame_idx)
+                {
+                    continue;
+                }
+                let end = sl.y0 + sl.rgba.len() / (sl.width * 4);
+                write_rows(&gpu.queue, tex, *tw, sl.y0 as u32, &sl.rgba);
+                slice_at = Some((sl.frame_idx, match slice_at {
+                    Some((f, e)) if f == sl.frame_idx => e.max(end),
+                    _ => end,
+                }));
             }
         }
 
@@ -588,6 +642,57 @@ fn render_thread(
             *shared.latency.lock().unwrap() = snap;
             last_log = Instant::now();
         }
+
+        // 画面に出たものを計測へ回す。出なかった(捨てられた)ものは数えない
+        #[cfg(target_os = "macos")]
+        if let Some(p) = presenter.as_ref() {
+            for (id, presented) in p.drain() {
+                let Some((fresh, acq, t_sub)) = in_flight.remove(&id) else { continue };
+                if let (Some((st, t_pick)), Some(t)) = (fresh, presented) {
+                    meter.add(&st, t_pick, Some(t_sub), Some(t));
+                }
+                if let Some(w) = present_csv.as_mut() {
+                    use std::io::Write;
+                    let ms = |x: Instant| x.saturating_duration_since(t_origin)
+                        .as_secs_f64() * 1000.0;
+                    let stages = fresh.map(|(st, tp)| format!(
+                        "{:.3},{:.3},{:.3},{:.3},{:.3}",
+                        ms(st.first), ms(st.last), ms(st.trigger),
+                        ms(st.published), ms(tp)))
+                        .unwrap_or_else(|| ",,,,".into());
+                    let _ = writeln!(w, "{id},{},{:.3},{:.3},{},{stages}",
+                        fresh.is_some() as u8,
+                        acq.as_secs_f64() * 1000.0, ms(t_sub),
+                        presented.map(|t| format!("{:.3}", ms(t)))
+                            .unwrap_or_else(|| "skipped".into()));
+                }
+            }
+            // 届かないまま溜まり続けないように(画面が隠れている等)
+            // 1秒たっても届かないものは捨てる
+            in_flight.retain(|_, v| v.2.elapsed() < Duration::from_secs(1));
+        }
+
+        // ★**帯を描くときは、前に出した1枚が画面に出るまで次を出さない。**
+        //   macOS は Immediate でも実際にはリフレッシュごとにしか受け取らず、
+        //   出しきれない present は drawable の列(最大3枚)に溜まる。16分割で
+        //   毎秒 880 回出したら列が常に詰まり、1枚ごとに3リフレッシュ待って
+        //   1フレームずつより遅くなった(平均 65 → 125ms、実測)。出さない間に
+        //   届いた帯はテクスチャへ書くだけにしておけば、次のリフレッシュには
+        //   その時点でいちばん新しい行まで入った1枚が渡る
+        #[cfg(target_os = "macos")]
+        if geom.slices > 0 && presenter.is_some()
+            && in_flight.values().any(|v| v.2.elapsed() < Duration::from_millis(50))
+        {
+            if picked.is_some() {
+                carry_pick = picked;
+            }
+            owed = true;
+            continue;
+        }
+        if picked.is_none() {
+            picked = carry_pick.take();
+        }
+        owed = false;
 
         let Some((_, bind, _, _)) = texture.as_ref() else { continue };
 
@@ -682,34 +787,6 @@ fn render_thread(
             if let Some((st, t_pick)) = picked {
                 meter.add(&st, t_pick, Some(Instant::now()), None);
             }
-        }
-        // 画面に出たものを計測へ回す。出なかった(捨てられた)ものは数えない
-        #[cfg(target_os = "macos")]
-        if let Some(p) = presenter.as_ref() {
-            for (id, presented) in p.drain() {
-                let Some((fresh, acq, t_sub)) = in_flight.remove(&id) else { continue };
-                if let (Some((st, t_pick)), Some(t)) = (fresh, presented) {
-                    meter.add(&st, t_pick, Some(t_sub), Some(t));
-                }
-                if let Some(w) = present_csv.as_mut() {
-                    use std::io::Write;
-                    let ms = |x: Instant| x.saturating_duration_since(t_origin)
-                        .as_secs_f64() * 1000.0;
-                    let stages = fresh.map(|(st, tp)| format!(
-                        "{:.3},{:.3},{:.3},{:.3},{:.3}",
-                        ms(st.first), ms(st.last), ms(st.trigger),
-                        ms(st.published), ms(tp)))
-                        .unwrap_or_else(|| ",,,,".into());
-                    let _ = writeln!(w, "{id},{},{:.3},{:.3},{},{stages}",
-                        fresh.is_some() as u8,
-                        acq.as_secs_f64() * 1000.0, ms(t_sub),
-                        presented.map(|t| format!("{:.3}", ms(t)))
-                            .unwrap_or_else(|| "skipped".into()));
-                }
-            }
-            // 届かないまま溜まり続けないように(画面が隠れている等)
-            // 1秒たっても届かないものは捨てる
-            in_flight.retain(|_, v| v.2.elapsed() < Duration::from_secs(1));
         }
 
         if fresh {
