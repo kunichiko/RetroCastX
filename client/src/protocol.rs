@@ -311,6 +311,8 @@ pub fn pack_config(
     p
 }
 
+/// ビルド元コミットの短縮SHA(読み取り専用)。往復時間の問い合わせにも使う(rtt.rs)
+pub const CFG_KEY_BUILD_ID: u16 = 0x0009;
 pub const CFG_KEY_VBP: u16 = 0x0010;
 pub const CFG_KEY_HS_OFFSET: u16 = 0x0011;
 pub const CFG_KEY_PLL_DIVIDE: u16 = 0x0012;

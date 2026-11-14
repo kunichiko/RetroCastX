@@ -36,7 +36,7 @@ midir = "0.11"
 # イベントを直接見るしかない
 objc2 = "0.6"
 block2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSEvent", "block2"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSEvent", "NSCursor", "block2"] }
 # フルスクリーンで「実際に画面に出た時刻」(MTLDrawable.presentedTime)を取るため
 # (src/metal_present.rs)。wgpu-hal が使っているのと同じ版に揃える
 objc2-metal = { version = "0.3", default-features = false, features = [
@@ -45,6 +45,11 @@ objc2-metal = { version = "0.3", default-features = false, features = [
 ] }
 objc2-quartz-core = { version = "0.3", default-features = false, features = [
     "std", "CALayer", "CAMetalLayer", "objc2-metal",
+] }
+# 全画面で Metal の HUD を出し入れするため(CAMetalLayer.developerHUDProperties は
+# NSDictionary で渡す。src/metal_present.rs)
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std", "NSDictionary", "NSString",
 ] }
 
 # iOS: 消音スイッチで黙らないよう AVAudioSession のカテゴリを再生用にする

@@ -9,7 +9,7 @@
 //! UIはなし(統計はstderrに毎秒出力)。ESCまたはウィンドウクローズで終了。
 //! ⌘L(Windows/Linux は Ctrl+L)で表示遅延の計測を開始/停止する(photo_lat.rs)。
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,6 +33,23 @@ pub fn run(port: u16, bind: String, subscribe_to: Option<String>, target_mac: Op
            interlace_decay: f32,
            audio: receiver::AudioOpts, params: FsGeom, vsync: bool,
            return_window: bool, photo_lat_high: bool) -> ! {
+    // Metal の HUD(⌘I で出し入れ)。HUD は Metal を初期化するときに環境変数を見て
+    // 読み込まれるので、ここで入れておき、出すかどうかは layer の設定で切り替える。
+    // 自分で MTL_HUD_ENABLED を付けて起動したときは最初から出す。
+    // ★**右下に置く。** 既定の右上は macOS のメニュー(上端にカーソルを持って
+    //   いくと出る)と重なる。MTL_HUD_ALIGNMENT を自分で指定したときはそちらに従う
+    let hud_given = std::env::var_os("MTL_HUD_ENABLED").is_some();
+    let align_given = std::env::var_os("MTL_HUD_ALIGNMENT").is_some();
+    // SAFETY: まだ他のスレッドを立てていない(受信スレッドはこの後で作る)
+    unsafe {
+        if !hud_given {
+            std::env::set_var("MTL_HUD_ENABLED", "1");
+        }
+        if !align_given {
+            std::env::set_var("MTL_HUD_ALIGNMENT", "bottomright");
+        }
+    }
+    let hud = Arc::new(AtomicBool::new(hud_given));
     let shared = Arc::new(receiver::Shared::default());
     // 受信(=再生器を開く)より前に入れる。後からだと開いた直後に 100% で鳴る
     *shared.gain.lock().unwrap() = Some(params.gain);
@@ -69,7 +86,7 @@ pub fn run(port: u16, bind: String, subscribe_to: Option<String>, target_mac: Op
     let event_loop = EventLoop::new().unwrap();
     let shared_at_exit = shared.clone();
     let mut app = App { lat_shared: shared.clone(), lat_on: false, lat_high: photo_lat_high,
-                        shared: Some((shared, rx)), window: None,
+                        shared: Some((shared, rx)), window: None, hud, cursor_hidden: false,
                         size: Arc::new(AtomicU64::new(0)), params, vsync,
                         remote: remote_input::RemoteInput::default(),
                         remote_toggle: Default::default(), remote_mods: Default::default(),
@@ -83,6 +100,18 @@ pub fn run(port: u16, bind: String, subscribe_to: Option<String>, target_mac: Op
     // パネルの「低遅延全画面」から来たときは、ウィンドウ表示へ戻す。
     // 受信中のボードを指定して戻る(戻った先で別のボードを掴まないように)
     if return_window {
+        // 入れた HUD の環境変数を戻ったウィンドウ表示へ持ち込まない
+        // (ウィンドウ表示には HUD を消す手段が無く、出しっぱなしになる)
+        // SAFETY: 描画スレッドは event loop と一緒に終わっている。受信スレッドは
+        // 環境変数を読まない
+        unsafe {
+            if !hud_given {
+                std::env::remove_var("MTL_HUD_ENABLED");
+            }
+            if !align_given {
+                std::env::remove_var("MTL_HUD_ALIGNMENT");
+            }
+        }
         let mac = *shared_at_exit.claimed.lock().unwrap();
         let extra: Vec<String> = mac
             .map(|m| vec!["--mac".into(), crate::format_mac(&m)])
@@ -158,6 +187,11 @@ struct App {
     lat_on: bool,
     /// センサーが光ると High(`--photo-lat-high`)
     lat_high: bool,
+    /// Metal の HUD を出すか(⌘I)。描画スレッドが layer に反映する
+    hud: Arc<AtomicBool>,
+    /// NSCursor.hide を呼んで、まだ unhide していないか(hide/unhide は回数で数える
+    /// ので、前面に来たら1回隠し、裏へ回ったら1回戻す)
+    cursor_hidden: bool,
     window: Option<Arc<Window>>,
     size: Arc<AtomicU64>, // (w<<32)|h — リサイズをrenderスレッドへ伝える
     params: FsGeom,
@@ -176,6 +210,19 @@ struct App {
 }
 
 impl App {
+    /// 前面にいる間はカーソルを隠す(macOS)。hide/unhide は回数で数えるので
+    /// 状態を持って釣り合わせる
+    fn set_cursor(&mut self, hide: bool) {
+        #[cfg(target_os = "macos")]
+        if hide != self.cursor_hidden {
+            use objc2_app_kit::NSCursor;
+            if hide { NSCursor::hide() } else { NSCursor::unhide() }
+            self.cursor_hidden = hide;
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = hide;
+    }
+
     /// ⌘L。止めたら少し待って集計を読み、stderr に出す
     /// (パネルが無いので。ウィンドウ表示に戻ればパネルでも読める)
     fn toggle_photo_lat(&mut self) {
@@ -242,6 +289,13 @@ impl ApplicationHandler for App {
                 )
                 .unwrap(),
         );
+        // ★**カーソルは隠す。** 全画面にマウスで触るものは無い。カーソルが出て
+        //   いると macOS は直接表示(Direct)をやめて合成に戻し、出るまでの間隔が
+        //   延びる(Metal HUD の Frame Interval が 2.5ms → 20ms 前後、実測)。
+        //   macOS は winit の set_cursor_visible では消えなかったので NSCursor で
+        //   隠す(set_cursor)。他の OS 向けに winit の方も呼んでおく
+        window.set_cursor_visible(false);
+        self.set_cursor(true);
         self.window = Some(window.clone());
         let sz = window.inner_size();
         self.size
@@ -252,7 +306,8 @@ impl ApplicationHandler for App {
         let (shared, rx) = self.shared.take().unwrap();
         let size = self.size.clone();
         let p = self.params.clone();
-        std::thread::spawn(move || render_thread(gpu, shared, rx, size, p));
+        let hud = self.hud.clone();
+        std::thread::spawn(move || render_thread(gpu, shared, rx, size, p, hud));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -294,6 +349,21 @@ impl ApplicationHandler for App {
                     && event.state.is_pressed() && !event.repeat
                 {
                     self.toggle_photo_lat();
+                    return;
+                }
+                // ⌘I で Metal の HUD を出し入れ、⌘F で全画面を抜ける(ウィンドウ表示の
+                // ⌘F で入るのと対)。⌘ 付きなので、キー転送中でも横取りしてよい
+                if code == Some(KeyCode::KeyI) && self.remote_mods.command
+                    && event.state.is_pressed() && !event.repeat
+                {
+                    let on = !self.hud.load(Ordering::Relaxed);
+                    self.hud.store(on, Ordering::Relaxed);
+                    return;
+                }
+                if code == Some(KeyCode::KeyF) && self.remote_mods.command
+                    && event.state.is_pressed() && !event.repeat
+                {
+                    event_loop.exit();
                     return;
                 }
                 if let Some(code) = code {
@@ -360,6 +430,8 @@ impl ApplicationHandler for App {
                 }
                 self.remote.update(focused);
                 self.awake.set(focused);
+                // ⌘Tab などで裏へ回ったらカーソルを戻し、前面に戻ったらまた隠す
+                self.set_cursor(focused);
             }
             WindowEvent::Resized(sz) => {
                 self.size
@@ -455,12 +527,25 @@ fn write_rows(queue: &wgpu::Queue, tex: &wgpu::Texture, w: u32, y0: u32, rgba: &
     );
 }
 
+/// 調査用(white.csv): 暗→明を見る行。プログレッシブは1行おきにしか埋まらないので
+/// この行と次の行の明るい方を見る
+const WHITE_ROW: u32 = 16;
+
+/// `rgba`(`y0` 行目から始まる幅 `w` の行)の `row` 行目・中央が明るいか
+fn bright_at(rgba: &[u8], w: usize, y0: usize, row: usize) -> bool {
+    [row, row + 1].iter().any(|&r| {
+        let o = ((r - y0) * w + w / 2) * 4;
+        rgba.get(o..o + 3).is_some_and(|p| p.iter().any(|&c| c > 128))
+    })
+}
+
 fn render_thread(
     mut gpu: Gpu,
     shared: Arc<receiver::Shared>,
     rx: Receiver<()>,
     size: Arc<AtomicU64>,
     geom: FsGeom,
+    hud: Arc<AtomicBool>,
 ) {
     let mut texture: Option<(wgpu::Texture, wgpu::BindGroup, u32, u32)> = None;
     let mut fail_count = 0u64;
@@ -483,6 +568,11 @@ fn render_thread(
         "wgpu(画面に出た時刻は測れない)"
     });
     let mut meter = crate::latency::LatencyMeter::default();
+    // Metal の HUD を layer に反映した値(⌘I で変わったら設定し直す)
+    #[cfg(target_os = "macos")]
+    let mut hud_applied: Option<bool> = None;
+    #[cfg(not(target_os = "macos"))]
+    let _ = &hud;
     // 届いたラインから順に描く(帯)。受信側に分け方を伝える
     shared.slices.store(geom.slices, Ordering::Relaxed);
     // 帯を描いたフレームと、そのフレームで描き終えた行の末尾。
@@ -505,7 +595,7 @@ fn render_thread(
         .map(std::io::BufWriter::new);
     if let Some(w) = present_csv.as_mut() {
         use std::io::Write;
-        let _ = writeln!(w, "id,fresh,acquire_ms,submit_ms,presented_ms,\
+        let _ = writeln!(w, "id,fresh,acquire_ms,submit_ms,presented_ms,drained_ms,\
                              first_ms,last_ms,trigger_ms,published_ms,picked_ms");
     }
     // present 済みで画面に出るのを待っているもの:
@@ -519,11 +609,46 @@ fn render_thread(
     let mut in_flight: std::collections::HashMap<
         u64, (Option<(crate::latency::FrameStamps, Instant)>, Duration, Instant)> =
         Default::default();
+    // 調査用: present の CSV と並べて、センサーの1回ごとの値を <パス>.photo.csv に
+    // 書く(同じ時刻の基準)。ボードは集計しか返さないので、回数が増えたら直近の値を拾う
+    let mut photo_csv = std::env::var("RCX_PRESENT_CSV").ok()
+        .and_then(|p| std::fs::File::create(format!("{p}.photo.csv")).ok())
+        .map(std::io::BufWriter::new);
+    if let Some(w) = photo_csv.as_mut() {
+        use std::io::Write;
+        let _ = writeln!(w, "seen_ms,count,last_us");
+    }
+    let mut photo_polled = Instant::now();
+    let mut photo_count: Option<u32> = None;
+    // 調査用: 画面上端の近く(WHITE_ROW 行目の中央)が暗→明に変わった瞬間を
+    // <パス>.white.csv に書く。帯/フレーム全体のどちらで書いたか、帯が届いた時刻、
+    // それを載せた present とその presentedTime。センサーの値と時刻で突き合わせる
+    let mut white_csv = std::env::var("RCX_PRESENT_CSV").ok()
+        .and_then(|p| std::fs::File::create(format!("{p}.white.csv")).ok())
+        .map(std::io::BufWriter::new);
+    if let Some(w) = white_csv.as_mut() {
+        use std::io::Write;
+        let _ = writeln!(w, "src,rx_ms,written_ms,submit_ms,presented_ms");
+    }
+    let mut top_bright = false;
+    // 明るくなったがまだ present していないもの: (帯/全体, 届いた, 書いた)
+    let mut white_pending: Option<(&'static str, Option<Instant>, Instant)> = None;
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut white_inflight: std::collections::HashMap<
+        u64, (&'static str, Option<Instant>, Instant)> = Default::default();
 
     loop {
         // 音量。再生器はデバイスの開き直しで作り直され、そのたびに 1.0 に戻るので毎回掛ける
         if let Some(a) = shared.audio.lock().unwrap().as_ref() {
             crate::audio::AudioPlayer::set_gain(a, geom.gain);
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(p) = presenter.as_ref() {
+            let want = hud.load(Ordering::Relaxed);
+            if hud_applied != Some(want) {
+                p.set_hud(want);
+                hud_applied = Some(want);
+            }
         }
         // 新フレーム到着まで待つ(タイムアウトでハートビート描画: 統計・黒画面維持)
         // 出しそびれた絵があるときは、前の1枚が画面に出たらすぐ出せるよう短く待つ
@@ -590,6 +715,13 @@ fn render_thread(
                 if y0 < h {
                     write_rows(&gpu.queue, tex, w, y0,
                                &frame.rgba[(y0 * w * 4) as usize..]);
+                    if white_csv.is_some() && y0 <= WHITE_ROW {
+                        let b = bright_at(&frame.rgba, w as usize, 0, WHITE_ROW as usize);
+                        if b && !top_bright {
+                            white_pending = Some(("full", None, Instant::now()));
+                        }
+                        top_bright = b;
+                    }
                 }
             }
         }
@@ -605,6 +737,13 @@ fn render_thread(
                 }
                 let end = sl.y0 + sl.rgba.len() / (sl.width * 4);
                 write_rows(&gpu.queue, tex, *tw, sl.y0 as u32, &sl.rgba);
+                if white_csv.is_some() && (sl.y0..end).contains(&(WHITE_ROW as usize)) {
+                    let b = bright_at(&sl.rgba, sl.width, sl.y0, WHITE_ROW as usize);
+                    if b && !top_bright {
+                        white_pending = Some(("slice", Some(sl.t), Instant::now()));
+                    }
+                    top_bright = b;
+                }
                 slice_at = Some((sl.frame_idx, match slice_at {
                     Some((f, e)) if f == sl.frame_idx => e.max(end),
                     _ => end,
@@ -639,6 +778,9 @@ fn render_thread(
                     .map(|m| 1.0e6 / m.vfreq_mhz_x1000 as f32);
                 eprintln!("{}", snap.describe(frame_ms));
             }
+            if let Some(line) = shared.rtt.lock().unwrap().describe() {
+                eprintln!("{line}");
+            }
             *shared.latency.lock().unwrap() = snap;
             last_log = Instant::now();
         }
@@ -647,6 +789,18 @@ fn render_thread(
         #[cfg(target_os = "macos")]
         if let Some(p) = presenter.as_ref() {
             for (id, presented) in p.drain() {
+                if let (Some((src, rx, wr)), Some(w)) =
+                    (white_inflight.remove(&id), white_csv.as_mut())
+                {
+                    use std::io::Write;
+                    let ms = |x: Instant| format!("{:.3}", x.saturating_duration_since(t_origin)
+                        .as_secs_f64() * 1000.0);
+                    let sub = in_flight.get(&id).map(|v| ms(v.2)).unwrap_or_default();
+                    let _ = writeln!(w, "{src},{},{},{sub},{}",
+                        rx.map(ms).unwrap_or_default(), ms(wr),
+                        presented.map(ms).unwrap_or_else(|| "skipped".into()));
+                    let _ = w.flush();
+                }
                 let Some((fresh, acq, t_sub)) = in_flight.remove(&id) else { continue };
                 if let (Some((st, t_pick)), Some(t)) = (fresh, presented) {
                     meter.add(&st, t_pick, Some(t_sub), Some(t));
@@ -660,16 +814,44 @@ fn render_thread(
                         ms(st.first), ms(st.last), ms(st.trigger),
                         ms(st.published), ms(tp)))
                         .unwrap_or_else(|| ",,,,".into());
-                    let _ = writeln!(w, "{id},{},{:.3},{:.3},{},{stages}",
+                    // drained: presented handler の結果をこちらで受け取った時刻。
+                    // 帯のときはこれを待って次を出すので、ハンドラの遅れがそのまま効く
+                    let _ = writeln!(w, "{id},{},{:.3},{:.3},{},{:.3},{stages}",
                         fresh.is_some() as u8,
                         acq.as_secs_f64() * 1000.0, ms(t_sub),
                         presented.map(|t| format!("{:.3}", ms(t)))
-                            .unwrap_or_else(|| "skipped".into()));
+                            .unwrap_or_else(|| "skipped".into()),
+                        ms(Instant::now()));
                 }
             }
             // 届かないまま溜まり続けないように(画面が隠れている等)
             // 1秒たっても届かないものは捨てる
             in_flight.retain(|_, v| v.2.elapsed() < Duration::from_secs(1));
+        }
+
+        if let Some(w) = photo_csv.as_mut() {
+            let st = shared.config_state.lock().unwrap();
+            let count = st.get(&crate::protocol::CFG_KEY_PLAT_COUNT).map(|c| c & 0xFFFF);
+            let last = st.get(&crate::protocol::CFG_KEY_PLAT_LAST).copied();
+            drop(st);
+            if let (Some(c), Some(l)) = (count, last) {
+                if photo_count.is_some_and(|p| p != c) {
+                    use std::io::Write;
+                    let ms = Instant::now().saturating_duration_since(t_origin)
+                        .as_secs_f64() * 1000.0;
+                    let _ = writeln!(w, "{ms:.3},{c},{l}");
+                    // 全画面は exit で抜けるので BufWriter は捨てられる。毎回書き出す
+                    let _ = w.flush();
+                }
+                photo_count = Some(c);
+            }
+            if photo_polled.elapsed() >= Duration::from_millis(50) {
+                photo_polled = Instant::now();
+                shared.config_get_queue.lock().unwrap().extend([
+                    crate::protocol::CFG_KEY_PLAT_LAST,
+                    crate::protocol::CFG_KEY_PLAT_COUNT,
+                ]);
+            }
         }
 
         // ★**帯を描くときは、前に出した1枚が画面に出るまで次を出さない。**
@@ -780,6 +962,9 @@ fn render_thread(
         if let (Some(a), Some(p)) = (acquired.take(), presenter.as_mut()) {
             let id = p.present(a);
             in_flight.insert(id, (picked, t_acq_dur, Instant::now()));
+            if let Some(wp) = white_pending.take() {
+                white_inflight.insert(id, wp);
+            }
         }
         if let Some(f) = wgpu_frame {
             f.present();

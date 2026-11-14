@@ -114,6 +114,21 @@ impl MetalPresenter {
         id
     }
 
+    /// Metal の HUD(画面隅の性能表示)を出す/消す。HUD 自体は環境変数
+    /// MTL_HUD_ENABLED で読み込まれている必要がある(fullscreen.rs が起動時に入れる)
+    pub fn set_hud(&self, on: bool) {
+        use objc2_foundation::{NSDictionary, NSString};
+        let key = NSString::from_str("mode");
+        let val = NSString::from_str(if on { "default" } else { "disabled" });
+        let dict = NSDictionary::from_slices(&[&*key], &[&*val]);
+        // SAFETY: HUD の設定は NSString → NSString の辞書(Apple の文書どおり)。
+        // 受け口は型引数を持たない NSDictionary なので型だけ合わせる
+        unsafe {
+            let dict = dict.cast_unchecked::<objc2::runtime::AnyObject, objc2::runtime::AnyObject>();
+            self.layer.setDeveloperHUDProperties(Some(dict));
+        }
+    }
+
     /// 画面に出た(または出なかった)drawable を取り出す。出なかったものは None。
     pub fn drain(&self) -> Vec<(u64, Option<Instant>)> {
         let v = std::mem::take(&mut *self.done.lock().unwrap());
