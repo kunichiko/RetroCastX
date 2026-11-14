@@ -5477,47 +5477,50 @@ impl Session {
 
         ui.add_space(6.0);
         // --- 名前 ---
-        let mut send_name: Option<[u32; 4]> = None;
+        // ★**使えない文字は削らずに断る。** 黙って直すと、日本語の名前が
+        //   一部だけ残った別物になる。送る前に理由を出し、直すのはユーザーに任せる
+        let mut try_name = false;
         ui.horizontal(|ui| {
             theme::label_col(ui, "名前");
             let buf = self.ident_name_edit.get_or_insert_with(|| board_name.clone());
             let resp = ui.add(
                 egui::TextEdit::singleline(buf)
                     .desired_width(theme::SLIDER_W + 40.0)
-                    .hint_text("16バイトまで"),
+                    .hint_text("英数字と - _ . で16文字まで"),
             );
-            let bytes = buf.as_bytes().len();
-            let ok = bytes <= 16;
-            if (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) && ok {
-                send_name = Self::name_to_words(buf);
-            }
-            if !ok {
-                ui.label(
-                    egui::RichText::new(format!("{bytes}B"))
-                        .size(10.0)
-                        .color(theme::AMBER),
-                )
-                .on_hover_text("ANNOUNCE の name は16バイト固定です。日本語は1文字3バイト");
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                try_name = true;
             }
         });
+        if let Some(why) = self.ident_name_edit.as_deref().and_then(board_name_problem) {
+            ui.horizontal(|ui| {
+                theme::label_col(ui, "");
+                ui.label(egui::RichText::new(why).size(10.0).color(theme::AMBER));
+            });
+        }
         if self.ident_name_edit.as_deref() != Some(board_name.as_str()) {
             ui.horizontal(|ui| {
                 theme::label_col(ui, "");
-                let ok = self
-                    .ident_name_edit
-                    .as_deref()
-                    .map_or(false, |b| b.as_bytes().len() <= 16);
+                // 押せなくはしない。押せないと、なぜ送れないのかが伝わらない
                 if ui
-                    .add_enabled(ok, egui::Button::new("適用"))
+                    .button("適用")
                     .on_hover_text("ボードに送る。焼くまでは電源で消えます")
                     .clicked()
                 {
-                    send_name = Self::name_to_words(self.ident_name_edit.as_deref().unwrap_or(""));
+                    try_name = true;
                 }
                 if ui.button("戻す").clicked() {
                     self.ident_name_edit = None;
                 }
             });
+        }
+        let mut send_name: Option<[u32; 4]> = None;
+        if try_name {
+            let edit = self.ident_name_edit.clone().unwrap_or_default();
+            match board_name_problem(&edit) {
+                Some(why) => self.toasts.notice(why),
+                None => send_name = Self::name_to_words(&edit),
+            }
         }
         if let Some(w) = send_name {
             for (k, v) in [
@@ -6146,6 +6149,45 @@ impl Session {
         // (両方送ると二重入力になる)
         ui.weak("ゲームパッドは MimicX が直接受け取ります");
     }
+}
+
+/// ボード名の長さの上限(ANNOUNCE の name 欄が16バイト固定)
+const BOARD_NAME_MAX: usize = 16;
+
+/// ボード名に使える文字か。英数字と `-` `_` `.` と空白だけ。
+///
+/// ★**ASCII に絞る。** 16バイトでは日本語が5文字しか入らず、どこで切れるかが
+///   文字数から読めない(プロトコル上は UTF-8 なので、受ける側は日本語も表示する)
+fn board_name_char_ok(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' ')
+}
+
+/// ボード名として送れない理由。送れるなら None。
+fn board_name_problem(name: &str) -> Option<String> {
+    let mut bad: Vec<char> = Vec::new();
+    for c in name.chars().filter(|c| !board_name_char_ok(*c)) {
+        if !bad.contains(&c) {
+            bad.push(c);
+        }
+    }
+    if !bad.is_empty() {
+        let shown: Vec<String> = bad
+            .iter()
+            .take(5)
+            .map(|c| if c.is_control() { "制御文字".to_string() } else { format!("「{c}」") })
+            .collect();
+        let more = if bad.len() > 5 { " など" } else { "" };
+        return Some(format!(
+            "使用できない文字が含まれています: {}{more}\n\
+             使える文字は英数字(A-Z a-z 0-9)と - _ . と空白です",
+            shown.join("")
+        ));
+    }
+    let n = name.len();
+    if n > BOARD_NAME_MAX {
+        return Some(format!("名前は{BOARD_NAME_MAX}文字までです(いま{n}文字)"));
+    }
+    None
 }
 
 /// アプリ本体。**ウィンドウ(セッション)を束ねるだけ。**
@@ -6802,6 +6844,20 @@ mod tests {
         // UTF-8 は文字数ではなくバイト数で効く(6文字=18バイト)
         assert!(Session::name_to_words("あいうえおか").is_none());
         assert!(Session::name_to_words("あいうえお").is_some());
+    }
+
+    /// ★**使えない文字は削らずに理由を返す。** 黙って削ると日本語の名前が
+    ///   別物になる(実機で分かりにくかった)。ハイフン入りは通す
+    #[test]
+    fn board_name_problem_rejects_instead_of_stripping() {
+        for ok in ["proto-1", "retrocastx-i5", "Board_2.a b", "0123456789abcdef", ""] {
+            assert_eq!(super::board_name_problem(ok), None, "{ok:?} を断った");
+        }
+        let why = super::board_name_problem("試作-1").expect("日本語を通した");
+        assert!(why.contains("「試」「作」"), "{why}");
+        assert!(why.contains("使える文字"), "{why}");
+        assert!(super::board_name_problem("a/b").is_some());
+        assert!(super::board_name_problem("0123456789abcdefg").unwrap().contains("17文字"));
     }
 
     /// 語の並びが**電線上のバイト順**と一致していること。ここがずれると
