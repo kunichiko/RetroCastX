@@ -448,6 +448,28 @@ pub struct EguiBlit {
 ///   どちらも「片側だけ変換」が原因なので、**両者の sRGB 性を揃える**。
 ///   揃えれば復号と再符号化が打ち消し合う(または両方起きない)ので、
 ///   格納バイトがそのまま画面に出る。
+/// 環境変数 RCX_BACKEND で描画 API を選ぶ(`dx12` / `vulkan` / `metal` / `gl`、
+/// カンマ区切りで複数も可)。指定が無いか読めなければ None(wgpu に任せる)。
+///
+/// ★**wgpu に任せると Windows では Vulkan が選ばれやすい**(バックエンドを
+///   Vulkan → DX12 の順に数えるため)。遅延がどちらで小さいかは実機で比べる
+///   まで分からないので、切り替えて測れるようにしておく
+pub fn backends_from_env() -> Option<wgpu::Backends> {
+    let v = std::env::var("RCX_BACKEND").ok()?;
+    let b = wgpu::Backends::from_comma_list(&v);
+    if b.is_empty() {
+        eprintln!("RCX_BACKEND={v} は分からないので無視します(dx12 / vulkan / metal / gl)");
+        return None;
+    }
+    Some(b)
+}
+
+/// 選ばれたアダプタの1行(起動時のログ用)。どの API で動いているかを残す
+pub fn describe_adapter(info: &wgpu::AdapterInfo) -> String {
+    format!("{:?} / {} ({:?}) / driver {} {}",
+            info.backend, info.name, info.device_type, info.driver, info.driver_info)
+}
+
 pub fn video_tex_format(target: wgpu::TextureFormat) -> wgpu::TextureFormat {
     if target.is_srgb() {
         wgpu::TextureFormat::Rgba8UnormSrgb

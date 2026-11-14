@@ -366,6 +366,10 @@ macOS はフォーカスの無いアプリにキーイベントを配送しな�
 タイムスタンプ駆動のジッタ平滑化(到着ゆらぎをドットクロック時刻で吸収)は次段。
 
 Windows側は wgpu Immediate が DXGI allow-tearing にマップされるので FreeSync で同様の構成が取れる見込み。
+★ただしこれは DX12 のときの話。**wgpu に任せると Windows では Vulkan が選ばれやすい**
+(バックエンドを Vulkan → DX12 の順に数える)。どちらで動いたかは起動時のログ
+(`adapter: …` / `fullscreen: adapter …`)に出るので、`RCX_BACKEND=dx12` と
+`RCX_BACKEND=vulkan`(PowerShell なら `$env:RCX_BACKEND="dx12"`)で起動して測り比べる。
 
 #### ProMotionパネルでの追従確認(2026-08-06, MacBook Pro M5 Pro + 内蔵XDR 120Hz, macOS 26.4)
 
