@@ -140,12 +140,14 @@ class World:
         self.results = []            # (サイクル, 計れた値)
         self.events = []             # (サイクル, センサーを光らせるか)
         self.sensor_row_white = []   # (サイクル, センサーの行が白で届いたか)
+        self.marker = []             # (サイクル, マーカーの新しい値)
 
 
 def world_proc(dut, w, n_cycles, script):
     words = []
     lit = False
     last_count = 0
+    marker = 0
     while w.cycle < n_cycles:
         if w.cycle % 10_000 == 0:
             print(f"  … {w.cycle}/{n_cycles} サイクル  計測 {len(w.results)} 回",
@@ -172,6 +174,10 @@ def world_proc(dut, w, n_cycles, script):
             if at == w.cycle:
                 lit = on
         yield dut.sensor.eq(0 if (lit and not w.blind) else 1)
+        m = (yield dut.lat.marker)
+        if m != marker:
+            marker = m
+            w.marker.append((w.cycle, m))
         cnt = (yield dut.lat.stat_count) & 0xFFFF
         if cnt != last_count:
             last_count = cnt
@@ -239,6 +245,20 @@ def main():
               f"期待 {want:5d}µs  計測 {val:5d}µs")
         if not (want - 1 <= val <= want + 2):
             bad.append(f"計測値 {val} が期待 {want} とずれている")
+
+    # 1b. マーカーは起点で上がり、判定で落ちる(オシロ用)
+    rises = [c for c, v in w.marker if v]
+    falls = [c for c, v in w.marker if not v]
+    for go in w.go:
+        if not any(0 < r - go <= 2 for r in rises):
+            bad.append(f"起点 {go} でマーカーが上がっていない")
+    for at, _ in w.results:
+        if not any(0 <= f - at <= 2 for f in falls):
+            bad.append(f"判定 {at} でマーカーが落ちていない")
+    if len(rises) != len(w.go):
+        bad.append(f"マーカーの立ち上がり {len(rises)} 回が起点 {len(w.go)} 回と合わない")
+    if w.marker and w.marker[-1][1]:
+        bad.append("計測をやめた後もマーカーが High のまま")
 
     # 2/3/4. フレームの中身
     frames = lines_by_frame(w)
