@@ -31,6 +31,7 @@ mod appicon;
 mod assembler;
 mod auto_skip;
 mod decode_worker;
+mod discovery;
 mod awake;
 mod audio;
 mod bezel;
@@ -44,6 +45,7 @@ mod keytap;
 mod latency;
 mod leds;
 mod letterbox;
+mod launcher;
 mod lifecycle;
 mod link;
 #[cfg(target_os = "macos")]
@@ -74,7 +76,7 @@ use eframe::egui;
 
 /// iPhone/iPad/Android。窓が1枚で全画面、キーボードもマウスも無い前提の
 /// 切り替え(別プロセスの低遅延全画面・複数ウィンドウ・Tab 等のキー操作を出さない)
-const MOBILE: bool = cfg!(any(target_os = "ios", target_os = "android"));
+pub(crate) const MOBILE: bool = cfg!(any(target_os = "ios", target_os = "android"));
 
 /// コンソールから起動されたときだけ、その親コンソールへ標準出力を戻す。
 /// Explorer から起動したときは親が無いので何も起きない(コンソールは出ない)。
@@ -125,8 +127,9 @@ fn main() -> eframe::Result {
     // 少し減衰させたい人もいるので設定にしてある。
     let mut interlace_decay = 1.0f32;
     // ★**ウィンドウ番号はアプリが配る。** 1プロセスで複数のウィンドウを開く
-    //   ので、プロセスごとにロックを取る必要はもう無い。0番が主ウィンドウ。
-    let slot_id: u32 = 0;
+    //   ので、プロセスごとにロックを取る必要はもう無い。`--slot` は低遅延全画面が
+    //   どの番号の設定(管面・音量)で映すかを受け取るためのもの
+    let slot_id: u32 = slot_arg(std::env::args().skip(1));
 
     // 保存済み設定を読み、CLI引数があればそれで上書きする(その回だけ有効)
     let mut cfg = settings::Settings::load_slot(slot_id);
@@ -138,6 +141,8 @@ fn main() -> eframe::Result {
         match a.as_str() {
             "--board" => subscribe_to = Some(args.next().expect("--board needs an IP")),
             "--mac" => target_mac = Some(parse_mac(&args.next().expect("--mac needs AA:BB:.."))),
+            // slot_arg が先に読んでいる
+            "--slot" => { args.next(); }
             "--port" => port = args.next().expect("--port needs a value").parse().unwrap(),
             "--no-subscribe" => subscribe_to = None,
             // 受信/送信ソケットを1つのNICに縛る。**VPN下でも通常は不要**
@@ -226,6 +231,20 @@ fn main() -> eframe::Result {
                 }
                 std::process::exit(0);
             }
+            // ランチャーと同じ発見(ANNOUNCE_ONLY)だけをして一覧を出し、終了する。
+            // 映像の送り先は動かないので、他の Viewer が見ているボードにも使える
+            "--list-boards" => {
+                let d = discovery::spawn(bind.clone(), port, || {});
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                println!("探索 → {}", d.sub_dest.lock().unwrap());
+                if let Some(e) = d.net_error.lock().unwrap().as_ref() {
+                    println!("{e}");
+                }
+                for b in d.list() {
+                    println!("{}  {:<16}  {}", claim::mac_string(&b.mac), b.name, b.addr);
+                }
+                std::process::exit(0);
+            }
             "--log-keys" => {
                 remote_input::LOG_KEYS.store(true, Ordering::Relaxed);
             }
@@ -284,8 +303,7 @@ fn main() -> eframe::Result {
     ios_scene::register();
     run_gui(
         GuiLaunch {
-            port, subscribe_to, target_mac, bind, no_vsync, decay, interlace_decay, audio, cfg,
-            slot_id,
+            port, subscribe_to, target_mac, bind, no_vsync, decay, interlace_decay, cfg, slot_id,
         },
         |_| {},
     )
@@ -312,8 +330,9 @@ struct GuiLaunch {
     no_vsync: bool,
     decay: f32,
     interlace_decay: f32,
-    audio: receiver::AudioOpts,
+    /// 0番(`--slot` なら その番号)の設定。ランチャーの「ボードのIP」に使う
     cfg: settings::Settings,
+    /// `--no-subscribe` で開く窓の番号
     slot_id: u32,
 }
 
@@ -321,8 +340,7 @@ struct GuiLaunch {
 /// (Android は AndroidApp をここで渡す)
 fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> eframe::Result {
     let GuiLaunch {
-        port, subscribe_to, target_mac, bind, no_vsync, decay, interlace_decay, audio, cfg,
-        slot_id,
+        port, subscribe_to, target_mac, bind, no_vsync, decay, interlace_decay, cfg, slot_id,
     } = l;
     let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
     // ★**モバイルでは GPU が申告する上限をそのまま要求する。** eframe の既定は
@@ -362,24 +380,14 @@ fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> efra
         viewport: {
             // アイコンは実行時に設定しないとタスクバー/タイトルバーに出ない
             // (exeへの埋め込みはExplorerのファイル用。appicon.rs 参照)
-            let mut vp = egui::ViewportBuilder::default()
-                .with_title(if slot_id == 0 {
-                    "RetroCast X".to_string()
-                } else {
-                    // ★**番号を出す。** 3つ並べたときに、どのウィンドウの設定を
-                    //   触っているのか分からなくなる
-                    format!("RetroCast X #{}", slot_id)
-                });
+            // 主ウィンドウはランチャー。Viewer の窓は App が開く(位置と大きさは
+            // それぞれの番号の設定から戻す)
+            let mut vp = egui::ViewportBuilder::default().with_title("RetroCast X");
             // ★**モバイルでは大きさも位置も指定しない。** 窓は画面そのもので、
             //   前回の内寸(safe area を除いた大きさ)を指定すると、iOS では
             //   2回目以降の起動で画面が真っ黒になった(UI も映像も出ない)。
             if !MOBILE {
-                vp = vp.with_inner_size([cfg.window_w, cfg.window_h]);
-                // ★**位置も戻す。** 大きさだけでは並びが戻らない(3画面筐体では
-                //   横に並べた配置そのものが設定)。
-                if let (Some(x), Some(y)) = (cfg.window_x, cfg.window_y) {
-                    vp = vp.with_position([x, y]);
-                }
+                vp = vp.with_inner_size([440.0, 520.0]).with_min_inner_size([320.0, 280.0]);
             }
             if let Some(icon) = appicon::egui_icon() {
                 vp = vp.with_icon(icon);
@@ -413,21 +421,38 @@ fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> efra
                     .callback_resources
                     .insert(render::Blits::default());
             }
+            // 一覧のための発見(映像は受けない)。`--board` で宛先を指定されていれば、
+            // ブロードキャストに加えてそこへも問いかける
+            let ctx = cc.egui_ctx.clone();
+            let disc = discovery::spawn(bind.clone(), port, move || ctx.request_repaint());
+            let pinned = subscribe_to.as_deref().filter(|d| *d != "255.255.255.255");
+            *disc.extra_dest.lock().unwrap() =
+                pinned.map(str::to_string).or_else(|| valid_ipv4(&cfg.board_ip));
+            let no_subscribe = subscribe_to.is_none();
             let mut app = App {
-                sessions: vec![Session::new(
-                    slot_id, &cc.egui_ctx, cc.wgpu_render_state.clone(), port,
-                    subscribe_to, target_mac, bind.clone(), no_vsync,
-                    decay, interlace_decay, audio, cfg.clone(),
-                )],
+                sessions: Vec::new(),
                 port,
                 bind: bind.clone(),
+                subscribe_to,
                 no_vsync,
                 decay,
                 interlace_decay,
+                render_state: cc.wgpu_render_state.clone(),
+                launcher: launcher::Launcher::new(disc, cfg.board_ip.clone()),
                 awake: awake::KeepAwake::new(),
                 touch: touch::TouchGesture::default(),
             };
-            app.restore_windows(&cc.egui_ctx, cc.wgpu_render_state.clone());
+            if no_subscribe {
+                // `--no-subscribe`(sender_sim 相手)はボードを選べないので、すぐ開く
+                app.add_session(&cc.egui_ctx, slot_id, None);
+            } else if let Some(m) = target_mac {
+                // `--mac`(低遅延全画面から戻ったときを含む)はそのボードを開く
+                app.open_board(&cc.egui_ctx, m, None);
+            } else if !MOBILE {
+                // ★**モバイルは起動したら必ず一覧から。** 窓が1枚なので、復元すると
+                //   一覧を飛ばして前のボードに繋がってしまう
+                app.restore_windows(&cc.egui_ctx);
+            }
             Ok(Box::new(app))
         }),
     )
@@ -456,7 +481,6 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
         no_vsync: false,
         decay: 0.8,
         interlace_decay: 1.0,
-        audio: audio_opts(&cfg),
         cfg,
         slot_id,
     };
@@ -512,12 +536,23 @@ fn relaunch_args(orig: impl Iterator<Item = String>, extra: &[String]) -> Vec<St
     while let Some(a) = it.next() {
         match a.as_str() {
             "--fullscreen" | "--vsync" | "--return-window" | "--photo-lat-high" => {}
-            "--mac" => { it.next(); }
+            "--mac" | "--slot" => { it.next(); }
             _ => args.push(a),
         }
     }
     args.extend(extra.iter().cloned());
     args
+}
+
+/// `--slot N`(設定ファイルの番号)。設定を読む前に要るので、引数の解釈より先に見る
+fn slot_arg(mut args: impl Iterator<Item = String>) -> u32 {
+    while let Some(a) = args.next() {
+        if a == "--slot" {
+            return args.next().and_then(|v| v.parse().ok())
+                .filter(|v| *v < claim::MAX_SLOTS).unwrap_or(0);
+        }
+    }
+    0
 }
 
 /// MAC を `--mac` に渡せる形にする(parse_mac の逆)
@@ -1367,9 +1402,11 @@ struct Session {
     viewport_shown: bool,
     /// 最後に心拍(=設定の保存)を打った時刻
     settings_beat: Option<std::time::Instant>,
-    /// アプリへの要求: 新しいウィンドウを開きたい(次のフレームで App が拾う)。
-    /// 指定があればそのボードを選んだ状態で開く。
-    want_new_window: Option<Option<[u8; 6]>>,
+    /// アプリへの要求: この窓を閉じて一覧へ戻りたい(モバイルの「一覧へ」)。
+    /// 次のフレームで App が拾う
+    want_close: bool,
+    /// アプリへの要求: ランチャーを前に出したい(デスクトップの「ボード一覧」/ ⌘N)
+    want_launcher: bool,
     /// このウィンドウの番号。設定ファイル・GPUテクスチャ・ビューポートIDの鍵。
     ///
     /// ★**空いているうち最小を割り当てる。** 0,1,2 を開いて1を閉じ、また開けば
@@ -1640,7 +1677,8 @@ impl Session {
             window_pos: cfg.window_x.zip(cfg.window_y).map(|(x, y)| egui::pos2(x, y)),
             viewport_shown: false,
             settings_beat: None,
-            want_new_window: None,
+            want_close: false,
+            want_launcher: false,
             slot_id,
             board_sel: cfg.board_sel,
             pending_mode: None,
@@ -1704,9 +1742,8 @@ impl Session {
             remote: remote_input::RemoteInput::default(),
             photo_lat: Default::default(),
             remote_toggle: Default::default(),
-            // ★**キー横取りは1つだけ。** AppKit のイベント監視をウィンドウの数だけ
-            //   仕掛けると同じキーが何度も実機へ飛ぶ。転送するのは主ウィンドウだけ。
-            keytap: (slot_id == 0).then(|| keytap::KeyTap::install(egui_ctx)),
+            // キー横取りは App が1つの窓にだけ渡す(add_session)
+            keytap: None,
             netcheck: None,
             netcheck_modal: false,
             netcheck_muted: cfg.netcheck_muted,
@@ -5140,11 +5177,11 @@ impl Session {
     fn window_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui
-                .small_button("新規ウィンドウ")
-                .on_hover_text("⌘N。別のボードを見るときに使います")
+                .small_button("ボード一覧")
+                .on_hover_text("⌘N。別のボードはランチャーから開きます")
                 .clicked()
             {
-                self.open_new_session(None);
+                self.want_launcher = true;
             }
             ui.weak(egui::RichText::new(format!("#{}", self.slot_id)).size(10.0))
                 .on_hover_text("このウィンドウの番号。設定はこの番号ごとに保存されます");
@@ -5172,40 +5209,21 @@ impl Session {
         self.photo_lat.ui(ui, &self.shared, caps, pixfmt, vfreq);
     }
 
-    /// 接続先の指定を変える。**保存もする**(次の起動で並びが戻るように)。
-    fn set_board_sel(&mut self, sel: settings::BoardSel) {
-        if self.board_sel == sel {
-            return;
+    /// 窓のタイトル。**ボードの名前を出す。** どの窓がどのボードかを、窓の
+    /// 中を見ずに分かるように(Dock / タスクバーの一覧にも出る)
+    fn window_title(&self) -> String {
+        let mac = match self.board_sel {
+            settings::BoardSel::Mac(m) => Some(m),
+            _ => self.claimed(),
+        };
+        let name = mac.map(|m| {
+            self.shared.boards.lock().unwrap().get(&m)
+                .map_or_else(|| claim::mac_string(&m), |b| b.name.clone())
+        });
+        match name {
+            Some(n) => format!("{n} — RetroCast X"),
+            None => "RetroCast X".to_string(),
         }
-        self.board_sel = sel;
-        *self.shared.board_sel.lock().unwrap() = sel;
-        // 選び直したら個体設定を取り直す
-        self.ident_for = None;
-        self.ident_name_edit = None;
-        self.ident_ip_edit = None;
-        self.ident_name_seen = None;
-        self.ident_ip_seen = None;
-        self.mark_settings_dirty();
-    }
-
-    /// 空いているボードが1枚でもあるか(新しいウィンドウを開く意味があるか)。
-    fn has_free_board(&self) -> bool {
-        let own = self.claimed();
-        let busy = self.shared.busy_boards.lock().unwrap();
-        self.shared
-            .boards
-            .lock()
-            .unwrap()
-            .keys()
-            .any(|m| own != Some(*m) && !busy.contains(m))
-    }
-
-    /// 新しいウィンドウを開くようアプリへ頼む。
-    ///
-    /// ★**ここでは開かない。** ウィンドウを増やすのはセッションの仕事ではないし、
-    ///   描画の途中で自分の入っている配列を触ることになる。要求だけ置く。
-    fn open_new_session(&mut self, mac: Option<[u8; 6]>) {
-        self.want_new_window = Some(mac);
     }
 
     /// ボード名を16バイトNUL詰めの4語にする。長すぎるなら None。
@@ -5289,131 +5307,63 @@ impl Session {
              PC版 Viewer の「ボード」欄で確認できます");
     }
 
-    /// 「ボード」欄。**LANに複数あるときの指名と、個体設定の書き換え。**
+    /// 「ボード」欄。**この窓のボードの様子と、個体設定の書き換え。**
     ///
-    /// ★**指名しないと2枚目が繋がった瞬間に絵が壊れる。** ワイルドカードの購読は
-    ///   全ボードが同時に映像を送ってくるので、両方のラインが同じ組立器に流れ込む。
-    ///   1枚しか無いうちは気付かないので、見つかった枚数を必ず出す。
+    /// ★**窓の中ではボードを替えない。** ボードはランチャーで選んで窓を開く
+    ///   (launcher.rs)。窓の中で替えられると、入力の選択や管面がどのボードの
+    ///   ものなのかが窓を見ても分からない。
     ///
     /// ★**名前とIPはEEPROMに焼くまで揮発する。** 試してから決められるようにして
     ///   あるので、UIでも「焼く」を別のボタンにする。
     fn boards_ui(&mut self, ui: &mut egui::Ui) {
-        let mut list: Vec<receiver::BoardInfo> =
-            self.shared.boards.lock().unwrap().values().cloned().collect();
-        // 見つかった順ではなくMAC順。並びが毎回変わると選び間違える
-        list.sort_by_key(|b| b.mac);
-
-        if list.is_empty() {
-            ui.weak("見つかっていません");
-            self.sub_dest_ui(ui);
-            return;
-        }
-        // 掴めていない理由を出す。黙って映らないのが一番分かりにくい
-        if self.claimed().is_none() {
-            let why = match self.board_sel {
-                settings::BoardSel::None => "未選択です(上の「自動」か下の一覧から選んでください)",
-                settings::BoardSel::Auto => "★空いているボードがありません(他のウィンドウが使用中)",
-                settings::BoardSel::Mac(_) => "★指定したボードが見つからないか使用中です",
-            };
-            ui.label(egui::RichText::new(why).size(11.0).color(theme::AMBER))
-                .on_hover_text(
-                    "ボードの映像送り先はプロトコル上1つだけです。\n                     1枚のボードを2つのウィンドウでは見られません",
-                );
-        }
-
         let own = self.claimed();
-        let busy_set = self.shared.busy_boards.lock().unwrap().clone();
-
-        // ★**「自動」を既定にしておく。** ボードを1枚しか持っていない人が大半で、
-        //   その人は何も選ばなくても繋がるべき。3画面で使う人だけが基板を指名する。
-        ui.horizontal(|ui| {
-            theme::label_col(ui, "接続");
-            let mut next = self.board_sel;
-            if ui
-                .selectable_label(self.board_sel == settings::BoardSel::Auto, "自動")
-                .on_hover_text("空いているボードを見つけ次第つなぐ")
-                .clicked()
-            {
-                next = settings::BoardSel::Auto;
-            }
-            if ui
-                .selectable_label(self.board_sel == settings::BoardSel::None, "未選択")
-                .on_hover_text("つながない")
-                .clicked()
-            {
-                next = settings::BoardSel::None;
-            }
-            if let settings::BoardSel::Mac(m) = self.board_sel {
-                ui.label(
-                    egui::RichText::new("指定").size(11.0).color(theme::ACCENT),
-                )
-                .on_hover_text(format!(
-                    "{} だけにつなぐ(見つからなければ未選択のまま待つ)",
-                    claim::mac_string(&m)
-                ));
-            }
-            self.set_board_sel(next);
-        });
-
-        let sel = match self.board_sel {
+        let want = match self.board_sel {
             settings::BoardSel::Mac(m) => Some(m),
             _ => own,
         };
-
-        let mut want: Option<[u8; 6]> = None;
-        let mut open_new: Option<[u8; 6]> = None;
-        for b in &list {
-            let mac = b.mac.map(|x| format!("{x:02x}")).join(":");
-            let picked = sel == Some(b.mac);
-            let busy = busy_set.contains(&b.mac);
-            let label = format!("{}  {}", b.name, b.addr);
-            ui.horizontal(|ui| {
-                // ★**使用中でも選べる。** 選んでおけば、相手のウィンドウが閉じた
-                //   瞬間に繋がる。押せないと「先に相手を閉じてから選び直す」しか
-                //   なくなって面倒。
-                let resp = ui.add(
-                    egui::Button::selectable(picked, label).wrap_mode(egui::TextWrapMode::Extend),
-                );
-                if resp.clicked() && !picked {
-                    want = Some(b.mac);
+        let info = want.and_then(|m| self.shared.boards.lock().unwrap().get(&m).cloned());
+        match &info {
+            None => {
+                ui.label(egui::RichText::new("ボードが見つかりません(電源と LAN を確かめてください)")
+                    .size(11.0).color(theme::AMBER));
+                if let Some(m) = want {
+                    ui.weak(egui::RichText::new(format!("  {}", claim::mac_string(&m))).size(10.0));
                 }
-                if busy {
-                    ui.label(egui::RichText::new("使用中").size(10.0).color(theme::AMBER))
-                        .on_hover_text("他のウィンドウが使っています(選んでおけば空き次第つながります)");
-                } else if !picked
-                    && !MOBILE
-                    && ui
-                        .small_button("別窓")
-                        .on_hover_text("このボードを新しいウィンドウで開く")
-                        .clicked()
-                {
-                    open_new = Some(b.mac);
-                }
-            });
-            ui.weak(
-                egui::RichText::new(format!(
-                    "  {mac}  fw {}.{}.{}",
-                    (b.fw_version >> 12) & 0xF,
-                    (b.fw_version >> 6) & 0x3F,
-                    b.fw_version & 0x3F
-                ))
-                .size(10.0),
-            );
-            // ★**MACがEEPROM由来でない基板は出荷できない。** 全基板共通の値に
-            //   なるので、同じLANに2枚繋ぐと両方通信できなくなる。
-            if b.caps & 0x0001 == 0 {
-                ui.label(
-                    egui::RichText::new("  ★MACをEEPROMから読めていません(出荷不可)")
-                        .size(10.0)
-                        .color(theme::AMBER),
-                );
+                self.sub_dest_ui(ui);
+                return;
             }
-        }
-        if let Some(m) = open_new {
-            self.open_new_session(Some(m));
-        }
-        if let Some(m) = want {
-            self.set_board_sel(settings::BoardSel::Mac(m));
+            Some(b) => {
+                ui.horizontal(|ui| {
+                    theme::label_col(ui, "ボード");
+                    ui.label(format!("{}  {}", b.name, b.addr));
+                });
+                ui.weak(
+                    egui::RichText::new(format!(
+                        "  {}  fw {}.{}.{}",
+                        claim::mac_string(&b.mac),
+                        (b.fw_version >> 12) & 0xF,
+                        (b.fw_version >> 6) & 0x3F,
+                        b.fw_version & 0x3F
+                    ))
+                    .size(10.0),
+                );
+                // ★**MACがEEPROM由来でない基板は出荷できない。** 全基板共通の値に
+                //   なるので、同じLANに2枚繋ぐと両方通信できなくなる。
+                if b.caps & 0x0001 == 0 {
+                    ui.label(
+                        egui::RichText::new("  ★MACをEEPROMから読めていません(出荷不可)")
+                            .size(10.0)
+                            .color(theme::AMBER),
+                    );
+                }
+                // 掴めていない理由を出す。黙って映らないのが一番分かりにくい
+                if own != Some(b.mac) && self.shared.busy_boards.lock().unwrap().contains(&b.mac) {
+                    ui.label(egui::RichText::new("★他の Viewer が使用中です(空き次第つながります)")
+                        .size(11.0).color(theme::AMBER))
+                        .on_hover_text("ボードの映像送り先はプロトコル上1つだけです。\n\
+                                        1枚のボードを2つの Viewer では見られません");
+                }
+            }
         }
 
         // つながりの状態。奪われたら押すまで止まっているので、ここでも繋ぎ直せる
@@ -6245,7 +6195,7 @@ fn board_name_problem(name: &str) -> Option<String> {
     None
 }
 
-/// アプリ本体。**ウィンドウ(セッション)を束ねるだけ。**
+/// アプリ本体。**ランチャーと、ボードごとの Viewer の窓を束ねるだけ。**
 ///
 /// ★**1プロセス・複数ウィンドウにする。** 以前はウィンドウごとに別プロセスに
 ///   していたが、macOS の .app は単一インスタンスなので `open -n` で起こすしか
@@ -6253,74 +6203,148 @@ fn board_name_problem(name: &str) -> Option<String> {
 ///   起動し直す」ができない、と macOS のアプリとして破綻していた。
 ///   `show_viewport_immediate` は `App::ui` と同じ `&mut Ui` を渡してくるので、
 ///   セッションの描画関数はそのまま使える。
+/// ★**主ウィンドウはランチャー(launcher.rs)。** Viewer の窓はどれも同格で、
+///   閉じてもアプリは終わらない。ランチャーを閉じたときだけ終わる。
 struct App {
+    /// 開いている Viewer。デスクトップは1つずつ別の窓、モバイルは高々1つ
     sessions: Vec<Session>,
     /// 新しいウィンドウを作るときに要る素。**起動時の引数を持ち回す。**
     port: u16,
     bind: String,
+    subscribe_to: Option<String>,
     no_vsync: bool,
     decay: f32,
     interlace_decay: f32,
+    render_state: Option<eframe::egui_wgpu::RenderState>,
+    launcher: launcher::Launcher,
     /// 前面にあって映像を受けている間、OS のスリープを止める(awake.rs)
     awake: awake::KeepAwake,
     /// タッチの身振りの振り分け(モバイル。touch.rs)
     touch: touch::TouchGesture,
 }
 
+/// Viewer の窓の識別子(番号ごと)
+fn session_viewport(slot: u32) -> egui::ViewportId {
+    egui::ViewportId::from_hash_of(("retrocastx-session", slot))
+}
+
 impl App {
-    /// 空いているうち最小のウィンドウ番号。
-    fn lowest_free_id(&self) -> u32 {
-        (0..claim::MAX_SLOTS).find(|i| !self.sessions.iter().any(|s| s.slot_id == *i)).unwrap_or(0)
-    }
-
-    /// ウィンドウを1つ増やす。上限に達していれば false。
-    fn add_session(
-        &mut self,
-        ctx: &egui::Context,
-        rs: Option<eframe::egui_wgpu::RenderState>,
-        id: Option<u32>,
-    ) -> bool {
-        if self.sessions.len() as u32 >= claim::MAX_SLOTS {
-            return false;
+    /// Viewer を1つ足す。`mac` が None なら接続先は設定のまま(`--no-subscribe` 用)
+    fn add_session(&mut self, ctx: &egui::Context, id: u32, mac: Option<[u8; 6]>) {
+        let mut cfg = settings::Settings::load_slot(id);
+        if let Some(m) = mac {
+            cfg.board_sel = settings::BoardSel::Mac(m);
         }
-        let id = id.unwrap_or_else(|| self.lowest_free_id());
-        if self.sessions.iter().any(|s| s.slot_id == id) {
-            return false;
+        // モバイルの「ボードのIP」は一覧の欄が正(番号ごとに入れ直させない)
+        if MOBILE {
+            cfg.board_ip = self.launcher.board_ip.clone();
         }
-        let cfg = settings::Settings::load_slot(id);
         let audio = audio_opts(&cfg);
-        self.sessions.push(Session::new(
-            id, ctx, rs, self.port, Some("255.255.255.255".to_string()), None,
-            self.bind.clone(), self.no_vsync, self.decay, self.interlace_decay,
-            audio, cfg,
-        ));
-        true
+        let mut s = Session::new(
+            id, ctx, self.render_state.clone(), self.port, self.subscribe_to.clone(), mac,
+            self.bind.clone(), self.no_vsync, self.decay, self.interlace_decay, audio, cfg,
+        );
+        // ★**キー横取りは1つだけ。** AppKit のイベント監視をウィンドウの数だけ
+        //   仕掛けると同じキーが何度も実機へ飛ぶ。最初に開いた窓が持つ
+        if !self.sessions.iter().any(|s| s.keytap.is_some()) {
+            s.keytap = Some(keytap::KeyTap::install(ctx));
+        }
+        // 番号の設定ファイルに接続先を残す(次にこのボードを開く番号になる)
+        s.mark_settings_dirty();
+        self.sessions.push(s);
     }
 
-    /// 前回いっしょに開いていたウィンドウを開き直す。
-    ///
-    /// ★**プロセスを起こさない。** 以前は `open -n` で別プロセスを立てていたが、
-    ///   1プロセスになったのでその場で足すだけ。
-    fn restore_windows(
-        &mut self,
-        ctx: &egui::Context,
-        rs: Option<eframe::egui_wgpu::RenderState>,
-    ) {
-        let me = self.sessions.first().map_or(0, |s| s.slot_id);
-        for id in settings::Settings::slots_to_restore(me, claim::MAX_SLOTS) {
-            if self.add_session(ctx, rs.clone(), Some(id)) {
-                eprintln!("ウィンドウ #{id} を復元しました");
+    /// ボードの Viewer を開く。開いていれば前に出す。
+    fn open_board(&mut self, ctx: &egui::Context, mac: [u8; 6], slot: Option<u32>) {
+        let want = settings::BoardSel::Mac(mac);
+        if let Some(s) = self.sessions.iter().find(|s| s.board_sel == want) {
+            if !MOBILE {
+                ctx.send_viewport_cmd_to(session_viewport(s.slot_id), egui::ViewportCommand::Focus);
             }
+            return;
+        }
+        // モバイルは窓が1枚。一覧が見えている時点で前の Viewer は閉じている
+        if MOBILE && !self.sessions.is_empty() {
+            return;
+        }
+        let in_use: Vec<u32> = self.sessions.iter().map(|s| s.slot_id).collect();
+        let id = slot
+            .filter(|i| !in_use.contains(i))
+            .or_else(|| launcher::slot_for(mac, &in_use));
+        let Some(id) = id else {
+            eprintln!("ウィンドウはすでに {} 個開いています(上限)", claim::MAX_SLOTS);
+            return;
+        };
+        self.add_session(ctx, id, Some(mac));
+    }
+
+    /// 前回いっしょに開いていたボードの窓を開き直す。
+    fn restore_windows(&mut self, ctx: &egui::Context) {
+        for (id, mac) in launcher::boards_to_restore() {
+            eprintln!("ウィンドウ #{id} を復元します({})", claim::mac_string(&mac));
+            self.open_board(ctx, mac, Some(id));
+        }
+    }
+
+    /// 窓を閉じる。設定を書いてから、GPU テクスチャ(フレーム1枚ぶん)を捨てる
+    fn close_sessions(&mut self, ctx: &egui::Context, closed: &[u32]) {
+        if closed.is_empty() {
+            return;
+        }
+        let rs = self.render_state.clone();
+        self.sessions.retain_mut(|s| {
+            if !closed.contains(&s.slot_id) {
+                return true;
+            }
+            s.on_close();
+            if let Some(rs) = rs.as_ref() {
+                if let Some(m) = rs.renderer.write().callback_resources.get_mut::<render::Blits>() {
+                    m.remove(s.slot_id);
+                }
+            }
+            false
+        });
+        // キー横取りを持っていた窓が閉じたら、残っている窓へ渡す
+        if !self.sessions.iter().any(|s| s.keytap.is_some()) {
+            if let Some(s) = self.sessions.first_mut() {
+                s.keytap = Some(keytap::KeyTap::install(ctx));
+            }
+        }
+    }
+
+    /// ランチャーを描く(デスクトップは主ウィンドウ、モバイルは Viewer が無いとき)
+    fn launcher_ui(&mut self, root: &mut egui::Ui) {
+        let here: std::collections::HashSet<[u8; 6]> = self
+            .sessions
+            .iter()
+            .filter_map(|s| match s.board_sel {
+                settings::BoardSel::Mac(m) => Some(m),
+                _ => s.claimed(),
+            })
+            .collect();
+        let ctx = root.ctx().clone();
+        if MOBILE {
+            safe_area_spacers(root);
+        }
+        let out = egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(root.visuals().panel_fill))
+            .show(root, |ui| self.launcher.ui(ui, &here))
+            .inner;
+        if out.ip_changed {
+            *self.launcher.disc.extra_dest.lock().unwrap() = valid_ipv4(&self.launcher.board_ip);
+            // ★**0番の設定に残す。** モバイルの Viewer は 0番で開くので、そちらの
+            //   「ボードのIP」と同じ欄になる
+            let mut cfg = settings::Settings::load_slot(0);
+            cfg.board_ip = self.launcher.board_ip.clone();
+            cfg.save_slot(0);
+        }
+        if let Some(m) = out.open {
+            self.open_board(&ctx, m, None);
         }
     }
 }
 
 impl eframe::App for App {
-    /// MimicX へのキー転送。キーそのものは keytap(AppKit のイベント監視)から
-    /// 取るので、ここでは RawInput を読むだけ(フォーカスと修飾の状態)
-    ///
-    /// ★**転送先は1つだけ。** キーは実機のキーボードに化けるので、複数の
-    ///   ウィンドウが同時に送ると誰も操作できなくなる。
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         // スクロールのつもりの縦スワイプがスライダーを動かさないよう、egui に
         // 渡す前に身振りを決める
@@ -6346,9 +6370,6 @@ impl eframe::App for App {
                 }
             }
         }
-        if let Some(s) = self.sessions.first_mut() {
-            s.remote_step(ctx, raw_input);
-        }
     }
 
     fn on_exit(&mut self) {
@@ -6358,99 +6379,94 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = root.ctx().clone();
         // どれかの窓が前面にあり、その窓が映像を受けているか(スリープ抑止の条件)
         let mut playing_in_front = false;
-        // 主ウィンドウ
-        let only_window = self.sessions.len() == 1;
-        if let Some(s) = self.sessions.first_mut() {
-            playing_in_front |= root.ctx().input(|i| i.focused) && s.receiving_video();
-            s.only_window = only_window;
-            s.ui(root);
-            if std::mem::take(&mut s.want_lowlat_fs) && only_window {
-                let mac = *s.shared.claimed.lock().unwrap();
-                let mut extra = vec!["--fullscreen".to_string(), "--return-window".to_string()];
-                if s.fs_vsync {
-                    extra.push("--vsync".into());
-                }
-                if s.photo_lat.active_high {
-                    extra.push("--photo-lat-high".into());
-                }
-                // 計測中なら止めてから移る。切り替えのあいだの点滅を測らない
-                // (全画面に入ってから ⌘L で始め直す)
-                if s.photo_lat.running() {
-                    s.photo_lat.stop(&s.shared);
-                    photo_lat::flush(&s.shared, std::time::Duration::from_millis(300));
-                }
-                if let Some(m) = mac {
-                    extra.push("--mac".into());
-                    extra.push(format_mac(&m));
-                }
-                // 設定(vsync の選択を含む)を書いてから渡す
-                s.on_close();
-                if relaunch(&extra) {
-                    root.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            }
-        }
-        // 追加ウィンドウ。**ここで &mut Ui が降ってくる**ので、主ウィンドウと
-        // まったく同じ描画関数を使える
-        let ctx = root.ctx().clone();
         let mut closed: Vec<u32> = Vec::new();
-        for s in self.sessions.iter_mut().skip(1) {
-            let id = egui::ViewportId::from_hash_of(("retrocastx-session", s.slot_id));
-            let mut builder =
-                egui::ViewportBuilder::default().with_title(format!("RetroCast X #{}", s.slot_id));
-            if !s.viewport_shown {
-                // 初回だけ前回の位置と大きさを指定する。以後は触らない
-                builder = builder.with_inner_size(s.window_size);
-                if let Some(p) = s.window_pos {
-                    builder = builder.with_position(p);
-                }
-                s.viewport_shown = true;
+        let only_window = self.sessions.len() == 1;
+        let mut lowlat: Option<Vec<String>> = None;
+        if MOBILE {
+            // ★**モバイルは窓が1枚。** Viewer を開いている間はそれを、閉じたら一覧を出す
+            if let Some(s) = self.sessions.first_mut() {
+                playing_in_front |= ctx.input(|i| i.focused) && s.receiving_video();
+                s.only_window = true;
+                s.ui(root);
+            } else {
+                self.launcher_ui(root);
             }
-            ctx.show_viewport_immediate(id, builder, |ui, _class| {
-                if ui.ctx().input(|i| i.viewport().close_requested()) {
-                    closed.push(s.slot_id);
-                    return;
+        } else {
+            self.launcher_ui(root);
+            // Viewer の窓。**ここで &mut Ui が降ってくる**ので、どの窓も同じ描画関数
+            for s in self.sessions.iter_mut() {
+                let mut builder = egui::ViewportBuilder::default().with_title(s.window_title());
+                if !s.viewport_shown {
+                    // 初回だけ前回の位置と大きさを指定する。以後は触らない
+                    builder = builder.with_inner_size(s.window_size);
+                    if let Some(p) = s.window_pos {
+                        builder = builder.with_position(p);
+                    }
+                    if let Some(icon) = appicon::egui_icon() {
+                        builder = builder.with_icon(icon);
+                    }
+                    s.viewport_shown = true;
                 }
-                playing_in_front |= ui.ctx().input(|i| i.focused) && s.receiving_video();
-                s.ui(ui);
-            });
+                ctx.show_viewport_immediate(session_viewport(s.slot_id), builder, |ui, _class| {
+                    if ui.ctx().input(|i| i.viewport().close_requested()) {
+                        closed.push(s.slot_id);
+                        return;
+                    }
+                    // MimicX へのキー転送。フォーカスはこの窓のものを見る
+                    if s.keytap.is_some() {
+                        let raw = ui.ctx().input(|i| i.raw.clone());
+                        s.remote_step(ui.ctx(), &raw);
+                    }
+                    playing_in_front |= ui.ctx().input(|i| i.focused) && s.receiving_video();
+                    s.only_window = only_window;
+                    s.ui(ui);
+                });
+                if std::mem::take(&mut s.want_lowlat_fs) && only_window {
+                    let mac = *s.shared.claimed.lock().unwrap();
+                    // ★**番号を渡す。** 全画面は管面や音量をその番号の設定から読む
+                    let mut extra = vec!["--fullscreen".to_string(), "--return-window".to_string(),
+                                         "--slot".to_string(), s.slot_id.to_string()];
+                    if s.fs_vsync {
+                        extra.push("--vsync".into());
+                    }
+                    if s.photo_lat.active_high {
+                        extra.push("--photo-lat-high".into());
+                    }
+                    // 計測中なら止めてから移る。切り替えのあいだの点滅を測らない
+                    // (全画面に入ってから ⌘L で始め直す)
+                    if s.photo_lat.running() {
+                        s.photo_lat.stop(&s.shared);
+                        photo_lat::flush(&s.shared, std::time::Duration::from_millis(300));
+                    }
+                    if let Some(m) = mac {
+                        extra.push("--mac".into());
+                        extra.push(format_mac(&m));
+                    }
+                    // 設定(vsync の選択を含む)を書いてから渡す
+                    s.on_close();
+                    lowlat = Some(extra);
+                }
+            }
         }
         self.awake.set(playing_in_front);
-        // セッションからの「窓を増やして」要求を拾う。**描画のあとで処理する** ─
-        // 描いている最中に自分の入っている配列を触ることになるため。
-        let mut wanted: Vec<Option<[u8; 6]>> = Vec::new();
         for s in &mut self.sessions {
-            if let Some(m) = s.want_new_window.take() {
-                wanted.push(m);
+            // モバイルの「一覧へ」
+            if std::mem::take(&mut s.want_close) {
+                closed.push(s.slot_id);
+            }
+            // デスクトップの「ボード一覧」/ ⌘N
+            if std::mem::take(&mut s.want_launcher) {
+                ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
             }
         }
-        for mac in wanted {
-            let rs = self.sessions.first().and_then(|s| s.render_state.clone());
-            if self.add_session(&ctx, rs, None) {
-                if let (Some(m), Some(last)) = (mac, self.sessions.last_mut()) {
-                    last.set_board_sel(settings::BoardSel::Mac(m));
-                }
-            } else {
-                eprintln!("ウィンドウはすでに {} 個開いています(上限)", claim::MAX_SLOTS);
+        self.close_sessions(&ctx, &closed);
+        if let Some(extra) = lowlat {
+            if relaunch(&extra) {
+                ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
             }
-        }
-        if !closed.is_empty() {
-            self.sessions.retain(|s| {
-                let keep = !closed.contains(&s.slot_id);
-                if !keep {
-                    // 閉じたウィンドウのGPUテクスチャを捨てる(フレーム1枚ぶんある)
-                    if let Some(rs) = s.render_state.as_ref() {
-                        if let Some(m) =
-                            rs.renderer.write().callback_resources.get_mut::<render::Blits>()
-                        {
-                            m.remove(s.slot_id);
-                        }
-                    }
-                }
-                keep
-            });
         }
     }
 }
@@ -6553,15 +6569,10 @@ impl Session {
         // MimicX への転送中はここへ来ない。raw_input_hook が先にイベントを
         // 取り除いているので、Tab も B も X68000 のキーとして送られる
         // (⌘+Shift+ESC で転送を切れば元に戻る)。
-        // ⌘N(Windows/Linux は Ctrl+N)で新しいセッションを開く。
-        //
-        // ★**macOS の .app は二重起動できない。** Finder や Dock から2つ目を
-        //   開こうとしても既存のウィンドウが前面に来るだけなので、アプリの中に
-        //   入口が要る(`open -n` を使う。session.rs 参照)。
+        // ⌘N(Windows/Linux は Ctrl+N)でランチャーを前に出す。別のボードは
+        // そこから開く(窓の中ではボードを替えない)
         if !MOBILE && root.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
-            // ★**いつでも開ける。** 空いているボードが無ければ「未選択」の窓が
-            //   開くだけ。開けない方が不便だし、あとで空けば繋がる。
-            self.open_new_session(None);
+            self.want_launcher = true;
         }
         // ⌘W で自分を閉じる(macOS の作法。⌘Q はアプリ全体)
         if root.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
