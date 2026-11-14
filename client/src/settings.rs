@@ -121,6 +121,19 @@ pub const DEFAULT_AUDIO_BUFFER_MS: u32 = 10;
 #[cfg(not(target_os = "macos"))]
 pub const DEFAULT_AUDIO_BUFFER_MS: u32 = 80;
 
+/// 低遅延全画面の「描き方」の既定。**macOS だけ 8 分割にする。**
+///
+/// macOS は前の1枚が画面に出たのを presentedTime で確かめてから次を出す
+/// (fullscreen.rs)ので、遅い機械でも present が減るだけで、最悪でも
+/// 1フレームずつと同じ動きに落ちる。8 分割で光り始めが約 15ms 早くなった
+/// (MacBook Pro の内蔵画面、オシロで実測)。16 分割は present の往復(約 2.5ms)が
+/// 帯の間隔より長くなり、8 分割と変わらない。
+/// 他の OS はその待ちが無く帯ごとに出すので、測るまでは 1フレームずつのまま。
+#[cfg(target_os = "macos")]
+pub const DEFAULT_FULLSCREEN_SLICES: u32 = 8;
+#[cfg(not(target_os = "macos"))]
+pub const DEFAULT_FULLSCREEN_SLICES: u32 = 0;
+
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub volume: f32,
@@ -275,7 +288,8 @@ pub struct Settings {
     pub spdif_volume: f32,
     /// 低遅延全画面で present をリフレッシュに合わせるか(`--vsync`)
     pub fullscreen_vsync: bool,
-    /// 低遅延全画面で、1フレームを何本の帯に分けて届いたそばから出すか(0 = 分けない)
+    /// 低遅延全画面で、1フレームを何本の帯に分けて届いたそばから出すか(0 = 分けない)。
+    /// 既定は `DEFAULT_FULLSCREEN_SLICES`
     pub fullscreen_slices: u32,
     /// ボードのLEDを Viewer から設定するか。false ならボードの既定に任せる
     pub led_control: bool,
@@ -347,7 +361,7 @@ impl Default for Settings {
             spdif_mix: false,
             spdif_volume: 1.0,
             fullscreen_vsync: false,
-            fullscreen_slices: 0,
+            fullscreen_slices: DEFAULT_FULLSCREEN_SLICES,
             led_control: true,
             leds: Default::default(),
             filter: 2,
@@ -602,7 +616,9 @@ impl Settings {
                 "audio_auto" => s.audio_auto = v != "false",
                 "spdif_mix" => s.spdif_mix = v == "true",
                 "fullscreen_vsync" => s.fullscreen_vsync = v == "true",
-                "fullscreen_slices" => s.fullscreen_slices = v.parse().unwrap_or(0).min(32),
+                "fullscreen_slices" => {
+                    s.fullscreen_slices = v.parse().unwrap_or(DEFAULT_FULLSCREEN_SLICES).min(32)
+                }
                 "led_control" => s.led_control = v != "false",
                 "leds" => {
                     // led_idle が先に読まれていることもあるので、切断中は残す
