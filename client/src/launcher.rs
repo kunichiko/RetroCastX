@@ -392,6 +392,50 @@ fn pick_slot(mac: [u8; 6], free: &[(u32, BoardSel)]) -> Option<u32> {
         .map(|(i, _)| *i)
 }
 
+/// 新しくボードに割り当てた番号へ、見た目の好みを引き継ぐ。
+///
+/// ★**引き継ぐのは好みだけ。** 管面の縦横比・余白の描き方・補間・ベゼル。
+///   H幅/V幅・PLL・位相は繋ぐ機械と線で決まる値なので、別のボードのものを
+///   持ってくると合わない。
+/// ★**前からこのボードの番号なら何もしない。** ユーザーがこの窓で決めた値を
+///   上書きしない。
+/// ★**元はいちばん最近使われた番号で、こちらより新しいときだけ。** 1枚だけで
+///   使ってきた人の 0 番(接続先が「自動」)は自分がいちばん新しいので、古い
+///   「別窓」の番号の値で上書きされない。逆に、以前の「別窓」で書いたきりの
+///   番号(2026-11-08 以前の既定「斜線」が残っていた)は、いまの好みに揃う。
+pub fn inherit_look(id: u32, mac: [u8; 6], cfg: &mut Settings) {
+    if cfg.board_sel == BoardSel::Mac(mac) {
+        return;
+    }
+    let others: Vec<(u32, Settings)> = (0..claim::MAX_SLOTS)
+        .filter(|i| *i != id)
+        .map(|i| (i, Settings::peek_slot(i)))
+        .collect();
+    let stamps: Vec<(u32, u64)> = others.iter().map(|(i, s)| (*i, s.last_used)).collect();
+    let Some(src) = look_source(cfg.last_used, &stamps) else { return };
+    if let Some((_, s)) = others.iter().find(|(i, _)| *i == src) {
+        eprintln!("ウィンドウ #{id} に #{src} の見た目(縦横比・余白・補間・ベゼル)を引き継ぎます");
+        copy_look(s, cfg);
+    }
+}
+
+/// 見た目の好みを写す元の番号(`inherit_look`)。`stamps` は (番号, 最後に使った時刻)
+fn look_source(target_last_used: u64, stamps: &[(u32, u64)]) -> Option<u32> {
+    stamps
+        .iter()
+        .filter(|(_, t)| *t > target_last_used)
+        .max_by_key(|(_, t)| *t)
+        .map(|(i, _)| *i)
+}
+
+fn copy_look(src: &Settings, dst: &mut Settings) {
+    dst.tube_aspect = src.tube_aspect;
+    dst.letterbox = src.letterbox.clone();
+    dst.filter = src.filter;
+    dst.bezel = src.bezel.clone();
+    dst.bezel_off = src.bezel_off;
+}
+
 /// 起動時に開き直すボード(前回いっしょに開いていた窓のうち、ボードの決まったもの)
 pub fn boards_to_restore() -> Vec<(u32, [u8; 6])> {
     Settings::slots_to_restore(u32::MAX, claim::MAX_SLOTS)
@@ -414,6 +458,30 @@ mod tests {
         // 初回(ファイル無し)は位置を決めない(OS に任せる)
         assert_eq!(Geom::parse(""), Geom::default());
         assert_eq!(Geom::parse("").pos, None);
+    }
+
+    /// ★**新しい側にだけ写す。** 1枚で使ってきた 0 番(いちばん新しい)を、古い
+    ///   「別窓」の番号の値で上書きしない
+    #[test]
+    fn look_comes_from_the_newest_slot_only_if_newer() {
+        let stamps = [(0, 1_000), (2, 500), (3, 0)];
+        // 書いたことの無い番号(0)・古い番号は、いちばん新しい 0 番から
+        assert_eq!(look_source(0, &[(0, 1_000), (2, 500)]), Some(0));
+        assert_eq!(look_source(300, &stamps), Some(0));
+        // 自分がいちばん新しければ写さない
+        assert_eq!(look_source(2_000, &stamps), None);
+        // 写すのは好みだけで、機械ごとの値は持ってこない
+        let mut src = Settings::default();
+        src.tube_aspect = 1.25;
+        src.letterbox = "hatch".into();
+        src.filter = 0;
+        src.bezel = "cz612d".into();
+        src.mon_bands.insert(("x68000".into(), 31), [0.8, 0.0, 0.9, 0.0]);
+        let mut dst = Settings::default();
+        copy_look(&src, &mut dst);
+        assert_eq!((dst.tube_aspect, dst.letterbox.as_str(), dst.filter, dst.bezel.as_str()),
+                   (1.25, "hatch", 0, "cz612d"));
+        assert!(dst.mon_bands.is_empty(), "管面(機械ごとの値)まで写した");
     }
 
     #[test]
