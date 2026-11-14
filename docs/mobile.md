@@ -186,7 +186,7 @@ iOS 14 以降、**ブロードキャスト/マルチキャストの送信には 
 (`com.apple.developer.networking.multicast` entitlement)が要る**。無いと発見用の
 SUBSCRIBE が送れない。**2026-11-14 に許可が下りた**(申請は 11-08、Request ID
 6P7MRHV9ZK)。許可の入った開発版で、同じ LAN の2台のボードが「ボードのIP」欄を
-空のまま両方見つかることを確かめた。
+空のまま両方見つかることを確かめた。TestFlight の本番版(0.16.1 / ビルド 174)でも同じく見つかった。
 
 - 申請は developer.apple.com/contact/request/networking-multicast から出した。
   Apple から「どのプロトコル(IP とポート)で何をやり取りするのか」を聞き返された
