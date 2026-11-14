@@ -32,6 +32,14 @@
   光るとコレクタが引き下げられて Low になる(既定の極性)。比較器付きの
   センサー基板のように「光ると High」のものは CONFIG 0x00A0 bit1 で反転する。
 
+オシロ用のマーカー(デバッグ端子 J7 の pin10 / dbg8 / N4):
+
+    計測中(白いフレームを送り始めてから、光ったと判定するまで)だけ High。
+    立ち上がり = 計測の起点、立ち下がり = 判定した時刻(光り始め + 10µs)。
+    ch1 をこれ(立ち上がりでトリガ)、ch2 をセンサー(pin9)にすると、液晶が
+    光り始めるまでと、しきい値を切るまで(センサーの立ち下がりの速さ)が分けて読める。
+    幅は計測値 + 10µs。時間切れのときは 2 秒で落ちる
+
 CONFIG(すべて target=0):
 
     0xA0  制御。bit0=計測する(0→1 で集計をクリア)/ bit1=光るとHigh
@@ -65,6 +73,7 @@ class PhotoLatency(Module):
         self.alive = Signal(reset=1)  # 入力: Viewer へ映像を送っている(本購読中)
         self.frame_white = Signal()   # 入力: いま送っているフレームが白か
         # --- 読み出し ---
+        self.marker = Signal()        # 出力: 計測中だけ High(オシロ用、上の説明)
         self.stat_state = Signal(32)
         self.stat_count = Signal(32)
         self.stat_last = Signal(32)
@@ -171,6 +180,7 @@ class PhotoLatency(Module):
                 ),
             ),
         ]
+        self.sync += self.marker.eq(run & (state == S_MEASURE))
         self.comb += [
             self.force.eq(state != S_OFF),
             self.white_req.eq((state == S_ARMED) | (state == S_MEASURE)),

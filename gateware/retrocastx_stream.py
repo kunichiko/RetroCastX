@@ -2322,6 +2322,12 @@ class RetroCastXStream(SoCMini):
              Misc("PULLMODE=UP")),   # SO-DIMM 68 / dbg7
         ])
         self.photo_lat = PhotoLatency(platform.request("lat_sensor"), sys_clk_freq)
+        # 計測中だけ High のマーカー(オシロで起点と判定の時刻を見る)。センサーの
+        # 隣の dbg8(pin10 / N4)。意味は retrocastx_latency.py 冒頭
+        platform.add_extension([
+            ("lat_marker", 0, Pins("N4"), IOStandard("LVCMOS33")),   # SO-DIMM 70 / dbg8
+        ])
+        self.comb += platform.request("lat_marker").eq(self.photo_lat.marker)
         # --- シリアルLED(WS2812 互換)---
         # 状態LED(メイン基板 D1)と小亀基板のLED。それぞれ別のピンの独立チェーン。
         # 色の決め方とキーフレーム表の形式は retrocastx_led.py 冒頭
