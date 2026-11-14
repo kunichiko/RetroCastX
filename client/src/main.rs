@@ -387,7 +387,11 @@ fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> efra
             //   前回の内寸(safe area を除いた大きさ)を指定すると、iOS では
             //   2回目以降の起動で画面が真っ黒になった(UI も映像も出ない)。
             if !MOBILE {
-                vp = vp.with_inner_size([440.0, 520.0]).with_min_inner_size([320.0, 280.0]);
+                let g = launcher::Geom::load();
+                vp = vp.with_inner_size(g.size).with_min_inner_size([320.0, 280.0]);
+                if let Some(p) = g.pos {
+                    vp = vp.with_position(p);
+                }
             }
             if let Some(icon) = appicon::egui_icon() {
                 vp = vp.with_icon(icon);
@@ -439,6 +443,7 @@ fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> efra
                 interlace_decay,
                 render_state: cc.wgpu_render_state.clone(),
                 launcher: launcher::Launcher::new(disc, cfg.board_ip.clone()),
+                launcher_geom: launcher::GeomTracker::new(launcher::Geom::load()),
                 awake: awake::KeepAwake::new(),
                 touch: touch::TouchGesture::default(),
             };
@@ -6217,6 +6222,8 @@ struct App {
     interlace_decay: f32,
     render_state: Option<eframe::egui_wgpu::RenderState>,
     launcher: launcher::Launcher,
+    /// ランチャー窓の位置と大きさ(次の起動で戻す。デスクトップだけ)
+    launcher_geom: launcher::GeomTracker,
     /// 前面にあって映像を受けている間、OS のスリープを止める(awake.rs)
     awake: awake::KeepAwake,
     /// タッチの身振りの振り分け(モバイル。touch.rs)
@@ -6376,6 +6383,7 @@ impl eframe::App for App {
         for s in &mut self.sessions {
             s.on_close();
         }
+        self.launcher_geom.flush();
     }
 
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -6395,6 +6403,9 @@ impl eframe::App for App {
                 self.launcher_ui(root);
             }
         } else {
+            // ここの ctx.input は主ウィンドウ(ランチャー)のもの
+            let (inner, outer) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().outer_rect));
+            self.launcher_geom.observe(inner, outer);
             self.launcher_ui(root);
             // Viewer の窓。**ここで &mut Ui が降ってくる**ので、どの窓も同じ描画関数
             for s in self.sessions.iter_mut() {
