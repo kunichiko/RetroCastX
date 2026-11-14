@@ -396,7 +396,10 @@ impl Default for Settings {
             band_pll: BTreeMap::new(),
             reg_overrides: BTreeMap::new(),
             modes: BTreeMap::new(),
-            tube_aspect: 0.0,
+            // ★**既定は 4:3。** 0(有効映像の比のまま)だと、初めて開いたボードの
+            //   管面が 768x512 なら横長・ドット比によってはほぼ正方形になり、
+            //   CRT の形にならなかった(2026-11-14 実機)。縦画面は回転で扱う
+            tube_aspect: 4.0 / 3.0,
             show_panel: true,
             netcheck_muted: false,
             board_ip: String::new(),
