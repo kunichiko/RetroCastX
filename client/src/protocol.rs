@@ -48,6 +48,9 @@ pub const CAP_LED_IDLE: u16 = 1 << 2;
 /// 前後のモードが混ざらない。parse がそれで `hfreq_mhz_x1000` などを出し直す。
 /// これがあれば、届いたラインと合う MODE を1回で信用してよい(modeswitch.rs)
 pub const CAP_FRAME_CLOCKS: u16 = 1 << 3;
+/// ANNOUNCE caps bit4: 表示遅延の計測(フォトトランジスタ、CONFIG 0x00A0〜0x00A6)に
+/// 対応している
+pub const CAP_PHOTO_LAT: u16 = 1 << 4;
 
 pub fn bytes_per_px(pixfmt: u8) -> Option<usize> {
     match pixfmt {
@@ -496,6 +499,20 @@ pub const CFG_KEY_DRGB_FH: u16 = 0x0070;
 /// 1本の選択線で Y/CVBS(→Gin1・SOGin1)と C/Pr(→Rin1)が一緒に切り替わる。
 /// 電源で 0 に戻るので、映像ソースの `input_regs` に入れて毎回書く。
 pub const CFG_KEY_KOKAME_SEL: u16 = 0x0096;
+
+/// 表示遅延の計測(gateware/retrocastx_latency.py)。bit0=計測する(0→1 で集計を
+/// クリア)/ bit1=センサーが光ると High
+pub const CFG_KEY_PLAT_CTL: u16 = 0x00A0;
+/// 読み出し専用。[1:0] 0=停止 1=暗転待ち 2=白待ち 3=計測中 / [4] センサーが光っている /
+/// [5] 購読が切れたので止めた
+pub const CFG_KEY_PLAT_STATE: u16 = 0x00A1;
+/// 読み出し専用。[15:0] 計れた回数 / [31:16] 時間切れ(2秒光らなかった)の回数
+pub const CFG_KEY_PLAT_COUNT: u16 = 0x00A2;
+/// 読み出し専用。直近 / 最小 / 最大 / 合計 [µs]
+pub const CFG_KEY_PLAT_LAST: u16 = 0x00A3;
+pub const CFG_KEY_PLAT_MIN: u16 = 0x00A4;
+pub const CFG_KEY_PLAT_MAX: u16 = 0x00A5;
+pub const CFG_KEY_PLAT_SUM: u16 = 0x00A6;
 
 /// 直近で見た SOGOUT の最長Low期間[pixクロック]。読み出し専用。
 ///

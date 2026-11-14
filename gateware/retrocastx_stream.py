@@ -61,6 +61,9 @@ CAP_LED_IDLE = 1 << 2
 # ANNOUNCE caps bit3: MODE の末尾に「1フレームの sys クロック数・ライン数・sys クロック
 # 周波数」が付く(1フレームごとに測った同じフレームの組)。受信側が割って fH/fV を出す
 CAP_FRAME_CLOCKS = 1 << 3
+# ANNOUNCE caps bit4: 表示遅延の計測(フォトトランジスタ、CONFIG 0xA0〜0xA6)に
+# 対応している
+CAP_PHOTO_LAT = 1 << 4
 SCROLL_PX   = 4               # テストパターンのカラーバー横スクロール量[px/frame](host pattern.pyと一致必須)
 
 # パケットタイプ(FSM内部コード。プロトコル上のtype値とは別)
@@ -494,6 +497,14 @@ class RetroCastXStreamer(LiteXModule):
             self.stat_streaming.eq(sub_valid),
             self.stat_host_seen.eq(host_timer != 0),
         ]
+        # 表示遅延の計測(retrocastx_latency.py)。force のあいだ映像を白/黒の
+        # フレームに差し替える。white_req はフレームの境目でだけ効く。
+        # white_go は白いフレームの最初のラインを送り始めたサイクルの1パルス。
+        # frame_white はいま送っているフレームが白か(黒を送り始めたかの確認用)
+        self.lat_force = Signal()
+        self.lat_white_req = Signal()
+        self.lat_white_go = Signal()
+        self.lat_frame_white = Signal()
 
         # --- RX: SUBSCRIBE(16B=4ワード) / CONFIG(24B=6ワード)。いずれも
         #     w2/w3に宛先MACを含み、自MACかFF×6(ワイルドカード)のみ受理する ---
@@ -1357,12 +1368,20 @@ class RetroCastXStreamer(LiteXModule):
             # YCC422: 2画素で Y0 Cb0 Y1 Cr0。色差は偶数画素の値を使う(足し算を
             # 入れないのはタイミングのため。4:2:2 の co-sited 配置と同じ意味)
             ycc = Cat(s0[8:16], s0[16:24], s1[8:16], s0[0:8])
+            # 表示遅延の計測で白に差し替えるラインの語。形式は滅多に変わらないので
+            # レジスタに落とし、データ経路に足すのは2入力の選択1段だけにする
+            lat_white_word = Signal(32)
+            lat_line_white = Signal()        # 送出中のラインを白にするか
+            self.sync += lat_white_word.eq(
+                Mux(pixfmt == PIXFMT_YCC422, 0x80FF80FF,     # Y=FF Cb=Cr=80
+                    Mux(pixfmt == PIXFMT_RGB555, 0x7FFF7FFF, 0xFFFFFFFF)))
             self.comb += [
                 w2b.eq(Mux(raw16,
                            Cat(s0[0:16], s1[0:16]),           # YC8 / CVBS8 はそのまま
                            Mux(pixfmt == PIXFMT_YCC422, ycc,
                                Cat(_slot555(s0), _slot555(s1))))),
-                line_pixdata.eq(Mux(fmt888, w3b, w2b)),
+                line_pixdata.eq(Mux(lat_line_white, lat_white_word,
+                                    Mux(fmt888, w3b, w2b))),
             ]
             if True:
                 # ★RGB888 のギアボックス: 4画素(2エントリ)→ 3語(12バイト)
@@ -1585,6 +1604,28 @@ class RetroCastXStreamer(LiteXModule):
                 NextValue(nwords, _nw_expr(n_c)),
                 NextValue(gph, 0),
             ]
+            # 表示遅延の計測: 白のラインは1ラインまるごと(send_full と同じ範囲)、
+            # 黒のラインは空(全黒の行と同じ 20 バイトのパケット)にする。
+            # ★**範囲は IDLE のラッチの後に1サイクル足して上書きする(LSUB)。**
+            #   IDLE の範囲の組合せ(FIFO先頭→加算・比較→レジスタ)に選択を足すと
+            #   sys のクリティカルパスに乗る(上の lo_c/hi_c のコメント)。
+            #   白の範囲は設定からしか決まらないので、前もってレジスタに作っておく
+            lat_lo = Signal(16)
+            lat_hi = Signal(16)
+            lat_hi_up = Signal(16)
+            self.comb += lat_hi_up.eq(self.cfg_pll_divide + (PX_ALIGN - 1))
+            self.sync += [
+                lat_lo.eq(Cat(C(0, ALB), self.cfg_hs_offset[ALB:])),
+                lat_hi.eq(Mux(Cat(C(0, ALB), lat_hi_up[ALB:]) > width,
+                              width, Cat(C(0, ALB), lat_hi_up[ALB:]))),
+            ]
+            lat_line_sub = Signal()
+            line_sub = [
+                If(lat_line_sub,
+                    NextValue(span_lo, Mux(lat_line_white, lat_lo, 0)),
+                    NextValue(span_hi, Mux(lat_line_white, lat_hi, 0)),
+                ),
+            ]
         else:
             line_prep = []
             line_span = [
@@ -1606,6 +1647,34 @@ class RetroCastXStreamer(LiteXModule):
                 NextValue(field, capture.line_field),
                 NextValue(ts_line, capture.line_ts),   # 実DATACLKカウンタ
             ]
+            # 表示遅延の計測: 差し替えるか・白にするかはフレームの境目(frame 番号が
+            # 変わったライン)でだけ決め直す。フレームの途中で白に変わると、どの
+            # フレームが白なのかが曖昧になり、時刻の起点が決まらない。差し替えの
+            # 入り切りも同じ境目に揃え、元の映像と黒が1枚の中で混ざらないようにする
+            lat_frame = Signal(16)
+            lat_frame_sub = Signal()         # いま送っているフレームを差し替えているか
+            lat_frame_white = self.lat_frame_white   # 〃 白か
+            lat_new = Signal()
+            lat_sub_next = Signal()
+            lat_white_next = Signal()
+            self.comb += [
+                lat_new.eq(capture.line_frame != lat_frame),
+                lat_sub_next.eq(Mux(lat_new, self.lat_force, lat_frame_sub)),
+                lat_white_next.eq(lat_sub_next &
+                                  Mux(lat_new, self.lat_white_req,
+                                      lat_frame_white)),
+            ]
+            line_snap += [
+                NextValue(lat_frame, capture.line_frame),
+                NextValue(lat_frame_sub, lat_sub_next),
+                NextValue(lat_frame_white, lat_white_next),
+                NextValue(lat_line_sub, lat_sub_next),
+                NextValue(lat_line_white, lat_white_next),
+                # 白いフレームの最初のライン = 計測の起点
+                If(lat_new & self.lat_force & self.lat_white_req
+                   & ~lat_frame_white,
+                    self.lat_white_go.eq(1)),
+            ]
         else:
             line_snap = [
                 NextValue(line, cap_line),
@@ -1621,7 +1690,7 @@ class RetroCastXStreamer(LiteXModule):
             NextValue(frag_idx, 0),
             *line_span,
             *line_snap,
-            NextState("LPREP" if cap_mode else "SEND"),
+            NextState("LSUB" if cap_mode else "SEND"),
         )
         for k in range(n_aud):
             idle_if = idle_if.Elif(aud_pending[k],
@@ -1660,6 +1729,7 @@ class RetroCastXStreamer(LiteXModule):
             # ラッチした span_lo/span_hi だけから派生値を作る1サイクル。
             # ここを挟むことで「行番号・ts と範囲が同じFIFOエントリ由来」に
             # なることが構造的に保証される。
+            fsm.act("LSUB", *line_sub, NextState("LPREP"))
             fsm.act("LPREP", *line_prep, NextState("SEND"))
         fsm.act("SEND",
             sink.valid.eq(1),
@@ -2242,6 +2312,16 @@ class RetroCastXStream(SoCMini):
             dbg_pads.hs.eq(self.drgb_gen.hs),
             dbg_pads.vs.eq(self.drgb_gen.vs),
         ]
+        # --- 表示遅延の計測(フォトトランジスタ)---
+        # デバッグ端子 J7 の dbg7(pin9 / R3)。回路と手順は retrocastx_latency.py 冒頭。
+        # ★**内蔵プルアップで受ける。** フォトトランジスタをピンとGNDの間に
+        #   入れるだけで使える。何も繋がないときも浮かない
+        from retrocastx_latency import PhotoLatency
+        platform.add_extension([
+            ("lat_sensor", 0, Pins("R3"), IOStandard("LVCMOS33"),
+             Misc("PULLMODE=UP")),   # SO-DIMM 68 / dbg7
+        ])
+        self.photo_lat = PhotoLatency(platform.request("lat_sensor"), sys_clk_freq)
         # --- シリアルLED(WS2812 互換)---
         # 状態LED(メイン基板 D1)と小亀基板のLED。それぞれ別のピンの独立チェーン。
         # 色の決め方とキーフレーム表の形式は retrocastx_led.py 冒頭
@@ -2351,8 +2431,10 @@ class RetroCastXStream(SoCMini):
             #   SUBSCRIBE/CONFIG の宛先照合と ANNOUNCE はこちらで、Viewer は
             #   これでボードを見分ける。
             mac_address=my_mac, my_ip=my_ip,
-            # bit1 = CAP_COMPACT / bit2 = CAP_LED_IDLE / bit3 = CAP_FRAME_CLOCKS
-            caps=Cat(self.status.mac_valid, C(1, 1), C(1, 1), C(1, 1), C(0, 12)),
+            # bit1 = CAP_COMPACT / bit2 = CAP_LED_IDLE / bit3 = CAP_FRAME_CLOCKS /
+            # bit4 = CAP_PHOTO_LAT
+            caps=Cat(self.status.mac_valid, C(1, 1), C(1, 1), C(1, 1),
+                     C(1 if capture else 0, 1), C(0, 11)),
             audio_sources=[(self.i2s.sources[0], 48000),
                            (self.i2s.sources[1], 48000),
                            (self.spdif.source, self.spdif.rate_hz),
@@ -2384,6 +2466,8 @@ class RetroCastXStream(SoCMini):
                 0x94: self.led_status.bright,
                 # 小亀基板の入力切替(0=コンポジット/コンポーネント 1=S端子)
                 0x96: self.kokame_sel,
+                # 表示遅延の計測。bit0=計測する bit1=光るとHigh
+                0xA0: self.photo_lat.cfg_ctl,
             },
             extra_stats={
                 # デジタルRGB の測定値(読み取り専用)
@@ -2413,6 +2497,13 @@ class RetroCastXStream(SoCMini):
                 0x4F: dual.frame_counts,
                 # 状態LEDの状態(0=赤 1=橙 2=青)
                 0x95: self.led_status.state,
+                # 表示遅延の計測(retrocastx_latency.py 冒頭)
+                0xA1: self.photo_lat.stat_state,
+                0xA2: self.photo_lat.stat_count,
+                0xA3: self.photo_lat.stat_last,
+                0xA4: self.photo_lat.stat_min,
+                0xA5: self.photo_lat.stat_max,
+                0xA6: self.photo_lat.stat_sum,
             },
             )
         self.sync += self.net_port_stat.eq(Cat(
@@ -2435,6 +2526,14 @@ class RetroCastXStream(SoCMini):
         ]
 
         if capture:
+            # 表示遅延の計測: 白/黒の差し替えはストリーマが行う
+            self.comb += [
+                self.streamer.lat_force.eq(self.photo_lat.force),
+                self.streamer.lat_white_req.eq(self.photo_lat.white_req),
+                self.photo_lat.white_go.eq(self.streamer.lat_white_go),
+                self.photo_lat.alive.eq(self.streamer.stat_streaming),
+                self.photo_lat.frame_white.eq(self.streamer.lat_frame_white),
+            ]
             # CONFIGで書き換わる画枠パラメータをキャプチャ/TVPへ配る。
             # 末尾クリアの開始entryは (1ラインのサンプル数 - 水平オフセット)/2。
             # pll_divide や hs_offset を変えると必要範囲も変わるので実行時に算出する。

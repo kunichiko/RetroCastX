@@ -12,7 +12,27 @@ export PATH="$HOME/opt/oss-cad-suite/bin:$PATH"
 .venv/bin/python sim_status.py                  # 共有I2C(TVP7002 + OLED)の検証
 .venv/bin/python sim_eeprom_cfg.py              # 個体設定ページ(EEPROM)の読み書き検証
 .venv/bin/python sim_drgb.py                    # デジタルRGB(生成器→測定器のループバック)
+.venv/bin/python sim_latency.py                 # 表示遅延の計測(白黒の差し替えと時間の数え方)
 ```
+
+## 表示遅延の計測(フォトトランジスタ)
+
+ボードが映像を送り出してから PC のモニタに実際に出るまでを、画面に貼った
+フォトトランジスタで測る(`retrocastx_latency.py`)。Viewer の中の
+時刻では測れない、コンポジタと液晶自身の遅延まで入った値になる。
+
+| J7(デバッグ端子) | | フォトトランジスタ |
+|---|---|---|
+| pin9 dbg7(R3) | → | コレクタ |
+| pin1/2 GND | → | エミッタ |
+
+FPGA の内蔵プルアップで受けるので抵抗は要らない(光ると Low)。光ると High を
+出すセンサー基板なら Viewer で極性を反転する。Viewer の詳細表示に出る
+「表示遅延」で開始すると、ボードが映像を黒/白のフレームに差し替えて計測を
+繰り返し、回数・最小・平均・最大を返す。起点は**白いフレームの最初のライン
+(VSYNC直後)を送り始めた時刻**なので、センサーを画面の下に貼るほど液晶の
+走査ぶん遅く出る。CONFIG は [docs/protocol-v0.md](../docs/protocol-v0.md) の
+「表示遅延の計測」。★入力信号が要る(キャプチャしたラインを差し替えるため)。
 
 ## デジタルRGB(TTL RGBI + HS/VS)
 
