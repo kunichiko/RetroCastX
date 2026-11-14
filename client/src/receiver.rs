@@ -931,7 +931,7 @@ fn rx_thread(
 ///
 /// `bind` に具体的なアドレスが指定されていれば、そのNICだけに絞る(明示指定を尊重)。
 /// 候補が1つも作れないときだけ、最後の手段として限定ブロードキャストを返す。
-fn broadcast_targets(bind: &str) -> Vec<String> {
+pub(crate) fn broadcast_targets(bind: &str) -> Vec<String> {
     let pinned: Option<std::net::Ipv4Addr> = bind
         .parse::<std::net::Ipv4Addr>()
         .ok()
@@ -995,17 +995,17 @@ fn blank_screen(shared: &Shared, repaint: &impl Fn()) {
 /// 宛先すべてへ送り、成功した数を返す。0 なら1つも出せていない。
 /// SUBSCRIBE が1つも出せなかったときの案内。原因が OS ごとに違う
 #[cfg(not(target_os = "ios"))]
-const SEND_FAIL_HINT: &str = "VPN が既定経路を握っていると限定ブロードキャストが送れません。\n\
+pub(crate) const SEND_FAIL_HINT: &str = "VPN が既定経路を握っていると限定ブロードキャストが送れません。\n\
                               有線/Wi-Fi のNICが有効か、ボードと同じL2にいるかを確認してください";
 /// ★**iOS はブロードキャストの送信に Apple の許可(マルチキャストの entitlement)が
 ///   要る。** 無いと送信自体が失敗するので、ボードのIPを入れてもらう。
 ///   ローカルネットワークの許可を拒否した場合も同じ症状になる。
 #[cfg(target_os = "ios")]
-const SEND_FAIL_HINT: &str = "「ボードのIP」にボードのアドレスを入れてください。\n\
+pub(crate) const SEND_FAIL_HINT: &str = "「ボードのIP」にボードのアドレスを入れてください。\n\
                               設定 > プライバシー > ローカルネットワーク で\n\
                               RetroCast X が許可されているかも確認してください";
 
-fn send_all(
+pub(crate) fn send_all(
     sock: &UdpSocket, port: u16, targets: &[String], extra: Option<&str>, pkt: &[u8],
 ) -> usize {
     let mut ok = 0usize;
