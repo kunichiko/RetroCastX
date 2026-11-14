@@ -976,6 +976,31 @@ fn pick_targets(
     out
 }
 
+/// ボードを掴めずに待っている理由
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wait {
+    /// 指定したボードがまだ見つかっていない
+    Searching,
+    /// 見つかっているが、別の Viewer が使っている
+    Busy,
+}
+
+/// 掴めなかったときの理由。言うことが無ければ None。
+///
+/// ★**「見つからない」と「使用中」を分ける。** ボードを指定した窓は、そのボードの
+///   ANNOUNCE が届く前に別のボードが見えることがよくある。以前はそこで「見つかった
+///   ボード(別のボード)はすべて使用中」と出ていた(誰も使っていないのに)。
+fn why_waiting(sel: crate::settings::BoardSel, macs: &[[u8; 6]]) -> Option<Wait> {
+    use crate::settings::BoardSel;
+    match sel {
+        BoardSel::None => None,
+        BoardSel::Mac(m) if !macs.contains(&m) => Some(Wait::Searching),
+        BoardSel::Mac(_) => Some(Wait::Busy),
+        BoardSel::Auto if macs.is_empty() => None,
+        BoardSel::Auto => Some(Wait::Busy),
+    }
+}
+
 /// 画面を黒にする(切断・奪われたとき)。
 ///
 /// ★**フレームを消すのではなく黒で上書きする。** 描画側は新しいフレームが来た
@@ -1070,8 +1095,8 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     // 掴んでいるボード。**落とすとロックが外れる**ので持ち続ける
     let mut claim: Option<crate::claim::Claim> = None;
     let mut last_claim: Option<Instant> = None;
-    // 「使用中で待っている」を一度だけ言うための旗
-    let mut waiting = false;
+    // 掴めずに待っている理由。**変わったときだけ**言う(同じことを繰り返さない)
+    let mut waiting: Option<Wait> = None;
     let mut last_geom: Option<Instant> = None;
     let mut last_report = Instant::now();
     let mut bytes_since = 0u64;
@@ -1250,27 +1275,38 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                     }
                     // 掴めたら次の購読をすぐ出す(下の on_claim)
                     if claim.is_some() {
-                        waiting = false;
-                    } else if !macs.is_empty()
-                        && sel != crate::settings::BoardSel::None
-                        && !waiting
-                    {
+                        waiting = None;
+                    } else {
                         // ★**理由を言う。** フルスクリーンにはUIが無く、
                         //   headless も「no mode 0.0 fps」が並ぶだけなので、
                         //   黙っていると壊れているようにしか見えない。
-                        waiting = true;
-                        let names: Vec<String> = shared
-                            .boards
-                            .lock()
-                            .unwrap()
-                            .values()
-                            .map(|b| b.name.clone())
-                            .collect();
-                        eprintln!(
-                            "見つかったボード({})はすべて別のウィンドウが使用中です。\n\
-                             空くまで待ちます(1枚のボードは同時に1つのウィンドウでしか見られません)",
-                            names.join(", ")
-                        );
+                        let why = why_waiting(sel, &macs);
+                        if why.is_some() && why != waiting {
+                            waiting = why;
+                            match (why, sel) {
+                                (Some(Wait::Searching), crate::settings::BoardSel::Mac(m)) => {
+                                    eprintln!("ボード {} を探しています", crate::claim::mac_string(&m));
+                                }
+                                _ => {
+                                    let names: Vec<String> = shared
+                                        .boards
+                                        .lock()
+                                        .unwrap()
+                                        .values()
+                                        .filter(|b| match sel {
+                                            crate::settings::BoardSel::Mac(m) => b.mac == m,
+                                            _ => true,
+                                        })
+                                        .map(|b| b.name.clone())
+                                        .collect();
+                                    eprintln!(
+                                        "ボード({})は別の Viewer が使用中です。\n\
+                                         空くまで待ちます(1枚のボードは同時に1つの Viewer でしか見られません)",
+                                        names.join(", ")
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
                 let own = claim.as_ref().map(|c| c.mac);
@@ -1759,6 +1795,20 @@ fn tick_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★**指定したボードが見えないうちは「探しています」。** 別のボードが先に
+    ///   見えても、それを「使用中」と言わない(実機で誤表示した)
+    #[test]
+    fn waiting_reason_separates_searching_from_busy() {
+        use crate::settings::BoardSel;
+        let (a, b) = ([2u8, 0, 0, 0, 0, 0xa], [2u8, 0, 0, 0, 0, 0xb]);
+        assert_eq!(why_waiting(BoardSel::Mac(a), &[b]), Some(Wait::Searching));
+        assert_eq!(why_waiting(BoardSel::Mac(a), &[]), Some(Wait::Searching));
+        assert_eq!(why_waiting(BoardSel::Mac(a), &[a, b]), Some(Wait::Busy));
+        assert_eq!(why_waiting(BoardSel::Auto, &[]), None);
+        assert_eq!(why_waiting(BoardSel::Auto, &[a]), Some(Wait::Busy));
+        assert_eq!(why_waiting(BoardSel::None, &[a]), None);
+    }
 
     fn ann(mac: [u8; 6], name: &str) -> proto::Announce {
         proto::Announce {
