@@ -341,6 +341,12 @@ fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> efra
             });
         }
     }
+    // RCX_BACKEND で描画 API を選ぶ(render::backends_from_env。低遅延全画面と同じ)
+    if let Some(backends) = render::backends_from_env() {
+        if let eframe::egui_wgpu::WgpuSetup::CreateNew(new) = &mut wgpu_options.wgpu_setup {
+            new.instance_descriptor.backends = backends;
+        }
+    }
     if no_vsync {
         wgpu_options.surface.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
         wgpu_options.surface.desired_maximum_frame_latency = Some(1); // 低遅延優先
@@ -395,6 +401,7 @@ fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> efra
                 // 描画先の色空間を出す。映像テクスチャはこれに合わせて選ぶ
                 // (render::video_tex_format が sRGB 性を揃える)。
                 eprintln!("render target format: {:?}", rs.target_format);
+                eprintln!("adapter: {}", render::describe_adapter(&rs.adapter.get_info()));
                 rs.renderer
                     .write()
                     .callback_resources

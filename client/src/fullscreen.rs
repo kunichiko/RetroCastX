@@ -459,7 +459,13 @@ struct Gpu {
 
 impl Gpu {
     fn new(window: Arc<Window>, vsync: bool) -> Self {
-        let instance = wgpu::Instance::default();
+        let instance = match render::backends_from_env() {
+            Some(backends) => wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends,
+                ..wgpu::InstanceDescriptor::new_without_display_handle()
+            }),
+            None => wgpu::Instance::default(),
+        };
         let surface = instance.create_surface(window.clone()).unwrap();
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -467,6 +473,7 @@ impl Gpu {
                 ..Default::default()
             }))
             .unwrap();
+        eprintln!("fullscreen: adapter {}", render::describe_adapter(&adapter.get_info()));
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                 .unwrap();
