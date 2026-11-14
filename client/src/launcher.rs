@@ -248,6 +248,111 @@ impl Launcher {
     }
 }
 
+/// ランチャー窓の位置と大きさ(`launcher.conf`)。
+///
+/// ★**Viewer の番号ごとの設定には入れない。** 0 番はボードの窓の設定で、
+///   ランチャーの窓と同じファイルに置くと、0 番の Viewer が開いている間に
+///   両方が同じキーを書き合う。
+/// ★**位置は外枠で覚える。** `with_position` が指すのは外枠なので、内枠を
+///   渡すと毎回タイトルバーの高さだけ下へずれる(Viewer の窓で踏んだ)。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Geom {
+    pub pos: Option<egui::Pos2>,
+    pub size: egui::Vec2,
+}
+
+impl Default for Geom {
+    fn default() -> Self {
+        Self { pos: None, size: egui::vec2(440.0, 520.0) }
+    }
+}
+
+impl Geom {
+    fn path() -> std::path::PathBuf {
+        Settings::path().with_file_name("launcher.conf")
+    }
+
+    pub fn load() -> Self {
+        Self::parse(&std::fs::read_to_string(Self::path()).unwrap_or_default())
+    }
+
+    fn parse(text: &str) -> Self {
+        let mut g = Self::default();
+        let (mut x, mut y) = (None, None);
+        for line in text.lines() {
+            let Some((k, v)) = line.split_once('=') else { continue };
+            let Ok(v) = v.trim().parse::<f32>() else { continue };
+            match k.trim() {
+                "window_x" => x = Some(v),
+                "window_y" => y = Some(v),
+                "window_w" => g.size.x = v.clamp(320.0, 8192.0),
+                "window_h" => g.size.y = v.clamp(280.0, 8192.0),
+                _ => {}
+            }
+        }
+        if let (Some(x), Some(y)) = (x, y) {
+            g.pos = Some(egui::pos2(x, y));
+        }
+        g
+    }
+
+    fn format(&self) -> String {
+        let mut s = String::from("# RetroCast X ランチャーの窓(自動生成。消しても既定値で起動する)\n");
+        if let Some(p) = self.pos {
+            s.push_str(&format!("window_x = {:.0}\nwindow_y = {:.0}\n", p.x, p.y));
+        }
+        s.push_str(&format!("window_w = {:.0}\nwindow_h = {:.0}\n", self.size.x, self.size.y));
+        s
+    }
+
+    /// 書けなくても致命的ではないので黙って諦める(次回は既定値で起動する)
+    pub fn save(&self) {
+        let p = Self::path();
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(p, self.format());
+    }
+}
+
+/// ランチャー窓の動きを追い、止まってから書く(ドラッグ中に書き続けない)
+#[derive(Default)]
+pub struct GeomTracker {
+    pub geom: Geom,
+    dirty: Option<Instant>,
+}
+
+impl GeomTracker {
+    pub fn new(geom: Geom) -> Self {
+        Self { geom, dirty: None }
+    }
+
+    /// 毎フレーム、主ウィンドウの内枠と外枠を渡す
+    pub fn observe(&mut self, inner: Option<egui::Rect>, outer: Option<egui::Rect>) {
+        if let Some(r) = inner {
+            if (r.size() - self.geom.size).length() > 1.0 {
+                self.geom.size = r.size();
+                self.dirty = Some(Instant::now());
+            }
+        }
+        if let Some(r) = outer.or(inner) {
+            if self.geom.pos.is_none_or(|p| (r.min - p).length() > 1.0) {
+                self.geom.pos = Some(r.min);
+                self.dirty = Some(Instant::now());
+            }
+        }
+        if self.dirty.is_some_and(|t| t.elapsed() >= Duration::from_millis(700)) {
+            self.flush();
+        }
+    }
+
+    pub fn flush(&mut self) {
+        if self.dirty.take().is_some() {
+            self.geom.save();
+        }
+    }
+}
+
 /// 「入力2 X68000」の形
 fn input_label(bi: &BoardInput) -> String {
     let key = bi
@@ -301,6 +406,15 @@ pub fn boards_to_restore() -> Vec<(u32, [u8; 6])> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn geom_roundtrips_and_keeps_default_when_unknown() {
+        let g = Geom { pos: Some(egui::pos2(120.0, -40.0)), size: egui::vec2(500.0, 610.0) };
+        assert_eq!(Geom::parse(&g.format()), g);
+        // 初回(ファイル無し)は位置を決めない(OS に任せる)
+        assert_eq!(Geom::parse(""), Geom::default());
+        assert_eq!(Geom::parse("").pos, None);
+    }
 
     #[test]
     fn slot_prefers_the_boards_own_then_unbound() {
