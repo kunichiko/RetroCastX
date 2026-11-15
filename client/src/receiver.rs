@@ -44,7 +44,22 @@ pub(crate) fn raise_thread_qos() {
     }
 }
 
-#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+/// Windows は呼んだスレッドの優先度を HIGHEST(通常クラスで 10)に上げる。
+/// macOS の USER_INTERACTIVE と同じ位置づけで、受信・組立・低遅延全画面の描画が
+/// 他のアプリやブラウザに横取りされないようにする。TIME_CRITICAL にしないのは、
+/// 復調のワーカー(ntsc.rs)のように CPU を使い切るスレッドも呼ぶので、UI や
+/// OS を止めないため。権限は要らず、失敗しても既定の優先度で動くだけ
+#[cfg(windows)]
+pub(crate) fn raise_thread_qos() {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
+    };
+    unsafe {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    }
+}
+
+#[cfg(not(any(target_vendor = "apple", target_os = "android", windows)))]
 pub(crate) fn raise_thread_qos() {}
 
 /// フレーム全体を走査する解析(noise/abox/tune/weave)を何フレームに1回やるか。

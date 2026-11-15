@@ -448,20 +448,30 @@ pub struct EguiBlit {
 ///   どちらも「片側だけ変換」が原因なので、**両者の sRGB 性を揃える**。
 ///   揃えれば復号と再符号化が打ち消し合う(または両方起きない)ので、
 ///   格納バイトがそのまま画面に出る。
-/// 環境変数 RCX_BACKEND で描画 API を選ぶ(`dx12` / `vulkan` / `metal` / `gl`、
-/// カンマ区切りで複数も可)。指定が無いか読めなければ None(wgpu に任せる)。
+/// 描画 API を選ぶ。環境変数 RCX_BACKEND(`dx12` / `vulkan` / `metal` / `gl`、
+/// カンマ区切りで複数も可)があればそれ、無ければ OS ごとの既定。
+/// None は wgpu に任せる。
 ///
-/// ★**wgpu に任せると Windows では Vulkan が選ばれやすい**(バックエンドを
-///   Vulkan → DX12 の順に数えるため)。遅延がどちらで小さいかは実機で比べる
-///   まで分からないので、切り替えて測れるようにしておく
-pub fn backends_from_env() -> Option<wgpu::Backends> {
-    let v = std::env::var("RCX_BACKEND").ok()?;
-    let b = wgpu::Backends::from_comma_list(&v);
-    if b.is_empty() {
+/// ★**Windows の既定は DX12。** wgpu に任せると Vulkan が選ばれる(バックエンドを
+///   Vulkan → DX12 の順に数えるため)。実測(2026-11-15, Quadro P620 + 60Hz 液晶、
+///   低遅延全画面、フォトトランジスタ): Vulkan・frame latency 3 で平均 103.5ms、
+///   DX12・frame latency 1 で平均 78.6ms。DX12 では PresentMon で
+///   `Hardware: Independent Flip`(合成を経ない)を確認した
+pub fn preferred_backends() -> Option<wgpu::Backends> {
+    if let Ok(v) = std::env::var("RCX_BACKEND") {
+        let b = wgpu::Backends::from_comma_list(&v);
+        if !b.is_empty() {
+            return Some(b);
+        }
         eprintln!("RCX_BACKEND={v} は分からないので無視します(dx12 / vulkan / metal / gl)");
-        return None;
     }
-    Some(b)
+    if cfg!(windows) { Some(wgpu::Backends::DX12) } else { None }
+}
+
+/// RCX_BACKEND が指定されているか(指定されていれば、その API で動かなくても
+/// 他へ逃げない。測り比べの最中に黙って別の API になると結果を取り違える)
+pub fn backend_overridden() -> bool {
+    std::env::var("RCX_BACKEND").is_ok_and(|v| !wgpu::Backends::from_comma_list(&v).is_empty())
 }
 
 /// 選ばれたアダプタの1行(起動時のログ用)。どの API で動いているかを残す

@@ -341,8 +341,9 @@ fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> efra
             });
         }
     }
-    // RCX_BACKEND で描画 API を選ぶ(render::backends_from_env。低遅延全画面と同じ)
-    if let Some(backends) = render::backends_from_env() {
+    // 描画 API を選ぶ(render::preferred_backends。Windows は DX12、RCX_BACKEND で上書き。
+    // 低遅延全画面と同じ)
+    if let Some(backends) = render::preferred_backends() {
         if let eframe::egui_wgpu::WgpuSetup::CreateNew(new) = &mut wgpu_options.wgpu_setup {
             new.instance_descriptor.backends = backends;
         }
