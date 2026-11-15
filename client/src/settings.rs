@@ -128,10 +128,18 @@ pub const DEFAULT_AUDIO_BUFFER_MS: u32 = 80;
 /// 1フレームずつと同じ動きに落ちる。8 分割で光り始めが約 15ms 早くなった
 /// (MacBook Pro の内蔵画面、オシロで実測)。16 分割は present の往復(約 2.5ms)が
 /// 帯の間隔より長くなり、8 分割と変わらない。
-/// 他の OS はその待ちが無く帯ごとに出すので、測るまでは 1フレームずつのまま。
-#[cfg(target_os = "macos")]
+///
+/// **Windows も 8 分割にする。** Windows はその待ちが無く帯ごとに present するが、
+/// DX12・frame latency 1 では前の1枚の描画が終わるまで次の drawable が取れないので、
+/// GPU が追いつかなければ present が減るだけで同じく1フレームずつに落ちる。
+/// 実測(2026-11-15, Quadro P620 + 60Hz 液晶、PresentMon): 4 / 8 / 16 分割で
+/// present はそれぞれ帯の数どおり出て、全部 `Hardware: Independent Flip`
+/// (合成を経ない・ティアリング可)。1回の GPU 時間は 0.7〜1.0ms で、16 分割でも
+/// 詰まらなかった。8 にしたのは macOS と揃えるため(帯の待ちは 18ms/8 ≒ 2.3ms)。
+/// Linux は測っていないので 1フレームずつのまま。
+#[cfg(any(target_os = "macos", windows))]
 pub const DEFAULT_FULLSCREEN_SLICES: u32 = 8;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub const DEFAULT_FULLSCREEN_SLICES: u32 = 0;
 
 #[derive(Clone, Debug)]

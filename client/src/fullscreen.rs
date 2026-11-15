@@ -459,20 +459,33 @@ struct Gpu {
 
 impl Gpu {
     fn new(window: Arc<Window>, vsync: bool) -> Self {
-        let instance = match render::backends_from_env() {
-            Some(backends) => wgpu::Instance::new(wgpu::InstanceDescriptor {
-                backends,
-                ..wgpu::InstanceDescriptor::new_without_display_handle()
-            }),
-            None => wgpu::Instance::default(),
+        // 既定の API(Windows は DX12)で取れなければ、指定が無い限り wgpu の既定へ逃げる
+        let open = |backends: Option<wgpu::Backends>| {
+            let instance = match backends {
+                Some(backends) => wgpu::Instance::new(wgpu::InstanceDescriptor {
+                    backends,
+                    ..wgpu::InstanceDescriptor::new_without_display_handle()
+                }),
+                None => wgpu::Instance::default(),
+            };
+            let surface = instance.create_surface(window.clone()).ok()?;
+            let adapter =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    compatible_surface: Some(&surface),
+                    ..Default::default()
+                }))
+                .ok()?;
+            Some((instance, surface, adapter))
         };
-        let surface = instance.create_surface(window.clone()).unwrap();
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                compatible_surface: Some(&surface),
-                ..Default::default()
-            }))
-            .unwrap();
+        let preferred = render::preferred_backends();
+        let (_instance, surface, adapter) = match open(preferred) {
+            Some(v) => v,
+            None if preferred.is_some() && !render::backend_overridden() => {
+                eprintln!("fullscreen: {preferred:?} が使えないので wgpu の既定で開きます");
+                open(None).expect("fullscreen: 描画アダプタが見つからない")
+            }
+            None => panic!("fullscreen: {preferred:?} で描画アダプタが見つからない"),
+        };
         eprintln!("fullscreen: adapter {}", render::describe_adapter(&adapter.get_info()));
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
@@ -497,9 +510,13 @@ impl Gpu {
             .get_default_config(&adapter, sz.width.max(1), sz.height.max(1))
             .unwrap();
         config.present_mode = mode;
-        // 調査用: RCX_FRAME_LATENCY で drawable の段数(既定3)を変えられる
+        // 調査用: RCX_FRAME_LATENCY で drawable の段数を変えられる。
+        // ★Windows の既定は 1。present 間隔はソース(55.46Hz)に追従しているので
+        //   段数を積んでも詰まりは減らず、積んだぶん遅れるだけ(render::preferred_backends
+        //   の実測を参照)。macOS は 3 のまま
+        let default_latency = if cfg!(windows) { 1 } else { 3 };
         config.desired_maximum_frame_latency = std::env::var("RCX_FRAME_LATENCY").ok()
-            .and_then(|v| v.parse().ok()).unwrap_or(3);
+            .and_then(|v| v.parse().ok()).unwrap_or(default_latency);
         surface.configure(&device, &config);
         eprintln!("fullscreen: present mode {mode:?}, {}x{}, surface {:?}, frame latency {}",
                   config.width, config.height, config.format,
@@ -554,6 +571,10 @@ fn render_thread(
     geom: FsGeom,
     hud: Arc<AtomicBool>,
 ) {
+    // Windows は描画スレッドも上げる。帯ごとに present するので、帯が届いてから
+    // 起きるまでの遅れがそのまま画面の遅れになる
+    #[cfg(windows)]
+    crate::receiver::raise_thread_qos();
     let mut texture: Option<(wgpu::Texture, wgpu::BindGroup, u32, u32)> = None;
     let mut fail_count = 0u64;
     let mut seen_gen = 0u64;

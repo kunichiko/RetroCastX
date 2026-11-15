@@ -21,6 +21,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     # 遊んでいる間のスリープ抑止(src/awake.rs の SetThreadExecutionState)
     "Win32_System_Power",
+    # 受信・組立・全画面描画のスレッド優先度(receiver.rs の raise_thread_qos)
+    "Win32_System_Threading",
 ] }
 
 [target.'cfg(windows)'.build-dependencies]

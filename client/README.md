@@ -366,10 +366,36 @@ macOS はフォーカスの無いアプリにキーイベントを配送しな�
 タイムスタンプ駆動のジッタ平滑化(到着ゆらぎをドットクロック時刻で吸収)は次段。
 
 Windows側は wgpu Immediate が DXGI allow-tearing にマップされるので FreeSync で同様の構成が取れる見込み。
-★ただしこれは DX12 のときの話。**wgpu に任せると Windows では Vulkan が選ばれやすい**
-(バックエンドを Vulkan → DX12 の順に数える)。どちらで動いたかは起動時のログ
-(`adapter: …` / `fullscreen: adapter …`)に出るので、`RCX_BACKEND=dx12` と
-`RCX_BACKEND=vulkan`(PowerShell なら `$env:RCX_BACKEND="dx12"`)で起動して測り比べる。
+★ただしこれは DX12 のときの話。**wgpu に任せると Windows では Vulkan が選ばれる**
+(バックエンドを Vulkan → DX12 の順に数える)ので、**Windows の既定は DX12、
+低遅延全画面の frame latency は 1** にしてある(macOS は 3 のまま)。
+どちらで動いたかは起動時のログ(`adapter: …` / `fullscreen: adapter …` /
+`frame latency …`)に出る。測り比べるときは `RCX_BACKEND=vulkan` と
+`RCX_FRAME_LATENCY=3`(PowerShell なら `$env:RCX_BACKEND="vulkan"`)で上書きする。
+
+実測(2026-11-15, Quadro P620 + 60Hz 液晶、低遅延全画面、フォトトランジスタで表示遅延):
+
+| 構成 | 平均 | 最小 |
+|---|---|---|
+| Vulkan・frame latency 3(以前の既定) | 103.5 ms | 75.0 ms |
+| DX12・frame latency 1(今の既定) | 78.6 ms | 66.7 ms |
+
+DX12 では PresentMon で全フレームが `Hardware: Independent Flip`(合成を経ない・
+ティアリング可)、present からフリップまで中央値 5.3ms だった。受信〜present の
+約 11ms(画面中央)と走査待ち平均 8ms を足しても PC 側は 25ms 前後なので、
+残りの 40〜55ms は液晶側(内部処理と応答)と見ている。
+
+**低遅延全画面の「描き方」は Windows も既定 8 分割**(macOS と同じ。パネルの「描き方」)。
+1フレームずつだと画面の上端でもフレーム全体(55Hz なら 18ms)が届くのを待つが、
+分割すると届いた帯から順に present するので、その待ちが 1/分割数 になる。
+PresentMon で 4 / 8 / 16 分割とも present が帯の数どおり出て、全部
+`Hardware: Independent Flip` のまま、1回の GPU 時間 0.7〜1.0ms で詰まらないことを
+確かめた(Quadro P620)。Immediate なので帯ごとにその場でフリップし、
+高リフレッシュ/VRR の液晶ほど効く。保存済みの設定(`fullscreen_slices = 0`)が
+あるとそちらが優先されるので、パネルで選び直す。
+
+受信・組立・全画面の描画スレッドは Windows でも優先度を上げる
+(`receiver::raise_thread_qos`、THREAD_PRIORITY_HIGHEST。macOS の USER_INTERACTIVE に相当)。
 
 #### ProMotionパネルでの追従確認(2026-08-06, MacBook Pro M5 Pro + 内蔵XDR 120Hz, macOS 26.4)
 
