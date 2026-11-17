@@ -53,6 +53,10 @@ pub fn run(port: u16, bind: String, subscribe_to: Option<String>, target_mac: Op
     let shared = Arc::new(receiver::Shared::default());
     // 受信(=再生器を開く)より前に入れる。後からだと開いた直後に 100% で鳴る
     *shared.gain.lock().unwrap() = Some(params.gain);
+    // 組み立ての設定も受信より前に(最初のフレームから効くように)
+    shared.ycbcr.store(params.ycbcr, Ordering::Relaxed);
+    shared.dot_a_milli.store(params.dot_a_milli, Ordering::Relaxed);
+    shared.comb3d.store(params.comb3d, Ordering::Relaxed);
     let subscribe_dest = subscribe_to.clone();
     let (tx, rx): (Sender<()>, Receiver<()>) = std::sync::mpsc::channel();
     receiver::spawn(
@@ -141,6 +145,14 @@ pub struct FsGeom {
     pub spdif: (bool, f32),
     /// 1フレームを何本の帯に分けて、届いたそばから出すか(0 = フレーム全体だけ)
     pub slices: u32,
+    /// コンポーネント(Pr/Y/Pb を RGB に直す)か。★**ウィンドウ表示では UI が
+    ///   毎フレーム `Shared` へ書いているが、全画面には UI が無いのでここで渡す。**
+    ///   渡さないと Pr/Y/Pb がそのまま RGB として出て色がおかしくなった(2026-11-17)
+    pub ycbcr: bool,
+    /// ドット復元の係数(同じく UI が書いていたもの)
+    pub dot_a_milli: u32,
+    /// コンポジットの3次元コム(同上)
+    pub comb3d: bool,
 }
 
 impl FsGeom {

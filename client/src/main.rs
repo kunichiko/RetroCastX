@@ -269,6 +269,10 @@ fn main() -> eframe::Result {
             gain: if cfg.muted { 0.0 } else { cfg.volume },
             spdif: (cfg.spdif_mix, cfg.spdif_volume),
             slices: cfg.fullscreen_slices,
+            ycbcr: regs_profile_of(cfg.input_port, cfg.source_profile(), &userprof::load_all())
+                .is_some_and(|p| p.ycbcr),
+            dot_a_milli: cfg.dot_a_milli,
+            comb3d: cfg.ntsc_comb3d,
         };
         fullscreen::run(port, bind, subscribe_to, target_mac, decay, interlace_decay, audio, p,
                         fullscreen_vsync, return_window, photo_lat_high); // 戻らない
@@ -655,6 +659,29 @@ fn parse_mac(s: &str) -> [u8; 6] {
         mac[i] = u8::from_str_radix(p, 16).expect("bad MAC octet");
     }
     mac
+}
+
+/// `Session::base_profile` の本体。低遅延全画面は Session を作らないので、
+/// 保存設定から同じ判定ができるよう切り出してある
+fn base_profile_of(port: profiles::Port, key: &str, users: &[userprof::UserProfile])
+    -> Option<&'static profiles::Profile>
+{
+    if let Some(u) = users.iter().find(|u| u.key == key) {
+        return u.base_profile();
+    }
+    profiles::by_key(key).filter(|p| p.port == port)
+}
+
+/// `Session::regs_profile` の本体(同上)
+fn regs_profile_of(port: profiles::Port, key: &str, users: &[userprof::UserProfile])
+    -> Option<&'static profiles::Profile>
+{
+    if !port.uses_tvp() {
+        return None;
+    }
+    base_profile_of(port, key, users)
+        .filter(|p| !p.input_regs.is_empty())
+        .or_else(|| port.base_profile())
 }
 
 /// GUIなしで受信パイプラインだけ動かし、毎秒統計を出力する(検証・CI用)。
@@ -2108,10 +2135,7 @@ impl Session {
     /// いまの機種の水晶の候補を持つ組み込みの機種。汎用なら None(全機種から探す)。
     /// ユーザーの機種は借りている機種(`base`)
     fn base_profile(&self) -> Option<&'static profiles::Profile> {
-        if let Some(u) = self.user_profiles.iter().find(|u| u.key == self.source_profile) {
-            return u.base_profile();
-        }
-        profiles::by_key(&self.source_profile).filter(|p| p.port == self.input_port)
+        base_profile_of(self.input_port, &self.source_profile, &self.user_profiles)
     }
 
     /// 入力設定(と、それに付いてくる伝送形式・音声・色空間)を決める機種。
@@ -2121,12 +2145,7 @@ impl Session {
     ///   何も書かなかったので、MSX から切り替えると 2番系統を見続けていた。
     /// TVP を通らない端子(デジタルRGB)は None。
     fn regs_profile(&self) -> Option<&'static profiles::Profile> {
-        if !self.input_port.uses_tvp() {
-            return None;
-        }
-        self.base_profile()
-            .filter(|p| !p.input_regs.is_empty())
-            .or_else(|| self.input_port.base_profile())
+        regs_profile_of(self.input_port, &self.source_profile, &self.user_profiles)
     }
 
     /// 端子と機種を選ぶ。書くべき入力設定を返す(呼び側が queue_config する)
