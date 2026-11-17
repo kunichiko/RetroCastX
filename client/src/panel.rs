@@ -1249,6 +1249,29 @@ impl Session {
                 self.mark_settings_dirty();
             }
         });
+        ui.horizontal(|ui| {
+            // インターレースの出し方(assembler::deinterlace)
+            ui.monospace("インタレース");
+            let mut d = self.deint_mode;
+            egui::ComboBox::from_id_salt("deint")
+                .selected_text(d.label())
+                .show_ui(ui, |ui| {
+                    for v in crate::assembler::Deint::ALL {
+                        ui.selectable_value(&mut d, v, v.label());
+                    }
+                })
+                .response
+                .on_hover_text("織り込み: 2フィールドをそのまま重ねる。動く物は1行おきの縞になる\n\
+                                動き適応(簡易): 上下の今の行が変わった所だけ補間する\n\
+                                動き適応: 前のフィールドの行自身の動きも見て、縞になっている\n\
+                                ぶんだけ直す。静止部分は織り込みのまま\n\
+                                Bob(CRT寄り): 常に今のフィールドだけで全高を作る。\n\
+                                縦の解像度は半分で、細い横線はちらつく(ブラウン管と同じ)");
+            if d != self.deint_mode {
+                self.deint_mode = d;
+                self.mark_settings_dirty();
+            }
+        });
     }
 
     /// 「画に合わせる」

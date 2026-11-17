@@ -170,6 +170,8 @@ pub struct Settings {
     pub frame_skip_fields: bool,
     /// コンポジットの3次元コム。既定は使う(モバイルでは重くて追いつかないことがある)
     pub ntsc_comb3d: bool,
+    /// インターレースの出し方(assembler::Deint)
+    pub deint_mode: crate::assembler::Deint,
     /// 選んでいる入力端子
     pub input_port: Port,
     /// 端子ごとに選んでいる機種(プロファイルのキー)。空文字は「汎用」
@@ -341,6 +343,7 @@ impl Default for Settings {
             tune_frame_skip: 0,
             frame_skip_fields: false,
             ntsc_comb3d: true,
+            deint_mode: Default::default(),
             // 既定は D-SUB15 の汎用。配っている基板で一番多く使われる端子で、
             // 機種を選ばなくても X68000 / VGA / PC-9801 のどれかとして探せる
             input_port: Port::Rgb15,
@@ -546,6 +549,9 @@ impl Settings {
                 "tune_frame_skip" => { if let Ok(x) = v.parse::<u8>() { s.tune_frame_skip = x.min(7) } }
                 "frame_skip_fields" => s.frame_skip_fields = v == "true",
                 "ntsc_comb3d" => s.ntsc_comb3d = v != "false",
+                "deint_mode" => {
+                    if let Some(d) = crate::assembler::Deint::from_key(v) { s.deint_mode = d }
+                }
                 "rotate" => {
                     if let Ok(x) = v.parse::<u32>() {
                         s.rotate = if x < 4 { x } else { 0 };
@@ -775,6 +781,7 @@ impl Settings {
              tune_frame_skip = {}\n\
              frame_skip_fields = {}\n\
              ntsc_comb3d = {}\n\
+             deint_mode = {}\n\
              tube_time_based = {}\n\
              mon = {:.4},{:.4},{:.4},{:.4}\n\
              rotate = {}\n\
@@ -826,6 +833,7 @@ impl Settings {
             self.tune_frame_skip,
             self.frame_skip_fields,
             self.ntsc_comb3d,
+            self.deint_mode.key(),
             self.tube_time_based,
             self.mon[0], self.mon[1], self.mon[2], self.mon[3],
             self.rotate,

@@ -15,7 +15,7 @@
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
 
-use crate::assembler::{finish_frame, CompletedFrame};
+use crate::assembler::{deinterlace, finish_frame, CompletedFrame, Deint, DeintHist};
 use crate::ntsc;
 use crate::perf_hint::Hint;
 
@@ -40,6 +40,8 @@ pub struct Job {
     pub interlaced: bool,
     pub decay: f32,
     pub field_view: u8,
+    /// インターレースの出し方(assembler の deint)
+    pub deint: Deint,
     pub frame_idx: u16,
     pub fill_ratio: f32,
     /// 公開用バッファ(組立側が UI から戻してもらったもの)
@@ -72,13 +74,15 @@ impl DecodeWorker {
             .spawn(move || {
                 crate::receiver::raise_thread_qos();
                 let mut fb: Vec<u8> = Vec::new();
+                // デインターレースが比べる過去の fb(assembler の deint_hist と同じ役)
+                let mut hist = DeintHist::default();
                 // 1フィールド(約16.7ms)以内に終えたい、と OS へ伝える。Android
                 // 以外では作れず何もしない
                 let hint = Hint::for_current_thread(Duration::from_micros(16_000));
                 // 組立側が落ちれば送り手が消えて recv が Err になり、抜ける
                 while let Ok(job) = job_rx.recv() {
                     let t = Instant::now();
-                    let done = run(&mut fb, job);
+                    let done = run(&mut fb, &mut hist, job);
                     if let Some(h) = hint.as_ref() {
                         h.report(t.elapsed());
                     }
@@ -113,7 +117,7 @@ impl DecodeWorker {
     }
 }
 
-fn run(fb: &mut Vec<u8>, mut job: Job) -> Done {
+fn run(fb: &mut Vec<u8>, deint_hist: &mut DeintHist, mut job: Job) -> Done {
     let (w, h) = (job.width, job.height);
     let need = w * h * 4;
     if fb.len() != need {
@@ -138,6 +142,9 @@ fn run(fb: &mut Vec<u8>, mut job: Job) -> Done {
         out = vec![0u8; need];
     }
     out.copy_from_slice(fb);
+    if job.interlaced && job.field_view == 0 {
+        deinterlace(&mut out, fb, deint_hist, &job.seen, w, h, job.deint);
+    }
     Done {
         frame: CompletedFrame {
             frame_idx: job.frame_idx,

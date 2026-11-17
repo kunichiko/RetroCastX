@@ -153,6 +153,10 @@ pub struct FrameAssembler {
     /// 表示するフィールド。0=織り込み(通常) / 1=偶数スロットのみ / 2=奇数スロットのみ。
     /// 選んだ側の行を隣のスロットへ複製して全高で出す(=ラインダブラ)。
     field_view: u8,
+    /// インターレースの出し方(deinterlace の注記)
+    pub deint: Deint,
+    /// deinterlace が比べる過去の fb
+    deint_hist: DeintHist,
     /// 公開用バッファの使い回し先。UIが使い終わったものを recycle() で戻す。
     /// 毎フレームの確保をなくすためだけのもので、中身に意味は無い。
     spare: Option<Vec<u8>>,
@@ -226,6 +230,8 @@ impl FrameAssembler {
             raw_view: false,
             comb3d: true,
             field_view: 0,
+            deint: Deint::default(),
+            deint_hist: DeintHist::default(),
             adjust: ntsc::Adjust::default(),
         }
     }
@@ -722,12 +728,21 @@ impl FrameAssembler {
             return;
         }
         let w4 = self.width * 4;
+        let mut rgba = self.fb[self.slice_next * w4..y1 * w4].to_vec();
+        // フレーム全体と同じくデインターレースする。帯の写しはそのまま描かれ、
+        // 後から届くフレーム全体はまだ帯で出していない行しか描かないため
+        // (fullscreen.rs)。インタレースかどうかは前のフィールドまでの判定で見る
+        let woven = self.mode.as_ref().map_or(false, |m| m.mflags & 0x0001 != 0);
+        if (woven || self.interlace_measured) && self.field_view == 0 {
+            deinterlace_rows(&mut rgba, self.slice_next..y1, &self.fb, &self.deint_hist,
+                             &self.line_seen, self.width, self.height, self.deint);
+        }
         self.slice_out = Some(Slice {
             frame_idx,
             width: self.width,
             height: self.height,
             y0: self.slice_next,
-            rgba: self.fb[self.slice_next * w4..y1 * w4].to_vec(),
+            rgba,
             t: std::time::Instant::now(),
         });
         self.slice_next = y1;
@@ -808,9 +823,6 @@ impl FrameAssembler {
         }
         self.unfilled_rows = finish_frame(&mut self.fb, &mut self.line_seen, w, h,
                                           interlaced, d, self.field_view);
-        for s in self.line_seen.iter_mut() {
-            *s = false;
-        }
         // 公開用のバッファは使い回す。
         //
         // 以前は self.fb.clone() で毎フレーム新規確保していた。31kHzなら
@@ -830,6 +842,14 @@ impl FrameAssembler {
             _ => vec![0u8; need],
         };
         out.copy_from_slice(&self.fb);
+        // 届いた行の印は deinterlace が使うので、消すのはその後
+        if interlaced && self.field_view == 0 {
+            deinterlace(&mut out, &self.fb, &mut self.deint_hist, &self.line_seen, w, h,
+                        self.deint);
+        }
+        for s in self.line_seen.iter_mut() {
+            *s = false;
+        }
         Some(CompletedFrame {
             frame_idx,
             width: self.width,
@@ -930,6 +950,7 @@ impl FrameAssembler {
         job.interlaced = p.interlaced;
         job.decay = p.decay;
         job.field_view = self.field_view;
+        job.deint = self.deint;
         job.frame_idx = p.frame_idx;
         job.fill_ratio = p.fill_ratio;
         job.out = self.spare.take().unwrap_or_default();
@@ -1041,6 +1062,228 @@ pub(crate) fn finish_frame(
     seen.iter().filter(|s| !**s).count() as u32
 }
 
+/// インターレースの出し方(settings の deint_mode)。
+///
+/// ★**ブラウン管に近いのは Bob。** ブラウン管は各フィールドを自分の行にだけ
+///   1/60秒光らせ、480i のビームは 240本ぶんの太さがあるので、1フィールドの
+///   行が隣の行まで覆う。「今のフィールドだけを全高で出す」のがその近似で、
+///   細かい横線のちらつき(ラインツイッタ)も実物どおりに出る。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Deint {
+    /// 素の織り込み。動く物は1行おきの縞になる
+    Weave,
+    /// 上下の今の行が変わった所だけ補間する(最初に入れた方式)
+    Simple,
+    /// 残っている行自身の動きも見て、縞になっているぶんだけ直す(既定)
+    #[default]
+    Adaptive,
+    /// 残っている行を常に補間する(ブラウン管寄り。縦の解像度は半分)
+    Bob,
+}
+
+impl Deint {
+    pub const ALL: [Deint; 4] = [Deint::Weave, Deint::Simple, Deint::Adaptive, Deint::Bob];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Deint::Weave => "weave",
+            Deint::Simple => "simple",
+            Deint::Adaptive => "adaptive",
+            Deint::Bob => "bob",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|d| d.key() == k)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Deint::Weave => "織り込み",
+            Deint::Simple => "動き適応(簡易)",
+            Deint::Adaptive => "動き適応",
+            Deint::Bob => "Bob(CRT寄り)",
+        }
+    }
+
+    /// Shared の AtomicU8 で受け渡すための番号。**0 は「UI が書いていない」**
+    /// (全画面・headless)で、既定として読む
+    pub fn to_u8(self) -> u8 {
+        Self::ALL.iter().position(|d| *d == self).unwrap_or(0) as u8 + 1
+    }
+
+    pub fn from_u8(v: u8) -> Self {
+        v.checked_sub(1).and_then(|i| Self::ALL.get(i as usize).copied()).unwrap_or_default()
+    }
+}
+
+/// デインターレースが比べる過去の fb。フィールドを閉じるたびに1つずつずらす
+#[derive(Default)]
+pub(crate) struct DeintHist {
+    /// 1フィールド前に閉じたときの fb
+    p1: Vec<u8>,
+    /// 2フィールド前に閉じたときの fb
+    p2: Vec<u8>,
+}
+
+/// Simple で動きと数え始める差(8bit、3チャンネルの最大)。コンポーネントの行ごとの
+/// 黒の揺れ(2〜4コード)やコンポジットの復調の揺れより上に置く
+const DEINT_MOTION_LO: i32 = 12;
+/// Simple でここから上は完全に補間へ切り替える。間は混ぜる(境目を目立たせない)
+const DEINT_MOTION_HI: i32 = 40;
+/// Adaptive で動きの量から差し引くノイズのぶん。静止部分を動きと読まないため
+const DEINT_CORE: i32 = 6;
+
+/// **デインターレース。** 公開用の `out` だけを書き換え、`fb` は素の
+/// 織り込みのまま残す(次のフィールドで残る行の元になるため)。
+///
+/// ★**weave のままだと、動くものが1行おきに食い違って縞になる。** 残っている
+///   行は1/60秒前の絵なので、横に飛ぶ弾は今の行と前の行で位置がずれ、1本ずつが
+///   縞に見える(2026-11-17、PS2 の R-TYPE Final をコンポーネントで確認。
+///   偶数のみ・奇数のみのどちらにも弾が出たので、点滅ではなく動きと確定)。
+///   ブラウン管では各フィールドの行は1/60秒しか光らないので縞に見えない。
+///
+/// 書き換えるのは残っている行(今のフィールドで来なかった行)だけ。補間値は
+/// 上下の**今届いた行**の平均(bob)。方式ごとの違いは「どれだけ bob に寄せるか」:
+///
+///   Simple    上下の今の行が2フィールド前から変わった量で、閾値の間を混ぜる。
+///             残っている行だけに映った動き(1フィールド前にだけ弾が通った所)は
+///             上下の今の行が変わらないので拾えない
+///   Adaptive  動きの量 m に、**残っている行自身の変化**(1フィールド前と
+///             3フィールド前の比較)も加える。そのうえで YADIF と同じく
+///             出力を「織り込みの値 ± m」に収める。縞になっていない所は bob と
+///             織り込みの値がもともと近いので変わらず、**縞になっているぶん
+///             だけ**が動きの量を上限に直る
+///   Bob       常に bob
+///
+/// 過去の値は `hist` から取る。今届いた行は前のフィールドでは残っていた行
+/// なので p1 のその行が2フィールド前の値、残っている行は2フィールド前に
+/// 閉じたときも残っていた行なので p2 のその行が3フィールド前の値になる。
+/// 動きは横に1画素ずつ広げて見る。動く物の輪郭のすぐ外側(差は小さいが
+/// 縞は出る)も拾うため。
+pub(crate) fn deinterlace(
+    out: &mut [u8],
+    fb: &[u8],
+    hist: &mut DeintHist,
+    seen: &[bool],
+    w: usize,
+    h: usize,
+    mode: Deint,
+) {
+    deinterlace_rows(out, 0..h, fb, hist, seen, w, h, mode);
+    // 織り込みでも履歴は進める(切り替えた直後に古い絵と比べないように)
+    hist.advance(fb);
+}
+
+/// `deinterlace` の本体。`rows` の行だけを処理し、`out` はその行の範囲の絵
+/// (`rows.start` 行目から)。履歴は進めない。
+///
+/// フィールドの途中で切り出す帯(cut_slice)にも使う。帯の最後の行の下がまだ
+/// 届いていなければ、上の行だけで補間する(その行は次の帯では描き直さない)。
+pub(crate) fn deinterlace_rows(
+    out: &mut [u8],
+    rows: std::ops::Range<usize>,
+    fb: &[u8],
+    hist: &DeintHist,
+    seen: &[bool],
+    w: usize,
+    h: usize,
+    mode: Deint,
+) {
+    let fresh = hist.p1.len() == fb.len();
+    let have_p2 = fresh && hist.p2.len() == fb.len();
+    let y0 = rows.start;
+    if mode != Deint::Weave && (fresh || mode == Deint::Bob) {
+        let row_seen = |y: usize| seen.get(y).copied().unwrap_or(false);
+        let row = |y: usize| (y * w * 4)..((y + 1) * w * 4);
+        let diff_row = |a: &[u8], b: &[u8]| -> Vec<u8> {
+            a.chunks_exact(4).zip(b.chunks_exact(4))
+                .map(|(a, b)| a[0].abs_diff(b[0]).max(a[1].abs_diff(b[1])).max(a[2].abs_diff(b[2])))
+                .collect()
+        };
+        // 画素ごとの「過去からの差」(3チャンネルの最大)。今届いた行は上下2本の
+        // 残っている行から使われるので、行ごとに1回だけ求める
+        let mut motion: Vec<Vec<u8>> = vec![Vec::new(); h];
+        if mode != Deint::Bob {
+            for y in rows.start.saturating_sub(1)..(rows.end + 1).min(h) {
+                if row_seen(y) {
+                    motion[y] = diff_row(&fb[row(y)], &hist.p1[row(y)]);
+                } else if mode == Deint::Adaptive && have_p2 {
+                    motion[y] = diff_row(&fb[row(y)], &hist.p2[row(y)]);
+                }
+            }
+        }
+        let mut m = vec![0u8; w];
+        for s in rows {
+            if row_seen(s) {
+                continue;
+            }
+            let up = (s > 0 && row_seen(s - 1)).then(|| s - 1);
+            let dn = (s + 1 < h && row_seen(s + 1)).then(|| s + 1);
+            if up.is_none() && dn.is_none() {
+                continue;
+            }
+            if mode != Deint::Bob {
+                // 上下(Adaptive では自分の行も)の差の大きい方
+                m.fill(0);
+                for y in [up, dn, Some(s)].into_iter().flatten() {
+                    for (d, v) in m.iter_mut().zip(&motion[y]) {
+                        *d = (*d).max(*v);
+                    }
+                }
+            }
+            let (mut left, mut here) = (0u8, m[0]);
+            for x in 0..w {
+                let right = if x + 1 < w { m[x + 1] } else { 0 };
+                let mx = left.max(here).max(right) as i32;
+                left = here;
+                here = right;
+                let o = (s * w + x) * 4;
+                let oo = ((s - y0) * w + x) * 4;
+                for c in 0..3 {
+                    let a = up.map(|y| fb[(y * w + x) * 4 + c] as i32);
+                    let b = dn.map(|y| fb[(y * w + x) * 4 + c] as i32);
+                    let bob = match (a, b) {
+                        (Some(a), Some(b)) => (a + b + 1) >> 1,
+                        (Some(v), None) | (None, Some(v)) => v,
+                        (None, None) => unreachable!(),
+                    };
+                    let cur = fb[o + c] as i32;
+                    out[oo + c] = match mode {
+                        Deint::Simple => {
+                            if mx <= DEINT_MOTION_LO {
+                                continue;
+                            }
+                            // 補間に寄せる割合(×256)
+                            let k = ((mx - DEINT_MOTION_LO) * 256
+                                / (DEINT_MOTION_HI - DEINT_MOTION_LO)).min(256);
+                            cur + (((bob - cur) * k) >> 8)
+                        }
+                        Deint::Adaptive => {
+                            let d = (mx - DEINT_CORE).max(0);
+                            bob.clamp(cur - d, cur + d)
+                        }
+                        _ => bob,
+                    } as u8;
+                }
+            }
+        }
+    }
+}
+
+impl DeintHist {
+    /// 履歴を1つずらす(p2 の領域を使い回して p1 を写し直す)。フィールドを
+    /// 閉じるときだけ呼ぶ
+    fn advance(&mut self, fb: &[u8]) {
+        std::mem::swap(&mut self.p1, &mut self.p2);
+        if self.p1.len() == fb.len() {
+            self.p1.copy_from_slice(fb);
+        } else {
+            self.p1 = fb.to_vec();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1054,6 +1297,144 @@ mod tests {
             dotclk_hz: 450, hfreq_mhz_x1000: 90_000, vfreq_mhz_x1000: 30_000,
             frame_clocks: 0, frame_lines: 0, frame_vsyncs: 0, sys_clk_hz: 0, seq: 0,
         }
+    }
+
+    /// インターレース(VSYNCがフィールドごと)を受けて、閉じたフィールドの絵を返す。
+    /// `px(field, slot, x)` が各画素の灰色の値。フィールド f の極性は f % 2。
+    ///
+    /// ★**実機と同じく mflags bit0 = 0 で流す。** インターレースかどうかは
+    ///   組立がパリティの交互性から測る(update_interlace_measure)ので、
+    ///   その判定を通った経路でデインターレースが走ることまで確かめる。
+    fn run_interlaced(deint: Deint, w: u16, fields: u16,
+                      px: impl Fn(u16, u16, u16) -> u8) -> Vec<CompletedFrame> {
+        let mode = Mode { hactive: w, htotal: w + 2, vactive: 40, vtotal: 42, ..test_mode() };
+        let mut asm = FrameAssembler::new();
+        asm.deint = deint;
+        let mut seq = 0u16;
+        asm.feed(&pack_mode(&mode, 0, seq));
+        let mut out = Vec::new();
+        for f in 0..=fields {
+            for r in 0..20u16 {
+                let slot = r * 2 + f % 2;
+                seq += 1;
+                let line: Vec<u8> = (0..w)
+                    .flat_map(|x| { let v = px(f, slot, x); rgb555(v, v, v) })
+                    .collect();
+                if let Some(fr) = asm.feed(&pack_line(f, seq, slot, 0, PIXFMT_RGB555, 1, 0, &line)) {
+                    out.push(fr);
+                }
+            }
+        }
+        assert!(asm.interlace_measured, "インタレースと判定されていない");
+        out
+    }
+
+    fn gray_at(f: &CompletedFrame, slot: usize, x: usize) -> u8 {
+        f.rgba[(slot * f.width + x) * 4 + 1]
+    }
+
+    /// 灰色(64)の地を、1フィールドに `speed` 画素ずつ右へ動く白い点。
+    /// 最後に閉じたフィールド 12(極性0)の絵を返す
+    fn moving_dot(deint: Deint, speed: u16) -> CompletedFrame {
+        let px = move |f: u16, _slot: u16, x: u16| if x == f * speed { 255 } else { 64 };
+        run_interlaced(deint, 40, 13, px).into_iter().last().unwrap()
+    }
+
+    /// 横に動く点は、残っている行(1フィールド前)で位置が食い違って縞になる。
+    /// どの動き適応でも、ゆっくりならその行を今のフィールドから補間して消す
+    #[test]
+    fn deinterlace_removes_combing_of_moving_dot() {
+        // 点は今 x=12、残っている行(奇数)はフィールド 11 の点 x=11 を持っている
+        let woven = moving_dot(Deint::Weave, 1);
+        assert_eq!(gray_at(&woven, 21, 11), 255, "素の織り込みなら1フィールド前の点が残る");
+        assert!(gray_at(&woven, 21, 12) < 80);
+        for d in [Deint::Simple, Deint::Adaptive, Deint::Bob] {
+            let f = moving_dot(d, 1);
+            // 今の点は残っている行でも出る(上下の今の行から補間)
+            assert!(gray_at(&f, 21, 12) > 200, "{d:?}: 動いた点が補間されていない");
+            // 1フィールド前の点の残りは消える
+            assert!(gray_at(&f, 21, 11) < 80, "{d:?}: 前のフィールドの点が縞で残る");
+            // 動いていない所は触らない
+            assert_eq!(gray_at(&f, 21, 30), gray_at(&woven, 21, 30), "{d:?}");
+        }
+    }
+
+    /// **速い動きは、残っている行にだけ映る。** 3画素/フィールドで動くと、
+    /// 1フィールド前の点の位置(x=33)は今の行でも2フィールド前の行でも地のまま
+    /// なので、上下しか見ない Simple は動きと気づかず縞が残る。Adaptive は
+    /// 残っている行自身を3フィールド前と比べて拾う
+    #[test]
+    fn adaptive_catches_motion_only_in_the_kept_field() {
+        let simple = moving_dot(Deint::Simple, 3);
+        assert_eq!(gray_at(&simple, 21, 33), 255, "前提: Simple はここを拾えない");
+        let f = moving_dot(Deint::Adaptive, 3);
+        assert!(gray_at(&f, 21, 33) < 80, "残っている行だけの動きが縞で残る: {}",
+                gray_at(&f, 21, 33));
+        assert!(gray_at(&f, 21, 36) > 200, "今の点が補間されていない");
+    }
+
+    /// **低遅延全画面の帯にも掛かる。** 帯の写しはそのまま描かれ、後から届く
+    /// フレーム全体は帯で出していない行しか描かない(fullscreen.rs)ので、
+    /// 帯の側でデインターレースしないと全画面だけ縞が残る
+    #[test]
+    fn deinterlace_applies_to_slices() {
+        let w = 40u16;
+        let mode = Mode { hactive: w, htotal: w + 2, vactive: 40, vtotal: 42, ..test_mode() };
+        let px = |f: u16, x: u16| if x == f { 255u8 } else { 64 };
+        for (deint, ghost_gone) in [(Deint::Weave, false), (Deint::Adaptive, true)] {
+            let mut asm = FrameAssembler::new();
+            asm.deint = deint;
+            asm.slices = 4;
+            let mut seq = 0u16;
+            asm.feed(&pack_mode(&mode, 0, seq));
+            // 最後のフィールド 13(極性1)の帯から組み立てた絵
+            let mut img = vec![0u8; w as usize * 40 * 4];
+            for f in 0..=13u16 {
+                for r in 0..20u16 {
+                    let slot = r * 2 + f % 2;
+                    seq += 1;
+                    let line: Vec<u8> = (0..w)
+                        .flat_map(|x| { let v = px(f, x); rgb555(v, v, v) })
+                        .collect();
+                    asm.feed(&pack_line(f, seq, slot, 0, PIXFMT_RGB555, 1, 0, &line));
+                    if let Some(sl) = asm.take_slice() {
+                        if sl.frame_idx == 13 {
+                            let o = sl.y0 * w as usize * 4;
+                            img[o..o + sl.rgba.len()].copy_from_slice(&sl.rgba);
+                        }
+                    }
+                }
+            }
+            // 残っている偶数行 20 は、フィールド 12 の点(x=12)を持っている
+            let at = |x: usize| img[(20 * w as usize + x) * 4 + 1];
+            if ghost_gone {
+                assert!(at(12) < 80, "帯に前のフィールドの点が縞で残る: {}", at(12));
+                assert!(at(13) > 200, "帯で今の点が補間されていない: {}", at(13));
+            } else {
+                assert_eq!(at(12), 255, "前提: 織り込みなら残る");
+            }
+        }
+    }
+
+    /// 静止した細かい横縞(1行おき)は、動き適応では織り込みのまま残す。
+    /// Bob は残っている行を常に補間するので縞が潰れる(ブラウン管寄りの方式で、
+    /// それが仕様)
+    #[test]
+    fn deinterlace_keeps_static_vertical_detail() {
+        let px = |_f: u16, slot: u16, _x: u16| if slot % 2 == 0 { 200 } else { 32 };
+        for d in [Deint::Simple, Deint::Adaptive] {
+            let frames = run_interlaced(d, 8, 13, px);
+            for f in frames.iter().skip(4) {
+                for slot in 1..39 {
+                    let want = if slot % 2 == 0 { 200 } else { 32 };
+                    let got = gray_at(f, slot, 3) as i32;
+                    assert!((got - want).abs() <= 8, "{d:?} slot {slot}: {got} (期待 {want})");
+                }
+            }
+        }
+        let f = run_interlaced(Deint::Bob, 8, 13, px).into_iter().last().unwrap();
+        // 最後は極性0。残っている奇数行は上下の偶数行(200)で埋まる
+        assert!(gray_at(&f, 21, 3) > 190, "Bob なのに織り込みのまま");
     }
 
     fn rgb555(r8: u8, g8: u8, b8: u8) -> [u8; 2] {

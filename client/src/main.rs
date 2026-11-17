@@ -273,6 +273,7 @@ fn main() -> eframe::Result {
                 .is_some_and(|p| p.ycbcr),
             dot_a_milli: cfg.dot_a_milli,
             comb3d: cfg.ntsc_comb3d,
+            deint: cfg.deint_mode,
         };
         fullscreen::run(port, bind, subscribe_to, target_mac, decay, interlace_decay, audio, p,
                         fullscreen_vsync, return_window, photo_lat_high); // 戻らない
@@ -1241,6 +1242,8 @@ struct Session {
     auto_skip: auto_skip::Detector,
     /// コンポジットの3次元コム(settings::Settings::ntsc_comb3d)
     ntsc_comb3d: bool,
+    /// インターレースの出し方(settings::Settings::deint_mode)
+    deint_mode: assembler::Deint,
     /// 間引きを書いた相手のボード。**掴んだボードが変わったら書き直す**
     /// (apply_frame_skip)。ボードが落ちたら外す(電源で 0 に戻るため)
     skip_applied_to: Option<[u8; 6]>,
@@ -1569,6 +1572,7 @@ impl Session {
             auto_skipped: false,
             auto_skip: auto_skip::Detector::default(),
             ntsc_comb3d: cfg.ntsc_comb3d,
+            deint_mode: cfg.deint_mode,
             skip_applied_to: None,
             win_applied: None,
             board_frame_skip: None,
@@ -1949,6 +1953,7 @@ impl Session {
             tune_frame_skip: self.tune_frame_skip,
             frame_skip_fields: self.frame_skip_fields,
             ntsc_comb3d: self.ntsc_comb3d,
+            deint_mode: self.deint_mode,
             tune_phase: self.tune_phase,
             input_port: self.input_port,
             port_profiles: self.port_profiles.clone(),
@@ -6356,6 +6361,7 @@ impl Session {
             std::sync::atomic::Ordering::Relaxed,
         );
         self.shared.comb3d.store(self.ntsc_comb3d, std::sync::atomic::Ordering::Relaxed);
+        self.shared.deint.store(self.deint_mode.to_u8(), std::sync::atomic::Ordering::Relaxed);
         // コンポーネントなら RGB888 の3チャンネルを Pr/Y/Pb として RGB に直させる
         self.shared.ycbcr.store(
             self.regs_profile().is_some_and(|p| p.ycbcr),

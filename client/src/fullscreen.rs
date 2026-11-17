@@ -57,6 +57,7 @@ pub fn run(port: u16, bind: String, subscribe_to: Option<String>, target_mac: Op
     shared.ycbcr.store(params.ycbcr, Ordering::Relaxed);
     shared.dot_a_milli.store(params.dot_a_milli, Ordering::Relaxed);
     shared.comb3d.store(params.comb3d, Ordering::Relaxed);
+    shared.deint.store(params.deint.to_u8(), Ordering::Relaxed);
     let subscribe_dest = subscribe_to.clone();
     let (tx, rx): (Sender<()>, Receiver<()>) = std::sync::mpsc::channel();
     receiver::spawn(
@@ -153,6 +154,8 @@ pub struct FsGeom {
     pub dot_a_milli: u32,
     /// コンポジットの3次元コム(同上)
     pub comb3d: bool,
+    /// インターレースの出し方(同上)
+    pub deint: crate::assembler::Deint,
 }
 
 impl FsGeom {
