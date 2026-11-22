@@ -790,6 +790,14 @@ impl Settings {
                 }
             }
         }
+        // ★**合わせる前の既定(1/0/1/0)と同じ管面は捨てる。** 0.18.0 より前の版は、
+        //   映しただけのモードでもそのときの値を覚えていたので、合わせていない
+        //   「1周期まるごと」の値が「その帯域で合わせた値」として残っている。0.18.0 は
+        //   帯域ごとの値を組み込みの既定(有効映像が管面の 90%)より先に引くので、
+        //   それが既定を隠し、目盛りが 0 から始まって絵が中央からずれた(iPhone で発生。
+        //   「既定に戻す」で直った)。1/0/1/0 は既定そのものなので、捨てても何も失わない
+        let untouched = Self::default().mon;
+        s.mon_bands.retain(|_, m| *m != untouched);
         s
     }
 
@@ -1068,7 +1076,7 @@ mod tests {
         s.port_profiles.insert(Port::Video, "svideo".into());
         s.port_profiles.insert(Port::Rgb15, "pc98".into());
         s.mon_bands.insert(("x68000".into(), 31), [0.9, -0.05, 0.95, 0.0]);
-        s.mon_bands.insert(("vga".into(), 31), [1.0, 0.0, 1.0, 0.0]);
+        s.mon_bands.insert(("vga".into(), 31), [0.95, 0.01, 1.0, 0.0]);
         s.band_pll.insert(("auto-rgb15".into(), 24), [848, 7]);
         // 帯域 × 垂直周波数のキーも残る(31kHz の 55Hz と 60Hz を別に持つ)
         let k55 = crate::geometry::band_fv_key(31, 55);
@@ -1126,6 +1134,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(text.contains("\nreg@x68000.0x0036 = 0\n"), "{text}");
         assert_eq!(Settings::parse(&text).reg_overrides, s.reg_overrides);
+    }
+
+    /// 合わせる前の既定(1/0/1/0)と同じ管面は読み込むときに捨てる。合わせた値は残す
+    #[test]
+    fn drops_untouched_geometry_on_load() {
+        let text = "input_port = rgb15\n\
+                    mon@x68000.31 = 1,0,1,0\n\
+                    mon@x68000.31v55 = 1.0,0.0,1.0,0.0\n\
+                    mon@x68000.24v53 = 0.808,-0.068,1.013,-0.027\n\
+                    mon@composite.1000 = 1,0,1,0\n";
+        let s = Settings::parse(text);
+        assert_eq!(s.mon_bands.len(), 1, "{:?}", s.mon_bands);
+        assert!(s.mon_bands.contains_key(&("x68000".into(), crate::geometry::band_fv_key(24, 53))));
     }
 
     /// 古い版へ戻しても管面が残るよう旧形式も書く。読み直しても他機種へ染み出さない
