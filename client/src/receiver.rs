@@ -823,8 +823,13 @@ pub fn spawn(
     //   映像も**受け取ったパケットの送信元ポートへ返す**(2026-09-08 に実測)ので、
     //   34600 を掴んでいる必要は無い。ここで諦めていたため
     //   **Viewer を2つ起動できず、LAN上の2台を同時に見られなかった**。
-    //   1つ目は 34600 のままにしておく(ホスト側のCLIはそこを bind する)。
-    match raw.bind(&std::net::SocketAddr::from((bind_ip, cfg.port)).into()) {
+    // ★**購読するときは最初から空きポートで待ち受ける。** 34600 を掴むのは、購読せずに
+    //   送られてくるのを待つとき(`--no-subscribe`、sender_sim 相手)だけ。Viewer が
+    //   34600 を持っていると、同じ機械で後から起動したダミーデバイス(devsim)が
+    //   127.0.0.1 側にしか bind できず、その Viewer からは返事が自分に戻って繋がらない
+    //   (ランチャーの「デバイスシミュレータを起動」で必ず起きる)
+    let want = if cfg.subscribe_to.is_some() { 0 } else { cfg.port };
+    match raw.bind(&std::net::SocketAddr::from((bind_ip, want)).into()) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
             raw.bind(&std::net::SocketAddr::from((bind_ip, 0)).into())?;

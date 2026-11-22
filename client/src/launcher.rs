@@ -47,6 +47,8 @@ pub struct Launcher {
     /// 他の Viewer が掴んでいるボード
     busy: HashSet<[u8; 6]>,
     peeked: Option<Instant>,
+    /// 「デバイスシミュレータを起動」の結果(一覧の下に出す)
+    devsim_msg: Option<String>,
 }
 
 /// ランチャーで起きたこと
@@ -60,7 +62,8 @@ pub struct Out {
 
 impl Launcher {
     pub fn new(disc: Arc<Discovery>, board_ip: String) -> Self {
-        Self { disc, board_ip, hints: HashMap::new(), busy: HashSet::new(), peeked: None }
+        Self { disc, board_ip, hints: HashMap::new(), busy: HashSet::new(), peeked: None,
+               devsim_msg: None }
     }
 
     /// 前に選んでいた入力と、他の Viewer の使用状況を覗き直す
@@ -114,7 +117,7 @@ impl Launcher {
                 }).size(12.0).color(MUTED));
                 ui.add_space(10.0);
 
-                let foot_h = if MOBILE { 96.0 } else { 40.0 };
+                let foot_h = if MOBILE { 96.0 } else { 66.0 };
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .max_height((ui.available_height() - foot_h).max(0.0))
@@ -233,6 +236,24 @@ impl Launcher {
             .on_hover_text(
                 "各NICのサブネット宛ブロードキャストへ、発見だけの問いかけを2秒ごとに\n\
                  送っています。映像の送り先は動かないので、他の Viewer の邪魔はしません");
+        // 開発用のダミーデバイス(client/devsim)を別のプロセスで起動する。
+        // デスクトップだけ(配布物では Viewer と同じフォルダ/.app に同梱する)
+        if !MOBILE {
+            ui.horizontal(|ui| {
+                if ui.small_button("デバイスシミュレータを起動").on_hover_text(
+                    "持っていない機種の映像信号で試すための、ボードの代役(devsim)を起動します。\n\
+                     起動すると、この一覧に「devsim」として出ます").clicked()
+                {
+                    self.devsim_msg = Some(match launch_devsim() {
+                        Ok(()) => "デバイスシミュレータを起動しました".into(),
+                        Err(e) => e,
+                    });
+                }
+                if let Some(m) = &self.devsim_msg {
+                    ui.label(egui::RichText::new(m).size(10.5).color(MUTED));
+                }
+            });
+        }
         // ★**iOS はブロードキャストを送れないことがある。** そのときの逃げ道
         if MOBILE {
             ui.horizontal(|ui| {
@@ -246,6 +267,23 @@ impl Launcher {
             });
         }
     }
+}
+
+/// ダミーデバイス(devsim)の実行ファイルを、Viewer と同じフォルダから探して起動する。
+///
+/// cargo でビルドしたとき(target/release)も、Mac の .app(Contents/MacOS)も、
+/// Windows の配布物(RetroCastX.exe の隣)も、同じフォルダに置く
+fn launch_devsim() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("起動できませんでした: {e}"))?;
+    let dir = exe.parent().ok_or("起動できませんでした: 実行ファイルの場所が分かりません")?;
+    let path = dir.join(format!("retrocastx-devsim{}", std::env::consts::EXE_SUFFIX));
+    if !path.is_file() {
+        return Err(format!("{} が見つかりません", path.display()));
+    }
+    std::process::Command::new(&path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("起動できませんでした: {e}"))
 }
 
 /// ランチャー窓の位置と大きさ(`launcher.conf`)。

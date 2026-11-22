@@ -238,18 +238,21 @@ jobs:
       - name: Build (universal)
         run: |
           set -euo pipefail
-          cargo build --release --locked --target aarch64-apple-darwin
-          cargo build --release --locked --target x86_64-apple-darwin
+          # ダミーデバイス(devsim)も一緒に作り、.app に同梱する(ランチャーから起動する)
+          cargo build --release --locked --target aarch64-apple-darwin -p retrocastx-viewer -p retrocastx-devsim
+          cargo build --release --locked --target x86_64-apple-darwin -p retrocastx-viewer -p retrocastx-devsim
           mkdir -p ../dist
-          lipo -create -output ../dist/retrocastx-viewer \
-            target/aarch64-apple-darwin/release/retrocastx-viewer \
-            target/x86_64-apple-darwin/release/retrocastx-viewer
-          ARCHS=$(lipo -archs ../dist/retrocastx-viewer)
-          echo "archs: ${ARCHS}"
-          for want in arm64 x86_64; do
-            case " ${ARCHS} " in *" ${want} "*) ;; *)
-              echo "::error::universal binary に ${want} が入っていません (${ARCHS})"; exit 1 ;;
-            esac
+          for bin in retrocastx-viewer retrocastx-devsim; do
+            lipo -create -output "../dist/${bin}" \
+              "target/aarch64-apple-darwin/release/${bin}" \
+              "target/x86_64-apple-darwin/release/${bin}"
+            ARCHS=$(lipo -archs "../dist/${bin}")
+            echo "${bin} archs: ${ARCHS}"
+            for want in arm64 x86_64; do
+              case " ${ARCHS} " in *" ${want} "*) ;; *)
+                echo "::error::${bin} の universal binary に ${want} が入っていません (${ARCHS})"; exit 1 ;;
+              esac
+            done
           done
 
       - name: Bundle .app
@@ -260,7 +263,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ../dist/app
-          packaging/macos/bundle.sh ../dist/retrocastx-viewer \
+          DEVSIM_BIN=../dist/retrocastx-devsim packaging/macos/bundle.sh ../dist/retrocastx-viewer \
             "${{ needs.prepare.outputs.app_version }}" \
             "${{ needs.prepare.outputs.build_number }}" \
             ../dist/app
@@ -347,6 +350,13 @@ jobs:
           fi
           chmod 600 "${KEY_PATH}"
 
+          # 入れ子の実行ファイル(ダミーデバイス)を先に署名する。.app の署名は
+          # Contents/MacOS の主実行ファイルにしか掛からず、残りが未署名だと公証で弾かれる
+          DEVSIM_PATH="${APP_PATH}/Contents/MacOS/retrocastx-devsim"
+          if [ -f "${DEVSIM_PATH}" ]; then
+            codesign --force --timestamp --options runtime \
+              --sign "${MACOS_SIGN_IDENTITY}" "${DEVSIM_PATH}"
+          fi
           codesign --force --timestamp --options runtime \
             --sign "${MACOS_SIGN_IDENTITY}" "${APP_PATH}"
           codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
@@ -437,7 +447,7 @@ jobs:
         run: cargo test --locked -p retrocastx-viewer -p retrocastx-devsim
 
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --release --locked -p retrocastx-viewer -p retrocastx-devsim
 
       # 署名はしない(証明書が無い)。SmartScreen の警告の回避方法は同梱の
       # README-first.txt に書いてある。受信バッファーの設定も同じファイル。
@@ -450,6 +460,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           # 配布する実行ファイルは製品名にする(開発時の retrocastx-viewer は変えない)
           Copy-Item target\release\retrocastx-viewer.exe "$stage\RetroCastX.exe"
+          # ダミーデバイス。ランチャーの「デバイスシミュレータを起動」が同じフォルダから探す
+          # (名前は探す側と揃える)。インストーラもこのフォルダを丸ごと入れる
+          Copy-Item target\release\retrocastx-devsim.exe "$stage\retrocastx-devsim.exe"
           Copy-Item packaging\windows\README-first.txt $stage
           $zipName = "RetroCastX_windows-$version.zip"
           Compress-Archive -Path "$stage\*" -DestinationPath "..\dist\$zipName" -Force
