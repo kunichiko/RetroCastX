@@ -98,6 +98,10 @@ const GRID_STEP: f32 = 24.0;
 /// 目盛りの長さ[point](小 / 大)
 const TICK_MINOR: f32 = 7.0;
 const TICK_MAJOR: f32 = 11.0;
+/// 目盛りを打つときに管面の左右に要る幅[point]。左は数値まで入る幅(48)。
+/// 右は目盛りだけだが、中央に置いたときの左右の見た目を揃えて同じにする。
+/// パネルを避けて映像を寄せるときの「映像領域」はこれを含めて測る。
+pub const RULER_SIDE: f32 = 48.0;
 /// 目盛りの分割数。2つおき(1/8ごと)に大目盛りと数値を置く
 const TICK_DIV: u32 = 16;
 /// 情報の文字の大きさと、帯の端からの余白[point]
@@ -125,7 +129,7 @@ pub fn info_slot(area: Rect, hole: Rect, need: Vec2) -> Option<Rect> {
     let pad = Vec2::splat(INFO_MARGIN);
     let fits = |r: Rect| r.width() >= need.x + 2.0 * pad.x && r.height() >= need.y + 2.0 * pad.y;
     // 左の帯は目盛りの数値が右端に来るので、その幅(~5文字)を空ける
-    let left_room = Rect::from_min_max(left.min, Pos2::new(left.max.x - 48.0, left.max.y));
+    let left_room = Rect::from_min_max(left.min, Pos2::new(left.max.x - RULER_SIDE, left.max.y));
     if fits(left_room) {
         return Some(Rect::from_min_size(left_room.min + pad, need));
     }
@@ -238,7 +242,7 @@ fn paint_ticks(p: &egui::Painter, bars: &[Rect; 4], t: Rect, ruler: [Axis; 2]) {
             let y = t.min.y + t.height() * f;
             if left.width() > TICK_MINOR {
                 p.line_segment([Pos2::new(t.min.x - len.min(left.width()), y), Pos2::new(t.min.x, y)], stroke);
-                if is_major && left.width() >= 48.0 {
+                if is_major && left.width() >= RULER_SIDE {
                     let align = near(f, egui::Align2::RIGHT_TOP, egui::Align2::RIGHT_CENTER,
                                      egui::Align2::RIGHT_BOTTOM);
                     p.text(Pos2::new(t.min.x - TICK_MAJOR - 4.0, y), align,

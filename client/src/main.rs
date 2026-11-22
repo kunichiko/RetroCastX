@@ -6494,10 +6494,13 @@ impl Session {
         //   並べるとパネルが画面からはみ出し、映像も切手大に潰れる。映像とは
         //   切り替えて見る(先頭の「映像に戻る」、映像のタップで行き来する)。
         let panel_full = MOBILE && self.show_panel && root.available_width() < 720.0;
+        // パネルの左端。管面がここにかかるなら、避けられる範囲で管面を左へ寄せる
+        let mut panel_left: Option<f32> = None;
         if self.show_panel {
         // モバイルの安全領域(safe_area_spacers が取った残り)の内側に置く
         let screen = root.available_rect_before_wrap();
         let w = if panel_full { screen.width() } else { PANEL_WIDTH.min(screen.width()) };
+        panel_left = Some(screen.right() - w);
         egui::Area::new(egui::Id::new("info"))
             .order(egui::Order::Middle)
             .fixed_pos(egui::pos2(screen.right() - w, screen.top()))
@@ -6605,6 +6608,26 @@ impl Session {
                         );
                         (brect, srect)
                     }
+                };
+                // ★**パネルを開いていて、管面がその下に隠れるなら左へ寄せる。**
+                //   パネルは重ねて出すので、管面は窓の中央のままだとパネルの2倍の
+                //   幅を広げないと隙間が空かない。寄せれば窓をパネル1枚ぶん
+                //   広げるだけで両方が見える。避けきれない狭い窓と、中央でも
+                //   重ならない広い窓では動かさない(geometry::panel_dodge)。
+                //   目盛りは管面の外に打つので、その帯も含めて避ける。
+                let (hole, tube) = match panel_left {
+                    Some(pl) => {
+                        let side = if bez.is_none() && self.letterbox == letterbox::Style::Ruler {
+                            letterbox::RULER_SIDE
+                        } else {
+                            0.0
+                        };
+                        let dx = geometry::panel_dodge(area.min.x, hole.min.x - side,
+                                                       hole.max.x + side, pl);
+                        let d = egui::vec2(dx, 0.0);
+                        (hole.translate(d), tube.translate(d))
+                    }
+                    None => (hole, tube),
                 };
                 // 余白。枠ありなら目盛りは枠に重なるので打たない
                 let info = self.letterbox_info(area, tube, has_video,
