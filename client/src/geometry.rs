@@ -14,12 +14,16 @@ use crate::render;
 pub const MON_KEY_NTSC: u32 = 1000;
 
 /// 15/24/31kHz の帯域番号
+///
+/// ★**31kHz 帯は 32.2kHz で切る。** PC-98 のハイレゾ(1120x750、32.84kHz)は
+///   PC-9821 の 31.47kHz と別の管面・PLL が要るが、以前は 40kHz まで 31 にまとめて
+///   いたので同じ機種の中で値を上書きし合った。32.2〜40kHz は丸めた値(33 など)
 pub fn band_of(fh_khz: f32) -> u32 {
     if fh_khz < 20.0 {
         15
     } else if fh_khz < 28.0 {
         24
-    } else if fh_khz < 40.0 {
+    } else if fh_khz < 32.2 {
         31
     } else {
         fh_khz.round() as u32
@@ -330,5 +334,21 @@ mod tests {
         assert_eq!(dx(c + 2.0 * p), 0.0);
         assert_eq!(dx(c + 3.0 * p), 0.0);
         assert!(dx(c + 2.0 * p - 0.01).abs() < 0.02);
+    }
+}
+
+#[cfg(test)]
+mod band_tests {
+    use super::band_of;
+
+    /// ハイレゾ(32.84kHz)は 31kHz 帯と分ける。X68000・VGA の 31kHz は 31 のまま
+    #[test]
+    fn hires_band_is_separate() {
+        assert_eq!(band_of(31.47), 31);
+        assert_eq!(band_of(31.50), 31);
+        assert_eq!(band_of(32.84), 33);
+        assert_eq!(band_of(50.0), 50);
+        assert_eq!(band_of(24.83), 24);
+        assert_eq!(band_of(15.98), 15);
     }
 }

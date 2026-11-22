@@ -327,6 +327,11 @@ impl Session {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         // 切り替わりの最中はどれも点けない(途中の帯域を見せない)
                         let lit = (!self.mode_switch.blanking()).then_some(self.band_khz);
+                        // 15/24/31 以外の帯域(PC-98 ハイレゾの 33kHz など)は、その帯域の札を
+                        // 右端に足して点ける。3枚のどれも点かないと、同期しているのか分からない
+                        if let Some(b) = lit.filter(|b| ![15, 24, 31].contains(b) && *b > 0) {
+                            band_led(ui, b, true);
+                        }
                         for b in [31u32, 24, 15] {
                             band_led(ui, b, lit == Some(b));
                         }
