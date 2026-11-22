@@ -6583,6 +6583,42 @@ impl Session {
         }
     }
 
+    /// モバイルの映像の上のボタン。左上に「切断」、右上に「設定」。
+    ///
+    /// ★**「切断」はパネルの外、映像の左上に置く。** 以前はパネルの先頭に
+    ///   「‹ ホーム」「‹ 一覧へ」「映像に戻る」と並んでいて、「‹ 一覧へ」(= このボードを
+    ///   閉じる)を「‹ ホーム」のつもりで押しやすかった(iPhone)。
+    /// ★**「設定」はパネルを隠しているときだけ。** 出している間はパネルがその場所に
+    ///   重なる。映像のタップで出し入れする動きもそのまま残す
+    fn mobile_video_buttons(&mut self, ctx: &egui::Context, area: egui::Rect) {
+        let pad = 10.0;
+        let style = |t: &str| egui::Button::new(egui::RichText::new(t).size(14.0).color(egui::Color32::WHITE))
+            .fill(egui::Color32::from_black_alpha(150))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(60)))
+            .corner_radius(6.0)
+            .min_size(egui::vec2(64.0, 32.0));
+        egui::Area::new(egui::Id::new(("mobile_disconnect", self.slot_id)))
+            .order(egui::Order::Foreground)
+            .fixed_pos(area.left_top() + egui::vec2(pad, pad))
+            .show(ctx, |ui| {
+                if ui.add(style("‹ 切断")).clicked() {
+                    self.want_close = true;
+                }
+            });
+        if !self.show_panel {
+            egui::Area::new(egui::Id::new(("mobile_settings", self.slot_id)))
+                .order(egui::Order::Foreground)
+                .pivot(egui::Align2::RIGHT_TOP)
+                .fixed_pos(area.right_top() + egui::vec2(-pad, pad))
+                .show(ctx, |ui| {
+                    if ui.add(style("設定")).clicked() {
+                        self.show_panel = true;
+                        self.mark_settings_dirty();
+                    }
+                });
+        }
+    }
+
     fn remote_badge(&mut self, ctx: &egui::Context) {
         if !self.remote.active() {
             return;
@@ -7132,6 +7168,8 @@ impl Session {
         if MOBILE {
             safe_area_spacers(root);
         }
+        // 映像の領域(安全領域の内側)。モバイルの「切断」「設定」をこの隅に置く
+        let video_area = root.available_rect_before_wrap();
         // ★**操作パネルは管面の上に重ねる。** 以前は右パネルとして管面の領域を
         //   押しのけていたので、出し入れするたびに管面の大きさが変わり、それに
         //   ウィンドウを合わせ直すと窓が縮んでいった。ウィンドウの大きさは
@@ -7326,6 +7364,10 @@ impl Session {
         if MOBILE && central.response.interact(egui::Sense::click()).clicked() {
             self.show_panel = !self.show_panel;
             self.mark_settings_dirty();
+        }
+        // 映像が見えているときだけ(パネルが全幅のときは映像が隠れている)
+        if MOBILE && !panel_full {
+            self.mobile_video_buttons(&ctx, video_area);
         }
 
         self.remote_badge(&ctx);
