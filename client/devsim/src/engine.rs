@@ -24,6 +24,8 @@ pub struct Preview {
     pub serial: u64,
     pub width: u32,
     pub slots: Vec<Option<Arc<Vec<[u8; 3]>>>>,
+    /// 今の絵を作った信号(1ラインの時間・vtotal・インターレース)。変わったら作り直す
+    pub mode: (u64, u32, bool),
 }
 
 #[derive(Default, Clone)]
@@ -516,9 +518,15 @@ fn update_preview(sh: &Shared, period: &Period, cfg: &CapCfg) {
     let mut pv = sh.preview.lock().unwrap();
     let width = cfg.pll_divide.min(capture::LINE_BUFFER_W);
     let max_slot = period.rows.iter().map(|r| r.slot as usize).max().unwrap_or(0);
-    if pv.width != width || pv.slots.len() < max_slot + 1 || pv.slots.len() > (max_slot + 1) * 2 + 4 {
+    // ★**信号が変わったら前の絵を捨てる。** インターレース → プログレッシブで
+    //   スロット数がほぼ同じだと残り、使われなくなった方のスロットに前のモードの
+    //   行が混ざって、横にずれた行が1本おきに出ていた
+    let mode = (period.line_s.to_bits(), period.vtotal, period.il_frame);
+    if pv.width != width || pv.mode != mode
+        || pv.slots.len() < max_slot + 1 || pv.slots.len() > (max_slot + 1) * 2 + 4 {
         pv.slots = vec![None; max_slot + 2];
         pv.width = width;
+        pv.mode = mode;
     }
     for r in &period.rows {
         pv.slots[r.slot as usize] = Some(r.samples.clone());
