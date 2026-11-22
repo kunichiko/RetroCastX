@@ -2,6 +2,7 @@
 # 実行ファイル1つから macOS の .app を組み立てる。
 #
 #   bundle.sh <実行ファイル> <version> <build番号> <出力先ディレクトリ>
+#   (DEVSIM_BIN=<devsim の実行ファイル> を付けると、ダミーデバイスも同梱する)
 #
 # 例(手元で試すとき):
 #   cd client && cargo build --release
@@ -50,6 +51,15 @@ printf 'APPL????' > "${APP}/Contents/PkgInfo"
 
 cp "${BIN}" "${APP}/Contents/MacOS/${EXECUTABLE}"
 chmod +x "${APP}/Contents/MacOS/${EXECUTABLE}"
+
+# ダミーデバイス(devsim)を同梱する(任意)。ランチャーの「デバイスシミュレータを
+# 起動」が Viewer と同じフォルダ(Contents/MacOS)から探す。DEVSIM_BIN で渡す。
+# 署名するときは、.app より先にこれを個別に署名すること(入れ子の実行ファイルは
+# .app の署名ではまとめて署名されず、公証で弾かれる)
+if [ -n "${DEVSIM_BIN:-}" ]; then
+    cp "${DEVSIM_BIN}" "${APP}/Contents/MacOS/retrocastx-devsim"
+    chmod +x "${APP}/Contents/MacOS/retrocastx-devsim"
+fi
 
 # アイコンは任意。無ければ汎用アイコンになるだけで動作に影響しない
 if [ -f "${HERE}/AppIcon.icns" ]; then
