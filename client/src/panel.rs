@@ -357,10 +357,17 @@ impl Session {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         let w = ui.available_width() - if action.is_some() { 52.0 } else { 0.0 };
-                        ui.allocate_ui(egui::vec2(w, 0.0), |ui| {
-                            ui.label(egui::RichText::new(text).size(12.5)
-                                .color(egui::Color32::from_rgb(0xF6, 0xB8, 0x8E)));
-                        });
+                        // ★**折り返しを明示する。** 横並びの中のラベルは既定で折り返さず、
+                        //   長い文(自動の間引きの警告)がパネルの幅を押し広げていた
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(w, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_max_width(w);
+                                ui.add(egui::Label::new(egui::RichText::new(text).size(12.5)
+                                    .color(egui::Color32::from_rgb(0xF6, 0xB8, 0x8E))).wrap());
+                            },
+                        );
                         if let Some(a) = action {
                             hit = ui.button(a).clicked();
                         }
