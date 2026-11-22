@@ -118,6 +118,45 @@ pub struct Profile {
     ///   ファイル(`userprof`)で送ってもらい、裏が取れたらここへ写す。書き出した
     ///   ファイルの末尾に、ここへそのまま貼れる形を添えてある。
     pub presets: &'static [Preset],
+    /// この機種の画面モード(機種のページの一覧に出すもの)。
+    ///
+    /// 一覧の1行は「帯域 × 垂直周波数」(`KnownMode::mon_key`)。信号から区別できない
+    /// モード(X68000 の 768x512 と 512x512 は同じ 31kHz・55Hz)は同じ行にまとまる
+    pub modes: &'static [KnownMode],
+}
+
+/// 機種の既知の画面モード1つ。
+#[derive(Clone, Copy, Debug)]
+pub struct KnownMode {
+    /// 表示名(解像度など)
+    pub name: &'static str,
+    /// 水平周波数[kHz]
+    pub fh_khz: f64,
+    /// VSYNC の周波数[Hz](インターレースはフィールドの値)
+    pub fv_hz: f64,
+    /// 実機または一次資料で確かめてあるか
+    pub verified: bool,
+}
+
+impl KnownMode {
+    /// 管面を覚えるキー。コンポジット/S端子(NTSC の窓)は `MON_KEY_NTSC`
+    pub fn mon_key(&self, p: &Profile) -> u32 {
+        if p.port == Port::Video && !p.ycbcr {
+            crate::geometry::MON_KEY_NTSC
+        } else {
+            self.pll_key()
+        }
+    }
+
+    /// PLL を覚えるキー(帯域 × 垂直周波数)
+    pub fn pll_key(&self) -> u32 {
+        crate::geometry::band_fv_key(crate::geometry::band_of(self.fh_khz as f32),
+                                     self.fv_hz.round() as u32)
+    }
+}
+
+const fn km(name: &'static str, fh_khz: f64, fv_hz: f64, verified: bool) -> KnownMode {
+    KnownMode { name, fh_khz, fv_hz, verified }
 }
 
 /// 機種ごとの初期値の1帯域分。値の意味は設定ファイルの `mon` / `bandpll` と同じ。
@@ -591,7 +630,34 @@ pub const PROFILES: &[Profile] = &[
         verified: true,
         ycbcr: false,
         port: Port::Rgb15,
-        presets: &[],
+        // XEiJ の CRTC 表と実機(31kHz 768x512 / 512x512、24kHz、15kHz)から
+        modes: &[
+            km("768x512", 31.50, 55.46, true),
+            km("512x512", 31.50, 55.46, true),
+            km("256x256", 31.50, 55.46, false),
+            km("640x480 (VGA)", 31.47, 59.94, false),
+            km("1024x424 / 1024x848 インターレース", 24.70, 53.11, true),
+            km("256x256 / 512x256", 15.98, 61.46, false),
+            km("512x512 インターレース", 15.98, 61.34, false),
+        ],
+        // ★**管面の既定は、有効映像が管面の 90% に収まる値を計算で出したもの。**
+        //   有効映像の位置(HSYNC / VSYNC から何ドット・何ライン後から何ドット・何ライン)
+        //   から、geometry::fit_mon と同じ式で H幅 = 有効の割合 / 0.9、H位置 = 0.5 − 中心。
+        //   タイミングはダミーデバイス(client/devsim/src/machines.rs)の表と同じ。
+        //   推定のタイミングの機種は値も推定。実機はボードが TVP の HSOUT から数えるので、
+        //   横位置がその遅れのぶんずれる
+        presets: &[
+            // 768x512(512x512 / 256x256 も同じ行)
+            Preset { band: 31, fv: Some(55), mon: Some([0.7729, -0.0870, 1.0016, -0.0211]), pll: None },
+            // 640x480 (VGA)
+            Preset { band: 31, fv: Some(60), mon: Some([0.8889, -0.0800, 1.0159, -0.0238]), pll: None },
+            // 1024x424 / 1024x848 インターレース。★位置は 2026-11-22 の実機の画面から読んだ
+            //   (横 1ラインの 0.203〜0.926、縦 465 ライン中 33〜457)。VSYNC はフィールドごと
+            //   (VSOUT 0x09)なので 53Hz。フレーム単位だった頃の 26.5Hz ではない
+            Preset { band: 24, fv: Some(53), mon: Some([0.8081, -0.0682, 1.0131, -0.0269]), pll: None },
+            // 256x256 / 512x256 / 512x512 インターレース(映るのはそれぞれ 240 / 480 ライン)
+            Preset { band: 15, fv: Some(61), mon: Some([0.9357, -0.0526, 1.0256, -0.0231]), pll: None },
+        ],
     },
     Profile {
         key: "msx",
@@ -624,7 +690,20 @@ pub const PROFILES: &[Profile] = &[
         verified: true,
         ycbcr: false,
         port: Port::Rgb21,
-        presets: &[],
+        modes: &[
+            km("256x192 / 256x212 / 512x212", 15.70, 59.92, true),
+            km("512x424 インターレース", 15.70, 59.94, false),
+        ],
+        // ★**管面の既定は、有効映像が管面の 90% に収まる値を計算で出したもの。**
+        //   有効映像の位置(HSYNC / VSYNC から何ドット・何ライン後から何ドット・何ライン)
+        //   から、geometry::fit_mon と同じ式で H幅 = 有効の割合 / 0.9、H位置 = 0.5 − 中心。
+        //   タイミングはダミーデバイス(client/devsim/src/machines.rs)の表と同じ。
+        //   推定のタイミングの機種は値も推定。実機はボードが TVP の HSOUT から数えるので、
+        //   横位置がその遅れのぶんずれる
+        presets: &[
+            // 256x212(192 行は約 81%)
+            Preset { band: 15, fv: Some(60), mon: Some([0.8317, -0.0439, 0.8991, 0.0191]), pll: None },
+        ],
     },
     Profile {
         key: "vga",
@@ -640,7 +719,25 @@ pub const PROFILES: &[Profile] = &[
         verified: false,
         ycbcr: false,
         port: Port::Rgb15,
-        presets: &[],
+        modes: &[
+            km("640x480 60Hz", 31.47, 59.94, true),
+            km("720x400 / 640x400 70Hz", 31.47, 70.09, true),
+            km("800x600 56Hz", 35.16, 56.25, true),
+        ],
+        // ★**管面の既定は、有効映像が管面の 90% に収まる値を計算で出したもの。**
+        //   有効映像の位置(HSYNC / VSYNC から何ドット・何ライン後から何ドット・何ライン)
+        //   から、geometry::fit_mon と同じ式で H幅 = 有効の割合 / 0.9、H位置 = 0.5 − 中心。
+        //   タイミングはダミーデバイス(client/devsim/src/machines.rs)の表と同じ。
+        //   推定のタイミングの機種は値も推定。実機はボードが TVP の HSOUT から数えるので、
+        //   横位置がその遅れのぶんずれる
+        presets: &[
+            // 640x480
+            Preset { band: 31, fv: Some(60), mon: Some([0.8889, -0.0800, 1.0159, -0.0238]), pll: None },
+            // 720x400 / 640x400
+            Preset { band: 31, fv: Some(70), mon: Some([0.8889, -0.0700, 0.9899, -0.0278]), pll: None },
+            // 800x600
+            Preset { band: 31, fv: Some(56), mon: Some([0.8681, -0.0859, 1.0667, -0.0184]), pll: None },
+        ],
     },
     Profile {
         key: "pc98",
@@ -670,18 +767,35 @@ pub const PROFILES: &[Profile] = &[
         verified: false,
         ycbcr: false,
         port: Port::Rgb15,
-        // ★**実機ではなくダミーデバイス(client/devsim)の信号で合わせた値。**
-        //   devsim の PC-98 640x400(21.0525MHz、htotal 848、有効映像は 136 ドット目から
-        //   640 ドット)自体が推定なので、実機で合わせ直したら差し替えること。
-        //   位相 4 は devsim の遅延の模型での最適値で、実機では違う値になる。
-        //
-        //   15kHz / 31kHz は管面だけ。合わせたときの PLL が信号と合っていなかった
-        //   (31kHz は 25.175MHz・htotal 800 の信号に 858、15kHz は 2304)。管面は
-        //   時間ベースなので PLL がずれていても値は使える
+        // テクニカルデータブック(1993)と H98 の資料
+        // (https://cf953518.cloudfree.jp/kazzez/furoku/h98pin.htm)から
+        modes: &[
+            km("640x400 ノーマル", 24.83, 56.42, true),
+            km("640x200 (標準ディスプレイ)", 15.98, 61.22, true),
+            km("640x400 31kHz (H98)", 31.47, 70.09, true),
+            km("640x480 (PC-9821)", 31.47, 59.94, false),
+            km("1120x750 ハイレゾ", 32.84, 80.0, true),
+            km("1120x750 ハイレゾ 50kHz (H98)", 50.0, 60.0, true),
+        ],
+        // ★**管面の既定は、有効映像が管面の 90% に収まる値を計算で出したもの。**
+        //   有効映像の位置(HSYNC / VSYNC から何ドット・何ライン後から何ドット・何ライン)
+        //   から、geometry::fit_mon と同じ式で H幅 = 有効の割合 / 0.9、H位置 = 0.5 − 中心。
+        //   タイミングはダミーデバイス(client/devsim/src/machines.rs)の表と同じ。
+        //   推定のタイミングの機種は値も推定。実機はボードが TVP の HSOUT から数えるので、
+        //   横位置がその遅れのぶんずれる
         presets: &[
-            Preset { band: 15, fv: None, mon: Some([0.7500, -0.0100, 0.8000, 0.0400]), pll: None },
-            Preset { band: 24, fv: None, mon: Some([0.7700, -0.0370, 0.9500, -0.0100]), pll: Some([848, 4]) },
-            Preset { band: 31, fv: None, mon: Some([0.8200, -0.0800, 0.9700, -0.0220]), pll: None },
+            // 640x400 ノーマル
+            Preset { band: 24, fv: Some(56), mon: Some([0.8386, -0.0472, 1.0101, -0.0295]), pll: Some([848, 4]) },
+            // 640x200
+            Preset { band: 15, fv: Some(61), mon: Some([0.7937, -0.0714, 0.8514, -0.0594]), pll: None },
+            // 640x400 31kHz (H98)
+            Preset { band: 31, fv: Some(70), mon: Some([0.8889, -0.0800, 0.9899, -0.0278]), pll: None },
+            // 640x480 (PC-9821)
+            Preset { band: 31, fv: Some(60), mon: Some([0.8889, -0.0800, 1.0159, -0.0238]), pll: None },
+            // 1120x750 ハイレゾ
+            Preset { band: 31, fv: Some(80), mon: Some([0.8547, -0.0385, 1.0150, -0.0225]), pll: None },
+            // 1120x750 ハイレゾ 50kHz
+            Preset { band: 50, fv: Some(60), mon: Some([0.8547, -0.0385, 1.0004, 0.0018]), pll: None },
         ],
     },
     // --- ここから下は「配線の方式」で決まる映像ソース。選ぶと入力設定を書く ---
@@ -705,6 +819,7 @@ pub const PROFILES: &[Profile] = &[
         verified: true,
         ycbcr: false,
         port: Port::Video,
+        modes: &[km("480i / 240p", 15.73, 59.94, true)],
         presets: &[],
     },
     Profile {
@@ -722,6 +837,7 @@ pub const PROFILES: &[Profile] = &[
         verified: false,
         ycbcr: false,
         port: Port::Video,
+        modes: &[km("480i / 240p", 15.73, 59.94, true)],
         presets: &[],
     },
     Profile {
@@ -738,7 +854,22 @@ pub const PROFILES: &[Profile] = &[
         verified: false,
         ycbcr: true,
         port: Port::Video,
-        presets: &[],
+        modes: &[
+            km("480i / 240p", 15.73, 59.94, false),
+            km("480p", 31.47, 59.94, false),
+        ],
+        // ★**管面の既定は、有効映像が管面の 90% に収まる値を計算で出したもの。**
+        //   有効映像の位置(HSYNC / VSYNC から何ドット・何ライン後から何ドット・何ライン)
+        //   から、geometry::fit_mon と同じ式で H幅 = 有効の割合 / 0.9、H位置 = 0.5 − 中心。
+        //   タイミングはダミーデバイス(client/devsim/src/machines.rs)の表と同じ。
+        //   推定のタイミングの機種は値も推定。実機はボードが TVP の HSOUT から数えるので、
+        //   横位置がその遅れのぶんずれる
+        presets: &[
+            // 480i / 240p
+            Preset { band: 15, fv: Some(60), mon: Some([0.9324, -0.0618, 1.0159, -0.0257]), pll: None },
+            // 480p
+            Preset { band: 31, fv: Some(60), mon: Some([0.9324, -0.0618, 1.0159, -0.0257]), pll: None },
+        ],
     },
     // --- デジタルRGB(入力4)。TVP を通らないので入力設定は無い ---
     Profile {
@@ -773,6 +904,7 @@ pub const PROFILES: &[Profile] = &[
         verified: false,
         ycbcr: false,
         port: Port::Digital,
+        modes: &[km("640x200 / 320x200", 15.73, 60.05, false)],
         presets: &[],
     },
 ];
@@ -1526,6 +1658,42 @@ mod tests {
         // ハイレゾ 32.84kHz: 1456
         let c = best(p, 32_840.0).expect("ハイレゾの候補なし");
         assert_eq!(c.pll_divide % 1456, 0, "{} → pll {}", c.label, c.pll_divide);
+    }
+
+    /// 機種のページの行のキー。信号から区別できないモードは同じキーになる
+    #[test]
+    fn known_modes_map_to_band_fv_keys() {
+        use crate::geometry::{band_fv_key, MON_KEY_NTSC};
+        let x = by_key("x68000").unwrap();
+        let key = |p: &Profile, name: &str| p.modes.iter().find(|m| m.name == name).unwrap().mon_key(p);
+        assert_eq!(key(x, "768x512"), band_fv_key(31, 55));
+        assert_eq!(key(x, "512x512"), key(x, "768x512"), "768x512 と 512x512 は同じ行");
+        assert_eq!(key(x, "640x480 (VGA)"), band_fv_key(31, 60));
+        assert_eq!(key(x, "1024x424 / 1024x848 インターレース"), band_fv_key(24, 53));
+        let p = by_key("pc98").unwrap();
+        assert_eq!(key(p, "1120x750 ハイレゾ"), band_fv_key(31, 80));
+        assert_eq!(key(p, "1120x750 ハイレゾ 50kHz (H98)"), band_fv_key(50, 60));
+        assert_eq!(key(p, "640x400 ノーマル"), band_fv_key(24, 56));
+        // コンポジットの管面は NTSC の窓、PLL は帯域 × 垂直周波数
+        let c = by_key("composite").unwrap();
+        assert_eq!(c.modes[0].mon_key(c), MON_KEY_NTSC);
+        assert_eq!(c.modes[0].pll_key(), band_fv_key(15, 60));
+        // 機種のモードが1つも無い機種は無い
+        assert!(PROFILES.iter().all(|p| !p.modes.is_empty()));
+    }
+
+    /// 垂直周波数付きの初期値は、どれも機種のモード表の行に当たる(当たらない初期値は
+    /// どのモードでも引かれず、機種のページにも出ない)
+    #[test]
+    fn presets_match_known_modes() {
+        use crate::geometry::band_fv_key;
+        for p in PROFILES {
+            for s in p.presets.iter().filter(|s| s.fv.is_some()) {
+                let k = band_fv_key(s.band, s.fv.unwrap());
+                assert!(p.modes.iter().any(|m| m.pll_key() == k),
+                        "{} の初期値 {}kHz・{}Hz に当たるモードが無い", p.key, s.band, s.fv.unwrap());
+            }
+        }
     }
 
     /// ラインバッファに入らない値は出さない(1ラインが入り切らないと

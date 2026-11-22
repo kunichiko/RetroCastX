@@ -1219,8 +1219,78 @@ struct ProfUi {
     confirm_delete: bool,
     /// 取り込もうとして、同じ名前の機種があったもの
     import_pending: Option<userprof::UserProfile>,
-    /// 編集をファイルへ書く予定(最後に変えた時刻)
-    save_due: Option<std::time::Instant>,
+    /// 名前の変更中(入力中の名前)
+    renaming: Option<String>,
+    /// 機種一覧の「＋ 追加」を開いている
+    add_open: bool,
+}
+
+/// 機種のページの画面モード1行
+#[derive(Clone, Debug)]
+pub(crate) struct ModeRow {
+    /// 管面のキー(帯域 × 垂直周波数、NTSC は `MON_KEY_NTSC`)
+    pub(crate) mon_key: u32,
+    /// PLL のキー(帯域 × 垂直周波数)
+    pub(crate) pll_key: u32,
+    /// このキーにまとまる既知のモードの名前(一覧に無いモードは空)
+    pub(crate) names: Vec<&'static str>,
+    /// まとまったモードがどれも確かめてあるか
+    pub(crate) verified: bool,
+    /// 機種のモード表にあるか
+    pub(crate) known: bool,
+    /// いま映っているモードか
+    pub(crate) current: bool,
+    /// 自分用の機種のファイルに値があるか
+    pub(crate) in_file: bool,
+    pub(crate) state: RowState,
+}
+
+/// 画面モードの状態(機種のページ)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RowState {
+    /// 合わせていない。この機種の既定(組み込みの初期値、自分用の機種ならファイルの値)で映る
+    Default,
+    /// このモードで合わせた値がある
+    Custom,
+    /// このモードの値は無いが、以前の版で帯域ごとに合わせた値で映る
+    CustomBand,
+}
+
+impl RowState {
+    pub(crate) fn text(self) -> &'static str {
+        match self {
+            RowState::Default => "既定",
+            RowState::Custom => "カスタム(合わせた値)",
+            RowState::CustomBand => "カスタム(以前の版で帯域ごとに合わせた値)",
+        }
+    }
+
+    pub(crate) fn badge(self) -> &'static str {
+        match self {
+            RowState::Default => "既定",
+            RowState::Custom => "カスタム",
+            RowState::CustomBand => "カスタム(帯域)",
+        }
+    }
+
+    pub(crate) fn color(self) -> egui::Color32 {
+        match self {
+            RowState::Default => egui::Color32::from_rgb(0x8A, 0x9A, 0x99),
+            RowState::Custom => theme::ACCENT,
+            RowState::CustomBand => theme::AMBER,
+        }
+    }
+
+    pub(crate) fn reset_hint(self) -> &'static str {
+        match self {
+            RowState::CustomBand =>
+                "以前の版で帯域ごとに合わせた値を消して、既定に戻します。\n\
+                 同じ帯域の、合わせていない他のモードも既定に戻ります",
+            _ => "このモードで合わせた管面と PLL を消して、既定に戻します。\n\
+                  帯域ごとの以前の値があればそれも消すので、同じ帯域の、\n\
+                  合わせていない他のモードも既定に戻ります",
+        }
+    }
 }
 
 /// `watch_signal` の状態
@@ -1243,19 +1313,20 @@ struct SignalWatch {
 }
 
 /// 2回の fH の読みから信号の有無を決める。未接続は漂い(SOG)、または 0(生HSYNC)
-/// 機種 × キーの値をしまう。キーが帯域 × 垂直周波数なら、帯域だけのキーにも同じ値を
-/// 書く(その帯域で最後に合わせた値)。初めて見る垂直周波数はそこから始まるので、
-/// 同じ帯域の別のモードに合わせた値に近いところから詰められる
+/// 機種 × キーの値をしまう(そのキーだけ)。
+///
+/// ★**帯域の既定へ写すのはやめた。** 写していたころは、合わせていないモードにも
+///   同じ帯域の別のモードの値が効き、機種のページで「既定」と出ているのに実際は
+///   別の値で映る、という食い違いが出た。行ごとに「既定 / カスタム」を出すには、
+///   合わせた行だけが値を持つ必要がある
 fn store_with_band<V: Copy>(map: &mut std::collections::BTreeMap<(String, u32), V>,
                             geo: &str, key: u32, v: V) {
     map.insert((geo.to_string(), key), v);
-    let band = geometry::key_band(key);
-    if band != key {
-        map.insert((geo.to_string(), band), v);
-    }
 }
 
-/// 機種 × キーの値を引く。帯域 × 垂直周波数の値が無ければ帯域だけの値
+/// 機種 × キーの値を引く。帯域 × 垂直周波数の値が無ければ帯域だけの値。
+/// 帯域だけの値は、垂直周波数で分ける前の版で合わせたもの(と、組が無い古い
+/// ゲートウェアで合わせたもの)。それまでの設定を失わないために引く
 fn lookup_with_band<V: Copy>(map: &std::collections::BTreeMap<(String, u32), V>,
                              geo: &str, key: u32) -> Option<V> {
     map.get(&(geo.to_string(), key))
@@ -1268,17 +1339,20 @@ mod band_fv_store_tests {
     use super::{lookup_with_band, store_with_band};
     use crate::geometry::band_fv_key;
 
-    /// 55Hz と 60Hz を別に持ち、初めての 70Hz は帯域で最後に合わせた値から始まる
+    /// 55Hz と 60Hz を別に持つ。しまうのはそのキーだけで、帯域の値は作らない。
+    /// 帯域だけの値(以前の版で合わせたもの)があれば、合わせていないモードで使う
     #[test]
-    fn fv_keys_fall_back_to_band() {
+    fn fv_keys_are_separate_and_band_values_are_legacy() {
         let mut map = std::collections::BTreeMap::new();
         let (k55, k60, k70) = (band_fv_key(31, 55), band_fv_key(31, 60), band_fv_key(31, 70));
         store_with_band(&mut map, "x68000", k55, 1);
         store_with_band(&mut map, "x68000", k60, 2);
         assert_eq!(lookup_with_band(&map, "x68000", k55), Some(1));
         assert_eq!(lookup_with_band(&map, "x68000", k60), Some(2));
-        assert_eq!(lookup_with_band(&map, "x68000", k70), Some(2));
-        assert_eq!(lookup_with_band(&map, "x68000", 31), Some(2));
+        assert_eq!(lookup_with_band(&map, "x68000", k70), None, "帯域の値は作らない");
+        map.insert(("x68000".to_string(), 31), 9);
+        assert_eq!(lookup_with_band(&map, "x68000", k70), Some(9));
+        assert_eq!(lookup_with_band(&map, "x68000", k55), Some(1));
         // 別の機種・別の帯域には漏れない
         assert_eq!(lookup_with_band(&map, "pc98", k55), None);
         assert_eq!(lookup_with_band(&map, "x68000", band_fv_key(24, 55)), None);
@@ -1615,6 +1689,10 @@ struct Session {
     /// `band_pll` を引くキー。帯域 × 垂直周波数(`geometry::band_fv_key`)、垂直周波数が
     /// 取れなければ帯域だけ。0 は未確定
     pll_key: u32,
+    /// モードを読み込んだときの管面と [PLL, 位相]。これと違ってきたら「合わせた」とみなし、
+    /// そのモードの値としてしまう(映しただけのモードは覚えない)
+    mon_loaded: [f32; 4],
+    pll_loaded: [u32; 2],
     /// `mon_bands` を引くキー。普段は `band_khz` と同じで、コンポジット/S端子
     /// (YC8)のときだけ `MON_KEY_NTSC` になる。0 は未確定
     mon_key: u32,
@@ -1826,6 +1904,8 @@ impl Session {
             band_pll: cfg.band_pll.clone(),
             band_khz: 0,
             pll_key: 0,
+            mon_loaded: [1.0, 0.0, 1.0, 0.0],
+            pll_loaded: [0, 0],
             mon_key: 0,
             geo_prof: String::new(),
             band_hold_until: None,
@@ -2204,7 +2284,31 @@ impl Session {
                     pick = Some((port, key));
                 }
             }
+            // 機種を増やす入口は、機種を選ぶ所に置く
+            if panel::seg_button(ui, "＋ 追加", "", self.prof_ui.add_open)
+                .on_hover_text("自分用の機種を作る・ファイルから読み込む").clicked()
+            {
+                self.prof_ui.add_open = !self.prof_ui.add_open;
+            }
         });
+        if self.prof_ui.add_open {
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("いまの機種を元に作る").clicked() {
+                    self.prof_ui.add_open = false;
+                    self.prof_ui.new_name =
+                        Some(format!("{} (自分用)", self.profile_label(&self.source_profile)));
+                    self.page = panel::Page::Machine;
+                }
+                if userprof::HAS_FILE_DIALOG && ui.button("ファイルから読み込む…").clicked() {
+                    self.prof_ui.add_open = false;
+                    self.import_profile_file();
+                }
+                if ui.button("やめる").clicked() {
+                    self.prof_ui.add_open = false;
+                }
+            });
+        }
+        self.import_pending_ui(ui);
         if let Some((port, key)) = pick {
             send.extend(self.select_input(port, key));
         }
@@ -2642,59 +2746,15 @@ impl Session {
         !self.input_port.uses_tvp()
     }
 
-    /// 自分用の機種と、人に渡すファイル。
-    ///
-    /// ★**2つの用途を分ける。** 以前は「書き出す」がプロファイルのフォルダへ
-    ///   書いていたので、人に渡すつもりで書き出すたびに機種一覧が増えた。
-    ///   - 人に渡す: 保存・開くのダイアログで好きな場所と行き来する。一覧は増えない
-    ///   - 自分用の機種: ここで作る・直す・消す。フォルダはこの機種の置き場
-    fn profile_files_ui(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("自分用の機種と書き出し")
-            .id_salt("profile_files")
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if !MOBILE && ui.button("ファイルに書き出す…").on_hover_text(
-                        "いまの機種で合わせた管面と PLL を1つのファイルにして、好きな場所へ\n\
-                         保存します(人に渡す・作者へ送る用)。機種一覧には足しません").clicked()
-                    {
-                        self.export_profile_file();
-                    }
-                    if userprof::HAS_FILE_DIALOG && ui.button("ファイルから読み込む…").on_hover_text(
-                        "人からもらったファイルを、自分用の機種として取り込みます").clicked()
-                    {
-                        self.import_profile_file();
-                    }
-                });
-                self.import_pending_ui(ui);
-                ui.separator();
-                if self.current_user_machine().is_some() {
-                    self.user_machine_editor(ui);
-                    ui.separator();
-                }
-                self.new_machine_ui(ui);
-                if !MOBILE {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.weak(egui::RichText::new(format!(
-                            "自分用の機種の置き場: {}", userprof::dir().display())).size(10.0));
-                        if ui.small_button("フォルダを開く").clicked()
-                            && !userprof::reveal(&userprof::dir())
-                        {
-                            self.toasts.notice("フォルダを開けませんでした");
-                        }
-                    });
-                }
-            });
-        self.flush_user_profile_edits();
-    }
-
-    /// モードのキーの表示名(31kHz・55Hz / 31kHz(帯域全体)/ NTSC)
+    /// モードのキーの表示名(31kHz・55Hz / 31kHz 帯 / NTSC)。「帯」は垂直周波数で
+    /// 分けていない値(組の無い古いゲートウェアか、以前の版で合わせたもの)
     fn mode_key_label(k: u32) -> String {
         if k == MON_KEY_NTSC {
             return "NTSC".into();
         }
         match geometry::key_fv(k) {
             Some(f) => format!("{}kHz・{f}Hz", geometry::key_band(k)),
-            None => format!("{k}kHz(帯域全体)"),
+            None => format!("{k}kHz 帯"),
         }
     }
 
@@ -2811,36 +2871,6 @@ impl Session {
         self.mark_settings_dirty();
     }
 
-    /// 新しい機種を作る欄
-    fn new_machine_ui(&mut self, ui: &mut egui::Ui) {
-        let Some(mut name) = self.prof_ui.new_name.clone() else {
-            if ui.button("新しい機種を作る").on_hover_text(
-                "いまの機種(と、合わせた管面・PLL)を元に、自分用の機種を作ります。\n\
-                 水晶の候補と入力設定は元の機種のものを使います").clicked()
-            {
-                self.prof_ui.new_name =
-                    Some(format!("{} (自分用)", self.profile_label(&self.source_profile)));
-            }
-            return;
-        };
-        let mut create = false;
-        let mut cancel = false;
-        ui.horizontal_wrapped(|ui| {
-            ui.label("名前");
-            ui.add(egui::TextEdit::singleline(&mut name).desired_width(160.0));
-            create = ui.add_enabled(!name.trim().is_empty(), egui::Button::new("作る")).clicked();
-            cancel = ui.button("やめる").clicked();
-        });
-        if create {
-            self.prof_ui.new_name = None;
-            self.create_user_machine(name.trim().to_string());
-        } else if cancel {
-            self.prof_ui.new_name = None;
-        } else {
-            self.prof_ui.new_name = Some(name);
-        }
-    }
-
     fn create_user_machine(&mut self, label: String) {
         let (mon, pll) = self.current_profile_values();
         let base = match self.current_user_machine() {
@@ -2870,154 +2900,157 @@ impl Session {
         self.toasts.info(format!("{label} を作って切り替えました"));
     }
 
-    /// 選んでいる自分用の機種の編集(名前・モードごとの値・上書き・削除)
-    fn user_machine_editor(&mut self, ui: &mut egui::Ui) {
-        let Some(mut u) = self.current_user_machine() else { return };
-        let mut changed = false;
-        ui.horizontal_wrapped(|ui| {
-            ui.label("名前");
-            let mut label = u.label.clone();
-            let r = ui.add(egui::TextEdit::singleline(&mut label).desired_width(160.0));
-            if r.changed() && !label.trim().is_empty() {
-                u.label = label;
-                changed = true;
-            }
-        });
-        let base = if u.base.is_empty() { "汎用".to_string() } else { self.profile_label(&u.base) };
-        ui.weak(format!("入力{} {} · 元にした機種 {base}", u.port.number(), u.port.jack()));
-
-        ui.weak("モード(帯域 × 垂直周波数)ごとの値");
-        let cur = (self.mon_key, self.pll_key);
-        let mut remove: Option<u32> = None;
-        let mut edited: Vec<(u32, Option<[f32; 4]>, Option<[u32; 2]>)> = Vec::new();
-        for k in u.mode_keys() {
-            ui.horizontal_wrapped(|ui| {
-                let t = Self::mode_key_label(k);
-                if k == cur.0 || k == cur.1 {
-                    ui.strong(format!("{t} ◀ いま"));
-                } else {
-                    ui.label(t);
+    /// 機種のページの画面モードの行。機種のモード表の行(同じキーはまとめる)に、
+    /// 表に無いが値のあるモードと、いま映っているモードを足す
+    fn mode_rows(&self) -> Vec<ModeRow> {
+        let geo = self.geo();
+        let user = self.current_user_machine();
+        let prof = match &user {
+            Some(u) => u.base_profile(),
+            None => profiles::by_key(&self.source_profile),
+        };
+        let mut rows: Vec<ModeRow> = Vec::new();
+        if let Some(p) = prof {
+            for km in p.modes {
+                let (mk, pk) = (km.mon_key(p), km.pll_key());
+                if let Some(r) = rows.iter_mut().find(|r| r.mon_key == mk) {
+                    r.names.push(km.name);
+                    r.verified &= km.verified;
+                    continue;
                 }
-                if ui.small_button("消す").on_hover_text("このモードの値を消します").clicked() {
-                    remove = Some(k);
-                }
-            });
-            ui.horizontal_wrapped(|ui| {
-                if let Some(mut m) = u.mon.get(&k).copied() {
-                    let mut ch = false;
-                    for (i, name) in ["H幅", "H位置", "V幅", "V位置"].iter().enumerate() {
-                        ui.weak(*name);
-                        ch |= ui.add(egui::DragValue::new(&mut m[i]).speed(0.001).max_decimals(4)
-                            .range(-1.0..=2.0)).changed();
-                    }
-                    if ch {
-                        edited.push((k, Some(m), None));
-                    }
-                }
-                if let Some(mut p) = u.pll.get(&k).copied() {
-                    ui.weak("PLL");
-                    let a = ui.add(egui::DragValue::new(&mut p[0]).range(200..=2304)).changed();
-                    ui.weak("位相");
-                    let b = ui.add(egui::DragValue::new(&mut p[1]).range(0..=31)).changed();
-                    if a || b {
-                        edited.push((k, None, Some(p)));
-                    }
-                }
-            });
-        }
-        if u.mode_keys().is_empty() {
-            ui.weak("まだ値がありません。映して合わせてから「いまの値で上書き」を押してください");
-        }
-        for (k, mon, pll) in edited {
-            if let Some(m) = mon {
-                u.mon.insert(k, m);
+                rows.push(ModeRow { mon_key: mk, pll_key: pk, names: vec![km.name],
+                                    verified: km.verified, known: true, current: false,
+                                    in_file: false, state: RowState::Default });
             }
-            if let Some(p) = pll {
-                u.pll.insert(k, p);
-            }
-            self.apply_user_value(&u.key, k, mon, pll);
-            changed = true;
         }
-        if let Some(k) = remove {
-            u.mon.remove(&k);
-            u.pll.remove(&k);
-            // 設定ファイル側の覚えも消す(残っていると消した値が効き続ける)
-            self.mon_bands.remove(&(u.key.clone(), k));
-            self.band_pll.remove(&(u.key.clone(), k));
-            if k == cur.0 || k == cur.1 {
-                self.mon_key = 0;
-                self.pll_key = 0;
-                self.band_khz = 0;
-            }
-            self.mark_settings_dirty();
-            changed = true;
+        // 帯域、垂直周波数の昇順に並べる(PLL のキーは 帯域 × 1000 + Hz なので、その順)
+        rows.sort_by_key(|r| r.pll_key);
+        // 表に無いが、合わせた値かファイルの値があるモード。帯域だけの値(以前の版)は、
+        // その帯域の行があればその行の「カスタム(帯域)」として出すので、行にしない
+        let mut extra: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        extra.extend(self.mon_bands.keys().filter(|(g, _)| *g == geo).map(|(_, k)| *k));
+        extra.extend(self.band_pll.keys().filter(|(g, _)| *g == geo).map(|(_, k)| *k));
+        if let Some(u) = &user {
+            extra.extend(u.mon.keys().copied());
+            extra.extend(u.pll.keys().copied());
         }
-
-        let label = if cur.0 > 0 { Self::mode_key_label(cur.0) } else { "—".into() };
-        if ui.add_enabled(cur.0 > 0, egui::Button::new(format!("いまの値で上書き({label})")))
-            .on_hover_text("いま映っているモードの、合わせた管面と PLL をこの機種に書きます")
-            .clicked()
-        {
-            u.mon.insert(cur.0, self.mon);
-            if cur.1 > 0 {
-                u.pll.insert(cur.1, [self.tune_pll_divide.max(0) as u32, self.tune_phase as u32]);
-            }
-            changed = true;
-            self.toasts.info(format!("{label} を上書きしました"));
+        if self.mon_key > 0 {
+            extra.insert(self.mon_key);
         }
-        let mut delete = false;
-        ui.horizontal_wrapped(|ui| {
-            if !self.prof_ui.confirm_delete {
-                if ui.button("この機種を削除").clicked() {
-                    self.prof_ui.confirm_delete = true;
-                }
-            } else {
-                ui.label(format!("「{}」を削除しますか?", u.label));
-                delete = ui.button("削除する").clicked();
-                if ui.button("やめる").clicked() {
-                    self.prof_ui.confirm_delete = false;
-                }
+        for k in extra {
+            if rows.iter().any(|r| r.mon_key == k || r.pll_key == k) {
+                continue;
             }
-        });
-        if delete {
-            self.prof_ui.confirm_delete = false;
-            self.delete_user_machine(&u);
-            return;
-        }
-        if changed {
-            if let Some(slot) = self.user_profiles.iter_mut().find(|x| x.key == u.key) {
-                *slot = u;
+            let band_only = geometry::key_fv(k).is_none() && k != MON_KEY_NTSC;
+            if band_only && k != self.mon_key
+                && rows.iter().any(|r| geometry::key_band(r.pll_key) == k) {
+                continue;
             }
-            // ファイルへはまとめて書く(つまみを回している間に毎フレーム書かない)
-            self.prof_ui.save_due = Some(std::time::Instant::now());
+            rows.push(ModeRow { mon_key: k, pll_key: k, names: Vec::new(), verified: true,
+                                known: false, current: false, in_file: false,
+                                state: RowState::Default });
         }
+        for r in rows.iter_mut() {
+            r.current = self.mon_key > 0 && r.mon_key == self.mon_key;
+            r.in_file = user.as_ref().is_some_and(|u| u.mon.contains_key(&r.mon_key)
+                                                      || u.pll.contains_key(&r.pll_key));
+            r.state = self.row_state(&geo, r.mon_key, r.pll_key);
+        }
+        rows
     }
 
-    /// 編集した値を、設定ファイル側の覚えといま映っている値にも入れる。
-    /// 自分用の機種は設定ファイルの値がファイルの値(初期値)より先に引かれるので、
-    /// ファイルだけ直しても効かない
-    fn apply_user_value(&mut self, geo: &str, k: u32, mon: Option<[f32; 4]>, pll: Option<[u32; 2]>) {
-        if let Some(m) = mon {
-            self.mon_bands.insert((geo.to_string(), k), m);
-            if geo == self.geo_prof && k == self.mon_key {
-                self.mon = m;
-            }
+    /// 行の状態。このモードの値が設定ファイルにあればカスタム
+    fn row_state(&self, geo: &str, mk: u32, pk: u32) -> RowState {
+        let has = |k: u32| self.mon_bands.contains_key(&(geo.to_string(), k))
+            || self.band_pll.contains_key(&(geo.to_string(), k));
+        if has(mk) || (pk != mk && self.band_pll.contains_key(&(geo.to_string(), pk))) {
+            return RowState::Custom;
         }
-        if let Some(p) = pll {
-            self.band_pll.insert((geo.to_string(), k), p);
-            if geo == self.geo_prof && k == self.pll_key {
-                let pll = (p[0] as i32).clamp(200, 2304);
-                if pll != self.tune_pll_divide {
-                    self.set_pll(pll as u32);
-                }
-                let ph = p[1].min(31) as u8;
-                if ph != self.tune_phase {
-                    self.tune_phase = ph;
-                    self.send_cfg(protocol::CFG_KEY_PHASE, ph as u32);
-                }
-            }
+        let (bm, bp) = (geometry::key_band(mk), geometry::key_band(pk));
+        let legacy = (bm != mk && self.mon_bands.contains_key(&(geo.to_string(), bm)))
+            || (bp != pk && self.band_pll.contains_key(&(geo.to_string(), bp)));
+        if legacy { RowState::CustomBand } else { RowState::Default }
+    }
+
+    /// 行を既定に戻す(このモードで合わせた値と、帯域ごとの以前の値を消す)
+    fn reset_mode(&mut self, mk: u32, pk: u32) {
+        let geo = self.geo();
+        self.mon_bands.remove(&(geo.clone(), mk));
+        self.band_pll.remove(&(geo.clone(), pk));
+        // ★**帯域ごとの値も一緒に消す。** 残すと、このモードの値を消した下から帯域の値が
+        //   出てきて、押しても「カスタム」から「カスタム(帯域)」になるだけだった
+        self.mon_bands.remove(&(geo.clone(), geometry::key_band(mk)));
+        self.band_pll.remove(&(geo.clone(), geometry::key_band(pk)));
+        if mk == self.mon_key || pk == self.pll_key {
+            // 次の follow_band で既定を読み直させる(いまの値はしまわない)
+            self.mon_key = 0;
+            self.pll_key = 0;
+            self.band_khz = 0;
         }
         self.mark_settings_dirty();
+        self.toasts.info(format!("{} を既定に戻しました", Self::mode_key_label(mk)));
+    }
+
+    /// 合わせた値を自分用の機種のファイルへ移す。移した値がその機種の既定になる
+    fn save_mode_to_user_machine(&mut self, mk: u32, pk: u32) {
+        let Some(mut u) = self.current_user_machine() else { return };
+        let geo = u.key.clone();
+        let current = mk == self.mon_key;
+        let mon = self.mon_bands.get(&(geo.clone(), mk)).copied()
+            .or_else(|| current.then_some(self.mon));
+        let pll = self.band_pll.get(&(geo.clone(), pk)).copied()
+            .or_else(|| (pk == self.pll_key)
+                .then(|| [self.tune_pll_divide.max(0) as u32, self.tune_phase as u32]));
+        if let Some(v) = mon {
+            u.mon.insert(mk, v);
+        }
+        if let Some(v) = pll {
+            u.pll.insert(pk, v);
+        }
+        self.mon_bands.remove(&(geo.clone(), mk));
+        self.band_pll.remove(&(geo.clone(), pk));
+        if current {
+            // いまの値がそのまま既定になった。しまい直さないよう、読み込んだ値として控える
+            self.mon_loaded = self.mon;
+            self.pll_loaded = [self.tune_pll_divide.max(0) as u32, self.tune_phase as u32];
+        }
+        self.mark_settings_dirty();
+        self.replace_user_machine(u);
+        self.toasts.info(format!("{} をこの機種に保存しました", Self::mode_key_label(mk)));
+    }
+
+    /// 自分用の機種のファイルからモードを消す(表に無いモードの片付け)
+    fn remove_mode_from_user_machine(&mut self, mk: u32, pk: u32) {
+        let Some(mut u) = self.current_user_machine() else { return };
+        u.mon.remove(&mk);
+        u.pll.remove(&pk);
+        let geo = u.key.clone();
+        self.mon_bands.remove(&(geo.clone(), mk));
+        self.band_pll.remove(&(geo, pk));
+        if mk == self.mon_key {
+            self.mon_key = 0;
+            self.pll_key = 0;
+            self.band_khz = 0;
+        }
+        self.mark_settings_dirty();
+        self.replace_user_machine(u);
+    }
+
+    /// 名前だけ変える(キー = ファイル名は変えない。合わせた値の持ち主なので)
+    fn rename_user_machine(&mut self, u: &userprof::UserProfile, label: String) {
+        let mut u = u.clone();
+        u.label = label;
+        self.replace_user_machine(u);
+    }
+
+    /// 自分用の機種を差し替えて、すぐファイルへ書く
+    fn replace_user_machine(&mut self, u: userprof::UserProfile) {
+        if let Err(e) = userprof::save(&u) {
+            self.toasts.notice(format!("保存できませんでした: {e}"));
+        }
+        if let Some(slot) = self.user_profiles.iter_mut().find(|x| x.key == u.key) {
+            *slot = u;
+        }
     }
 
     fn delete_user_machine(&mut self, u: &userprof::UserProfile) {
@@ -3035,20 +3068,6 @@ impl Session {
             }
         }
         self.toasts.info(format!("{} を削除しました", u.label));
-    }
-
-    /// 編集した自分用の機種を、少し待ってからファイルへ書く
-    fn flush_user_profile_edits(&mut self) {
-        let Some(t) = self.prof_ui.save_due else { return };
-        if t.elapsed() < std::time::Duration::from_millis(500) {
-            return;
-        }
-        self.prof_ui.save_due = None;
-        if let Some(u) = self.current_user_machine() {
-            if let Err(e) = userprof::save(&u) {
-                self.toasts.notice(format!("保存できませんでした: {e}"));
-            }
-        }
     }
 
     /// 配信用クリーン出力の操作。**配信中いちばん触るものなので上に出す。**
@@ -4235,12 +4254,22 @@ impl Session {
             return;
         }
         let geo = self.geo_prof.clone();
-        if self.mon_key > 0 {
-            store_with_band(&mut self.mon_bands, &geo, self.mon_key, self.mon);
+        self.stash_mon(&geo);
+        self.stash_pll(&geo);
+    }
+
+    /// いまの管面を、いまのモードのキーへ。読み込んだときから変わっていなければしまわない
+    fn stash_mon(&mut self, geo: &str) {
+        if self.mon_key > 0 && self.mon != self.mon_loaded {
+            store_with_band(&mut self.mon_bands, geo, self.mon_key, self.mon);
         }
-        if self.pll_key > 0 {
-            let v = [self.tune_pll_divide.max(0) as u32, self.tune_phase as u32];
-            store_with_band(&mut self.band_pll, &geo, self.pll_key, v);
+    }
+
+    /// いまの PLL と位相を、いまのモードのキーへ。変わっていなければしまわない
+    fn stash_pll(&mut self, geo: &str) {
+        let v = [self.tune_pll_divide.max(0) as u32, self.tune_phase as u32];
+        if self.pll_key > 0 && v != self.pll_loaded {
+            store_with_band(&mut self.band_pll, geo, self.pll_key, v);
         }
     }
 
@@ -4316,33 +4345,48 @@ impl Session {
         // ★コンポジット/S端子は管面を帯域と別に持つ。同じ15kHz帯でも、RGB(MSX・
         //   X68000)の管面はモニタに合わせて回すつまみで、NTSCの窓は規格と
         //   ビデオデッキで決まる。共用すると片方を合わせるともう片方がずれる。
-        let mk = if self.pll_locked_by_format() { MON_KEY_NTSC } else { key };
+        //   ★**NTSC の管面はビデオ端子のときだけ。** コンポジットから RGB の機種へ
+        //   切り替えた直後は、ボードがまだ YC8 で送ってくるので、届いた MODE だけで
+        //   決めると RGB の機種(PC-9801)で NTSC の管面を引き、その機種の値として
+        //   残っていた(機種のページに「NTSC」の行が出た)
+        let ntsc = self.input_port == profiles::Port::Video && self.pll_locked_by_format();
+        let mk = if ntsc { MON_KEY_NTSC } else { key };
         if mk != self.mon_key {
-            if self.mon_key > 0 {
-                store_with_band(&mut self.mon_bands, &geo, self.mon_key, self.mon);
-            }
+            self.stash_mon(&geo);
             let default = if mk == MON_KEY_NTSC { MON_NTSC } else { [1.0, 0.0, 1.0, 0.0] };
             // 合わせた値(帯域 × fV → 帯域)、無ければ初期値(同じ順)
             self.mon = lookup_with_band(&self.mon_bands, &geo, mk)
                 .or(self.preset_for(&geo, mk).0)
                 .unwrap_or(default);
             self.mon_key = mk;
+            self.mon_loaded = self.mon;
             self.mark_settings_dirty();
         }
         if key == self.pll_key {
             return;
         }
-        if self.pll_key > 0 {
-            let v = [self.tune_pll_divide.max(0) as u32, self.tune_phase as u32];
-            store_with_band(&mut self.band_pll, &geo, self.pll_key, v);
-        }
+        self.stash_pll(&geo);
         // 機種 × 帯域(× 垂直周波数)ごとの pll_divide / 位相を復元してボードへ送る。
         // pll_divide はモードごとに正解が違い、位相も帯域ごとに最適値が変わるので、
         // 1つだけ持つと帯域を切り替えるたびに合わせ直しになる。
+        // ★**合わせた値も初期値も無いモードは、機種の水晶から出した値にする。**
+        //   以前は PLL を書き換えず、前のモード(別の機種のこともある)の値を持ち越して
+        //   いた。X68000 の 15kHz で、PC-98 の試験で残った 2304 のまま取り込み、
+        //   ラインバッファ(2048)に入らない右の 11% が切れた
+        let estimated = || {
+            let fh = self.shared.mode.lock().unwrap().as_ref()
+                .map_or(0.0, |m| m.hfreq_mhz_x1000 as f64 / 1000.0);
+            self.base_profile()
+                .and_then(|p| profiles::best(p, fh))
+                .map(|c| [c.pll_divide as u32, 16])
+        };
         let saved = lookup_with_band(&self.band_pll, &geo, key)
-            .or(self.preset_for(&geo, key).1);
+            .or(self.preset_for(&geo, key).1)
+            .or_else(estimated);
         if let Some(v) = saved {
-            let pll = (v[0] as i32).clamp(200, 2304);
+            // ★**ラインバッファに入らない PLL は使わない。** 2048 を超えると、1ラインの
+            //   右の端が取り込まれない(TVP の上限 2304 ではなくこちらが実用の上限)
+            let pll = (v[0] as i32).clamp(profiles::PLL_MIN, profiles::LINE_BUFFER_W);
             if pll != self.tune_pll_divide {
                 self.set_pll(pll as u32);
             }
@@ -4358,6 +4402,7 @@ impl Session {
         // 戻っているので、実際のCRTは 0.85〜0.95 あたりが近い)。
         self.band_khz = khz;
         self.pll_key = key;
+        self.pll_loaded = [self.tune_pll_divide.max(0) as u32, self.tune_phase as u32];
         // H-PLLのVCOレンジ/チャージポンプはピクセルクロックとpixels per lineで
         // 決まるので、モードが変わったら計算して送り直す
         // VCOレンジは「報告されたドットクロック」ではなく pll_divide から決める。

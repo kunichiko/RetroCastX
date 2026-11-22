@@ -24,6 +24,8 @@ pub enum Page {
     #[default]
     Home,
     Video,
+    /// 機種の管理(自分用の機種の保存・一覧・書き出し)
+    Machine,
     Display,
     Audio,
     Board,
@@ -37,6 +39,7 @@ impl Page {
         match self {
             Page::Home => "ホーム",
             Page::Video => "映像",
+            Page::Machine => "機種",
             Page::Display => "表示",
             Page::Audio => "音声",
             Page::Board => "ボード",
@@ -139,7 +142,11 @@ pub(crate) fn seg_button(ui: &mut egui::Ui, text: &str, note: &str, on: bool) ->
 }
 
 /// 帯域の札1枚の大きさ
-const BAND_LED: egui::Vec2 = egui::vec2(46.0, 20.0);
+/// ★**幅は周波数の行(`31.47kHz / 59.94Hz`)が切れない所まで詰めてある。** 札4枚と
+///   並べると、40pt では「Hz」が切れた
+const BAND_LED: egui::Vec2 = egui::vec2(36.0, 20.0);
+/// 帯域の札の枚数(15/24/31/50kHz)
+const BAND_LEDS: [u32; 4] = [50, 31, 24, 15];
 
 /// マルチスキャンモニタの周波数インジケータの札1枚。いま同期している帯域が点灯する。
 ///
@@ -191,6 +198,7 @@ impl Session {
                 match self.page {
                     Page::Home => self.home_page(ui),
                     Page::Video => self.video_page(ui),
+                    Page::Machine => self.machine_page(ui),
                     Page::Display => self.display_page(ui),
                     Page::Audio => self.audio_page(ui),
                     Page::Board => self.board_page(ui),
@@ -311,7 +319,11 @@ impl Session {
                 // 解像度・周波数の2行と、その右に帯域の札(2行の高さの中央)
                 ui.horizontal(|ui| {
                     ui.add_space(14.0);
-                    let leds_w = 3.0 * BAND_LED.x + 2.0 * 4.0;
+                    // ★**札の枚数から幅を出す。** 札を4枚にしたとき3枚分のままにしていたので、
+                    //   1枚分(約40pt)がはみ出してパネルが左へ広がり、パネルを避けて寄せた
+                    //   映像に重なった(寄せる量は 360pt の幅で計算している)
+                    let n = BAND_LEDS.len() as f32;
+                    let leds_w = n * BAND_LED.x + (n - 1.0) * 4.0;
                     let left_w = (ui.available_width() - leds_w - 8.0).max(60.0);
                     ui.allocate_ui_with_layout(egui::vec2(left_w, 0.0),
                                                egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -327,7 +339,7 @@ impl Session {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         // 切り替わりの最中はどれも点けない(途中の帯域を見せない)
                         let lit = (!self.mode_switch.blanking()).then_some(self.band_khz);
-                        for b in [50u32, 31, 24, 15] {
+                        for b in BAND_LEDS {
                             band_led(ui, b, lit == Some(b));
                         }
                     });
@@ -415,6 +427,7 @@ impl Session {
         ui.add_space(8.0);
         let mut cats: Vec<(Page, String)> = vec![
             (Page::Video, self.video_summary()),
+            (Page::Machine, self.machine_summary()),
             (Page::Display, self.display_summary()),
             (Page::Audio, self.audio_summary()),
             (Page::Board, self.board_summary()),
@@ -629,12 +642,261 @@ impl Session {
             ui.label(egui::RichText::new(
                 "管面の位置・幅と PLL は「機種 × 周波数帯」ごとに覚えます。").size(11.0).color(MUTED));
             self.input_write_ui(ui);
-            self.profile_files_ui(ui);
         });
         ui.add_space(6.0);
         group(ui, "画の仕上げ", |ui| {
             self.finish_ui(ui);
         });
+    }
+
+    // ---------------------------------------------------------------- 機種
+
+    /// ホームの「機種」の行の要約
+    fn machine_summary(&self) -> String {
+        let name = self.profile_label(&self.source_profile);
+        let kind = if self.current_user_machine().is_some() { "自分用" } else { "組み込み" };
+        match self.mode_rows().into_iter().find(|r| r.current) {
+            Some(r) => format!("{name} · {kind} · {} {}", Self::mode_key_label(r.mon_key), r.state.text()),
+            None => format!("{name} · {kind}"),
+        }
+    }
+
+    /// 機種のページ。上から「いまのモード」「画面モード一覧」「この機種」
+    fn machine_page(&mut self, ui: &mut egui::Ui) {
+        let user = self.current_user_machine();
+        // どの機種のページかを一番上に出す
+        ui.label(egui::RichText::new(self.profile_label(&self.source_profile)).size(16.0).color(INK));
+        ui.label(egui::RichText::new(format!(
+            "{} · 入力{} {}", if user.is_some() { "自分用" } else { "組み込み" },
+            self.input_port.number(), self.input_port.jack())).size(11.0).color(MUTED));
+        ui.add_space(6.0);
+        let rows = self.mode_rows();
+        group(ui, "いまのモード", |ui| self.machine_now_ui(ui, &rows, user.is_some()));
+        ui.add_space(6.0);
+        group(ui, "画面モード", |ui| self.machine_modes_ui(ui, &rows, user.is_some()));
+        ui.add_space(6.0);
+        group(ui, "この機種", |ui| self.machine_actions_ui(ui, user.as_ref()));
+    }
+
+    /// いま映っているモードと、その状態。操作はここに置く
+    fn machine_now_ui(&mut self, ui: &mut egui::Ui, rows: &[ModeRow], is_user: bool) {
+        let Some(r) = rows.iter().find(|r| r.current) else {
+            ui.label(egui::RichText::new("信号を待っています").size(12.5).color(MUTED));
+            return;
+        };
+        ui.label(egui::RichText::new(Self::mode_key_label(r.mon_key)).size(15.0).color(INK));
+        if !r.names.is_empty() {
+            ui.add(egui::Label::new(egui::RichText::new(r.names.join(" / ")).size(11.5).color(MUTED)).wrap());
+        } else {
+            ui.label(egui::RichText::new("一覧に無いモード").size(11.5).color(MUTED));
+        }
+        ui.add(egui::Label::new(egui::RichText::new(format!("● {}", r.state.text()))
+            .size(11.5).color(r.state.color())).wrap());
+        ui.add_space(4.0);
+        if r.state == RowState::Default {
+            ui.add(egui::Label::new(egui::RichText::new(
+                "「表示」のつまみや「同期の調整」で合わせると、このモードはカスタムになります")
+                .size(11.0).color(MUTED)).wrap());
+            if !is_user {
+                ui.add_space(4.0);
+                self.new_machine_inline(ui, "この機種を元に自分用の機種を作る");
+            }
+            return;
+        }
+        let w = ui.available_width();
+        if is_user {
+            let r2 = ui.add(egui::Button::new(
+                    egui::RichText::new("この機種に保存").color(egui::Color32::BLACK))
+                .fill(theme::ACCENT).min_size(egui::vec2(w, 30.0)));
+            if r2.on_hover_text("合わせた値をこの機種のファイルに書き、このモードの既定にします")
+                .clicked()
+            {
+                self.save_mode_to_user_machine(r.mon_key, r.pll_key);
+            }
+        }
+        if ui.add(egui::Button::new("既定に戻す").min_size(egui::vec2(w, 26.0)))
+            .on_hover_text(r.state.reset_hint()).clicked()
+        {
+            self.reset_mode(r.mon_key, r.pll_key);
+        }
+    }
+
+    /// 画面モードの一覧。行ごとに「既定 / カスタム」と、カスタムなら「既定に戻す」
+    fn machine_modes_ui(&mut self, ui: &mut egui::Ui, rows: &[ModeRow], is_user: bool) {
+        if rows.is_empty() {
+            ui.label(egui::RichText::new("この機種の画面モードはまだ分かっていません").size(11.5).color(MUTED));
+            return;
+        }
+        let mut shown_unknown = false;
+        for r in rows {
+            if !r.known && !shown_unknown {
+                shown_unknown = true;
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("一覧に無いモード").size(11.0).color(LABEL));
+            }
+            self.mode_row(ui, r, is_user);
+        }
+    }
+
+    /// モード1行。いまのモードは左にアクセントの帯
+    fn mode_row(&mut self, ui: &mut egui::Ui, r: &ModeRow, is_user: bool) {
+        let resp = ui.horizontal(|ui| {
+            ui.add_space(6.0);
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    let ink = if r.current { theme::ACCENT } else { INK };
+                    ui.label(egui::RichText::new(Self::mode_key_label(r.mon_key)).size(12.5).color(ink));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(r.state.badge()).size(11.0).color(r.state.color()));
+                    });
+                });
+                if !r.names.is_empty() {
+                    let mut t = r.names.join(" / ");
+                    if !r.verified {
+                        t.push_str("(推定)");
+                    }
+                    ui.add(egui::Label::new(egui::RichText::new(t).size(11.0).color(MUTED)).wrap());
+                }
+                if r.state != RowState::Default {
+                    ui.horizontal(|ui| {
+                        if ui.small_button("既定に戻す").on_hover_text(r.state.reset_hint()).clicked() {
+                            self.reset_mode(r.mon_key, r.pll_key);
+                        }
+                        if is_user && ui.small_button("この機種に保存").clicked() {
+                            self.save_mode_to_user_machine(r.mon_key, r.pll_key);
+                        }
+                    });
+                } else if is_user && r.in_file && !r.known {
+                    if ui.small_button("この機種から消す").clicked() {
+                        self.remove_mode_from_user_machine(r.mon_key, r.pll_key);
+                    }
+                }
+            });
+        });
+        if r.current {
+            let rect = resp.response.rect;
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())), 1.5, theme::ACCENT);
+        }
+        ui.add_space(3.0);
+    }
+
+    /// 機種そのものの操作。削除だけ離して置き、確認はダイアログで
+    fn machine_actions_ui(&mut self, ui: &mut egui::Ui, user: Option<&crate::userprof::UserProfile>) {
+        if let Some(u) = user {
+            match self.prof_ui.renaming.clone() {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&u.label).size(13.0).color(INK));
+                        if ui.small_button("名前を変える").clicked() {
+                            self.prof_ui.renaming = Some(u.label.clone());
+                        }
+                    });
+                }
+                Some(mut name) => {
+                    let mut done = false;
+                    let mut cancel = false;
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut name).desired_width(150.0));
+                        done = ui.add_enabled(!name.trim().is_empty(), egui::Button::new("決める")).clicked();
+                        cancel = ui.button("やめる").clicked();
+                    });
+                    if done {
+                        self.prof_ui.renaming = None;
+                        self.rename_user_machine(u, name.trim().to_string());
+                    } else if cancel {
+                        self.prof_ui.renaming = None;
+                    } else {
+                        self.prof_ui.renaming = Some(name);
+                    }
+                }
+            }
+            let base = if u.base.is_empty() { "汎用".to_string() } else { self.profile_label(&u.base) };
+            ui.label(egui::RichText::new(format!(
+                "入力{} {} · 元にした機種 {base}", u.port.number(), u.port.jack())).size(11.0).color(MUTED));
+            ui.add_space(4.0);
+            self.new_machine_inline(ui, "複製して新しい機種");
+        }
+        if !MOBILE {
+            if ui.button("ファイルに書き出す…").on_hover_text(
+                "この機種で合わせた管面と PLL を1つのファイルにして、好きな場所へ保存します\n\
+                 (人に渡す・作者へ送る用)。機種一覧には足しません").clicked()
+            {
+                self.export_profile_file();
+            }
+        }
+        if !MOBILE {
+            let r = ui.add(egui::Button::new(
+                egui::RichText::new("自分用の機種のフォルダを開く").size(11.0).color(MUTED)).frame(false));
+            if r.on_hover_text(crate::userprof::dir().display().to_string()).clicked()
+                && !crate::userprof::reveal(&crate::userprof::dir())
+            {
+                self.toasts.notice("フォルダを開けませんでした");
+            }
+        }
+        if let Some(u) = user {
+            ui.add_space(10.0);
+            let del = ui.add(egui::Button::new(
+                egui::RichText::new("この機種を削除").color(egui::Color32::from_rgb(0xE8, 0x6A, 0x5C)))
+                .frame(false));
+            if del.clicked() {
+                self.prof_ui.confirm_delete = true;
+            }
+            if self.prof_ui.confirm_delete {
+                let mut close = false;
+                let resp = egui::Modal::new(egui::Id::new("delete_machine")).show(ui.ctx(), |ui| {
+                    ui.set_width(260.0);
+                    ui.label(egui::RichText::new(format!("「{}」を削除しますか?", u.label)).size(13.5));
+                    ui.label(egui::RichText::new(
+                        "この機種のファイルと、この機種で合わせた値を消します。元に戻せません")
+                        .size(11.0).color(MUTED));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(egui::RichText::new("削除する")
+                            .color(egui::Color32::from_rgb(0xE8, 0x6A, 0x5C))).clicked()
+                        {
+                            self.delete_user_machine(u);
+                            close = true;
+                        }
+                        if ui.button("やめる").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                if close || resp.should_close() {
+                    self.prof_ui.confirm_delete = false;
+                }
+            }
+        }
+    }
+
+    /// 新しい機種の名前を入れる欄(ボタンを押すと開く)
+    fn new_machine_inline(&mut self, ui: &mut egui::Ui, button: &str) {
+        let Some(mut name) = self.prof_ui.new_name.clone() else {
+            if ui.button(button).on_hover_text(
+                "いまの機種(と、合わせた管面・PLL)を元に、自分用の機種を作って切り替えます。\n\
+                 水晶の候補と入力設定は元の機種のものを使います").clicked()
+            {
+                self.prof_ui.new_name =
+                    Some(format!("{} (自分用)", self.profile_label(&self.source_profile)));
+            }
+            return;
+        };
+        let mut create = false;
+        let mut cancel = false;
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut name).desired_width(150.0).hint_text("名前"));
+            create = ui.add_enabled(!name.trim().is_empty(), egui::Button::new("作る")).clicked();
+            cancel = ui.button("やめる").clicked();
+        });
+        if create {
+            self.prof_ui.new_name = None;
+            self.create_user_machine(name.trim().to_string());
+        } else if cancel {
+            self.prof_ui.new_name = None;
+        } else {
+            self.prof_ui.new_name = Some(name);
+        }
     }
 
     fn display_page(&mut self, ui: &mut egui::Ui) {
