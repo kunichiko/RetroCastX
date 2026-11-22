@@ -244,22 +244,24 @@ pub fn fit_centered(area_w: f32, area_h: f32, aspect: (f32, f32)) -> (f32, f32, 
     ((area_w - w) * 0.5, (area_h - h) * 0.5, w, h)
 }
 
-/// 操作パネルを避けるために映像を左へ動かす量(0 以下)。
+/// 操作パネルを開いているときに映像を横へ動かす量(0 以下)。
 ///
-/// 映像領域 C(`lo`..`hi`。管面と、その左右に打つ目盛りの帯を含む)が右から
-/// 重なるパネル(左端 `panel_left`)にかかるときだけ、ちょうど避けきる分だけ
-/// 左へ寄せる。窓の幅を W、パネルの幅を P とすると:
+/// 映像領域 C(`lo`..`hi`。管面と、その左右に打つ目盛りの帯を含む)を、窓
+/// (左端 `area_left`)の右に重ねるパネル(左端 `panel_left`)との関係で置く。
+/// 窓の幅を W、パネルの幅を P とすると:
 ///
-/// - W < C+P: 寄せても避けきれないので中央のまま(0)
-/// - C+P ≦ W < C+2P: 右端をパネルの左端に合わせる
-/// - C+2P ≦ W: 中央のままでも重ならない(0)
+/// - W < C+P: 映像の左端を窓の左端に付ける(パネルにかかる幅を極力減らす)
+/// - C+P ≦ W: 窓からパネルの幅を除いた残りの中央に置く(重ならない)
 ///
-/// ★**寄せきる(左端に付ける)のではなく、避けきる分だけ動かす。** こうすると
-///   W = C+2P で中央の位置へ連続につながり、窓を広げていく途中で映像が跳ばない。
+/// パネルを閉じているときは呼ばない(窓の中央のまま)。
 pub fn panel_dodge(area_left: f32, lo: f32, hi: f32, panel_left: f32) -> f32 {
-    let overlap = hi - panel_left;
-    let room = lo - area_left;
-    if overlap > 0.0 && overlap <= room { -overlap } else { 0.0 }
+    let c = hi - lo;
+    let free = panel_left - area_left; // W - P
+    if free < c {
+        area_left - lo
+    } else {
+        (area_left + panel_left) * 0.5 - (lo + hi) * 0.5
+    }
 }
 
 #[cfg(test)]
@@ -374,24 +376,22 @@ mod tests {
     #[test]
     fn panel_dodge_cases() {
         let (c, p) = (800.0f32, 360.0f32);
-        let dx = |w: f32| {
+        // 寄せた後の映像の左端(窓の中央に置いた位置から dx 動かす)
+        let left = |w: f32| {
             let lo = (w - c) * 0.5;
-            panel_dodge(0.0, lo, lo + c, w - p)
+            lo + panel_dodge(0.0, lo, lo + c, w - p)
         };
-        // Case1: W < C+P は中央のまま
-        assert_eq!(dx(c + p - 1.0), 0.0);
-        // Case2: 右端がパネルの左端にちょうど来る
-        for w in [c + p, c + 1.5 * p, c + 2.0 * p - 1.0] {
-            let lo = (w - c) * 0.5 + dx(w);
-            assert!(lo >= -1e-3, "左にはみ出した W={w}");
-            assert!((lo + c - (w - p)).abs() < 1e-3, "パネルに合っていない W={w}");
+        // W < C+P: 左端を窓の左端に付ける
+        for w in [c, c + 0.5 * p, c + p - 1.0] {
+            assert!(left(w).abs() < 1e-3, "左端に付いていない W={w}");
         }
-        // W = C+P では左端に付く
-        assert!(((c + p - c) * 0.5 + dx(c + p)).abs() < 1e-3);
-        // Case3: W ≧ C+2P は中央のまま。境目で跳ばない
-        assert_eq!(dx(c + 2.0 * p), 0.0);
-        assert_eq!(dx(c + 3.0 * p), 0.0);
-        assert!(dx(c + 2.0 * p - 0.01).abs() < 0.02);
+        // C+P ≦ W: 窓からパネルを除いた残りの中央。W = C+P では左端に付いた位置と同じ
+        assert!(left(c + p).abs() < 1e-3);
+        for w in [c + p, c + 1.5 * p, c + 2.0 * p, 3000.0] {
+            let l = left(w);
+            assert!((l - (w - p - c) * 0.5).abs() < 1e-3, "残りの中央でない W={w}");
+            assert!(l + c <= w - p + 1e-3, "パネルにかかった W={w}");
+        }
     }
 }
 
