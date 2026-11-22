@@ -14,6 +14,9 @@ D) 送り先の後勝ち(RENEW):
    - 後から来た通常 SUBSCRIBE が送り先を奪う
    - 奪われた側の RENEW では奪い返せず、ANNOUNCE で「送信中・宛先は別」と返る
    - 送り先の RENEW には「宛先はあなた」と返る
+E) ANNOUNCE の「あなた宛」と宛先の食い違い:
+   - 別の Viewer の発見の問いかけが送出中に挟まっても、送り先へ届く ANNOUNCE は
+     必ず「あなた宛」、それ以外へ届くものは必ず「あなた宛でない」
 B) インターレース:
    - MODE mflags bit0、vactive=フルフレーム行数
    - frame=フィールド毎+1、FIELD_ODD=フィールド極性、行番号の偶奇=極性
@@ -112,9 +115,12 @@ def driver(dut):
                               *SUBSCRIBER)
 
 
-def collector(dut, out, n_cycles):
+def collector(dut, out, n_cycles, stall=0):
+    """stall > 0 なら、ときどき最大 stall サイクル ready を落とす(実機の UDP
+    送信側がヘッダを足したり前のパケットを送り出したりしている間に当たる)。"""
     rnd = random.Random(1)
     cycle = 0
+    hold = 0
     words, meta = [], None
     while cycle < n_cycles:
         snk = dut.port.sink
@@ -130,16 +136,22 @@ def collector(dut, out, n_cycles):
                     "length field %d != stream length %d" % (length, len(payload))
                 out.append((start, ip, port, payload))
                 words, meta = [], None
-        yield snk.ready.eq(int(rnd.random() < 0.8))
+        if stall and not hold and rnd.random() < 0.05:
+            hold = rnd.randrange(stall)
+        if hold:
+            hold -= 1
+            yield snk.ready.eq(0)
+        else:
+            yield snk.ready.eq(int(rnd.random() < 0.8))
         yield
         cycle += 1
 
 
 def run_dut(fps, mtu_payload, interlace, n_cycles, n_audio=0,
-            audio_nsamples=16, extra_gens=(), drv=driver):
+            audio_nsamples=16, extra_gens=(), drv=driver, stall=0):
     dut = DUT(fps, mtu_payload, interlace, n_audio, audio_nsamples)
     datagrams = []
-    gens = [drv(dut), collector(dut, datagrams, n_cycles)]
+    gens = [drv(dut), collector(dut, datagrams, n_cycles, stall)]
     gens += [g(dut) for g in extra_gens]
     run_simulation(dut, gens)
     return datagrams
@@ -468,11 +480,56 @@ def scenario_d():
           "(A=%#x, B=%#x)" % (f_a, f_b))
 
 
+def scenario_e():
+    """送り先の延長と別 Viewer の発見の問いかけが入り乱れても、ANNOUNCE の
+    「あなた宛」はその ANNOUNCE の宛先について正しい。
+
+    ★**以前は宛先を送り始めに、フラグを先頭ワードを出す瞬間に決めていた。** その
+    間に問いかけが返し先を書き換えると、送り先の Viewer に「あなた宛でない」が
+    届き、使用中の Viewer が「他の Viewer が接続しました」で止まった(実機で一度)。
+    """
+    fps, mtu, n_cycles = 300.0, 60, 12_000
+    rnd = random.Random(7)
+
+    def drv(dut):
+        yield from _send_datagram(
+            dut.port.source, proto.pack_subscribe(0, mac=BOARD_MAC), *VIEWER_A)
+        seq, t = 1, 0
+        while t < n_cycles - 300:
+            # 問いかけと延長を細かくずらして撃ち、送出中に挟まる回を作る
+            gap = rnd.randrange(3, 40)
+            for _ in range(gap):
+                yield
+            t += gap + 6
+            if rnd.random() < 0.5:
+                pkt = proto.pack_subscribe(seq, announce_only=True)
+                who = VIEWER_B
+            else:
+                pkt = proto.pack_subscribe(seq, mac=BOARD_MAC, renew=True)
+                who = VIEWER_A
+            yield from _send_datagram(dut.port.source, pkt, *who)
+            seq += 1
+
+    datagrams = run_dut(fps, mtu, False, n_cycles, drv=drv, stall=60)
+    anns = [(s, (ip, port), proto.parse(p)[1].flags) for s, ip, port, p in datagrams
+            if proto.parse(p)[0] == proto.TYPE_INFO]
+    to_a = [f for _, who, f in anns if who == VIEWER_A]
+    to_b = [f for _, who, f in anns if who == VIEWER_B]
+    assert len(to_a) > 20 and len(to_b) > 20, (len(to_a), len(to_b))
+    bad_a = [hex(f) for f in to_a if not f & proto.ANN_FLAG_YOURS]
+    bad_b = [hex(f) for f in to_b if f & proto.ANN_FLAG_YOURS]
+    assert not bad_a, "owner got NOT-yours ANNOUNCE %d/%d" % (len(bad_a), len(to_a))
+    assert not bad_b, "prober got YOURS ANNOUNCE %d/%d" % (len(bad_b), len(to_b))
+    print("E(announce flags): OK — YOURS matches the destination "
+          "(%d to owner, %d to prober)" % (len(to_a), len(to_b)))
+
+
 def main():
     scenario_a()
     scenario_b()
     scenario_c()
     scenario_d()
+    scenario_e()
     print("all scenarios passed")
 
 

@@ -483,12 +483,15 @@ class RetroCastXStreamer(LiteXModule):
         self.comb += sub_valid.eq(sub_timer != 0)
         # ANNOUNCE の宛先がいまの映像の送り先か。Viewer はこれで「奪われた」と
         # 「ボードが消えた」を見分ける(どちらも映像が止まるだけでは区別できない)。
-        # 比較はレジスタに落とす。1サイクル遅れるので、SUBSCRIBE への即答は
+        # ★**宛先(dst_ip)を決めるのと同じクロックで決めて持つ。** 以前は先頭
+        #   ワードを出す瞬間の返し先と比べていたので、UDP 側が ready を落として
+        #   待たされている間に別の Viewer の発見の問いかけが返し先を書き換えると、
+        #   送り先の Viewer に「あなた宛でない」が届き、使用中の Viewer が
+        #   「他の Viewer が接続しました」で止まった(実機で一度、2026-11-22)。
+        # 返し先は SUBSCRIBE の翌クロックに変わるので、SUBSCRIBE への即答は
         # sub_hit_any_d で1サイクル待ってから出す
         ann_yours = Signal()
         sub_hit_any_d = Signal()
-        self.sync += ann_yours.eq(sub_valid & (ann_ip == sub_ip) &
-                                  (ann_port == sub_port))
         # 状態LED用: 本購読中か / 10秒以内に Viewer から何か来たか
         host_timer = Signal(max=max(int(sys_clk_freq * sub_timeout), 2))
         self.stat_streaming = Signal()
@@ -1468,6 +1471,8 @@ class RetroCastXStreamer(LiteXModule):
             NextValue(ptype, _T_ANN),
             NextValue(dst_ip, ann_ip),
             NextValue(dst_port, ann_port),
+            NextValue(ann_yours, sub_valid & (ann_ip == sub_ip) &
+                      (ann_port == sub_port)),
             NextValue(length, len(ann_payload)),
             NextValue(nwords, n_ann_words),
             NextState("SEND"),
