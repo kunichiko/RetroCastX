@@ -182,6 +182,24 @@ pub fn fit_centered(area_w: f32, area_h: f32, aspect: (f32, f32)) -> (f32, f32, 
     ((area_w - w) * 0.5, (area_h - h) * 0.5, w, h)
 }
 
+/// 操作パネルを避けるために映像を左へ動かす量(0 以下)。
+///
+/// 映像領域 C(`lo`..`hi`。管面と、その左右に打つ目盛りの帯を含む)が右から
+/// 重なるパネル(左端 `panel_left`)にかかるときだけ、ちょうど避けきる分だけ
+/// 左へ寄せる。窓の幅を W、パネルの幅を P とすると:
+///
+/// - W < C+P: 寄せても避けきれないので中央のまま(0)
+/// - C+P ≦ W < C+2P: 右端をパネルの左端に合わせる
+/// - C+2P ≦ W: 中央のままでも重ならない(0)
+///
+/// ★**寄せきる(左端に付ける)のではなく、避けきる分だけ動かす。** こうすると
+///   W = C+2P で中央の位置へ連続につながり、窓を広げていく途中で映像が跳ばない。
+pub fn panel_dodge(area_left: f32, lo: f32, hi: f32, panel_left: f32) -> f32 {
+    let overlap = hi - panel_left;
+    let room = lo - area_left;
+    if overlap > 0.0 && overlap <= room { -overlap } else { 0.0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,5 +306,29 @@ mod tests {
         let a = display_aspect((1104.0, 1136.0), 4.0 / 3.0, 1);
         let (_, _, w, h) = fit_centered(1920.0, 1080.0, a);
         assert!((h / w - 4.0 / 3.0).abs() < 1e-3);
+    }
+
+    /// パネルを避ける寄せ方: C=800, P=360 の窓幅 W ごとに
+    #[test]
+    fn panel_dodge_cases() {
+        let (c, p) = (800.0f32, 360.0f32);
+        let dx = |w: f32| {
+            let lo = (w - c) * 0.5;
+            panel_dodge(0.0, lo, lo + c, w - p)
+        };
+        // Case1: W < C+P は中央のまま
+        assert_eq!(dx(c + p - 1.0), 0.0);
+        // Case2: 右端がパネルの左端にちょうど来る
+        for w in [c + p, c + 1.5 * p, c + 2.0 * p - 1.0] {
+            let lo = (w - c) * 0.5 + dx(w);
+            assert!(lo >= -1e-3, "左にはみ出した W={w}");
+            assert!((lo + c - (w - p)).abs() < 1e-3, "パネルに合っていない W={w}");
+        }
+        // W = C+P では左端に付く
+        assert!(((c + p - c) * 0.5 + dx(c + p)).abs() < 1e-3);
+        // Case3: W ≧ C+2P は中央のまま。境目で跳ばない
+        assert_eq!(dx(c + 2.0 * p), 0.0);
+        assert_eq!(dx(c + 3.0 * p), 0.0);
+        assert!(dx(c + 2.0 * p - 0.01).abs() < 0.02);
     }
 }
