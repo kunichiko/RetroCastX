@@ -257,11 +257,9 @@ impl Session {
                     self.show_panel = false;
                     self.mark_settings_dirty();
                 }
-                // ★**モバイルは窓が1枚なので、ボード一覧へはここから戻る。**
-                //   デスクトップは窓を閉じれば一覧(ランチャー)が残っている
-                if MOBILE && ui.button("‹ 一覧へ").on_hover_text("このボードを閉じて、ボード一覧へ戻ります").clicked() {
-                    self.want_close = true;
-                }
+                // モバイルの「切断」(ボード一覧へ戻る)はパネルではなく映像の左上に置く
+                // (main.rs の mobile_video_buttons)。ここにあると「‹ ホーム」と並び、
+                // 押し間違えやすかった
             });
         });
         ui.add_space(4.0);
