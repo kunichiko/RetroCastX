@@ -1,6 +1,12 @@
 {
   "bitstreams": [
     {
+      "name": "v1.6.1",
+      "file": "retrocastx_v1.6.1.bit",
+      "date": "2026-11-22",
+      "note": "gw-v1.6.1: 使用中の Viewer が「他の Viewer が接続しました」で誤って止まるのを直す\n\n- ANNOUNCE の「あなた宛」フラグを、宛先を決めるのと同じクロックで決めて持つ。\n  これまでは送出を待たされている間に別の Viewer の発見の問いかけが届くと、\n  映像の送り先の Viewer に「あなた宛でない」が届き、Viewer が奪われたと\n  判断して止まることがあった\n\nViewer はそのまま使える(v0.17.3 以降は古いゲートウェアでもこの誤報で止まらない)。\n\n\n---\nビルド: seed 7 / oss-cad-suite 2026-09-03 / litex 93c8d230e"
+    },
+    {
       "name": "v1.6.0",
       "file": "retrocastx_v1.6.0.bit",
       "date": "2026-11-10",
