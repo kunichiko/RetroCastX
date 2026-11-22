@@ -228,8 +228,10 @@ jobs:
       #   大きなクレートを2回最適化する分の方が高い。
       #   依存の重複はキャッシュ(下の Cache cargo が効けば)で吸収されるので、
       #   debug のままでよい。
+      # ダミーデバイス(devsim)も同じワークスペースなので一緒に試す。Viewer の
+      # protocol.rs を共有しているので、そちらを変えたときに壊れていないかも見られる
       - name: Test
-        run: cargo test --locked
+        run: cargo test --locked -p retrocastx-viewer -p retrocastx-devsim
 
       # Intel Mac も対象にするため universal binary にする。arm64ランナー上で
       # x86_64 をクロスビルドし lipo で束ねる(実行時アセットは無いので他に同梱物なし)
@@ -429,8 +431,10 @@ jobs:
           cargo --version
 
       # release に揃える案は macOS 側のコメントのとおり実測で否定した。
+      # ダミーデバイス(devsim)も同じワークスペースなので一緒に試す。Viewer の
+      # protocol.rs を共有しているので、そちらを変えたときに壊れていないかも見られる
       - name: Test
-        run: cargo test --locked
+        run: cargo test --locked -p retrocastx-viewer -p retrocastx-devsim
 
       - name: Build
         run: cargo build --release --locked

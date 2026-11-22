@@ -1,0 +1,37 @@
+# ダミーデバイス(キャプチャボードの代役)。
+#
+# 持っていない機種の映像信号で Viewer を試すためのもの。ネットワーク上では実機の
+# ボードと同じに振る舞い(ANNOUNCE / SUBSCRIBE / CONFIG / MODE / LINE / AUDIO)、
+# 中では「機種のタイミングで描いた信号を、Viewer が書いた pll_divide でサンプルし、
+# ゲートウェアと同じ規則でパケットにする」ところまでを真似る。
+#
+# プロトコルの定数とパーサは Viewer の ../src/protocol.rs をそのまま使う
+# (`#[path]`)。送る側の組み立てはこちらで書き、Viewer のパーサで読めることを
+# テストで確かめる。
+[package]
+name = "retrocastx-devsim"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "retrocastx-devsim"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { workspace = true, features = ["accesskit", "default_fonts", "wgpu", "wayland", "x11"] }
+socket2.workspace = true
+
+# 送出スレッドの優先度(engine.rs の raise_thread_priority)
+[target.'cfg(target_vendor = "apple")'.dependencies]
+libc.workspace = true
+
+# App Nap を止める(main.rs の keep_awake)。版は Viewer と揃える
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std", "NSProcessInfo", "NSString", "NSObject",
+] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Media", "Win32_System_Threading"] }
