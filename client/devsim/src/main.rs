@@ -232,7 +232,7 @@ fn headless(sh: &Arc<Shared>, ms: &[Machine], cycle: Option<f64>) {
             println!("  {}", e.text);
         }
         println!(
-            "購読 {:<22} TVP {:<18} pll {:4} 位相 {:2} 形式 {} | {:6} pkt/s {:7.1} Mbps 負荷 {:.2} 周回 {}/s 最長 {:.1}ms 詰まり {}",
+            "購読 {:<22} TVP {:<18} pll {:4} 位相 {:2} 形式 {} | {:6} pkt/s {:7.1} Mbps 負荷 {:.2} 周回 {}/s 最長 {:.1}ms 遅れ {:.0}ms 詰まり {}",
             match (b.sub, b.subscribed(now)) {
                 (Some(a), true) => a.to_string(),
                 _ => "-".into(),
@@ -241,7 +241,7 @@ fn headless(sh: &Arc<Shared>, ms: &[Machine], cycle: Option<f64>) {
             b.reg(protocol::CFG_KEY_PLL_DIVIDE),
             b.reg(protocol::CFG_KEY_PHASE),
             pixfmt_name(b.reg(protocol::CFG_KEY_PIXFMT) as u8),
-            s.pkts_per_s, s.mbps, s.load, s.iters, s.worst_ms, s.would_block,
+            s.pkts_per_s, s.mbps, s.load, s.iters, s.worst_ms, s.lag_ms, s.would_block,
         );
     }
 }
@@ -483,9 +483,17 @@ impl App {
             ui.end_row();
             ui.label("送出ループ");
             // 周回が数十/s に落ちていたら、OS に間引かれて送出が塊になっている
-            let t = format!("{} 周/s  1周の最長 {:.1}ms", s.iters, s.worst_ms);
+            let t = format!("{} 周/s  1周の最長 {:.1}ms  遅れ {:.1}ms", s.iters, s.worst_ms, s.lag_ms);
             if s.pkts_per_s > 0 && s.iters < 300 {
                 ui.colored_label(egui::Color32::YELLOW, t + "(間引かれています)");
+            } else if s.lag_ms > 30.0 {
+                // ★**信号どおりの速さで送れていない。** Viewer に出るフレームレートが
+                //   信号より低くなる。ループバックの送信は1パケット 15〜20µs かかり、
+                //   毎秒 4〜6 万パケットあたりが上限(機械の混み具合で変わる)
+                ui.colored_label(egui::Color32::YELLOW, t)
+                    .on_hover_text("送信が信号のパケットレートに追いついていません。\n\
+                                    Viewer に出るフレームレートが信号より低くなります。\n\
+                                    ダミーを別の機械で動かすか、Viewer の間引きを使ってください");
             } else {
                 ui.monospace(t);
             }
