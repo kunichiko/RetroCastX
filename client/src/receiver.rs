@@ -1096,6 +1096,8 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
     let mut dest = cfg.subscribe_to.clone();
     let broadcast = "255.255.255.255".to_string();
     let mut got_any = false;
+    // 映像を送ってきている送信元(下の「他のボードのパケットを数えない」)
+    let mut stream_src: Option<std::net::IpAddr> = None;
     let started = Instant::now();
     let mut fell_back = false;
     // ブロードキャスト時の実際の宛先(NICごとのサブネット宛)。NICは後から増減する
@@ -1510,6 +1512,20 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         // 映像の流れは送り先にしか来ない。来ている間はつながっている
         if n >= 3 && matches!(buf[2], proto::TYPE_LINE | proto::TYPE_MODE | proto::TYPE_AUDIO) {
             link.on_stream(Instant::now());
+        }
+        // ★**映像の送り元以外のパケットは組み立てに渡さない。** 組み立て側は seq の
+        //   飛びを lost に数えるが、seq はボードごとの別の数列。同じ LAN の別のボードも
+        //   (発見用の SUBSCRIBE に応えて)1秒ごとに ANNOUNCE をこちらへ送ってくるので、
+        //   交互に届くたびに数万の「飛び」になり、1つも落としていないのに lost が
+        //   18万に達して自動の間引きまで入った(2026-11-22、実機 + ダミーデバイス)。
+        //   送り元は映像(LINE/MODE/AUDIO)が来るたびに取り直すので、ボードを
+        //   切り替えても新しい方に移る
+        if n >= 3 && matches!(buf[2], proto::TYPE_LINE | proto::TYPE_MODE | proto::TYPE_AUDIO) {
+            stream_src = Some(src_ip);
+        }
+        if stream_src.is_some_and(|s| s != src_ip) {
+            let _ = free_tx.send(buf);
+            continue;
         }
         // ★**奪われた後に届いた残りは描かない。** 消した画面に古い絵が戻る。
         if link.state == crate::link::State::Taken {
