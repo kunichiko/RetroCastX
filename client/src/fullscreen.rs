@@ -166,14 +166,17 @@ impl FsGeom {
         use crate::geometry as g;
         let m = shared.mode.lock().unwrap().clone();
         let ntsc = m.as_ref().is_some_and(|m| crate::protocol::is_raw8(m.pixfmt));
+        // ウィンドウ側(main.rs の follow_band)と同じく、帯域 × 垂直周波数 → 帯域の順に引く
         let key = match &m {
             _ if ntsc => g::MON_KEY_NTSC,
             Some(m) if m.hfreq_mhz_x1000 > 1_000_000 =>
-                g::band_of(m.hfreq_mhz_x1000 as f32 / 1_000_000.0),
+                g::mode_key_of(g::band_of(m.hfreq_mhz_x1000 as f32 / 1_000_000.0), m),
             _ => 0,
         };
         let default = if ntsc { self.mon_ntsc } else { [1.0, 0.0, 1.0, 0.0] };
-        let mon = self.mon_bands.get(&key).copied().unwrap_or(default);
+        let mon = self.mon_bands.get(&key)
+            .or_else(|| self.mon_bands.get(&g::key_band(key)))
+            .copied().unwrap_or(default);
         let tube = g::tube_aspect_eff(self.tube_aspect, ntsc, self.time_based);
         // 絵の広がりは span_*(明るい画素がある範囲)。無ければ active_*(main.rs と同じ)
         let act = {

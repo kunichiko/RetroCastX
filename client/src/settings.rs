@@ -274,7 +274,8 @@ pub struct Settings {
     /// 管面へ出る割合」と「位置」だけ。1.0なら周期全体が見えるので何も切れない。
     pub mon: [f32; 4],
     /// 機種 × 帯域ごとのモニタプロファイル(CZ-612Dのような3モードディスプレイに相当)。
-    /// キーは (`profiles::geo_key`, 帯域[kHz])。
+    /// キーは (`profiles::geo_key`, 帯域[kHz])。垂直周波数でも分けたものは
+    /// 帯域の所が `geometry::band_fv_key`(31kHz・55Hz なら 31055)になる。
     ///
     /// ★**帯域だけをキーにしていた頃は、同じ帯域の別機種が値を共有していた。**
     ///   31kHz で X68000 に合わせた管面が、31kHz の FM-TOWNS にもそのまま使われ、
@@ -632,10 +633,11 @@ impl Settings {
                     if n.len() >= 4 { s.mon = [n[0], n[1], n[2], n[3]] }
                 }
                 // 機種 × 帯域: `bandpll@x68000.31` / `mon@auto-rgb15.24`
+                // 機種 × 帯域 × 垂直周波数: `mon@x68000.31v55`(geometry::key_to_str)
                 k if k.starts_with("bandpll@") || k.starts_with("mon@") => {
                     let rest = &k[k.find('@').unwrap() + 1..];
                     let Some((geo, khz)) = rest.rsplit_once('.') else { continue };
-                    let Ok(khz) = khz.parse::<u32>() else { continue };
+                    let Some(khz) = crate::geometry::key_from_str(khz) else { continue };
                     if k.starts_with("mon@") {
                         if let Some(m) = parse_mon(v) {
                             s.mon_bands.insert((geo.to_string(), khz), m);
@@ -940,28 +942,32 @@ impl Settings {
                 body.push_str(&format!("board_profile@{m}.{} = {key}\n", port.key()));
             }
         }
+        use crate::geometry::{key_fv, key_to_str};
         for ((geo, khz), v) in &self.band_pll {
-            body.push_str(&format!("bandpll@{geo}.{khz} = {},{}\n", v[0], v[1]));
+            body.push_str(&format!("bandpll@{geo}.{} = {},{}\n", key_to_str(*khz), v[0], v[1]));
         }
         for ((prof, key), v) in &self.reg_overrides {
             body.push_str(&format!("reg@{prof}.0x{key:04x} = {v}\n"));
         }
         for ((geo, khz), v) in &self.mon_bands {
             body.push_str(&format!(
-                "mon@{geo}.{khz} = {},{},{},{}\n", v[0], v[1], v[2], v[3]));
+                "mon@{geo}.{} = {},{},{},{}\n", key_to_str(*khz), v[0], v[1], v[2], v[3]));
         }
         // ★**古い版の形でも、いまの機種の分だけ書く。** 0.14 以前の Viewer は
         //   `mon@…` を知らず、無いと管面を全帯域とも既定値(1,0,1,0)で始めて
         //   そのまま保存する(実機で発生: この版を試したあと入れてある版に戻したら、
         //   X68000 の管面が消えた)。読むときは `mon@…` が優先なので害は無い
         let geo = profiles::geo_key(self.input_port, self.source_profile());
+        // 旧形式は帯域だけのキーしか表せない(垂直周波数付きは書かない)
         for ((g, khz), v) in &self.band_pll {
-            if *g == geo {
+            if *g == geo && key_fv(*khz).is_none() {
                 body.push_str(&format!("bandpll.{khz} = {},{}\n", v[0], v[1]));
             }
         }
         for (khz, v) in self.mon_bands_for_current() {
-            body.push_str(&format!("mon.{khz} = {},{},{},{}\n", v[0], v[1], v[2], v[3]));
+            if key_fv(khz).is_none() {
+                body.push_str(&format!("mon.{khz} = {},{},{},{}\n", v[0], v[1], v[2], v[3]));
+            }
         }
         for (k, v) in &self.modes {
             body.push_str(&format!(
@@ -1064,6 +1070,12 @@ mod tests {
         s.mon_bands.insert(("x68000".into(), 31), [0.9, -0.05, 0.95, 0.0]);
         s.mon_bands.insert(("vga".into(), 31), [1.0, 0.0, 1.0, 0.0]);
         s.band_pll.insert(("auto-rgb15".into(), 24), [848, 7]);
+        // 帯域 × 垂直周波数のキーも残る(31kHz の 55Hz と 60Hz を別に持つ)
+        let k55 = crate::geometry::band_fv_key(31, 55);
+        let k60 = crate::geometry::band_fv_key(31, 60);
+        s.mon_bands.insert(("x68000".into(), k55), [0.8, -0.04, 0.9, 0.0]);
+        s.mon_bands.insert(("x68000".into(), k60), [0.7, -0.03, 0.8, 0.0]);
+        s.band_pll.insert(("x68000".into(), k60), [800, 9]);
         let dir = std::env::temp_dir().join(format!("rcx-settings-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("viewer.conf");
@@ -1135,6 +1147,18 @@ mod tests {
         let r = Settings::parse(&text);
         assert_eq!(r.mon_bands, s.mon_bands);
         assert_eq!(r.band_pll, s.band_pll);
+        // 旧形式(`mon.31` など)には垂直周波数付きを書かない(古い Viewer が読めない)
+        let mut t = s.clone();
+        t.mon_bands.insert(("x68000".into(), crate::geometry::band_fv_key(31, 55)),
+                           [0.8, -0.04, 0.9, 0.0]);
+        let dir = std::env::temp_dir().join(format!("rcx-settings-fv-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("viewer.conf");
+        t.save_to(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(text.contains("mon@x68000.31v55 = "), "{text}");
+        assert!(!text.lines().any(|l| l.starts_with("mon.31v") || l.starts_with("mon.31055")));
     }
 
     /// ★**番号0は従来どおり `viewer.conf`。** ボードを1枚しか持っていない人は

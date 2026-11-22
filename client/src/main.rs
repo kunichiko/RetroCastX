@@ -1230,6 +1230,48 @@ struct SignalWatch {
 }
 
 /// 2回の fH の読みから信号の有無を決める。未接続は漂い(SOG)、または 0(生HSYNC)
+/// 機種 × キーの値をしまう。キーが帯域 × 垂直周波数なら、帯域だけのキーにも同じ値を
+/// 書く(その帯域で最後に合わせた値)。初めて見る垂直周波数はそこから始まるので、
+/// 同じ帯域の別のモードに合わせた値に近いところから詰められる
+fn store_with_band<V: Copy>(map: &mut std::collections::BTreeMap<(String, u32), V>,
+                            geo: &str, key: u32, v: V) {
+    map.insert((geo.to_string(), key), v);
+    let band = geometry::key_band(key);
+    if band != key {
+        map.insert((geo.to_string(), band), v);
+    }
+}
+
+/// 機種 × キーの値を引く。帯域 × 垂直周波数の値が無ければ帯域だけの値
+fn lookup_with_band<V: Copy>(map: &std::collections::BTreeMap<(String, u32), V>,
+                             geo: &str, key: u32) -> Option<V> {
+    map.get(&(geo.to_string(), key))
+        .or_else(|| map.get(&(geo.to_string(), geometry::key_band(key))))
+        .copied()
+}
+
+#[cfg(test)]
+mod band_fv_store_tests {
+    use super::{lookup_with_band, store_with_band};
+    use crate::geometry::band_fv_key;
+
+    /// 55Hz と 60Hz を別に持ち、初めての 70Hz は帯域で最後に合わせた値から始まる
+    #[test]
+    fn fv_keys_fall_back_to_band() {
+        let mut map = std::collections::BTreeMap::new();
+        let (k55, k60, k70) = (band_fv_key(31, 55), band_fv_key(31, 60), band_fv_key(31, 70));
+        store_with_band(&mut map, "x68000", k55, 1);
+        store_with_band(&mut map, "x68000", k60, 2);
+        assert_eq!(lookup_with_band(&map, "x68000", k55), Some(1));
+        assert_eq!(lookup_with_band(&map, "x68000", k60), Some(2));
+        assert_eq!(lookup_with_band(&map, "x68000", k70), Some(2));
+        assert_eq!(lookup_with_band(&map, "x68000", 31), Some(2));
+        // 別の機種・別の帯域には漏れない
+        assert_eq!(lookup_with_band(&map, "pc98", k55), None);
+        assert_eq!(lookup_with_band(&map, "x68000", band_fv_key(24, 55)), None);
+    }
+}
+
 fn sig_from_pair(fh: [Option<u32>; 2]) -> Sig {
     match fh {
         [Some(a), Some(b)] => {
@@ -1555,6 +1597,9 @@ struct Session {
     mode_log_prev: (bool, Option<u32>),
     /// いまの周波数帯[kHz]。0 は未確定
     band_khz: u32,
+    /// `band_pll` を引くキー。帯域 × 垂直周波数(`geometry::band_fv_key`)、垂直周波数が
+    /// 取れなければ帯域だけ。0 は未確定
+    pll_key: u32,
     /// `mon_bands` を引くキー。普段は `band_khz` と同じで、コンポジット/S端子
     /// (YC8)のときだけ `MON_KEY_NTSC` になる。0 は未確定
     mon_key: u32,
@@ -1764,6 +1809,7 @@ impl Session {
             mon_bands: cfg.mon_bands.clone(),
             band_pll: cfg.band_pll.clone(),
             band_khz: 0,
+            pll_key: 0,
             mon_key: 0,
             geo_prof: String::new(),
             band_hold_until: None,
@@ -2357,6 +2403,7 @@ impl Session {
         self.geo_prof = self.geo();
         self.mon_key = 0;
         self.band_khz = 0;
+        self.pll_key = 0;
         // 端子を替えたら信号の判定はやり直し
         if port_changed {
             self.signal.port = Some(port);
@@ -3668,6 +3715,7 @@ impl Session {
         // PLL・位相・VCOレンジは follow_band が帯域ごとに送る。ボードは既定値に
         // 戻っているかもしれないので、帯域を未確定に戻して送り直させる
         self.band_khz = 0;
+        self.pll_key = 0;
         eprintln!("[{:7}] 入力設定を送りました: {} ({}件)",
                   receiver::log_ms(), p.label, wrote.len());
     }
@@ -3837,24 +3885,33 @@ impl Session {
         if self.geo_prof.is_empty() {
             return;
         }
+        let geo = self.geo_prof.clone();
         if self.mon_key > 0 {
-            self.mon_bands.insert((self.geo_prof.clone(), self.mon_key), self.mon);
+            store_with_band(&mut self.mon_bands, &geo, self.mon_key, self.mon);
         }
-        if self.band_khz > 0 {
-            self.band_pll.insert((self.geo_prof.clone(), self.band_khz),
-                                 [self.tune_pll_divide.max(0) as u32, self.tune_phase as u32]);
+        if self.pll_key > 0 {
+            let v = [self.tune_pll_divide.max(0) as u32, self.tune_phase as u32];
+            store_with_band(&mut self.band_pll, &geo, self.pll_key, v);
         }
     }
 
     /// 機種 × 帯域の初期値(ユーザーが一度も合わせていないとき)。
     /// ユーザーの機種ならそのファイルの値、組み込みなら `Profile::presets`
-    fn preset_for(&self, geo: &str, band: u32) -> (Option<[f32; 4]>, Option<[u32; 2]>) {
+    ///
+    /// `key` は帯域、または帯域 × 垂直周波数(`geometry::band_fv_key`)。そのキーの
+    /// 値が無ければ帯域だけの値を返す(管面と PLL は別々に探す)
+    fn preset_for(&self, geo: &str, key: u32) -> (Option<[f32; 4]>, Option<[u32; 2]>) {
+        let band = geometry::key_band(key);
+        let fv = geometry::key_fv(key);
         if let Some(u) = self.user_profiles.iter().find(|u| u.key == geo) {
-            return (u.mon.get(&band).copied(), u.pll.get(&band).copied());
+            return (u.mon.get(&key).or(u.mon.get(&band)).copied(),
+                    u.pll.get(&key).or(u.pll.get(&band)).copied());
         }
-        profiles::by_key(geo)
-            .and_then(|p| p.presets.iter().find(|s| s.band == band))
-            .map_or((None, None), |s| (s.mon, s.pll))
+        let Some(p) = profiles::by_key(geo) else { return (None, None) };
+        let find = |fv: Option<u32>| p.presets.iter().find(|s| s.band == band && s.fv == fv);
+        let (exact, whole) = (fv.and_then(|f| find(Some(f))), find(None));
+        (exact.and_then(|s| s.mon).or(whole.and_then(|s| s.mon)),
+         exact.and_then(|s| s.pll).or(whole.and_then(|s| s.pll)))
     }
 
     fn follow_band(&mut self) {
@@ -3894,36 +3951,47 @@ impl Session {
             self.geo_prof = geo;
             self.mon_key = 0;
             self.band_khz = 0;
+            self.pll_key = 0;
         }
         let geo = self.geo_prof.clone();
+        // ★**帯域 × 垂直周波数で引く。** 同じ 31kHz でも X68000 の 768x512(55Hz)と
+        //   VGA 互換の 640x480(60Hz)は別の管面と PLL が要る。垂直周波数が取れない
+        //   (1フレームの組が無い古いゲートウェア)ときは帯域だけ(geometry::fv_hz)
+        //   fV は帯域を決めた MODE と同じものから取る(receiver の ModeBand::fv)。
+        //   その MODE がまだ確定した帯域のものでなければ(切り替わりの途中)次を待つ
+        let mb = *self.shared.mode_band.lock().unwrap();
+        if mb.band != khz {
+            return;
+        }
+        let key = mb.fv.map_or(khz, |f| geometry::band_fv_key(khz, f));
         // ★コンポジット/S端子は管面を帯域と別に持つ。同じ15kHz帯でも、RGB(MSX・
         //   X68000)の管面はモニタに合わせて回すつまみで、NTSCの窓は規格と
         //   ビデオデッキで決まる。共用すると片方を合わせるともう片方がずれる。
-        let mk = if self.pll_locked_by_format() { MON_KEY_NTSC } else { khz };
+        let mk = if self.pll_locked_by_format() { MON_KEY_NTSC } else { key };
         if mk != self.mon_key {
             if self.mon_key > 0 {
-                self.mon_bands.insert((geo.clone(), self.mon_key), self.mon);
+                store_with_band(&mut self.mon_bands, &geo, self.mon_key, self.mon);
             }
             let default = if mk == MON_KEY_NTSC { MON_NTSC } else { [1.0, 0.0, 1.0, 0.0] };
-            self.mon = self.mon_bands.get(&(geo.clone(), mk)).copied()
+            // 合わせた値(帯域 × fV → 帯域)、無ければ初期値(同じ順)
+            self.mon = lookup_with_band(&self.mon_bands, &geo, mk)
                 .or(self.preset_for(&geo, mk).0)
                 .unwrap_or(default);
             self.mon_key = mk;
             self.mark_settings_dirty();
         }
-        if khz == self.band_khz {
+        if key == self.pll_key {
             return;
         }
-        if self.band_khz > 0 {
-            let old = self.band_khz;
-            self.band_pll.insert((geo.clone(), old), [self.tune_pll_divide.max(0) as u32,
-                                                      self.tune_phase as u32]);
+        if self.pll_key > 0 {
+            let v = [self.tune_pll_divide.max(0) as u32, self.tune_phase as u32];
+            store_with_band(&mut self.band_pll, &geo, self.pll_key, v);
         }
-        // 機種 × 帯域ごとの pll_divide / 位相を復元してボードへ送る。
+        // 機種 × 帯域(× 垂直周波数)ごとの pll_divide / 位相を復元してボードへ送る。
         // pll_divide はモードごとに正解が違い、位相も帯域ごとに最適値が変わるので、
         // 1つだけ持つと帯域を切り替えるたびに合わせ直しになる。
-        let saved = self.band_pll.get(&(geo.clone(), khz)).copied()
-            .or(self.preset_for(&geo, khz).1);
+        let saved = lookup_with_band(&self.band_pll, &geo, key)
+            .or(self.preset_for(&geo, key).1);
         if let Some(v) = saved {
             let pll = (v[0] as i32).clamp(200, 2304);
             if pll != self.tune_pll_divide {
@@ -3940,6 +4008,7 @@ impl Session {
         // モニタに合わせて H幅/V幅を1未満へ詰めていけばよい(帰線の間ビームは
         // 戻っているので、実際のCRTは 0.85〜0.95 あたりが近い)。
         self.band_khz = khz;
+        self.pll_key = key;
         // H-PLLのVCOレンジ/チャージポンプはピクセルクロックとpixels per lineで
         // 決まるので、モードが変わったら計算して送り直す
         // VCOレンジは「報告されたドットクロック」ではなく pll_divide から決める。

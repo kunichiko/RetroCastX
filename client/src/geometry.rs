@@ -13,21 +13,79 @@ use crate::render;
 /// 帯域と別に持つ(NTSC の窓は規格で決まるため)
 pub const MON_KEY_NTSC: u32 = 1000;
 
-/// 15/24/31kHz の帯域番号
+/// 15/24/31/50kHz の帯域番号(マルチスキャンモニタのインジケータと同じ呼び方)
 ///
-/// ★**31kHz 帯は 32.2kHz で切る。** PC-98 のハイレゾ(1120x750、32.84kHz)は
-///   PC-9821 の 31.47kHz と別の管面・PLL が要るが、以前は 40kHz まで 31 にまとめて
-///   いたので同じ機種の中で値を上書きし合った。32.2〜40kHz は丸めた値(33 など)
+/// 40kHz 以上はまとめて 50(PC-H98 のハイレゾ 50kHz など)。同じ帯域の中の別の
+/// モード(31kHz の 55Hz と 60Hz、PC-98 ハイレゾのインターレース 32.84kHz・80Hz)は
+/// 垂直周波数で分ける(`band_fv_key`)。以前は 40kHz 以上を丸めた値にしていたので、
+/// 未接続で漂った fH が `mon.47` のような実在しない帯域を作っていた
 pub fn band_of(fh_khz: f32) -> u32 {
     if fh_khz < 20.0 {
         15
     } else if fh_khz < 28.0 {
         24
-    } else if fh_khz < 32.2 {
+    } else if fh_khz < 40.0 {
         31
     } else {
-        fh_khz.round() as u32
+        50
     }
+}
+
+/// 帯域 × 垂直周波数のキー(管面と PLL を覚える単位)。
+///
+/// ★**帯域だけでは分けられないモードがある。** 同じ 31kHz でも X68000 の
+///   768x512(55.46Hz)と VGA 互換の 640x480(59.94Hz)は別の管面が要るのに、
+///   「機種 × 帯域」の1か所を取り合っていた。垂直周波数を整数 Hz に丸めて足す。
+///
+/// 数の作り: 帯域だけのキーは帯域そのもの(15/24/31/…、`MON_KEY_NTSC`=1000)。
+/// 垂直周波数付きは `帯域 × 1000 + Hz`(31kHz・55Hz なら 31055)。帯域は 15 以上なので
+/// 1000 を超え、帯域だけのキーと重ならない。設定ファイルには `31v55` と書く
+/// (`key_to_str`)。古い Viewer は `31v55` を数として読めずに飛ばすので害は無い
+pub fn band_fv_key(band: u32, fv_hz: u32) -> u32 {
+    band * 1000 + fv_hz.min(999)
+}
+
+/// キーの帯域の部分
+pub fn key_band(k: u32) -> u32 {
+    if k > MON_KEY_NTSC { k / 1000 } else { k }
+}
+
+/// キーの垂直周波数の部分(帯域だけのキーは None)
+pub fn key_fv(k: u32) -> Option<u32> {
+    (k > MON_KEY_NTSC).then_some(k % 1000)
+}
+
+/// 設定ファイル・プロファイルのファイルに書く形(`31` / `31v55`)
+pub fn key_to_str(k: u32) -> String {
+    match key_fv(k) {
+        Some(f) => format!("{}v{f}", key_band(k)),
+        None => k.to_string(),
+    }
+}
+
+pub fn key_from_str(s: &str) -> Option<u32> {
+    match s.split_once('v') {
+        Some((b, f)) => {
+            let (b, f) = (b.parse::<u32>().ok()?, f.parse::<u32>().ok()?);
+            (b > 1 && f < 1000).then(|| band_fv_key(b, f))
+        }
+        None => s.parse().ok(),
+    }
+}
+
+/// MODE の垂直周波数を整数 Hz で。**1フレームの組(caps bit3)が付いているときだけ。**
+///
+/// 組が無い古いゲートウェアの fV は8秒窓で、モードを替えてから最大8秒、前のモードの
+/// 値が残る。それで引くと前のモードの管面を出してしまうので、そのときは帯域だけで引く。
+/// インターレースは VSYNC ごと(フィールド)の値になる(480i は 60、PC-98 ハイレゾは 80)
+pub fn fv_hz(m: &Mode) -> Option<u32> {
+    (m.frame_clocks != 0 && m.sys_clk_hz != 0 && m.vfreq_mhz_x1000 > 0)
+        .then(|| (m.vfreq_mhz_x1000 as f64 / 1000.0).round() as u32)
+}
+
+/// いまの MODE で管面を引くキー(帯域 × 垂直周波数、取れなければ帯域だけ)
+pub fn mode_key_of(band: u32, m: &Mode) -> u32 {
+    fv_hz(m).map_or(band, |f| band_fv_key(band, f))
 }
 
 /// NTSC の1ライン[µs]と1フレームのライン数(管面を時間で決めるとき)
@@ -341,14 +399,32 @@ mod tests {
 mod band_tests {
     use super::band_of;
 
-    /// ハイレゾ(32.84kHz)は 31kHz 帯と分ける。X68000・VGA の 31kHz は 31 のまま
+    /// 帯域は 15/24/31/50 の4つ。PC-98 ハイレゾのインターレース(32.84kHz)は 31 に入り、
+    /// 垂直周波数(80Hz)で 31kHz の他のモードと分ける
     #[test]
-    fn hires_band_is_separate() {
+    fn four_bands() {
         assert_eq!(band_of(31.47), 31);
         assert_eq!(band_of(31.50), 31);
-        assert_eq!(band_of(32.84), 33);
+        assert_eq!(band_of(32.84), 31);
         assert_eq!(band_of(50.0), 50);
+        assert_eq!(band_of(64.0), 50);
         assert_eq!(band_of(24.83), 24);
         assert_eq!(band_of(15.98), 15);
+    }
+
+    #[test]
+    fn band_fv_keys_roundtrip_and_stay_apart_from_bands() {
+        use super::*;
+        let k = band_fv_key(31, 55);
+        assert_eq!((key_band(k), key_fv(k)), (31, Some(55)));
+        assert_eq!(key_to_str(k), "31v55");
+        assert_eq!(key_from_str("31v55"), Some(k));
+        // 帯域だけのキーと NTSC はそのまま
+        for b in [15, 24, 31, 33, 50, MON_KEY_NTSC] {
+            assert_eq!((key_band(b), key_fv(b)), (b, None));
+            assert_eq!(key_from_str(&key_to_str(b)), Some(b));
+        }
+        assert_eq!(key_from_str("31v"), None);
+        assert_eq!(key_from_str("xv55"), None);
     }
 }

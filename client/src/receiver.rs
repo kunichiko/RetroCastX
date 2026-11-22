@@ -601,6 +601,11 @@ pub struct ModeBand {
     /// 1フレームの組の sys クロック数(0 = 付いていない古いゲートウェア)。
     /// 端子を替えた直後に届く、前の信号の MODE を見分けるのに使う(modeswitch.rs)
     pub frame_clocks: u32,
+    /// 同じ MODE の垂直周波数[Hz](`geometry::fv_hz`。組が無ければ None)。
+    /// ★**帯域と同じ MODE から取る。** 管面を引くキー(帯域 × 垂直周波数)を、別々に
+    ///   届いた MODE から組むと、切り替わりの瞬間に新しい帯域と前のモードの fV が
+    ///   組になり、`24v60`(24kHz なのに VGA の 60Hz)のような実在しない組ができた
+    pub fv: Option<u32>,
     /// MODE を受けた通し番号(UI が同じ MODE を2回数えないため)
     pub seq: u64,
 }
@@ -1493,6 +1498,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                     mb.band = band;
                     mb.vactive = m.vactive as u32;
                     mb.frame_clocks = m.frame_clocks;
+                    mb.fv = crate::geometry::fv_hz(&m);
                     mb.seq += 1;
                     // RCX_MODE_LOG=1 のときは1つ残らず出す(切り替えの途中に何が
                     // 届いたかを見るため。毎秒2本ほど出るので普段は出さない)。
