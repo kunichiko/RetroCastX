@@ -535,29 +535,39 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
 /// グリフが無いため豆腐(□)になる。フォントは同梱せず、実行環境のものを使う。
 fn install_cjk_font(ctx: &egui::Context) {
     // 単一フォント(.ttf/.otf)のみ。.ttc はコレクションでab_glyphが扱えない
-    const CANDIDATES: &[&str] = &[
+    // 2つ目は字を下へずらす量(字の大きさに対する比)。
+    // ★**ヒラギノは行間(line gap)が 0.5em あり、egui は後ろに足したフォントを
+    //   行間込みの高さで既定フォントの行に中央寄せするので、日本語が 0.22em 上に浮く**
+    //   (iOS のボタンの字が上に寄っていた)。ベースラインが既定フォントと揃う分だけ下げる:
+    //   Ubuntu-Light 0.932 − (0.88 + (1.149 − 1.5)/2) = 0.228、Hack は 0.216
+    //   (各フォントの hhea の ascent / descent / lineGap、em 比)。
+    //   行間が 0 のフォント(Arial Unicode、Noto Sans CJK)はほぼ揃うので 0 のまま
+    const CANDIDATES: &[(&str, f32)] = &[
         // iOS(41MB あるが、日本語の入った単体フォントがこれしか無い)
-        "/System/Library/Fonts/Core/HiraginoKakuGothic.ttc",
+        ("/System/Library/Fonts/Core/HiraginoKakuGothic.ttc", 0.22),
         // Android(コレクションの0番が日本語)
-        "/system/fonts/NotoSansCJK-Regular.ttc",
+        ("/system/fonts/NotoSansCJK-Regular.ttc", 0.0),
         // macOS
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/Library/Fonts/Arial Unicode.ttf",
+        ("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 0.0),
+        ("/Library/Fonts/Arial Unicode.ttf", 0.0),
         // Linux (Noto/VLGothic)
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttf",
-        "/usr/share/fonts/truetype/vlgothic/VL-Gothic-Regular.ttf",
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0.0),
+        ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttf", 0.0),
+        ("/usr/share/fonts/truetype/vlgothic/VL-Gothic-Regular.ttf", 0.0),
         // Windows
-        "C:/Windows/Fonts/meiryo.ttc",
-        "C:/Windows/Fonts/msgothic.ttc",
-        "C:/Windows/Fonts/YuGothR.ttc",
+        ("C:/Windows/Fonts/meiryo.ttc", 0.0),
+        ("C:/Windows/Fonts/msgothic.ttc", 0.0),
+        ("C:/Windows/Fonts/YuGothR.ttc", 0.0),
     ];
-    for path in CANDIDATES {
+    for &(path, y_offset_factor) in CANDIDATES {
         let Ok(bytes) = std::fs::read(path) else { continue };
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "cjk".to_owned(),
-            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+            std::sync::Arc::new(egui::FontData::from_owned(bytes).tweak(egui::FontTweak {
+                y_offset_factor,
+                ..Default::default()
+            })),
         );
         // 既定フォントの後ろに足す(ASCIIは既定の見た目を保ち、CJKだけ補完)
         for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
