@@ -643,8 +643,22 @@ pub const PROFILES: &[Profile] = &[
         label: "PC-9801",
         input_regs: &[],
         auto_pick: true,
+        // ★**21.0526MHz と 14.318MHz は NEC「PC-9800シリーズ テクニカルデータブック
+        //   HARDWARE 編」(1993)の CRT コネクタの CLOCK 出力。** タイミング表の 1 ライン
+        //   (24.83kHz 40.28µs / 15.98kHz 62.58µs)がそれぞれ 848 / 896 ドットになる。
+        //   14.318MHz が無かったので、15.98kHz(標準ディスプレイの 200 ライン)は
+        //   簡易スキャンの候補が出なかった。15.98kHz は X68000 の 15kHz と同じ値だが、
+        //   自動選択では実機で確かめた X68000 が先に来る(`auto_picks_x68000`)。
+        //
+        //   ハイレゾ(1120x750、32.84kHz)のドットクロックは表に無い。1 ライン 30.45µs・
+        //   表示 23.41µs を 1456 / 1120 ドットと置くと 47.815MHz で、前後のポーチも
+        //   表の µs と揃うので、それを候補に置く(逆算なので水晶の名前は推定)。
+        //   ノンインターレースの 50kHz(PC-H98)は表が無いので入れていない。
+        //   25.175MHz は PC-9821 の 31.47kHz を VGA と同じと見た推定
         oscillators: &[
-            Clock { name: "21.0525MHz", hz: 21.052_5e6, dividers: &[1, 2] },
+            Clock { name: "21.0526MHz", hz: 21.052_6e6, dividers: &[1, 2] },
+            Clock { name: "14.318MHz", hz: 14.318_18e6, dividers: &[1] },
+            Clock { name: "ハイレゾ 47.815MHz(逆算)", hz: 47.815e6, dividers: &[1] },
             Clock { name: "25.175MHz", hz: 25.175e6, dividers: &[1, 2] },
         ],
         htotal_multiple: 1,
@@ -1492,6 +1506,22 @@ mod tests {
     fn geo_key_separates_generic_by_port() {
         assert_eq!(geo_key(Port::Rgb15, "x68000"), "x68000");
         assert_ne!(geo_key(Port::Rgb15, ""), geo_key(Port::Rgb21, ""));
+    }
+
+    /// PC-9801 の各モードで、書く pll_divide がテクニカルデータブックの htotal の整数倍になる
+    /// (1サンプル=1ドットか、その整数倍のオーバーサンプル)
+    #[test]
+    fn pc98_modes_from_the_technical_databook() {
+        let p = by_key("pc98").unwrap();
+        // 24.83kHz(40.28µs): 21.0526MHz で 848
+        let c = best(p, 1e6 / 40.28).expect("24kHz の候補なし");
+        assert_eq!(c.pll_divide % 848, 0, "{} → pll {}", c.label, c.pll_divide);
+        // 15.98kHz(62.58µs): 14.318MHz で 896
+        let c = best(p, 14.318_18e6 / 896.0).expect("15kHz の候補なし");
+        assert_eq!(c.pll_divide % 896, 0, "{} → pll {}", c.label, c.pll_divide);
+        // ハイレゾ 32.84kHz: 1456
+        let c = best(p, 32_840.0).expect("ハイレゾの候補なし");
+        assert_eq!(c.pll_divide % 1456, 0, "{} → pll {}", c.label, c.pll_divide);
     }
 
     /// ラインバッファに入らない値は出さない(1ラインが入り切らないと
