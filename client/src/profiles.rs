@@ -652,7 +652,13 @@ pub const PROFILES: &[Profile] = &[
         verified: false,
         ycbcr: false,
         port: Port::Rgb15,
-        presets: &[],
+        // ★**実機ではなくダミーデバイス(client/devsim)の信号で合わせた値。**
+        //   devsim の PC-98 640x400(21.0525MHz、htotal 848、有効映像は 136 ドット目から
+        //   640 ドット)自体が推定なので、実機で合わせ直したら差し替えること。
+        //   位相 4 は devsim の遅延の模型での最適値で、実機では違う値になる
+        presets: &[
+            Preset { band: 24, mon: Some([0.7700, -0.0370, 0.9500, -0.0100]), pll: Some([848, 4]) },
+        ],
     },
     // --- ここから下は「配線の方式」で決まる映像ソース。選ぶと入力設定を書く ---
     //
