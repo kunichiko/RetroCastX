@@ -81,8 +81,12 @@ if-addrs.workspace = true
 # Android 版は android/ の別パッケージ。NativeActivity が共有ライブラリの
 # android_main を呼ぶので lib が要るが、ここに [lib] を足すとデスクトップの
 # ビルドでも本体を2回コンパイルすることになる。詳しくは android/Cargo.toml
+#
+# devsim はボードの代わりをするダミーデバイス(持っていない機種の信号で Viewer を
+# 試すため)。egui の版を Viewer と揃えるためにここへ置く。`-p retrocastx-devsim`
+# を指定したときだけビルドされる
 [workspace]
-members = ["android"]
+members = ["android", "devsim"]
 
 # 両パッケージで同じ src/ をコンパイルするので、版はここ1か所で持つ
 [workspace.dependencies]

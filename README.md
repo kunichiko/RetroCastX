@@ -37,6 +37,7 @@ gateware/           FPGA側(LiteX / Colorlight i5)※sim検証済み、実機未
 hardware/           ADCフロントエンド基板(Atopile、HAT形式)
 host/python/        PC側リファレンス実装(送信シミュレータ・受信・検証)
 client/             ビューアアプリ(Rust + eframe/egui、Mac/Win/Linux)
+client/devsim/      ダミーデバイス(ボードの代役。持っていない機種の信号で Viewer を試す)
 ```
 
 ## クイックスタート(ハードウェア不要)
