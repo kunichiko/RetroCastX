@@ -18,8 +18,10 @@
 //! bandpll.31 = 1104,12                       ← 帯域ごとの pll_divide, 位相
 //! ```
 //!
-//! 置き場所は設定ファイルの隣の `profiles/`。パネルの「フォルダを開く」で
-//! 開けるので、どこにあるか分からなくなる設定にはしない。
+//! 置き場所は設定ファイルの隣の `profiles/`。ここは**自分用の機種の置き場**で、
+//! パネルの「自分用の機種」で作る・直す・消す。人に渡すファイルはここに置かず、
+//! 保存のダイアログで好きな場所へ書き出す(`write_file`)。もらったファイルは
+//! 開くダイアログで読み込むと、ここへ取り込まれる。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -173,23 +175,118 @@ fn load_dir(dir: &Path) -> Vec<UserProfile> {
     out
 }
 
-/// フォルダへ書き出す。名前が重なれば `-2` `-3` … を付ける。書いたパスを返す
-pub fn export(u: &UserProfile, stem: &str) -> std::io::Result<PathBuf> {
-    export_to(&dir(), u, stem)
+impl UserProfile {
+    /// フォルダの中のファイル名(拡張子なし)。キーから `u:` を外したもの
+    pub fn stem(&self) -> &str {
+        self.key.trim_start_matches(KEY_PREFIX)
+    }
+
+    /// 帯域 × 垂直周波数ごとの値のキー(管面か PLL のどちらかがあるもの)。昇順
+    pub fn mode_keys(&self) -> Vec<u32> {
+        let set: std::collections::BTreeSet<u32> =
+            self.mon.keys().chain(self.pll.keys()).copied().collect();
+        set.into_iter().collect()
+    }
 }
 
-fn export_to(dir: &Path, u: &UserProfile, stem: &str) -> std::io::Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
-    let stem = sanitize(stem);
-    let mut path = dir.join(format!("{stem}.txt"));
-    let mut n = 2;
-    while path.exists() {
-        path = dir.join(format!("{stem}-{n}.txt"));
-        n += 1;
+/// 新しい機種のファイル名。表示名の英数字部分から作り、フォルダの既存と重なれば
+/// `-2` `-3` … を付ける(キー = 設定ファイルの管面の持ち主なので、既存とは別にする)
+pub fn unique_stem(label: &str, existing: &[UserProfile]) -> String {
+    let base = sanitize(label);
+    let base = base.trim_matches('_');
+    let base = if base.is_empty() { "machine" } else { base };
+    let taken = |s: &str| existing.iter().any(|u| u.stem() == s) || dir().join(format!("{s}.txt")).exists();
+    if !taken(base) {
+        return base.to_string();
     }
+    (2..).map(|n| format!("{base}-{n}")).find(|s| !taken(s)).unwrap()
+}
+
+/// 自分用の機種をフォルダへ保存する(同じ機種は上書き)
+pub fn save(u: &UserProfile) -> std::io::Result<PathBuf> {
+    save_in(&dir(), u)
+}
+
+fn save_in(dir: &Path, u: &UserProfile) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(format!("{}.txt", u.stem()));
     std::fs::write(&path, u.format())?;
     Ok(path)
 }
+
+/// 自分用の機種をフォルダから消す
+pub fn delete(u: &UserProfile) -> std::io::Result<()> {
+    std::fs::remove_file(dir().join(format!("{}.txt", u.stem())))
+}
+
+/// 人に渡すファイルとして、好きな場所へ書き出す(フォルダには足さない)
+pub fn write_file(u: &UserProfile, path: &Path) -> std::io::Result<()> {
+    std::fs::write(path, u.format())
+}
+
+/// 人からもらったファイルを読む。キーはファイル名から作る(取り込むときに
+/// `unique_stem` で付け直すかを決める)
+pub fn read_file(path: &Path) -> Option<UserProfile> {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("profile");
+    UserProfile::parse(&std::fs::read_to_string(path).ok()?, stem)
+}
+
+/// 保存のダイアログ。Mac / Windows だけ(rfd)。他は None
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn pick_save_path(default_name: &str) -> Option<PathBuf> {
+    let mut d = rfd::FileDialog::new()
+        .set_title("プロファイルを書き出す")
+        .set_file_name(format!("{default_name}.txt"))
+        .add_filter("RetroCastX プロファイル", &["txt"]);
+    if let Some(docs) = documents_dir() {
+        d = d.set_directory(docs);
+    }
+    d.save_file()
+}
+
+/// 開くダイアログ。Mac / Windows だけ
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn pick_open_path() -> Option<PathBuf> {
+    let mut d = rfd::FileDialog::new()
+        .set_title("プロファイルを読み込む")
+        .add_filter("RetroCastX プロファイル", &["txt"]);
+    if let Some(docs) = documents_dir() {
+        d = d.set_directory(docs);
+    }
+    d.pick_file()
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn documents_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    let d = PathBuf::from(home).join("Documents");
+    d.is_dir().then_some(d)
+}
+
+/// ダイアログの無い環境(Linux)は書類フォルダ(無ければホーム)へ書く。
+/// 同じ名前があれば `-2` … を付ける。iOS / Android はボタンを出さないので呼ばれない
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn pick_save_path(default_name: &str) -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let docs = home.join("Documents");
+    let dir = if docs.is_dir() { docs } else { home };
+    let base = sanitize(default_name);
+    let mut path = dir.join(format!("{base}.txt"));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{base}-{n}.txt"));
+        n += 1;
+    }
+    Some(path)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn pick_open_path() -> Option<PathBuf> {
+    None
+}
+
+/// ダイアログが使えるか(パネルのボタンを出すか)
+pub const HAS_FILE_DIALOG: bool = cfg!(any(target_os = "macos", target_os = "windows"));
 
 /// フォルダを OS のファイル管理で開く。モバイルには無いので false
 pub fn reveal(dir: &Path) -> bool {
@@ -255,19 +352,40 @@ mod tests {
         assert_eq!(u.label, "アーケード 基板=1");
     }
 
-    /// 書き出しは既存のファイルを上書きしない。フォルダから全部読める
+    /// 保存は同じ機種を上書きし、フォルダから読み直せる。消せば一覧から消える
     #[test]
-    fn export_never_overwrites_and_loads_back() {
+    fn save_overwrites_same_machine_and_loads_back() {
         let dir = std::env::temp_dir().join(format!("rcx-userprof-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let u = sample();
-        let a = export_to(&dir, &u, "fm-towns").unwrap();
-        let b = export_to(&dir, &u, "fm-towns").unwrap();
-        assert_ne!(a, b);
+        let mut u = sample();
+        save_in(&dir, &u).unwrap();
+        u.mon.insert(24, [0.8, 0.0, 0.9, 0.0]);
+        save_in(&dir, &u).unwrap();
         let all = load_dir(&dir);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0], u);
+        std::fs::remove_file(dir.join(format!("{}.txt", u.stem()))).unwrap();
+        assert!(load_dir(&dir).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(all.len(), 2);
-        assert_eq!(all[0].label, "FM-TOWNS");
+    }
+
+    /// 書き出したファイルを読み込むと同じ中身になる(人に渡したものがそのまま使える)
+    #[test]
+    fn written_file_reads_back() {
+        let dir = std::env::temp_dir().join(format!("rcx-userprof-file-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let u = sample();
+        let path = dir.join("fm-towns.txt");
+        write_file(&u, &path).unwrap();
+        let r = read_file(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(r, u);
+    }
+
+    #[test]
+    fn mode_keys_are_the_union() {
+        let u = sample();
+        assert_eq!(u.mode_keys(), vec![31, crate::geometry::band_fv_key(31, 70)]);
     }
 
     /// 借りる機種が別の端子のものなら汎用として扱う(15ピンの機種が MSX の

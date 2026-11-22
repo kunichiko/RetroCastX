@@ -54,6 +54,11 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "std", "NSDictionary", "NSString",
 ] }
 
+# プロファイルのファイルの保存・開くダイアログ(src/userprof.rs)。iOS / Android には
+# 無いので、デスクトップの2つだけに入れる(Linux はダイアログの代わりに書類フォルダへ)
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+rfd = { version = "0.18.0", default-features = false }
+
 # iOS: 消音スイッチで黙らないよう AVAudioSession のカテゴリを再生用にする
 # (src/audio.rs)のと、遊んでいる間の自動ロック抑止(src/awake.rs)。
 # 版は cpal が使っているものに揃える
