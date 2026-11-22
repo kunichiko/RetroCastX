@@ -365,12 +365,12 @@ mod tests {
         assert_eq!((l.offset_px, l.count_px, l.flags & 1), (0, 0, 1));
         pk.clear();
         packetize(&per.rows[100], &c, &mut seq, &mut pk);
-        // 白は 232..1000、4画素単位に広げて 232..1000(どちらも4の倍数)
+        // 白は 264..1032、4画素単位に広げて 264..1032(どちらも4の倍数)
         let lines: Vec<_> = pk.iter().map(|b| match proto::parse(b).unwrap() {
             Packet::Line(l) => (l.offset_px, l.count_px, l.flags & 1),
             _ => panic!(),
         }).collect();
-        assert_eq!(lines, vec![(232, 724, 0), (956, 44, 1)]);
+        assert_eq!(lines, vec![(264, 724, 0), (988, 44, 1)]);
         // FIELD_ODD はプログレッシブで毎フレーム反転する
         let per2 = cap.next_period(&s, false, &p, 1, &c, 0);
         assert_ne!(per.rows[0].field_odd, per2.rows[0].field_odd);
@@ -404,7 +404,10 @@ mod tests {
     /// VSYNC 1回にフィールド2枚: 後半は折り返して奇数スロット
     #[test]
     fn x68000_24k_field_pair_folds() {
-        let s = src("x68000", "1024x848 24kHz");
+        // VSOUT をフレーム単位にした X68000 24kHz(931 ライン)。機種の表には無いので作る
+        let mut s = src("x68000", "1024x848 24kHz インターレース");
+        s.timing.scan = crate::machines::Scan::FieldPair;
+        s.timing.vstart = 30;
         let p = pic(&s, Pattern::White);
         let mut cap = Capture::default();
         let per = cap.next_period(&s, false, &p, 1, &cfg(1408), 0);
@@ -416,7 +419,7 @@ mod tests {
 
     #[test]
     fn frame_skip_drops_periods_but_counts_frames() {
-        let s = src("x68000", "256x240 15kHz");
+        let s = src("x68000", "256x256 15kHz");
         let p = pic(&s, Pattern::Black);
         let mut cap = Capture::default();
         let mut c = cfg(1216);
