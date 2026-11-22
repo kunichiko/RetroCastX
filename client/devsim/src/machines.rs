@@ -207,25 +207,44 @@ pub fn machines() -> Vec<Machine> {
             port: Port::Rgb15,
             kind: Kind::Rgb,
             modes: vec![
-                // 31kHz 系。fH 31.50kHz / fV 55.46Hz。CRTC の既定値(R00=$89 …)
-                m("768x512 31kHz", t(X_HI / 2.0, 1104, 112, 232, 768, 568, 6, 40, 512, Progressive),
+                // ★**位置は CRTC の値からの推定。** htotal = (R00+1)×8、HSYNC 幅 = (R01+1)×8、
+                //   表示開始 = (R02+5)×8、vtotal = R04+1、VSYNC 幅 = R05+1、縦の表示開始 = R06
+                //   と読んだ。「+5」で 768x512 / 512x512 / 256x256 の有効映像の割合が揃う
+                //   (同じモニタで同じ大きさに映る)ので採った。CRTC の値も記憶からなので、
+                //   実機で確かめたら直すこと(Viewer の profiles.rs の X68000 の既定も同じ値)
+                //
+                // 31kHz 系。fH 31.50kHz / fV 55.46Hz。R00=$89 R01=$0E R02=$1C R03=$7C
+                // R04=$237 R05=$05 R06=$28 R07=$228
+                m("768x512 31kHz", t(X_HI / 2.0, 1104, 120, 264, 768, 568, 6, 40, 512, Progressive),
                   5, true, "CRTMOD 16。69.552MHz/2、htotal 1104(実機で確認済み)"),
-                m("512x512 31kHz", t(X_HI / 3.0, 736, 72, 152, 512, 568, 6, 40, 512, Progressive),
+                // R00=$5B R01=$09 R02=$11 R03=$51
+                m("512x512 31kHz", t(X_HI / 3.0, 736, 80, 176, 512, 568, 6, 40, 512, Progressive),
                   5, true, "CRTMOD 12 など。69.552MHz/3、htotal 736(実機で確認済み)"),
-                m("256x256 31kHz", rep(t(X_HI / 6.0, 368, 36, 76, 256, 568, 6, 40, 512, Progressive), 2),
+                // R00=$2D R01=$04 R02=$06 R03=$26
+                m("256x256 31kHz", rep(t(X_HI / 6.0, 368, 40, 88, 256, 568, 6, 40, 512, Progressive), 2),
                   5, false, "69.552MHz/6、htotal 368。同じ行を2回走査する"),
                 m("640x480 31kHz (VGA)", t(X_VGA / 2.0, 800, 96, 144, 640, 525, 2, 35, 480, Progressive),
                   5, false, "50.3498MHz/2、htotal 800"),
-                // 24kHz。VSYNC 1回の間にフィールドが2枚入る(design-notes / retrocastx_capture.py)
-                m("1024x848 24kHz", t(X_HI / 2.0, 1408, 128, 296, 1024, 931, 4, 30, 848, FieldPair),
-                  5, true, "69.552MHz/2、htotal 1408、vtotal 931。VSYNC 1回にフィールド2枚"),
-                // 15kHz 系。fH 15.98kHz
-                m("256x240 15kHz", t(X_LO / 8.0, 304, 24, 40, 256, 260, 3, 16, 240, Progressive),
-                  5, false, "38.864MHz/8、htotal 304、vtotal 260(fV 61.46Hz)"),
-                m("512x240 15kHz", t(X_LO / 4.0, 608, 48, 80, 512, 260, 3, 16, 240, Progressive),
-                  5, false, "38.864MHz/4、htotal 608"),
-                m("512x480 15kHz インターレース", t(X_LO / 4.0, 608, 48, 80, 512, 521, 3, 16, 480, Interlace),
-                  5, false, "1フィールド 260.5 ライン。VSYNC はフィールドごと"),
+                // 24kHz。fH 24.70kHz / fV 53.11Hz(1フィールド 465 ライン、2026-11-22 実機の MODE)。
+                // ★**VSYNC はフィールドごとに来る。** Viewer の X68000 は TVP の VSOUT を
+                //   フィールド単位(reg 22h = 0x09)にするので。フレーム単位(0x08)だった頃は
+                //   VSYNC 1回にフィールド2枚(931 ライン、26.5Hz)だった(design-notes)。
+                //   有効映像の位置は実機の画面から読んだ: 横 1ラインの 0.203〜0.926
+                //   (表示開始を 8 ドット刻みに丸めて 288)、縦 33〜457 ライン目
+                m("1024x424 24kHz", t(X_HI / 2.0, 1408, 128, 288, 1024, 465, 4, 33, 424, Progressive),
+                  5, true, "69.552MHz/2、htotal 1408、vtotal 465(fV 53.1Hz)。位置は実機の画面から"),
+                m("1024x848 24kHz インターレース", t(X_HI / 2.0, 1408, 128, 288, 1024, 931, 4, 33, 848, Interlace),
+                  5, false, "1フィールド 465.5 ライン。VSYNC はフィールドごと"),
+                // 15kHz 系。fH 15.98kHz。R00=$25 R01=$01 R02=$00 R03=$20 R04=$103 R05=$02
+                // R06=$10 R07=$100。モード名は X68000 の呼び方(256x256 など縦横同じドット数)。
+                // 260 ラインの中で映るのは R06〜R07 の 240 ラインと読んだので、出すのは 240 ライン
+                m("256x256 15kHz", t(X_LO / 8.0, 304, 16, 40, 256, 260, 3, 16, 240, Progressive),
+                  5, false, "38.864MHz/8、htotal 304、vtotal 260(fV 61.46Hz)。映るのは 240 ライン"),
+                // R00=$4B R01=$03 R02=$05 R03=$45
+                m("512x256 15kHz", t(X_LO / 4.0, 608, 32, 80, 512, 260, 3, 16, 240, Progressive),
+                  5, false, "38.864MHz/4、htotal 608。映るのは 240 ライン"),
+                m("512x512 15kHz インターレース", t(X_LO / 4.0, 608, 32, 80, 512, 521, 3, 16, 480, Interlace),
+                  5, false, "1フィールド 260.5 ライン。VSYNC はフィールドごと。映るのは 480 ライン"),
             ],
         },
         Machine {
@@ -410,8 +429,8 @@ mod tests {
         let x = ms.iter().find(|m| m.key == "x68000").unwrap();
         let fh = |name: &str| x.modes.iter().find(|m| m.name == name).unwrap().timing.fh();
         assert!((fh("768x512 31kHz") - 31_500.0).abs() < 10.0);
-        assert!((fh("1024x848 24kHz") - 24_699.0).abs() < 10.0);
-        assert!((fh("256x240 15kHz") - 15_980.0).abs() < 10.0);
+        assert!((fh("1024x424 24kHz") - 24_699.0).abs() < 10.0);
+        assert!((fh("256x256 15kHz") - 15_980.0).abs() < 10.0);
         let t = &x.modes[0].timing;
         assert!((t.fv() - 55.46).abs() < 0.01, "fV {}", t.fv());
     }

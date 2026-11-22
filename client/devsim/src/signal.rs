@@ -269,7 +269,7 @@ mod tests {
         let l = LineRef { field_line: s.timing.vstart, field: 0, abs_odd: false };
         sample_line(&s, &pic, l, Tvp { pll_divide: 1104, phase: 16 }, 0, &mut seed, &mut out);
         let lit: Vec<usize> = (0..1104).filter(|&i| out[i][0] > 128).collect();
-        assert_eq!(*lit.first().unwrap(), 232);
+        assert_eq!(*lit.first().unwrap(), 264);
         assert_eq!(lit.len(), 768);
         let l = LineRef { field_line: 0, field: 0, abs_odd: false };
         sample_line(&s, &pic, l, Tvp { pll_divide: 1104, phase: 16 }, 0, &mut seed, &mut out);
