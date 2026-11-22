@@ -87,7 +87,24 @@ pub struct Info {
     pub mode: Option<String>,
     /// 2行目以降
     pub lines: Vec<String>,
+    /// デインターレースの行ごとの内訳。管面の左に色の帯で出す(調査用)
+    pub deint: Option<DeintRows>,
 }
+
+/// デインターレースの行ごとの内訳(assembler の `deinterlace` の `rows_out`)。
+pub struct DeintRows {
+    /// バッファの行ごと。`DEINT_ROW_FRESH` は今届いた行、それ以外は補間の度合い
+    pub rows: Vec<u8>,
+    /// 1ラインが占めるバッファの行数(縦の目盛りはライン単位)
+    pub k: f32,
+}
+
+/// 内訳の帯の幅[point]と、管面の辺からの隙間
+const DEINT_BAR: f32 = 6.0;
+const DEINT_GAP: f32 = 2.0;
+/// 織り込みのままの行 / 補間した行の色
+const DEINT_WEAVE: Color32 = Color32::from_rgb(0x2A, 0x4C, 0x80);
+const DEINT_BOB: Color32 = Color32::from_rgb(0xFF, 0x8C, 0x1A);
 
 const GROUND_HATCH: Color32 = Color32::from_rgb(0x0C, 0x10, 0x12);
 const GROUND_RULER: Color32 = Color32::from_rgb(0x10, 0x14, 0x16);
@@ -167,6 +184,9 @@ pub fn paint(
             for b in bars.iter().filter(|b| b.is_positive()) {
                 paint_grid(&painter.with_clip_rect(*b), area, *b);
             }
+            if let (Some(t), Some(d), Some(di)) = (tube, info.ruler, info.deint.as_ref()) {
+                paint_deint(&painter.with_clip_rect(bars[2]), t, d[1], di);
+            }
             if let (Some(t), Some(d)) = (tube, info.ruler) {
                 paint_ticks(painter, &bars, t, d);
                 paint_corners(painter, t);
@@ -207,6 +227,42 @@ fn paint_grid(p: &egui::Painter, area: Rect, b: Rect) {
         }
         y += GRID_STEP;
     }
+}
+
+/// 管面の左辺に沿って、行ごとに織り込みか補間かを色で出す。
+///
+/// 残っている行(今のフィールドで来なかった行)だけを、下の今届いた行の分まで
+/// 2行ぶんの高さで塗る。今届いた行はそのまま出ているので塗らない(塗ると
+/// 1行おきの縞になって読めない)。
+fn paint_deint(p: &egui::Painter, t: Rect, axis: Axis, d: &DeintRows) {
+    let span = axis.b - axis.a;
+    if span.abs() < 1e-6 || d.k <= 0.0 {
+        return;
+    }
+    let x1 = t.min.x - DEINT_GAP;
+    let x0 = x1 - DEINT_BAR;
+    // バッファの行 y の上端の、管面の上下での位置
+    let at = |y: f32| t.min.y + (y / d.k - axis.a) / span * t.height();
+    for (y, &v) in d.rows.iter().enumerate() {
+        if v == crate::assembler::DEINT_ROW_FRESH {
+            continue;
+        }
+        let f = v as f32 / crate::assembler::DEINT_ROW_MAX as f32;
+        let col = lerp_color(DEINT_WEAVE, DEINT_BOB, f);
+        let (a, b) = (at(y as f32), at(y as f32 + 2.0));
+        let (y0, y1) = (a.min(b), a.max(b));
+        if y1 < t.min.y || y0 > t.max.y {
+            continue;
+        }
+        p.rect_filled(Rect::from_min_max(Pos2::new(x0, y0.max(t.min.y)),
+                                         Pos2::new(x1, y1.min(t.max.y))), 0.0, col);
+    }
+}
+
+fn lerp_color(a: Color32, b: Color32, f: f32) -> Color32 {
+    let f = f.clamp(0.0, 1.0);
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * f).round() as u8;
+    Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
 }
 
 /// 管面の辺に沿った目盛り。帯がある辺にだけ打つ(帯が無ければ外に出しようがない)。

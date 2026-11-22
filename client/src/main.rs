@@ -1379,6 +1379,8 @@ struct Session {
     frame_size: (u32, u32),
     render_state: Option<eframe::egui_wgpu::RenderState>,
     seen_gen: u64,
+    /// 最後に拾ったフレームのデインターレースの行ごとの内訳(調査表示のときだけ)
+    deint_rows: Option<Vec<u8>>,
     /// 低遅延全画面で vsync を使うか(設定に保存)
     fs_vsync: bool,
     /// 低遅延全画面で、1フレームを何本の帯に分けて出すか(0 = 分けない。設定に保存)
@@ -1631,6 +1633,7 @@ impl Session {
             frame_size: (0, 0),
             render_state,
             seen_gen: 0,
+            deint_rows: None,
             fs_vsync: cfg.fullscreen_vsync,
             fs_slices: cfg.fullscreen_slices,
             want_lowlat_fs: false,
@@ -1741,6 +1744,7 @@ impl Session {
             let Some(frame) = guard.as_ref() else { return };
             self.frame_size = (frame.width as u32, frame.height as u32);
             self.mode_switch.on_frame(frame.lines, picked);
+            self.deint_rows = frame.deint_rows.clone();
             // ★ウィンドウ表示は eframe が present するので、測れるのは拾うまで。
             //   この先にコンポジタと液晶の遅延が乗る(パネルにそう書く)
             if let Some(st) = frame.stamps.as_ref() {
@@ -1756,6 +1760,7 @@ impl Session {
             if let Some(frame) = guard.as_ref() {
                 self.frame_size = (frame.width as u32, frame.height as u32);
                 self.mode_switch.on_frame(frame.lines, picked);
+                self.deint_rows = frame.deint_rows.clone();
             }
         }
         let _ = ctx;
@@ -1795,7 +1800,7 @@ impl Session {
                     m.hfreq_mhz_x1000 as f32 / 1.0e6, m.vfreq_mhz_x1000 as f32 / 1.0e3)
         });
         if !has_video || mode.is_none() {
-            return letterbox::Info { ruler: None, mode: None, lines: vec![win] };
+            return letterbox::Info { ruler: None, mode: None, lines: vec![win], deint: None };
         }
         let range = render::shown_range(&self.render_params(),
                                         self.frame_size.0, self.frame_size.1);
@@ -1812,15 +1817,20 @@ impl Session {
         // 画面上の横・縦に並ぶ画素数(回転済み)
         let d = egui::vec2((ends[0].1 - ends[0].0).abs(), (ends[1].1 - ends[1].0).abs());
         let px = tube.size() * ppp;
-        letterbox::Info {
-            ruler: Some(ruler),
-            mode,
-            lines: vec![
-                format!("管面 {:.0}×{:.0} → {:.0}×{:.0}px", d.x, d.y, px.x, px.y),
-                format!("倍率 横 {:.2}  縦 {:.2}", px.x / d.x.max(1.0), px.y / d.y.max(1.0)),
-                win,
-            ],
+        let mut lines = vec![
+            format!("管面 {:.0}×{:.0} → {:.0}×{:.0}px", d.x, d.y, px.x, px.y),
+            format!("倍率 横 {:.2}  縦 {:.2}", px.x / d.x.max(1.0), px.y / d.y.max(1.0)),
+            win,
+        ];
+        // デインターレースの内訳。縦の目盛りが行に沿っているとき(回転なし・180°)だけ
+        let deint = self.deint_rows.clone()
+            .filter(|r| self.show_advanced && self.rotate % 2 == 0
+                    && r.len() == self.frame_size.1 as usize)
+            .map(|rows| letterbox::DeintRows { rows, k });
+        if deint.is_some() {
+            lines.push(format!("左の帯: 青=織り込み 橙=補間({})", self.deint_mode.label()));
         }
+        letterbox::Info { ruler: Some(ruler), mode, lines, deint }
     }
 
     /// 管面(GPUで描く映像)を指定した矩形へ描く。
@@ -6362,6 +6372,11 @@ impl Session {
         );
         self.shared.comb3d.store(self.ntsc_comb3d, std::sync::atomic::Ordering::Relaxed);
         self.shared.deint.store(self.deint_mode.to_u8(), std::sync::atomic::Ordering::Relaxed);
+        // 調査用の表示を出していて計測帯があるときだけ、行ごとの内訳を作らせる
+        self.shared.deint_debug.store(
+            self.show_advanced && self.letterbox == letterbox::Style::Ruler,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         // コンポーネントなら RGB888 の3チャンネルを Pr/Y/Pb として RGB に直させる
         self.shared.ycbcr.store(
             self.regs_profile().is_some_and(|p| p.ycbcr),

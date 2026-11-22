@@ -42,6 +42,8 @@ pub struct Job {
     pub field_view: u8,
     /// インターレースの出し方(assembler の deint)
     pub deint: Deint,
+    /// 行ごとの内訳を出すか(assembler の deint_debug)
+    pub deint_debug: bool,
     pub frame_idx: u16,
     pub fill_ratio: f32,
     /// 公開用バッファ(組立側が UI から戻してもらったもの)
@@ -142,8 +144,11 @@ fn run(fb: &mut Vec<u8>, deint_hist: &mut DeintHist, mut job: Job) -> Done {
         out = vec![0u8; need];
     }
     out.copy_from_slice(fb);
+    let mut deint_rows = None;
     if job.interlaced && job.field_view == 0 {
-        deinterlace(&mut out, fb, deint_hist, &job.seen, w, h, job.deint);
+        let mut rows = job.deint_debug.then(|| vec![0u8; h]);
+        deinterlace(&mut out, fb, deint_hist, &job.seen, w, h, job.deint, rows.as_deref_mut());
+        deint_rows = rows;
     }
     Done {
         frame: CompletedFrame {
@@ -154,6 +159,7 @@ fn run(fb: &mut Vec<u8>, deint_hist: &mut DeintHist, mut job: Job) -> Done {
             fill_ratio: job.fill_ratio,
             stamps: None,
             lines: 0,
+            deint_rows,
         },
         info,
         unfilled_rows,

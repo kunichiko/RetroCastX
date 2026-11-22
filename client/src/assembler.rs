@@ -16,6 +16,8 @@ pub struct CompletedFrame {
     /// このフレームで届いた最大のライン番号 + 1(受信側が埋める)。
     /// モードの切り替わりを MODE より早く知るのに使う(modeswitch.rs)
     pub lines: u32,
+    /// デインターレースの行ごとの内訳(`DeintRows`)。調査表示を出しているときだけ
+    pub deint_rows: Option<Vec<u8>>,
 }
 
 /// フレームの途中で切り出した行の帯(届いたラインから順に描く用)。
@@ -157,6 +159,8 @@ pub struct FrameAssembler {
     pub deint: Deint,
     /// deinterlace が比べる過去の fb
     deint_hist: DeintHist,
+    /// 行ごとの内訳を出すか(調査表示。計測帯の色分けに使う)
+    pub deint_debug: bool,
     /// 公開用バッファの使い回し先。UIが使い終わったものを recycle() で戻す。
     /// 毎フレームの確保をなくすためだけのもので、中身に意味は無い。
     spare: Option<Vec<u8>>,
@@ -232,6 +236,7 @@ impl FrameAssembler {
             field_view: 0,
             deint: Deint::default(),
             deint_hist: DeintHist::default(),
+            deint_debug: false,
             adjust: ntsc::Adjust::default(),
         }
     }
@@ -735,7 +740,7 @@ impl FrameAssembler {
         let woven = self.mode.as_ref().map_or(false, |m| m.mflags & 0x0001 != 0);
         if (woven || self.interlace_measured) && self.field_view == 0 {
             deinterlace_rows(&mut rgba, self.slice_next..y1, &self.fb, &self.deint_hist,
-                             &self.line_seen, self.width, self.height, self.deint);
+                             &self.line_seen, self.width, self.height, self.deint, None);
         }
         self.slice_out = Some(Slice {
             frame_idx,
@@ -843,9 +848,12 @@ impl FrameAssembler {
         };
         out.copy_from_slice(&self.fb);
         // 届いた行の印は deinterlace が使うので、消すのはその後
+        let mut deint_rows = None;
         if interlaced && self.field_view == 0 {
+            let mut rows = self.deint_debug.then(|| vec![0u8; h]);
             deinterlace(&mut out, &self.fb, &mut self.deint_hist, &self.line_seen, w, h,
-                        self.deint);
+                        self.deint, rows.as_deref_mut());
+            deint_rows = rows;
         }
         for s in self.line_seen.iter_mut() {
             *s = false;
@@ -858,6 +866,7 @@ impl FrameAssembler {
             fill_ratio,
             stamps: None,
             lines: 0,
+            deint_rows,
         })
     }
 
@@ -951,6 +960,7 @@ impl FrameAssembler {
         job.decay = p.decay;
         job.field_view = self.field_view;
         job.deint = self.deint;
+        job.deint_debug = self.deint_debug;
         job.frame_idx = p.frame_idx;
         job.fill_ratio = p.fill_ratio;
         job.out = self.spare.take().unwrap_or_default();
@@ -1161,6 +1171,8 @@ const DEINT_CORE: i32 = 6;
 /// 閉じたときも残っていた行なので p2 のその行が3フィールド前の値になる。
 /// 動きは横に1画素ずつ広げて見る。動く物の輪郭のすぐ外側(差は小さいが
 /// 縞は出る)も拾うため。
+///
+/// `rows_out` を渡すと、行ごとの内訳(`DeintRows`)を書く。
 pub(crate) fn deinterlace(
     out: &mut [u8],
     fb: &[u8],
@@ -1169,11 +1181,27 @@ pub(crate) fn deinterlace(
     w: usize,
     h: usize,
     mode: Deint,
+    rows_out: Option<&mut [u8]>,
 ) {
-    deinterlace_rows(out, 0..h, fb, hist, seen, w, h, mode);
+    deinterlace_rows(out, 0..h, fb, hist, seen, w, h, mode, rows_out);
     // 織り込みでも履歴は進める(切り替えた直後に古い絵と比べないように)
     hist.advance(fb);
 }
+
+/// 行ごとの内訳(`deinterlace` の `rows_out`)。計測帯の色分けに使う。
+///
+/// 今届いた行は `DEINT_ROW_FRESH`。残っている行は、補間で**織り込みの値から
+/// `DEINT_ROW_VISIBLE` 以上動いた画素**の数を `DEINT_ROW_GAIN` 倍して
+/// `DEINT_ROW_MAX` で頭打ちにした値(0 = 織り込みのまま)。
+/// ★**動きの判定が開いた画素を数えない。** コンポーネントの静止画でも、ノイズで
+///   閾値をわずかに超える画素が1行(2048サンプル)に何十もあり、ほぼ全行が
+///   「補間」に見えた。そこでの補間幅はノイズ程度で絵は変わらない。
+/// ★**割合ではなく数で見る。** 横に飛ぶ弾は1行の数%しかなく、割合では見えない。
+///   32画素(弾1つ分ほど)で頭打ちにする。
+pub(crate) const DEINT_ROW_FRESH: u8 = u8::MAX;
+pub(crate) const DEINT_ROW_MAX: u8 = 254;
+const DEINT_ROW_GAIN: usize = 8;
+const DEINT_ROW_VISIBLE: i32 = 16;
 
 /// `deinterlace` の本体。`rows` の行だけを処理し、`out` はその行の範囲の絵
 /// (`rows.start` 行目から)。履歴は進めない。
@@ -1189,7 +1217,15 @@ pub(crate) fn deinterlace_rows(
     w: usize,
     h: usize,
     mode: Deint,
+    mut rows_out: Option<&mut [u8]>,
 ) {
+    if let Some(r) = rows_out.as_deref_mut() {
+        for y in rows.clone() {
+            if let Some(v) = r.get_mut(y) {
+                *v = if seen.get(y).copied().unwrap_or(false) { DEINT_ROW_FRESH } else { 0 };
+            }
+        }
+    }
     let fresh = hist.p1.len() == fb.len();
     let have_p2 = fresh && hist.p2.len() == fb.len();
     let y0 = rows.start;
@@ -1233,11 +1269,14 @@ pub(crate) fn deinterlace_rows(
                 }
             }
             let (mut left, mut here) = (0u8, m[0]);
+            // 補間で目に見えて変わった画素の数(内訳用)
+            let mut changed = 0usize;
             for x in 0..w {
                 let right = if x + 1 < w { m[x + 1] } else { 0 };
                 let mx = left.max(here).max(right) as i32;
                 left = here;
                 here = right;
+                let mut moved = 0i32;
                 let o = (s * w + x) * 4;
                 let oo = ((s - y0) * w + x) * 4;
                 for c in 0..3 {
@@ -1249,7 +1288,7 @@ pub(crate) fn deinterlace_rows(
                         (None, None) => unreachable!(),
                     };
                     let cur = fb[o + c] as i32;
-                    out[oo + c] = match mode {
+                    let v = match mode {
                         Deint::Simple => {
                             if mx <= DEINT_MOTION_LO {
                                 continue;
@@ -1264,8 +1303,14 @@ pub(crate) fn deinterlace_rows(
                             bob.clamp(cur - d, cur + d)
                         }
                         _ => bob,
-                    } as u8;
+                    };
+                    out[oo + c] = v as u8;
+                    moved = moved.max((v - cur).abs());
                 }
+                changed += (moved >= DEINT_ROW_VISIBLE) as usize;
+            }
+            if let Some(v) = rows_out.as_deref_mut().and_then(|r| r.get_mut(s)) {
+                *v = (changed * DEINT_ROW_GAIN).min(DEINT_ROW_MAX as usize) as u8;
             }
         }
     }
@@ -1310,6 +1355,8 @@ mod tests {
         let mode = Mode { hactive: w, htotal: w + 2, vactive: 40, vtotal: 42, ..test_mode() };
         let mut asm = FrameAssembler::new();
         asm.deint = deint;
+        // 内訳も作らせる(絵は変えない)
+        asm.deint_debug = true;
         let mut seq = 0u16;
         asm.feed(&pack_mode(&mode, 0, seq));
         let mut out = Vec::new();
@@ -1338,6 +1385,45 @@ mod tests {
     fn moving_dot(deint: Deint, speed: u16) -> CompletedFrame {
         let px = move |f: u16, _slot: u16, x: u16| if x == f * speed { 255 } else { 64 };
         run_interlaced(deint, 40, 13, px).into_iter().last().unwrap()
+    }
+
+    /// 調査表示の行ごとの内訳: 今届いた行は FRESH、残っている行は動いている所
+    /// だけ補間の度合いが立つ。Bob は全部、織り込みは全部 0。
+    #[test]
+    fn deinterlace_reports_rows() {
+        // 点はスロット 10..20 の帯にだけある
+        let px = |f: u16, slot: u16, x: u16| {
+            if (10..20).contains(&slot) && x == f * 2 { 255 } else { 64 }
+        };
+        let rows_of = |d: Deint| run_interlaced(d, 40, 13, px)
+            .into_iter().last().unwrap().deint_rows.expect("内訳が付いていない");
+        let r = rows_of(Deint::Adaptive);
+        assert_eq!(r.len(), 40);
+        // フィールド 12(極性0)を閉じた絵なので、偶数が今届いた行
+        for y in (0..40).step_by(2) {
+            assert_eq!(r[y], DEINT_ROW_FRESH, "行 {y}");
+        }
+        for y in (1..40).step_by(2) {
+            if (11..19).contains(&y) {
+                assert!(r[y] > 0, "行 {y}: 動いているのに織り込みのまま");
+            } else if !(9..=19).contains(&y) {
+                assert_eq!(r[y], 0, "行 {y}: 止まっているのに補間した");
+            }
+        }
+        // Bob も、点の行(上下の行と値が違う所)だけを変えたと出る
+        let bob = rows_of(Deint::Bob);
+        assert!(bob[13] > 0 && bob[31] == 0, "{bob:?}");
+        // 止まっている地にノイズ程度の揺れがあっても織り込みのまま(実機で、
+        // 静止画なのにほぼ全行が補間と出た)
+        let noisy = |f: u16, slot: u16, x: u16| {
+            let n = ((f as u32 * 7 + slot as u32 * 13 + x as u32 * 5) % 3) as u8 * 8;
+            64 + n
+        };
+        let r = run_interlaced(Deint::Adaptive, 40, 13, noisy)
+            .into_iter().last().unwrap().deint_rows.unwrap();
+        assert!((1..39).step_by(2).all(|y| r[y] == 0), "{r:?}");
+        let weave = rows_of(Deint::Weave);
+        assert!((1..40).step_by(2).all(|y| weave[y] == 0), "{weave:?}");
     }
 
     /// 横に動く点は、残っている行(1フィールド前)で位置が食い違って縞になる。
