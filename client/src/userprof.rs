@@ -180,13 +180,6 @@ impl UserProfile {
     pub fn stem(&self) -> &str {
         self.key.trim_start_matches(KEY_PREFIX)
     }
-
-    /// 帯域 × 垂直周波数ごとの値のキー(管面か PLL のどちらかがあるもの)。昇順
-    pub fn mode_keys(&self) -> Vec<u32> {
-        let set: std::collections::BTreeSet<u32> =
-            self.mon.keys().chain(self.pll.keys()).copied().collect();
-        set.into_iter().collect()
-    }
 }
 
 /// 新しい機種のファイル名。表示名の英数字部分から作り、フォルダの既存と重なれば
@@ -380,12 +373,6 @@ mod tests {
         let r = read_file(&path).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(r, u);
-    }
-
-    #[test]
-    fn mode_keys_are_the_union() {
-        let u = sample();
-        assert_eq!(u.mode_keys(), vec![31, crate::geometry::band_fv_key(31, 70)]);
     }
 
     /// 借りる機種が別の端子のものなら汎用として扱う(15ピンの機種が MSX の
