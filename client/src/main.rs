@@ -1210,6 +1210,19 @@ impl Sig {
     }
 }
 
+/// 自分用の機種の欄(`profile_files_ui`)の状態
+#[derive(Default)]
+struct ProfUi {
+    /// 新しい機種の名前の入力中(欄を開いているとき Some)
+    new_name: Option<String>,
+    /// 機種の削除の確認中
+    confirm_delete: bool,
+    /// 取り込もうとして、同じ名前の機種があったもの
+    import_pending: Option<userprof::UserProfile>,
+    /// 編集をファイルへ書く予定(最後に変えた時刻)
+    save_due: Option<std::time::Instant>,
+}
+
 /// `watch_signal` の状態
 #[derive(Default)]
 struct SignalWatch {
@@ -1420,6 +1433,8 @@ struct Session {
     input_owner: Option<[u8; 6]>,
     /// `userprof` のフォルダから読んだ機種
     user_profiles: Vec<userprof::UserProfile>,
+    /// 自分用の機種の欄の状態
+    prof_ui: ProfUi,
     /// いまの端子に信号が来ているかの判定(`watch_signal`)
     signal: SignalWatch,
     tune_phase: u8,
@@ -1735,6 +1750,7 @@ impl Session {
             board_inputs: cfg.board_inputs.clone(),
             input_owner: None,
             user_profiles: userprof::load_all(),
+            prof_ui: ProfUi::default(),
             signal: SignalWatch::default(),
             tune_pending: Default::default(),
             tune_get_at: None,
@@ -2626,79 +2642,412 @@ impl Session {
         !self.input_port.uses_tvp()
     }
 
-    /// プロファイルのファイル(書き出し・フォルダ・読み直し)。
+    /// 自分用の機種と、人に渡すファイル。
     ///
-    /// 買った人が合わせた値を作者へ送る、有志の作ったファイルを読み込む、の入口
+    /// ★**2つの用途を分ける。** 以前は「書き出す」がプロファイルのフォルダへ
+    ///   書いていたので、人に渡すつもりで書き出すたびに機種一覧が増えた。
+    ///   - 人に渡す: 保存・開くのダイアログで好きな場所と行き来する。一覧は増えない
+    ///   - 自分用の機種: ここで作る・直す・消す。フォルダはこの機種の置き場
     fn profile_files_ui(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("プロファイルのファイル")
+        egui::CollapsingHeader::new("自分用の機種と書き出し")
             .id_salt("profile_files")
             .show(ui, |ui| {
-                ui.label(egui::RichText::new(
-                    "いまの機種で合わせた管面と PLL を書き出せます。作者へ送ってもらえれば、\
-                     次の版で正式に採用できます。人からもらったファイルはフォルダに置いて\
-                     「読み直す」と、端子の機種一覧に ★ 付きで出ます。")
-                    .size(11.0));
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("いまの調整を書き出す").clicked() {
-                        self.export_profile();
-                    }
-                    if !MOBILE && ui.button("フォルダを開く").clicked()
-                        && !userprof::reveal(&userprof::dir())
+                    if !MOBILE && ui.button("ファイルに書き出す…").on_hover_text(
+                        "いまの機種で合わせた管面と PLL を1つのファイルにして、好きな場所へ\n\
+                         保存します(人に渡す・作者へ送る用)。機種一覧には足しません").clicked()
                     {
-                        self.toasts.notice("フォルダを開けませんでした");
+                        self.export_profile_file();
                     }
-                    if ui.button("読み直す").clicked() {
-                        self.user_profiles = userprof::load_all();
-                        self.toasts.info(format!("プロファイルを {} 件読みました",
-                                                 self.user_profiles.len()));
+                    if userprof::HAS_FILE_DIALOG && ui.button("ファイルから読み込む…").on_hover_text(
+                        "人からもらったファイルを、自分用の機種として取り込みます").clicked()
+                    {
+                        self.import_profile_file();
                     }
                 });
-                ui.weak(egui::RichText::new(userprof::dir().display().to_string()).size(10.0));
+                self.import_pending_ui(ui);
+                ui.separator();
+                if self.current_user_machine().is_some() {
+                    self.user_machine_editor(ui);
+                    ui.separator();
+                }
+                self.new_machine_ui(ui);
+                if !MOBILE {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.weak(egui::RichText::new(format!(
+                            "自分用の機種の置き場: {}", userprof::dir().display())).size(10.0));
+                        if ui.small_button("フォルダを開く").clicked()
+                            && !userprof::reveal(&userprof::dir())
+                        {
+                            self.toasts.notice("フォルダを開けませんでした");
+                        }
+                    });
+                }
             });
+        self.flush_user_profile_edits();
     }
 
-    /// いまの機種の、合わせ終えた全帯域の値をファイルへ書き出す
-    fn export_profile(&mut self) {
+    /// モードのキーの表示名(31kHz・55Hz / 31kHz(帯域全体)/ NTSC)
+    fn mode_key_label(k: u32) -> String {
+        if k == MON_KEY_NTSC {
+            return "NTSC".into();
+        }
+        match geometry::key_fv(k) {
+            Some(f) => format!("{}kHz・{f}Hz", geometry::key_band(k)),
+            None => format!("{k}kHz(帯域全体)"),
+        }
+    }
+
+    /// いまの機種で合わせた値(しまってから集める)
+    fn current_profile_values(&mut self)
+        -> (std::collections::BTreeMap<u32, [f32; 4]>, std::collections::BTreeMap<u32, [u32; 2]>) {
         self.stash_geometry();
         let geo = self.geo();
-        let user = self.user_profiles.iter().find(|u| u.key == self.source_profile).cloned();
-        let mut u = userprof::UserProfile {
+        let mon = self.mon_bands.iter().filter(|((g, _), _)| *g == geo)
+            .map(|((_, k), v)| (*k, *v)).collect();
+        let pll = self.band_pll.iter().filter(|((g, _), _)| *g == geo)
+            .map(|((_, k), v)| (*k, *v)).collect();
+        (mon, pll)
+    }
+
+    /// いま選んでいる自分用の機種(組み込みなら None)
+    fn current_user_machine(&self) -> Option<userprof::UserProfile> {
+        self.user_profiles.iter().find(|u| u.key == self.source_profile).cloned()
+    }
+
+    /// 書き出す内容。自分用の機種ならファイルの値に、合わせた値を重ねる
+    fn profile_for_export(&mut self) -> userprof::UserProfile {
+        let (mon, pll) = self.current_profile_values();
+        let mut u = self.current_user_machine().unwrap_or_else(|| userprof::UserProfile {
             key: String::new(),
-            label: match &user {
-                Some(u) => u.label.clone(),
-                None => format!("{} (調整)", self.profile_label(&self.source_profile)),
-            },
+            label: format!("{} (調整)", self.profile_label(&self.source_profile)),
             port: self.input_port,
-            base: match &user {
-                Some(u) => u.base.clone(),
-                None => self.source_profile.clone(),
-            },
-            author: user.as_ref().map(|u| u.author.clone()).unwrap_or_default(),
-            note: user.as_ref().map(|u| u.note.clone()).unwrap_or_default(),
+            base: self.source_profile.clone(),
+            author: String::new(),
+            note: String::new(),
             mon: Default::default(),
             pll: Default::default(),
-        };
-        for ((g, b), m) in &self.mon_bands {
-            if *g == geo {
-                u.mon.insert(*b, *m);
-            }
-        }
-        for ((g, b), p) in &self.band_pll {
-            if *g == geo {
-                u.pll.insert(*b, *p);
-            }
-        }
+        });
+        u.mon.extend(mon);
+        u.pll.extend(pll);
+        u
+    }
+
+    /// 人に渡すファイルとして書き出す(保存のダイアログ)
+    fn export_profile_file(&mut self) {
+        let u = self.profile_for_export();
         if u.mon.is_empty() && u.pll.is_empty() {
             self.toasts.notice("この機種はまだ一度も合わせていないので、書き出す値がありません");
             return;
         }
-        let stem = geo.trim_start_matches(userprof::KEY_PREFIX).to_string();
-        match userprof::export(&u, &stem) {
-            Ok(path) => {
-                self.user_profiles = userprof::load_all();
-                self.toasts.info(format!("書き出しました: {}", path.display()));
-            }
+        let Some(path) = userprof::pick_save_path(&u.label) else { return };
+        match userprof::write_file(&u, &path) {
+            Ok(()) => self.toasts.info(format!("書き出しました: {}", path.display())),
             Err(e) => self.toasts.notice(format!("書き出せませんでした: {e}")),
+        }
+    }
+
+    /// もらったファイルを自分用の機種として取り込む(開くダイアログ)
+    fn import_profile_file(&mut self) {
+        let Some(path) = userprof::pick_open_path() else { return };
+        let Some(u) = userprof::read_file(&path) else {
+            self.toasts.notice("RetroCastX のプロファイルとして読めませんでした(port の行がありません)");
+            return;
+        };
+        if self.user_profiles.iter().any(|x| x.key == u.key) {
+            // 同じ名前の機種がある。上書きか別名かを聞く(import_pending_ui)
+            self.prof_ui.import_pending = Some(u);
+            return;
+        }
+        self.store_imported(u);
+    }
+
+    fn store_imported(&mut self, u: userprof::UserProfile) {
+        // 取り込んだ値が効くよう、同じ機種で前に合わせた値は捨てる(上書きのとき)
+        self.forget_geometry_of(&u.key);
+        match userprof::save(&u) {
+            Ok(_) => {
+                self.user_profiles = userprof::load_all();
+                self.toasts.info(format!("{} を取り込みました。入力{} の機種一覧に ★ 付きで出ます",
+                                         u.label, u.port.number()));
+            }
+            Err(e) => self.toasts.notice(format!("取り込めませんでした: {e}")),
+        }
+    }
+
+    /// 取り込みで名前が重なったときの確認
+    fn import_pending_ui(&mut self, ui: &mut egui::Ui) {
+        let Some(u) = self.prof_ui.import_pending.clone() else { return };
+        ui.label(format!("「{}」と同じ名前の自分用の機種があります。", u.label));
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("上書きする").clicked() {
+                self.prof_ui.import_pending = None;
+                self.store_imported(u.clone());
+            }
+            if ui.button("別の名前で取り込む").clicked() {
+                self.prof_ui.import_pending = None;
+                let stem = userprof::unique_stem(u.stem(), &self.user_profiles);
+                let mut v = u.clone();
+                v.key = format!("{}{stem}", userprof::KEY_PREFIX);
+                v.label = format!("{} ({stem})", u.label);
+                self.store_imported(v);
+            }
+            if ui.button("やめる").clicked() {
+                self.prof_ui.import_pending = None;
+            }
+        });
+    }
+
+    /// 機種の管面と PLL の覚えを消す(設定ファイル側)。消すとファイルの値(初期値)が効く
+    fn forget_geometry_of(&mut self, geo: &str) {
+        self.mon_bands.retain(|(g, _), _| g != geo);
+        self.band_pll.retain(|(g, _), _| g != geo);
+        if self.geo_prof == geo {
+            // 次の follow_band で引き直させる(いまの値をしまわずに)
+            self.mon_key = 0;
+            self.pll_key = 0;
+            self.band_khz = 0;
+        }
+        self.mark_settings_dirty();
+    }
+
+    /// 新しい機種を作る欄
+    fn new_machine_ui(&mut self, ui: &mut egui::Ui) {
+        let Some(mut name) = self.prof_ui.new_name.clone() else {
+            if ui.button("新しい機種を作る").on_hover_text(
+                "いまの機種(と、合わせた管面・PLL)を元に、自分用の機種を作ります。\n\
+                 水晶の候補と入力設定は元の機種のものを使います").clicked()
+            {
+                self.prof_ui.new_name =
+                    Some(format!("{} (自分用)", self.profile_label(&self.source_profile)));
+            }
+            return;
+        };
+        let mut create = false;
+        let mut cancel = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("名前");
+            ui.add(egui::TextEdit::singleline(&mut name).desired_width(160.0));
+            create = ui.add_enabled(!name.trim().is_empty(), egui::Button::new("作る")).clicked();
+            cancel = ui.button("やめる").clicked();
+        });
+        if create {
+            self.prof_ui.new_name = None;
+            self.create_user_machine(name.trim().to_string());
+        } else if cancel {
+            self.prof_ui.new_name = None;
+        } else {
+            self.prof_ui.new_name = Some(name);
+        }
+    }
+
+    fn create_user_machine(&mut self, label: String) {
+        let (mon, pll) = self.current_profile_values();
+        let base = match self.current_user_machine() {
+            Some(u) => u.base,
+            None => self.source_profile.clone(),
+        };
+        let stem = userprof::unique_stem(&label, &self.user_profiles);
+        let u = userprof::UserProfile {
+            key: format!("{}{stem}", userprof::KEY_PREFIX),
+            label: label.clone(),
+            port: self.input_port,
+            base,
+            author: String::new(),
+            note: String::new(),
+            mon,
+            pll,
+        };
+        if let Err(e) = userprof::save(&u) {
+            self.toasts.notice(format!("作れませんでした: {e}"));
+            return;
+        }
+        self.user_profiles = userprof::load_all();
+        let sends = self.select_input(self.input_port, u.key.clone());
+        for (k, v) in sends {
+            self.send_cfg(k, v);
+        }
+        self.toasts.info(format!("{label} を作って切り替えました"));
+    }
+
+    /// 選んでいる自分用の機種の編集(名前・モードごとの値・上書き・削除)
+    fn user_machine_editor(&mut self, ui: &mut egui::Ui) {
+        let Some(mut u) = self.current_user_machine() else { return };
+        let mut changed = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("名前");
+            let mut label = u.label.clone();
+            let r = ui.add(egui::TextEdit::singleline(&mut label).desired_width(160.0));
+            if r.changed() && !label.trim().is_empty() {
+                u.label = label;
+                changed = true;
+            }
+        });
+        let base = if u.base.is_empty() { "汎用".to_string() } else { self.profile_label(&u.base) };
+        ui.weak(format!("入力{} {} · 元にした機種 {base}", u.port.number(), u.port.jack()));
+
+        ui.weak("モード(帯域 × 垂直周波数)ごとの値");
+        let cur = (self.mon_key, self.pll_key);
+        let mut remove: Option<u32> = None;
+        let mut edited: Vec<(u32, Option<[f32; 4]>, Option<[u32; 2]>)> = Vec::new();
+        for k in u.mode_keys() {
+            ui.horizontal_wrapped(|ui| {
+                let t = Self::mode_key_label(k);
+                if k == cur.0 || k == cur.1 {
+                    ui.strong(format!("{t} ◀ いま"));
+                } else {
+                    ui.label(t);
+                }
+                if ui.small_button("消す").on_hover_text("このモードの値を消します").clicked() {
+                    remove = Some(k);
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                if let Some(mut m) = u.mon.get(&k).copied() {
+                    let mut ch = false;
+                    for (i, name) in ["H幅", "H位置", "V幅", "V位置"].iter().enumerate() {
+                        ui.weak(*name);
+                        ch |= ui.add(egui::DragValue::new(&mut m[i]).speed(0.001).max_decimals(4)
+                            .range(-1.0..=2.0)).changed();
+                    }
+                    if ch {
+                        edited.push((k, Some(m), None));
+                    }
+                }
+                if let Some(mut p) = u.pll.get(&k).copied() {
+                    ui.weak("PLL");
+                    let a = ui.add(egui::DragValue::new(&mut p[0]).range(200..=2304)).changed();
+                    ui.weak("位相");
+                    let b = ui.add(egui::DragValue::new(&mut p[1]).range(0..=31)).changed();
+                    if a || b {
+                        edited.push((k, None, Some(p)));
+                    }
+                }
+            });
+        }
+        if u.mode_keys().is_empty() {
+            ui.weak("まだ値がありません。映して合わせてから「いまの値で上書き」を押してください");
+        }
+        for (k, mon, pll) in edited {
+            if let Some(m) = mon {
+                u.mon.insert(k, m);
+            }
+            if let Some(p) = pll {
+                u.pll.insert(k, p);
+            }
+            self.apply_user_value(&u.key, k, mon, pll);
+            changed = true;
+        }
+        if let Some(k) = remove {
+            u.mon.remove(&k);
+            u.pll.remove(&k);
+            // 設定ファイル側の覚えも消す(残っていると消した値が効き続ける)
+            self.mon_bands.remove(&(u.key.clone(), k));
+            self.band_pll.remove(&(u.key.clone(), k));
+            if k == cur.0 || k == cur.1 {
+                self.mon_key = 0;
+                self.pll_key = 0;
+                self.band_khz = 0;
+            }
+            self.mark_settings_dirty();
+            changed = true;
+        }
+
+        let label = if cur.0 > 0 { Self::mode_key_label(cur.0) } else { "—".into() };
+        if ui.add_enabled(cur.0 > 0, egui::Button::new(format!("いまの値で上書き({label})")))
+            .on_hover_text("いま映っているモードの、合わせた管面と PLL をこの機種に書きます")
+            .clicked()
+        {
+            u.mon.insert(cur.0, self.mon);
+            if cur.1 > 0 {
+                u.pll.insert(cur.1, [self.tune_pll_divide.max(0) as u32, self.tune_phase as u32]);
+            }
+            changed = true;
+            self.toasts.info(format!("{label} を上書きしました"));
+        }
+        let mut delete = false;
+        ui.horizontal_wrapped(|ui| {
+            if !self.prof_ui.confirm_delete {
+                if ui.button("この機種を削除").clicked() {
+                    self.prof_ui.confirm_delete = true;
+                }
+            } else {
+                ui.label(format!("「{}」を削除しますか?", u.label));
+                delete = ui.button("削除する").clicked();
+                if ui.button("やめる").clicked() {
+                    self.prof_ui.confirm_delete = false;
+                }
+            }
+        });
+        if delete {
+            self.prof_ui.confirm_delete = false;
+            self.delete_user_machine(&u);
+            return;
+        }
+        if changed {
+            if let Some(slot) = self.user_profiles.iter_mut().find(|x| x.key == u.key) {
+                *slot = u;
+            }
+            // ファイルへはまとめて書く(つまみを回している間に毎フレーム書かない)
+            self.prof_ui.save_due = Some(std::time::Instant::now());
+        }
+    }
+
+    /// 編集した値を、設定ファイル側の覚えといま映っている値にも入れる。
+    /// 自分用の機種は設定ファイルの値がファイルの値(初期値)より先に引かれるので、
+    /// ファイルだけ直しても効かない
+    fn apply_user_value(&mut self, geo: &str, k: u32, mon: Option<[f32; 4]>, pll: Option<[u32; 2]>) {
+        if let Some(m) = mon {
+            self.mon_bands.insert((geo.to_string(), k), m);
+            if geo == self.geo_prof && k == self.mon_key {
+                self.mon = m;
+            }
+        }
+        if let Some(p) = pll {
+            self.band_pll.insert((geo.to_string(), k), p);
+            if geo == self.geo_prof && k == self.pll_key {
+                let pll = (p[0] as i32).clamp(200, 2304);
+                if pll != self.tune_pll_divide {
+                    self.set_pll(pll as u32);
+                }
+                let ph = p[1].min(31) as u8;
+                if ph != self.tune_phase {
+                    self.tune_phase = ph;
+                    self.send_cfg(protocol::CFG_KEY_PHASE, ph as u32);
+                }
+            }
+        }
+        self.mark_settings_dirty();
+    }
+
+    fn delete_user_machine(&mut self, u: &userprof::UserProfile) {
+        if let Err(e) = userprof::delete(u) {
+            self.toasts.notice(format!("削除できませんでした: {e}"));
+            return;
+        }
+        self.forget_geometry_of(&u.key);
+        self.user_profiles = userprof::load_all();
+        if self.source_profile == u.key {
+            let port = self.input_port;
+            let sends = self.select_input(port, port.default_profile().to_string());
+            for (k, v) in sends {
+                self.send_cfg(k, v);
+            }
+        }
+        self.toasts.info(format!("{} を削除しました", u.label));
+    }
+
+    /// 編集した自分用の機種を、少し待ってからファイルへ書く
+    fn flush_user_profile_edits(&mut self) {
+        let Some(t) = self.prof_ui.save_due else { return };
+        if t.elapsed() < std::time::Duration::from_millis(500) {
+            return;
+        }
+        self.prof_ui.save_due = None;
+        if let Some(u) = self.current_user_machine() {
+            if let Err(e) = userprof::save(&u) {
+                self.toasts.notice(format!("保存できませんでした: {e}"));
+            }
         }
     }
 
