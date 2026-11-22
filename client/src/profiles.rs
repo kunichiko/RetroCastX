@@ -798,6 +798,63 @@ pub const PROFILES: &[Profile] = &[
             Preset { band: 50, fv: Some(60), mon: Some([0.8547, -0.0385, 1.0004, 0.0018]), pll: None },
         ],
     },
+    Profile {
+        key: "fmtowns",
+        label: "FM TOWNS",
+        // 入力設定は持たない(入力3 の代表 = X68000 のものを使う。PC-9801 と同じ)
+        input_regs: &[],
+        auto_pick: true,
+        // ★**出典は TOWNS エミュレータ Tsugaru の CRTC の実装と、実際の BIOS(EGB)に
+        //   画面モードを設定させた直後の CRTC の全レジスタのダンプ。**
+        //   https://github.com/captainys/TOWNSEMU
+        //     src/towns/crtc/crtc.cpp(CLKSELtoHz)/ experiments/crtc/settings.cpp
+        //   MAME(fmtowns_v.cpp)と CSP(eFM-Towns)もドットクロック表は同じ。
+        //
+        //   CR1 の CLKSEL で選ぶ元クロックは 28.6363 / 24.5454 / 25.175 / 21.0525MHz。
+        //   水平のレジスタはこの元クロック単位なので、1ラインのクロック数(HST+1)が
+        //   そのまま htotal になる。画素の大きさ(ZOOM)は同期に関係しない。
+        //   標準の画面モード(EGB の 1〜18)は、同期で見ると次の4系統しかない:
+        //
+        //     24kHz  21.0525MHz  864 × 440 ライン(55.38Hz)
+        //     31kHz  25.175MHz   800 × 525 ライン(59.94Hz、VGA と同じ)
+        //     15kHz  28.6363MHz 1820 × 262.5 ライン(NTSC 480i と同じ)
+        //     15kHz  24.5454MHz 1560 × 262 ライン(60.05Hz)
+        //
+        //   実機の出力を測った値ではないので未検証。TOWNS II の後期機(MA/MX/ME/MF/
+        //   Fresh/H シリーズ)は本体で 24kHz(機種により 15kHz も)を 31kHz に変換して
+        //   出すので、この表は当てはまらない
+        oscillators: &[
+            Clock { name: "21.0525MHz", hz: 21.052_5e6, dividers: &[1] },
+            Clock { name: "25.175MHz", hz: 25.175e6, dividers: &[1] },
+            Clock { name: "28.6363MHz", hz: 28.636_3e6, dividers: &[1] },
+            Clock { name: "24.5454MHz", hz: 24.545_4e6, dividers: &[1] },
+        ],
+        htotal_multiple: 1,
+        audio_src: Some(0),
+        verified: false,
+        ycbcr: false,
+        port: Port::Rgb15,
+        // EGB の画面モード番号(Tsugaru のダンプ)を括弧に書く
+        modes: &[
+            km("640x400 / 640x200 / 256x256 (1, 2, 4, 6, 13)", 24.366, 55.378, false),
+            km("640x480 / 256x256 / 320x240 / 320x480 / 512x480 (3, 5, 10, 12, 15, 17)",
+               31.469, 59.94, false),
+            km("256x240 / 360x240 / 720x480i (7, 9, 14)", 15.734, 59.94, false),
+            km("256x240 / 320x240 / 320x480i / 512x480i (8, 11, 16, 18)", 15.734, 60.054, false),
+        ],
+        // ★**管面の既定は、有効映像が管面の 90% に収まる値を計算で出したもの**(PC-9801 と
+        //   同じ式)。表示の窓は各系統でいちばん広いもの(HDS〜HDE、VDS〜VDE)。
+        //   15kHz の2系統は垂直周波数が丸めると同じ 60Hz で同じ行になるので、28.6363MHz の
+        //   系統の値にした(24.5454MHz の系統では管面の約 93% になる)
+        presets: &[
+            // 24kHz: 864 中 156〜796、440 ライン中 32〜432
+            Preset { band: 24, fv: Some(55), mon: Some([0.8230, -0.0509, 1.0101, -0.0273]), pll: None },
+            // 31kHz: 800 中 138〜778、525 ライン中 35〜515
+            Preset { band: 31, fv: Some(60), mon: Some([0.8889, -0.0725, 1.0159, -0.0238]), pll: None },
+            // 15kHz: 1820 中 297〜1737、1フィールド 262.5 ライン中 18〜258
+            Preset { band: 15, fv: Some(60), mon: Some([0.8791, -0.0588, 1.0159, -0.0257]), pll: None },
+        ],
+    },
     // --- ここから下は「配線の方式」で決まる映像ソース。選ぶと入力設定を書く ---
     //
     // pll_divide は規格で 1820(= 8fsc NTSC)に決まるので、水晶を1つ置いておけば
@@ -1644,6 +1701,20 @@ mod tests {
         assert_ne!(geo_key(Port::Rgb15, ""), geo_key(Port::Rgb21, ""));
     }
 
+    /// FM TOWNS の各系統で、書く pll_divide が Tsugaru のダンプの htotal(HST+1)の整数倍になる
+    #[test]
+    fn fmtowns_modes_from_crtc_dumps() {
+        let p = by_key("fmtowns").unwrap();
+        for (fh, ht) in [(21.052_5e6 / 864.0, 864), (25.175e6 / 800.0, 800)] {
+            let c = best(p, fh).expect("候補なし");
+            assert_eq!(c.pll_divide % ht, 0, "{} → pll {}", c.label, c.pll_divide);
+        }
+        // 15.734kHz は 28.6363MHz(1820)でも 24.5454MHz(1560)でも説明できる。
+        // どちらかの整数倍になっていればよい(どちらの系統かは簡易スキャンで詰める)
+        let c = best(p, 28.636_3e6 / 1820.0).expect("15kHz の候補なし");
+        assert!(c.pll_divide % 1820 == 0 || c.pll_divide % 1560 == 0, "{} → {}", c.label, c.pll_divide);
+    }
+
     /// PC-9801 の各モードで、書く pll_divide がテクニカルデータブックの htotal の整数倍になる
     /// (1サンプル=1ドットか、その整数倍のオーバーサンプル)
     #[test]
@@ -1674,6 +1745,11 @@ mod tests {
         assert_eq!(key(p, "1120x750 ハイレゾ"), band_fv_key(31, 80));
         assert_eq!(key(p, "1120x750 ハイレゾ 50kHz (H98)"), band_fv_key(50, 60));
         assert_eq!(key(p, "640x400 ノーマル"), band_fv_key(24, 56));
+        // FM TOWNS: 15kHz の2系統(28.6363MHz / 24.5454MHz)は同じ行にまとまる
+        let t = by_key("fmtowns").unwrap();
+        assert_eq!(t.modes[2].mon_key(t), band_fv_key(15, 60));
+        assert_eq!(t.modes[3].mon_key(t), t.modes[2].mon_key(t));
+        assert_eq!(t.modes[0].mon_key(t), band_fv_key(24, 55));
         // コンポジットの管面は NTSC の窓、PLL は帯域 × 垂直周波数
         let c = by_key("composite").unwrap();
         assert_eq!(c.modes[0].mon_key(c), MON_KEY_NTSC);
