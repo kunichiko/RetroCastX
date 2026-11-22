@@ -14,6 +14,7 @@
 //! author = …
 //! note = …
 //! mon.31 = 0.9200,-0.0600,0.9500,0.0000      ← 帯域ごとの管面
+//! mon.31v70 = 0.8500,-0.0500,0.9000,0.0000   ← 帯域 × 垂直周波数(Hz)の管面
 //! bandpll.31 = 1104,12                       ← 帯域ごとの pll_divide, 位相
 //! ```
 //!
@@ -23,6 +24,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::geometry::{key_band, key_from_str, key_fv, key_to_str};
 use crate::profiles::{self, Port};
 use crate::settings::{self, Settings};
 
@@ -82,12 +84,12 @@ impl UserProfile {
                 "author" => u.author = v.to_string(),
                 "note" => u.note = v.to_string(),
                 k if k.starts_with("mon.") => {
-                    if let (Ok(b), Some(m)) = (k[4..].parse(), settings::parse_mon(v)) {
+                    if let (Some(b), Some(m)) = (key_from_str(&k[4..]), settings::parse_mon(v)) {
                         u.mon.insert(b, m);
                     }
                 }
                 k if k.starts_with("bandpll.") => {
-                    if let (Ok(b), Some(p)) = (k[8..].parse(), settings::parse_pll(v)) {
+                    if let (Some(b), Some(p)) = (key_from_str(&k[8..]), settings::parse_pll(v)) {
                         u.pll.insert(b, p);
                     }
                 }
@@ -108,10 +110,10 @@ impl UserProfile {
         s.push_str(&format!("author = {}\n", self.author));
         s.push_str(&format!("note = {}\n", self.note));
         for (b, m) in &self.mon {
-            s.push_str(&format!("mon.{b} = {:.4},{:.4},{:.4},{:.4}\n", m[0], m[1], m[2], m[3]));
+            s.push_str(&format!("mon.{} = {:.4},{:.4},{:.4},{:.4}\n", key_to_str(*b), m[0], m[1], m[2], m[3]));
         }
         for (b, p) in &self.pll {
-            s.push_str(&format!("bandpll.{b} = {},{}\n", p[0], p[1]));
+            s.push_str(&format!("bandpll.{} = {},{}\n", key_to_str(*b), p[0], p[1]));
         }
         // 正式採用するときに profiles.rs へそのまま貼れる形。読み込みでは無視される
         s.push_str("#\n# 正式採用するときは client/src/profiles.rs の機種の presets へ:\n");
@@ -123,7 +125,9 @@ impl UserProfile {
                 format!("Some([{:.4}, {:.4}, {:.4}, {:.4}])", m[0], m[1], m[2], m[3])
             });
             let pll = self.pll.get(&b).map_or("None".into(), |p| format!("Some([{}, {}])", p[0], p[1]));
-            s.push_str(&format!("#         Preset {{ band: {b}, mon: {mon}, pll: {pll} }},\n"));
+            let fv = key_fv(b).map_or("None".into(), |f| format!("Some({f})"));
+            s.push_str(&format!("#         Preset {{ band: {}, fv: {fv}, mon: {mon}, pll: {pll} }},\n",
+                                key_band(b)));
         }
         s.push_str("#     ],\n");
         s
@@ -218,6 +222,8 @@ mod tests {
         };
         u.mon.insert(31, [0.92, -0.06, 0.95, 0.0]);
         u.pll.insert(31, [800, 12]);
+        // 垂直周波数でも分けた値(31kHz・70Hz)
+        u.mon.insert(crate::geometry::band_fv_key(31, 70), [0.85, -0.05, 0.9, 0.0]);
         u
     }
 
@@ -228,7 +234,9 @@ mod tests {
         let r = UserProfile::parse(&u.format(), "fm-towns").expect("読めない");
         assert_eq!(r, u);
         // 正式採用用の貼り付け形も出ている
-        assert!(u.format().contains("Preset { band: 31, mon: Some([0.9200, -0.0600, 0.9500, 0.0000]), pll: Some([800, 12]) }"));
+        assert!(u.format().contains("Preset { band: 31, fv: None, mon: Some([0.9200, -0.0600, 0.9500, 0.0000]), pll: Some([800, 12]) }"));
+        assert!(u.format().contains("mon.31v70 = "));
+        assert!(u.format().contains("Preset { band: 31, fv: Some(70), mon: Some([0.8500, -0.0500, 0.9000, 0.0000]), pll: None }"));
     }
 
     /// 端子の無いテキストはプロファイルとして読まない(フォルダに別の txt が

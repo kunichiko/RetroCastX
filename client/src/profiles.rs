@@ -125,6 +125,10 @@ pub struct Profile {
 pub struct Preset {
     /// 周波数帯[kHz](15/24/31…)。コンポジット/S端子の管面は `MON_KEY_NTSC`
     pub band: u32,
+    /// 垂直周波数[Hz](整数に丸めたもの)。None は帯域全体の値。
+    /// 同じ帯域で垂直周波数ごとに違う値が要るとき(31kHz の 55Hz と 60Hz など)に使う。
+    /// 引くときは垂直周波数付きが先(`geometry::band_fv_key`)
+    pub fv: Option<u32>,
     /// 管面 [H幅, H位置, V幅, V位置]
     pub mon: Option<[f32; 4]>,
     /// [pll_divide, 位相]
@@ -675,9 +679,9 @@ pub const PROFILES: &[Profile] = &[
         //   (31kHz は 25.175MHz・htotal 800 の信号に 858、15kHz は 2304)。管面は
         //   時間ベースなので PLL がずれていても値は使える
         presets: &[
-            Preset { band: 15, mon: Some([0.7500, -0.0100, 0.8000, 0.0400]), pll: None },
-            Preset { band: 24, mon: Some([0.7700, -0.0370, 0.9500, -0.0100]), pll: Some([848, 4]) },
-            Preset { band: 31, mon: Some([0.8200, -0.0800, 0.9700, -0.0220]), pll: None },
+            Preset { band: 15, fv: None, mon: Some([0.7500, -0.0100, 0.8000, 0.0400]), pll: None },
+            Preset { band: 24, fv: None, mon: Some([0.7700, -0.0370, 0.9500, -0.0100]), pll: Some([848, 4]) },
+            Preset { band: 31, fv: None, mon: Some([0.8200, -0.0800, 0.9700, -0.0220]), pll: None },
         ],
     },
     // --- ここから下は「配線の方式」で決まる映像ソース。選ぶと入力設定を書く ---
