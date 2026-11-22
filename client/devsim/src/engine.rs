@@ -40,6 +40,10 @@ pub struct Stats {
     pub iters: u32,
     pub worst_ms: f64,
     pub would_block: u64,
+    /// 直近1秒で、ラインを送るべき時刻から最も遅れた量[ms]。
+    /// 1フレームを超えて増え続けるなら、送信(ループバックの sendto)が信号の
+    /// パケットレートに追いついていない
+    pub lag_ms: f64,
 }
 
 pub struct Shared {
@@ -149,7 +153,7 @@ pub fn run(sock: UdpSocket, sh: Arc<Shared>) {
     let mut gen_time = Duration::ZERO;
     let mut sent_time = Duration::ZERO;
 
-    let (mut iters, mut worst) = (0u32, Duration::ZERO);
+    let (mut iters, mut worst, mut lag) = (0u32, Duration::ZERO, Duration::ZERO);
     while !sh.stop.load(Ordering::Relaxed) {
         let now = Instant::now();
         iters += 1;
@@ -190,6 +194,8 @@ pub fn run(sock: UdpSocket, sh: Arc<Shared>) {
                 if due > now || now.elapsed() > Duration::from_millis(1) {
                     break;
                 }
+                // 送るべき時刻からの遅れ。送信が信号の速さに追いつかないと積み上がる
+                lag = lag.max(now.saturating_duration_since(due));
                 c.next += 1;
                 frame = row.frame;
                 if !subscribed {
@@ -347,7 +353,8 @@ pub fn run(sock: UdpSocket, sh: Arc<Shared>) {
             (gen_time, sent_time) = (Duration::ZERO, Duration::ZERO);
             s.iters = iters;
             s.worst_ms = worst.as_secs_f64() * 1e3;
-            (iters, worst) = (0, Duration::ZERO);
+            s.lag_ms = lag.as_secs_f64() * 1e3;
+            (iters, worst, lag) = (0, Duration::ZERO, Duration::ZERO);
         }
 
         // 次にすることまで眠る(最長 1ms。Windows の sleep は粗いが、その分まとめて送る)
