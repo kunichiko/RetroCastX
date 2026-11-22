@@ -1272,6 +1272,17 @@ impl Session {
                 self.mark_settings_dirty();
             }
         });
+        // 補間の状況を見る(調査用。保存しない)
+        ui.indent("deint_debug", |ui| {
+            ui.checkbox(&mut self.deint_show_rows, "補間状況をラインごとに表示")
+                .on_hover_text("管面の左の計測帯に、ラインごとに 青=織り込みのまま /\n\
+                                橙=補間した を出します。補間で目に見えて(16階調以上)\n\
+                                変わった画素の数で塗ります。余白が「計測帯」のときだけ。\n\
+                                保存しません");
+            ui.checkbox(&mut self.deint_tint, "補間状況を画素ごとに表示")
+                .on_hover_text("補間で目に見えて(16階調以上)変わった画素に橙を重ねます。\n\
+                                保存しません");
+        });
     }
 
     /// 「画に合わせる」

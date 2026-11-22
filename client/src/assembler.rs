@@ -161,6 +161,8 @@ pub struct FrameAssembler {
     deint_hist: DeintHist,
     /// 行ごとの内訳を出すか(調査表示。計測帯の色分けに使う)
     pub deint_debug: bool,
+    /// 補間で目に見えて変わった画素に色を重ねるか(調査表示)
+    pub deint_tint: bool,
     /// 公開用バッファの使い回し先。UIが使い終わったものを recycle() で戻す。
     /// 毎フレームの確保をなくすためだけのもので、中身に意味は無い。
     spare: Option<Vec<u8>>,
@@ -237,6 +239,7 @@ impl FrameAssembler {
             deint: Deint::default(),
             deint_hist: DeintHist::default(),
             deint_debug: false,
+            deint_tint: false,
             adjust: ntsc::Adjust::default(),
         }
     }
@@ -740,7 +743,8 @@ impl FrameAssembler {
         let woven = self.mode.as_ref().map_or(false, |m| m.mflags & 0x0001 != 0);
         if (woven || self.interlace_measured) && self.field_view == 0 {
             deinterlace_rows(&mut rgba, self.slice_next..y1, &self.fb, &self.deint_hist,
-                             &self.line_seen, self.width, self.height, self.deint, None);
+                             &self.line_seen, self.width, self.height, self.deint, None,
+                             false);
         }
         self.slice_out = Some(Slice {
             frame_idx,
@@ -852,7 +856,7 @@ impl FrameAssembler {
         if interlaced && self.field_view == 0 {
             let mut rows = self.deint_debug.then(|| vec![0u8; h]);
             deinterlace(&mut out, &self.fb, &mut self.deint_hist, &self.line_seen, w, h,
-                        self.deint, rows.as_deref_mut());
+                        self.deint, rows.as_deref_mut(), self.deint_tint);
             deint_rows = rows;
         }
         for s in self.line_seen.iter_mut() {
@@ -961,6 +965,7 @@ impl FrameAssembler {
         job.field_view = self.field_view;
         job.deint = self.deint;
         job.deint_debug = self.deint_debug;
+        job.deint_tint = self.deint_tint;
         job.frame_idx = p.frame_idx;
         job.fill_ratio = p.fill_ratio;
         job.out = self.spare.take().unwrap_or_default();
@@ -1172,7 +1177,8 @@ const DEINT_CORE: i32 = 6;
 /// 動きは横に1画素ずつ広げて見る。動く物の輪郭のすぐ外側(差は小さいが
 /// 縞は出る)も拾うため。
 ///
-/// `rows_out` を渡すと、行ごとの内訳(`DeintRows`)を書く。
+/// `rows_out` を渡すと、行ごとの内訳(`DeintRows`)を書く。`tint` なら、補間で
+/// 目に見えて変わった画素(内訳で数えるのと同じ画素)に橙を重ねる(調査表示)。
 pub(crate) fn deinterlace(
     out: &mut [u8],
     fb: &[u8],
@@ -1182,8 +1188,9 @@ pub(crate) fn deinterlace(
     h: usize,
     mode: Deint,
     rows_out: Option<&mut [u8]>,
+    tint: bool,
 ) {
-    deinterlace_rows(out, 0..h, fb, hist, seen, w, h, mode, rows_out);
+    deinterlace_rows(out, 0..h, fb, hist, seen, w, h, mode, rows_out, tint);
     // 織り込みでも履歴は進める(切り替えた直後に古い絵と比べないように)
     hist.advance(fb);
 }
@@ -1202,6 +1209,8 @@ pub(crate) const DEINT_ROW_FRESH: u8 = u8::MAX;
 pub(crate) const DEINT_ROW_MAX: u8 = 254;
 const DEINT_ROW_GAIN: usize = 8;
 const DEINT_ROW_VISIBLE: i32 = 16;
+/// 調査表示で補間した画素に重ねる色(計測帯の橙と同じ)。元の絵と半々に混ぜる
+const DEINT_TINT: [u8; 3] = [0xFF, 0x8C, 0x1A];
 
 /// `deinterlace` の本体。`rows` の行だけを処理し、`out` はその行の範囲の絵
 /// (`rows.start` 行目から)。履歴は進めない。
@@ -1218,6 +1227,7 @@ pub(crate) fn deinterlace_rows(
     h: usize,
     mode: Deint,
     mut rows_out: Option<&mut [u8]>,
+    tint: bool,
 ) {
     if let Some(r) = rows_out.as_deref_mut() {
         for y in rows.clone() {
@@ -1307,7 +1317,15 @@ pub(crate) fn deinterlace_rows(
                     out[oo + c] = v as u8;
                     moved = moved.max((v - cur).abs());
                 }
-                changed += (moved >= DEINT_ROW_VISIBLE) as usize;
+                if moved >= DEINT_ROW_VISIBLE {
+                    changed += 1;
+                    if tint {
+                        for c in 0..3 {
+                            let v = &mut out[oo + c];
+                            *v = ((*v as u16 + DEINT_TINT[c] as u16 + 1) >> 1) as u8;
+                        }
+                    }
+                }
             }
             if let Some(v) = rows_out.as_deref_mut().and_then(|r| r.get_mut(s)) {
                 *v = (changed * DEINT_ROW_GAIN).min(DEINT_ROW_MAX as usize) as u8;
@@ -1424,6 +1442,37 @@ mod tests {
         assert!((1..39).step_by(2).all(|y| r[y] == 0), "{r:?}");
         let weave = rows_of(Deint::Weave);
         assert!((1..40).step_by(2).all(|y| weave[y] == 0), "{weave:?}");
+    }
+
+    /// 調査表示の色: 補間で変わった画素にだけ橙が乗り、他の画素は変わらない。
+    #[test]
+    fn deinterlace_tints_only_changed_pixels() {
+        let w = 40;
+        let (h, n) = (40usize, w * 40 * 4);
+        // 残っている行(奇数)にだけ前のフィールドの点(x=11)、今の行は x=12
+        let mut fb = vec![64u8; n];
+        for y in 0..h {
+            let x = if y % 2 == 0 { 12 } else { 11 };
+            fb[(y * w + x) * 4..(y * w + x) * 4 + 3].fill(255);
+        }
+        let seen: Vec<bool> = (0..h).map(|y| y % 2 == 0).collect();
+        let hist = DeintHist { p1: vec![64u8; n], p2: vec![64u8; n] };
+        let run = |tint: bool| {
+            let mut out = fb.clone();
+            deinterlace_rows(&mut out, 0..h, &fb, &hist, &seen, w, h, Deint::Adaptive, None, tint);
+            out
+        };
+        let (plain, tinted) = (run(false), run(true));
+        let px = |b: &[u8], y: usize, x: usize| b[(y * w + x) * 4..(y * w + x) * 4 + 3].to_vec();
+        // 点の残り(x=11)と今の点(x=12)は補間で変わったので橙が乗る
+        for x in [11, 12] {
+            let (p, t) = (px(&plain, 21, x), px(&tinted, 21, x));
+            assert_ne!(p, t, "x={x} に色が乗っていない");
+            assert!(t[0] > t[2], "x={x} が橙でない: {t:?}");
+        }
+        // 止まっている所と今届いた行はそのまま
+        assert_eq!(px(&plain, 21, 30), px(&tinted, 21, 30));
+        assert_eq!(px(&plain, 20, 12), px(&tinted, 20, 12));
     }
 
     /// 横に動く点は、残っている行(1フィールド前)で位置が食い違って縞になる。

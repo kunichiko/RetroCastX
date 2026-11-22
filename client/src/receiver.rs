@@ -741,6 +741,8 @@ pub struct Shared {
     pub deint: AtomicU8,
     /// デインターレースの行ごとの内訳をフレームに付けるか(計測帯の色分け)。UI が書く
     pub deint_debug: AtomicBool,
+    /// 補間した画素に色を重ねるか(調査表示)。UI が書く
+    pub deint_tint: AtomicBool,
     /// 表示するフィールド。0=織り込み / 1=偶数スロット / 2=奇数スロット。
     /// 織り込みの影響を外して1枚だけ見るための切り分け用。None なら変更なし。
     pub field_view: Mutex<Option<u8>>,
@@ -1534,6 +1536,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         asm.slices = shared.slices.load(Ordering::Relaxed);
         asm.deint = crate::assembler::Deint::from_u8(shared.deint.load(Ordering::Relaxed));
         asm.deint_debug = shared.deint_debug.load(Ordering::Relaxed);
+        asm.deint_tint = shared.deint_tint.load(Ordering::Relaxed);
         let is_line = n >= 3 && buf[2] == proto::TYPE_LINE;
         let fed = asm.feed(&buf[..n]);
         if let Some(sl) = asm.take_slice() {

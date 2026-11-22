@@ -44,6 +44,8 @@ pub struct Job {
     pub deint: Deint,
     /// 行ごとの内訳を出すか(assembler の deint_debug)
     pub deint_debug: bool,
+    /// 補間した画素に色を重ねるか(assembler の deint_tint)
+    pub deint_tint: bool,
     pub frame_idx: u16,
     pub fill_ratio: f32,
     /// 公開用バッファ(組立側が UI から戻してもらったもの)
@@ -147,7 +149,8 @@ fn run(fb: &mut Vec<u8>, deint_hist: &mut DeintHist, mut job: Job) -> Done {
     let mut deint_rows = None;
     if job.interlaced && job.field_view == 0 {
         let mut rows = job.deint_debug.then(|| vec![0u8; h]);
-        deinterlace(&mut out, fb, deint_hist, &job.seen, w, h, job.deint, rows.as_deref_mut());
+        deinterlace(&mut out, fb, deint_hist, &job.seen, w, h, job.deint, rows.as_deref_mut(),
+                    job.deint_tint);
         deint_rows = rows;
     }
     Done {

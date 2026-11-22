@@ -1244,6 +1244,11 @@ struct Session {
     ntsc_comb3d: bool,
     /// インターレースの出し方(settings::Settings::deint_mode)
     deint_mode: assembler::Deint,
+    /// 補間の状況を計測帯にラインごとに出す / 映像の画素に色を重ねる(調査用)。
+    /// ★**保存しない。** 映像に色が乗るので、入れたまま忘れて次に起動したとき
+    /// 故障に見えないように
+    deint_show_rows: bool,
+    deint_tint: bool,
     /// 間引きを書いた相手のボード。**掴んだボードが変わったら書き直す**
     /// (apply_frame_skip)。ボードが落ちたら外す(電源で 0 に戻るため)
     skip_applied_to: Option<[u8; 6]>,
@@ -1575,6 +1580,8 @@ impl Session {
             auto_skip: auto_skip::Detector::default(),
             ntsc_comb3d: cfg.ntsc_comb3d,
             deint_mode: cfg.deint_mode,
+            deint_show_rows: false,
+            deint_tint: false,
             skip_applied_to: None,
             win_applied: None,
             board_frame_skip: None,
@@ -1824,7 +1831,7 @@ impl Session {
         ];
         // デインターレースの内訳。縦の目盛りが行に沿っているとき(回転なし・180°)だけ
         let deint = self.deint_rows.clone()
-            .filter(|r| self.show_advanced && self.rotate % 2 == 0
+            .filter(|r| self.deint_show_rows && self.rotate % 2 == 0
                     && r.len() == self.frame_size.1 as usize)
             .map(|rows| letterbox::DeintRows { rows, k });
         if deint.is_some() {
@@ -6372,11 +6379,12 @@ impl Session {
         );
         self.shared.comb3d.store(self.ntsc_comb3d, std::sync::atomic::Ordering::Relaxed);
         self.shared.deint.store(self.deint_mode.to_u8(), std::sync::atomic::Ordering::Relaxed);
-        // 調査用の表示を出していて計測帯があるときだけ、行ごとの内訳を作らせる
+        // ラインごとの表示は計測帯に描くので、計測帯があるときだけ内訳を作らせる
         self.shared.deint_debug.store(
-            self.show_advanced && self.letterbox == letterbox::Style::Ruler,
+            self.deint_show_rows && self.letterbox == letterbox::Style::Ruler,
             std::sync::atomic::Ordering::Relaxed,
         );
+        self.shared.deint_tint.store(self.deint_tint, std::sync::atomic::Ordering::Relaxed);
         // コンポーネントなら RGB888 の3チャンネルを Pr/Y/Pb として RGB に直させる
         self.shared.ycbcr.store(
             self.regs_profile().is_some_and(|p| p.ycbcr),
