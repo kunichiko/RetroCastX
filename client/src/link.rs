@@ -11,6 +11,11 @@
 //!   ボードは ANNOUNCE の flags で「送信中か」「宛先が送り先か」を返すので、
 //!   それで分ける。奪われたら止まったまま(押すまで繋ぎ直さない)、消えたら
 //!   画面を消して、戻ってきて誰も使っていなければ繋ぎ直す。
+//! ★**「あなた宛でない」を1つ受けただけでは奪われたことにしない。** 古い
+//!   ゲートウェアは宛先と「あなた宛」を別の時点で決めていたので、他の Viewer の
+//!   発見の問いかけがその間に挟まると、こちら宛なのに「あなた宛でない」が届いた
+//!   (実機で一度、使用中に止まった)。疑いにしておき、映像が途絶えたときだけ
+//!   奪われたとする。本当に奪われたなら映像はすぐ止まり、誤報なら来続ける。
 //! ★**古いゲートウェアは flags を返さない**(OWNER_INFO が立たない)。その相手には
 //!   RENEW が通常の SUBSCRIBE として効いてしまうので、以前どおり通常の
 //!   SUBSCRIBE で延長する(奪い合いは残るが、切断の表示だけは効く)。
@@ -30,6 +35,13 @@ pub const SILENCE: Duration = Duration::from_secs(3);
 ///
 /// 奪う前にボードが出した定期 ANNOUNCE が、奪ったあとに届くことがある。
 const TAKE_GRACE: Duration = Duration::from_secs(1);
+/// 「あなた宛でない」を受けてから、映像が来なければ奪われたとするまで。
+///
+/// ボードは購読中なら入力が無くても MODE を毎秒送るので、それより長くする。
+const TAKEN_CONFIRM: Duration = Duration::from_millis(1500);
+/// 疑ってからこれより後に届いた映像だけを「まだこちらが送り先」の証拠にする。
+/// 奪われる前に出た映像が遅れて届くことがあるため。
+const IN_FLIGHT: Duration = Duration::from_millis(100);
 /// 繋ぎ直し(通常の SUBSCRIBE)を出す最短の間隔。
 const RETAKE_MIN: Duration = Duration::from_secs(1);
 
@@ -69,6 +81,8 @@ pub struct Link {
     last_stream: Option<Instant>,
     /// ボードが送り先の情報を返すか(新しいゲートウェア)
     owner_aware: bool,
+    /// 「送信中・あなた宛でない」を受けた時刻。映像が来続ければ取り消す
+    suspect: Option<Instant>,
 }
 
 impl Link {
@@ -91,6 +105,7 @@ impl Link {
         }
         self.take_pending = false;
         self.last_stream = None;
+        self.suspect = None;
     }
 
     /// 利用者が「接続」を押した。奪われていても奪い返す。
@@ -101,6 +116,7 @@ impl Link {
         self.state = State::Connecting;
         self.take_pending = true;
         self.last_stream = None;
+        self.suspect = None;
         let _ = now;
     }
 
@@ -119,32 +135,39 @@ impl Link {
         }
         self.last_stream = Some(now);
         self.state = State::Live;
+        if self.suspect.is_some_and(|t| now.duration_since(t) >= IN_FLIGHT) {
+            self.suspect = None;
+        }
     }
 
-    /// 掴んでいるボードの ANNOUNCE。戻り値が true なら画面を消す。
-    pub fn on_announce(&mut self, mac: [u8; 6], flags: u8, now: Instant) -> bool {
+    /// 掴んでいるボードの ANNOUNCE。奪われたかは疑うだけで、決めるのは tick。
+    pub fn on_announce(&mut self, mac: [u8; 6], flags: u8, now: Instant) {
         if self.mac != Some(mac) || self.state == State::Taken || self.state == State::Idle {
-            return false;
+            return;
         }
         self.owner_aware = flags & proto::ANN_FLAG_OWNER_INFO != 0;
         if !self.owner_aware || flags & proto::ANN_FLAG_YOURS != 0 {
-            return false;
+            return;
         }
         if flags & proto::ANN_FLAG_STREAMING != 0 {
             if self.last_take.map_or(false, |t| now.duration_since(t) < TAKE_GRACE) {
-                return false;
+                return;
             }
-            self.state = State::Taken;
-            self.take_pending = false;
-            return true;
+            self.suspect.get_or_insert(now);
+            return;
         }
         // 誰も受けていない(ボードの再起動・購読の失効)。こちらから繋ぎ直す
         self.take_pending = true;
-        false
     }
 
     /// 毎周呼ぶ。戻り値の .1 が true なら画面を消す。
     pub fn tick(&mut self, now: Instant) -> (Action, bool) {
+        if self.suspect.is_some_and(|t| now.duration_since(t) >= TAKEN_CONFIRM) {
+            self.suspect = None;
+            self.state = State::Taken;
+            self.take_pending = false;
+            return (Action::None, true);
+        }
         let mut blank = false;
         if self.state == State::Live
             && self.last_stream.map_or(true, |t| now.duration_since(t) >= SILENCE)
@@ -192,7 +215,7 @@ mod tests {
         let mut l = Link::default();
         l.on_claim(MAC, t0);
         assert_eq!(l.tick(t0).0, Action::Take);
-        assert!(!l.on_announce(MAC, OWNED, s(t0, 10)));
+        l.on_announce(MAC, OWNED, s(t0, 10));
         l.on_stream(s(t0, 20));
         assert_eq!(l.state, State::Live);
         l
@@ -212,9 +235,18 @@ mod tests {
     fn taken_stops_until_connect() {
         let t0 = Instant::now();
         let mut l = live(t0);
-        assert!(l.on_announce(MAC, OTHER, s(t0, 3000)), "画面を消していない");
+        l.on_stream(s(t0, 2990));
+        l.on_announce(MAC, OTHER, s(t0, 3000));
+        // 奪われる前に出た映像が遅れて届いても、まだこちらのものとは見ない
+        l.on_stream(s(t0, 3050));
+        // 疑っている間も延長(RENEW)は出す。RENEW では奪い返せない
+        assert_eq!(l.tick(s(t0, 4000)), (Action::Renew, false));
+        assert_ne!(l.state, State::Taken, "映像の途絶えを待たずに止まった");
+        let (action, blank) = l.tick(s(t0, 4500));
+        assert!(blank, "画面を消していない");
+        assert_eq!(action, Action::None);
         assert_eq!(l.state, State::Taken);
-        for ms in (3000..60_000).step_by(500) {
+        for ms in (4500..60_000).step_by(500) {
             assert_eq!(l.tick(s(t0, ms)).0, Action::None, "{ms}ms で何か出した");
         }
         // ボードが一覧から消えて戻っても止まったまま
@@ -234,8 +266,34 @@ mod tests {
         let mut l = Link::default();
         l.on_claim(MAC, t0);
         assert_eq!(l.tick(t0).0, Action::Take);
-        assert!(!l.on_announce(MAC, OTHER, s(t0, 50)));
+        l.on_announce(MAC, OTHER, s(t0, 50));
+        l.tick(s(t0, 2000));
         assert_ne!(l.state, State::Taken);
+    }
+
+    /// ★**こちら宛なのに「あなた宛でない」が1つ届いても止まらない。** 古い
+    /// ゲートウェアは宛先とフラグを別の時点で決めていたので、他の Viewer の
+    /// 発見の問いかけが挟まるとこうなった。映像が来続けていれば誤報。
+    #[test]
+    fn stray_not_yours_while_streaming_is_ignored() {
+        let t0 = Instant::now();
+        let mut l = live(t0);
+        l.on_announce(MAC, OTHER, s(t0, 3000));
+        for ms in (3000..10_000).step_by(16) {
+            l.on_stream(s(t0, ms));
+            assert_eq!(l.tick(s(t0, ms)).1, false, "{ms}ms で画面を消した");
+        }
+        assert_eq!(l.state, State::Live);
+        // 入力が無く MODE が毎秒来るだけでも誤報と分かる
+        l.on_announce(MAC, OTHER, s(t0, 10_000));
+        l.on_stream(s(t0, 10_900));
+        assert_eq!(l.tick(s(t0, 11_600)).1, false);
+        assert_eq!(l.state, State::Live);
+        // 疑いは消えているので、次の本物の横取りは改めて待ってから止まる
+        l.on_announce(MAC, OTHER, s(t0, 12_000));
+        assert_ne!(l.tick(s(t0, 13_000)).0, Action::Take);
+        assert!(l.tick(s(t0, 13_500)).1);
+        assert_eq!(l.state, State::Taken);
     }
 
     /// ★**電源断は切断表示、戻ってきたら繋ぎ直す。**
@@ -247,7 +305,7 @@ mod tests {
         assert!(blank, "途絶えたのに画面を消していない");
         assert_eq!(l.state, State::Lost);
         // 再起動したボードは誰にも送っていない
-        assert!(!l.on_announce(MAC, FREE, s(t0, 8000)));
+        l.on_announce(MAC, FREE, s(t0, 8000));
         assert_eq!(l.tick(s(t0, 8000)).0, Action::Take);
         l.on_stream(s(t0, 8100));
         assert_eq!(l.state, State::Live);
@@ -260,7 +318,7 @@ mod tests {
         let mut l = Link::default();
         l.on_claim(MAC, t0);
         assert_eq!(l.tick(t0).0, Action::Take);
-        assert!(!l.on_announce(MAC, 0, s(t0, 10)));
+        l.on_announce(MAC, 0, s(t0, 10));
         l.on_stream(s(t0, 20));
         l.on_stream(s(t0, 1990));
         assert_eq!(l.tick(s(t0, 2000)).0, Action::Take);
@@ -272,6 +330,9 @@ mod tests {
         let t0 = Instant::now();
         let mut l = live(t0);
         l.on_announce(MAC, OTHER, s(t0, 3000));
+        l.tick(s(t0, 3100));
+        l.tick(s(t0, 4600));
+        assert_eq!(l.state, State::Taken);
         let other = [0x02, 0, 0, 0, 0, 1];
         l.on_release();
         l.on_claim(other, s(t0, 4000));

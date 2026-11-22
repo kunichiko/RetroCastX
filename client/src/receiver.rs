@@ -1147,7 +1147,11 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
             if shared.reconnect.swap(false, Ordering::Relaxed) {
                 link.connect(Instant::now());
             }
+            let was_taken = link.state == crate::link::State::Taken;
             let (action, blank) = link.tick(Instant::now());
+            if !was_taken && link.state == crate::link::State::Taken {
+                eprintln!("他の Viewer がこのボードに接続したので停止します");
+            }
             if blank {
                 blank_screen(&shared, &repaint);
             }
@@ -1497,10 +1501,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
                 let mut boards = shared.boards.lock().unwrap();
                 upsert_board(&mut boards, &src_ip.to_string(), &a, Instant::now());
             }
-            if link.on_announce(a.mac, a.flags, Instant::now()) {
-                eprintln!("他の Viewer がこのボードに接続したので停止します");
-                blank_screen(&shared, &repaint);
-            }
+            link.on_announce(a.mac, a.flags, Instant::now());
         }
         // 映像の流れは送り先にしか来ない。来ている間はつながっている
         if n >= 3 && matches!(buf[2], proto::TYPE_LINE | proto::TYPE_MODE | proto::TYPE_AUDIO) {
