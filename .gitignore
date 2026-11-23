@@ -72,3 +72,10 @@ fp-info-cache
 # Excel/Office が開いている間だけ作るロックファイル
 ~$*
 .~lock.*#
+
+# RGB21 変換基板(hardware/rgb21-breakout, kinema)。atopile の基板と違い、
+# 自作フットプリントの表 fp-lib-table は手で書いた正本なので追跡する。
+!hardware/rgb21-breakout/fp-lib-table
+# 画面の表示状態(ユーザーごと)と、KiCad が保存のたびに作るバックアップ
+hardware/rgb21-breakout/*.kicad_prl
+hardware/rgb21-breakout/*-backups/

@@ -1,0 +1,13 @@
+[project]
+name = "rgb21_breakout"
+sources = ["src/*.v"]
+libraries = ["lib/*.v"]
+board = "rgb21_breakout.kicad_pcb"
+
+[kicad]
+# 自作フットプリント(${KIPRJMOD}/rgb21_breakout.pretty)の表。
+# ★先頭の "./" を消さないこと。kinema 0.6.4 は表のパスの親ディレクトリを
+#   ${KIPRJMOD} にするので、"fp-lib-table" と書くと親が空文字になり
+#   /rgb21_breakout.pretty を探しに行って footprint-missing になる。
+#   指定しない場合の自動検出も同じ理由で失敗する。
+fp_lib_table = "./fp-lib-table"
