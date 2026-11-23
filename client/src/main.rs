@@ -34,6 +34,7 @@ mod decode_worker;
 mod discovery;
 mod awake;
 mod audio;
+mod audio_dump;
 mod bezel;
 mod claim;
 mod cleanout;
@@ -7107,6 +7108,7 @@ impl eframe::App for App {
             s.on_close();
         }
         self.launcher_geom.flush();
+        audio_dump::finish();
     }
 
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {

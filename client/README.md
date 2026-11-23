@@ -288,6 +288,30 @@ bandpll.31 = 1104,12                    # 帯域ごとの [pll_divide, 位相]
 - `src/netcheck.rs` — NIC受信バッファーの確認(Windows、レジストリを読む)
 - `src/android_log.rs` — Android で標準出力/標準エラーを logcat へ流す
 - `android/` — Android 版のパッケージ(入口だけ。ソースは `src/` を共有)
+- `src/audio_dump.rs` — 受信した音声を WAV に書き出すデバッグ機能(`RCX_AUDIO_DUMP`)
+
+## 音声を録る(音割れの切り分け)
+
+`RCX_AUDIO_DUMP=パス` を付けて起動すると、再生中の主系統の音声を WAV に書き出す。
+書くのは**ボードの ADC が取った値そのもの**で、Viewer の音量やバッファ調整を通る前。
+ふつうに遊びながら録れる(音は普段どおり鳴る)。
+
+```sh
+RCX_AUDIO_DUMP=$HOME/Desktop/audio.wav cargo run --release
+# 配布版なら
+RCX_AUDIO_DUMP=$HOME/Desktop/audio.wav "/Applications/RetroCast X.app/Contents/MacOS/retrocastx-viewer"
+```
+
+- 16bit ステレオ、レートはボードの送ってきたもの(コンポジット基板は 48kHz)。
+- 約1秒ごとにヘッダを書き直すので、途中で落ちても読める。
+- 取りこぼしたパケットは詰めて書く。窓を複数開いているときは、最初に音が届いた窓だけ。
+
+**見方**: ±32767(または −32768)に何サンプルも続けて張り付いていたら、ADC の入力が
+上限を超えている。Viewer の音量では直せない(基板の入力レベルの問題)。
+例: PS2 の RCA 音声が小亀基板 v1.0.1 で割れていた件
+([改修手順](../hardware/console-frontend/docs/rework-v1.0.1.md))。
+Viewer を使わずに数秒だけ測るなら、`host/python` の `python3 -m retrocastx.audio_dump` でもよい
+(こちらは Viewer を閉じておく必要がある)。
 
 ## MimicX と組み合わせてリモート操作する(macOS)
 
