@@ -408,10 +408,11 @@ pub fn machines() -> Vec<Machine> {
             port: Port::Digital,
             kind: Kind::Rgb,
             modes: vec![
+                // 階調 2bit = RGBI の 16色(Viewer の profiles.rs の rgbi16 と合わせる)
                 m("640x200", t(14.318_18, 910, 68, 150, 640, 262, 3, 30, 200, Progressive),
-                  1, false, "予想(Viewer の profiles.rs と同じ推論)"),
+                  2, false, "予想(Viewer の profiles.rs と同じ推論)。RGBI 16色"),
                 m("320x200", t(14.318_18 / 2.0, 455, 34, 75, 320, 262, 3, 30, 200, Progressive),
-                  1, false, "予想"),
+                  2, false, "予想。RGBI 16色"),
             ],
         },
     ]

@@ -109,6 +109,9 @@ pub struct Profile {
     /// 赤ch=Pr / 緑ch=Y / 青ch=Pb を RGB888 の枠でそのまま送り、Viewer が
     /// RGB に直す(`assembler` の `ycbcr`)。
     pub ycbcr: bool,
+    /// デジタルRGB が 16色(RGBI の I を明るさに使う)か。false は 8色(I を見ない)。
+    /// TVP を通る機種では意味が無い(`assembler` の `rgbi16`)
+    pub rgbi16: bool,
     /// どの端子に繋ぐ機種か。パネルでは端子を選んでから、その端子の機種を選ぶ。
     pub port: Port,
     /// 周波数帯ごとの管面と PLL の初期値。ユーザーが一度も合わせていない
@@ -629,6 +632,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(0),
         verified: true,
         ycbcr: false,
+        rgbi16: false,
         port: Port::Rgb15,
         // XEiJ の CRTC 表と実機(31kHz 768x512 / 512x512、24kHz、15kHz)から
         modes: &[
@@ -689,6 +693,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(1),
         verified: true,
         ycbcr: false,
+        rgbi16: false,
         port: Port::Rgb21,
         modes: &[
             km("256x192 / 256x212 / 512x212", 15.70, 59.92, true),
@@ -718,6 +723,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(0),
         verified: false,
         ycbcr: false,
+        rgbi16: false,
         port: Port::Rgb15,
         modes: &[
             km("640x480 60Hz", 31.47, 59.94, true),
@@ -766,6 +772,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(0),
         verified: false,
         ycbcr: false,
+        rgbi16: false,
         port: Port::Rgb15,
         // テクニカルデータブック(1993)と H98 の資料
         // (https://cf953518.cloudfree.jp/kazzez/furoku/h98pin.htm)から
@@ -833,6 +840,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(0),
         verified: false,
         ycbcr: false,
+        rgbi16: false,
         port: Port::Rgb15,
         // EGB の画面モード番号(Tsugaru のダンプ)を括弧に書く
         modes: &[
@@ -875,6 +883,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(3),
         verified: true,
         ycbcr: false,
+        rgbi16: false,
         port: Port::Video,
         modes: &[km("480i / 240p", 15.73, 59.94, true)],
         presets: &[],
@@ -893,6 +902,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(3),
         verified: false,
         ycbcr: false,
+        rgbi16: false,
         port: Port::Video,
         modes: &[km("480i / 240p", 15.73, 59.94, true)],
         presets: &[],
@@ -910,6 +920,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(3),
         verified: false,
         ycbcr: true,
+        rgbi16: false,
         port: Port::Video,
         modes: &[
             km("480i / 240p", 15.73, 59.94, false),
@@ -960,9 +971,16 @@ pub const PROFILES: &[Profile] = &[
         audio_src: None,
         verified: false,
         ycbcr: false,
+        // ★**16色(RGBI)も予想。** mkIISR は 15色+黒の画面モードを持つので I の線が
+        //   あると見ている。8色の機種で 16色にすると白が灰色(170)になる
+        rgbi16: true,
         port: Port::Digital,
         modes: &[km("640x200 / 320x200", 15.73, 60.05, false)],
-        presets: &[],
+        // ★**表示期間も予想**(devsim の machines.rs と同じ値)。910 中 150〜790、
+        //   262 ライン中 30〜230 を管面の 90% に。320 ドット系(455 中 75〜395)も同じ比
+        presets: &[
+            Preset { band: 15, fv: Some(60), mon: Some([0.7814, -0.0165, 0.8482, 0.0038]), pll: None },
+        ],
     },
 ];
 

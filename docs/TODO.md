@@ -133,6 +133,15 @@ SOG の垂直検出が HSOUT の端と同じクロックに重なると、ゲー
 **状態: ブランチ `gateware-digital-rgb`。実機に焼き済み、未マージ。**
 生成器と測定器まで。**絵にする部分(キャプチャ)はまだ無い。**
 
+**送り方は先に決めて Viewer と devsim に入れた(2026-11-23)。** ゲートウェアはこれに
+合わせて作る(`docs/protocol-v0.md` の「pixfmt = 6 (RGBI4)」と CONFIG 0x003A):
+
+- CONFIG 0x003A `video_src` = 1 で TVP の代わりにデジタルRGB を送る。caps bit5(CAP_DRGB)
+- 1ライン = `pll_divide`(0x0012)ドット、`phase`(0x001F)はドット内の位相。ライン全体を送る
+- LINE は pixfmt 6(RGBI4、1バイト2画素で下位4bitが先、bit0=R 1=G 2=B 3=I)
+- MODE の pixfmt / htotal / fH / fV / 1フレームの組もデジタルRGB の測定から出す
+- 色(8色 / 16色)は Viewer が機種で決める。ボードは線の値をそのまま送る
+
 ★**焼き直すと消える。** リリース版のビットストリーム(gw-v0.9.3 等)には
 入っていないので、WebUSB等で焼き直したら `gateware-digital-rgb` を
 ビルドし直すこと(seed 3 で全ドメイン成立を確認済み)。

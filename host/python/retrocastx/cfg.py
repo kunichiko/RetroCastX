@@ -79,6 +79,7 @@ KNOWN = [
     (0x002D, "il_status",         "インターレース判定 bit0=生位相が交互 bit1=生同期OK bit2=TVPのP/I bit3=TVP vtotalが2フィールド分(読専)"),
     (0x0030, "full_line",         "1ラインまるごと送る(診断)"),
     (0x0036, "pixfmt",            "伝送形式 1=RGB555(既定) 3=YC8(生8bit、CVBS用)"),
+    (0x003A, "video_src",         "映像の出どころ 0=TVP(既定) 1=デジタルRGB(RGBI4、caps bit5)"),
     (0x0050, "sog_thresh",        "reg 10h bit[7:3] SOGスライス閾値(5bit)"),
     (0x0051, "sep_thresh",        "reg 11h 同期セパレータ閾値"),
     (0x0052, "precoast",          "reg 12h プリコースト[ライン] 最低1が必要"),

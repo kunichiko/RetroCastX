@@ -115,6 +115,9 @@ pub struct FrameAssembler {
     /// ここで BT.601 のスタジオレンジ(Y 16〜235 / 色差 128±112)として RGB に直す。
     /// レベルの根拠は profiles.rs の REGS_COMPONENT(粗ゲイン1.2倍・粗オフセット+16)。
     pub ycbcr: bool,
+    /// デジタルRGB(RGBI4)を 16色(I を明るさに使う)で展開するか。false なら
+    /// 8色(I を見ず、各色 0/255)。UI が選んでいる機種から毎フレーム書く
+    pub rgbi16: bool,
     /// コンポーネントの黒の基準(行ごと)。[Y, Cb, Cr] の生コード。
     ///
     /// ★**ライン先頭のバックポーチを毎ライン測って、そこを Y=16 / 色差=128 とみなす**
@@ -227,6 +230,7 @@ impl FrameAssembler {
             interlace_measured: false,
             dot_a_milli: 0,
             ycbcr: false,
+            rgbi16: false,
             ycc_ref: Vec::new(),
             ycc_ref_avg: [16 * 16, 128 * 16, 128 * 16],
             last_raw: Vec::new(),
@@ -484,6 +488,11 @@ impl FrameAssembler {
                     proto::PIXFMT_CVBS8 => {
                         expanded = l.pixels.iter().flat_map(|&v| [v, 0]).collect();
                         l.pixfmt = proto::PIXFMT_YC8;
+                        l.pixels = &expanded;
+                    }
+                    proto::PIXFMT_RGBI4 => {
+                        expanded = expand_rgbi4(l.pixels, l.count_px as usize, self.rgbi16);
+                        l.pixfmt = proto::PIXFMT_RGB888;
                         l.pixels = &expanded;
                     }
                     _ => {}
@@ -978,6 +987,30 @@ impl FrameAssembler {
 
 /// YCC422(2画素で Y0 Cb0 Y1 Cr0)を RGB888 の枠(Pr, Y, Pb)に展開する。
 /// 色差は2画素で共有する(ボードは偶数画素の値を送っている)
+/// RGBI4(1バイト2画素、下位4bitが先。bit0=R bit1=G bit2=B bit3=I)→ RGB888。
+///
+/// 16色は IBM CGA と同じ「色の bit で 2/3、I で 1/3」(0 / 85 / 170 / 255)。
+/// 8色の機種は I の線が無い(ボードのプルダウンで 0)ので、I を見ずに 0 / 255 にする。
+/// ★**8色の機種を16色で見ると、白が 170 の灰色になる。** だから機種で選ぶ
+fn expand_rgbi4(px: &[u8], count: usize, rgbi16: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(count * 3);
+    for i in 0..count.min(px.len() * 2) {
+        let v = (px[i / 2] >> ((i & 1) * 4)) & 0xF;
+        let level = |bit: u8| -> u8 {
+            let on = v >> bit & 1 != 0;
+            if rgbi16 {
+                (on as u8) * 170 + (v >> 3 & 1) * 85
+            } else if on {
+                255
+            } else {
+                0
+            }
+        };
+        out.extend_from_slice(&[level(0), level(1), level(2)]);
+    }
+    out
+}
+
 fn expand_ycc422(px: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(px.len() / 2 * 3);
     for q in px.chunks_exact(4) {
@@ -1689,6 +1722,16 @@ mod tests {
 
     /// コンポーネントの黒が浮いていても、バックポーチを基準に (0,0,0) に戻ること。
     /// 実機の値(黒 Y=20 / Cb=126 / Cr=127)で確かめる
+    #[test]
+    fn rgbi4_expands_low_nibble_first() {
+        // 画素0 = 0x1(赤)、画素1 = 0xE(I+青+緑)、画素2 = 0x8(I だけ)
+        let px = [0xE1, 0x08];
+        assert_eq!(expand_rgbi4(&px, 3, false), vec![255, 0, 0, 0, 255, 255, 0, 0, 0]);
+        assert_eq!(expand_rgbi4(&px, 3, true), vec![170, 0, 0, 85, 255, 255, 85, 85, 85]);
+        // count が奇数なら最後の上位4bitは使わない
+        assert_eq!(expand_rgbi4(&px, 4, false).len(), 12);
+    }
+
     #[test]
     fn ycbcr_black_follows_back_porch() {
         use crate::protocol::PIXFMT_RGB888;

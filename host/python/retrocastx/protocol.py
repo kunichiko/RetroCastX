@@ -119,6 +119,7 @@ CFG_KEY_IN_MUX1 = 0x0069        # レジスタ19h [7:6]=SOG [5:4]=R [3:2]=G [1:0
                                 #   ★入力方式の切替に必須。以前はビルド時定数だった
 CFG_KEY_FRAME_SKIP = 0x0035     # フレーム間引き 0=毎フレーム / 1=2回に1回 …
 CFG_KEY_PIXFMT = 0x0036         # 伝送ピクセル形式。1=RGB555(既定) / 3=YC8(生8bit)
+CFG_KEY_VIDEO_SRC = 0x003A      # 映像の出どころ 0=TVP(既定) / 1=デジタルRGB(RGBI4 で送る。caps bit5)
                                 #   YC8にすると「黒でない範囲」の最適化は自動で切れる
                                 #   (ライン全体が中身なので範囲の概念が成立しない)
 # ARP学習の診断(読み取り専用)。gateware/retrocastx_net.py の ArpLearner。
@@ -194,6 +195,9 @@ PIXFMT_YC8 = 3
 #         (CAP_COMPACT)を持つボードだけが送れる
 PIXFMT_YCC422 = 4
 PIXFMT_CVBS8 = 5
+# RGBI4: デジタルRGB 用 4bit/px。1バイト2画素で下位4bitが先。bit0=R bit1=G bit2=B bit3=I。
+#        ANNOUNCE caps bit5(CAP_DRGB)を持つボードが video_src=1 のときに送る
+PIXFMT_RGBI4 = 6
 CAP_COMPACT = 1 << 1
 # caps bit2: 小亀のLEDの切断中の動作(CONFIG 0x0097)に対応している(gw-v1.4.0 以降)
 CAP_LED_IDLE = 1 << 2
@@ -202,9 +206,18 @@ CAP_LED_IDLE = 1 << 2
 CAP_FRAME_CLOCKS = 1 << 3
 # caps bit4: 表示遅延の計測(フォトトランジスタ、CONFIG 0x00A0〜0x00A6)に対応している
 CAP_PHOTO_LAT = 1 << 4
+# caps bit5: デジタルRGB(入力4)の映像を取り込める(CONFIG 0x003A)
+CAP_DRGB = 1 << 5
 
 BYTES_PER_PX = {PIXFMT_RGB888: 3, PIXFMT_RGB555: 2, PIXFMT_RGB565: 2,
                 PIXFMT_YC8: 2, PIXFMT_YCC422: 2, PIXFMT_CVBS8: 1}
+
+
+def payload_len(pixfmt: int, count_px: int) -> int:
+    """count_px 画素ぶんの中身のバイト数(RGBI4 は1バイト2画素)"""
+    if pixfmt == PIXFMT_RGBI4:
+        return (count_px + 1) // 2
+    return count_px * BYTES_PER_PX[pixfmt]
 
 _COMMON = struct.Struct("<BBBBHH")        # magic, version, type, flags, frame, seq
 _LINE = struct.Struct("<HHHBBI")          # line, offset_px, count_px, pixfmt, mode_id, timestamp
@@ -398,10 +411,13 @@ def pack_subscribe(seq: int, announce_only: bool = False,
 def pack_line(frame: int, seq: int, line: int, offset_px: int, pixfmt: int,
               mode_id: int, timestamp: int, pixels: bytes,
               last_fragment: bool = True, field_odd: bool = False) -> bytes:
-    bpp = BYTES_PER_PX[pixfmt]
-    count_px, rem = divmod(len(pixels), bpp)
-    if rem:
-        raise ValueError("pixel buffer not a multiple of bytes-per-pixel")
+    if pixfmt == PIXFMT_RGBI4:
+        count_px = len(pixels) * 2  # 1バイト2画素(奇数画素は渡さない)
+    else:
+        bpp = BYTES_PER_PX[pixfmt]
+        count_px, rem = divmod(len(pixels), bpp)
+        if rem:
+            raise ValueError("pixel buffer not a multiple of bytes-per-pixel")
     flags = (FLAG_LAST_FRAGMENT if last_fragment else 0) | (FLAG_FIELD_ODD if field_odd else 0)
     return (_COMMON.pack(MAGIC, VERSION, TYPE_LINE, flags, frame & 0xFFFF, seq & 0xFFFF)
             + _LINE.pack(line, offset_px, count_px, pixfmt, mode_id & 0xFF, timestamp & 0xFFFFFFFF)
@@ -421,7 +437,8 @@ def parse(datagram: bytes) -> Tuple[int, object]:
             raise ValueError("short LINE packet")
         line, offset_px, count_px, pixfmt, mode_id, timestamp = _LINE.unpack_from(body, 0)
         pixels = body[LINE_HDR_SIZE:]
-        if pixfmt not in BYTES_PER_PX or len(pixels) != count_px * BYTES_PER_PX[pixfmt]:
+        known = pixfmt in BYTES_PER_PX or pixfmt == PIXFMT_RGBI4
+        if not known or len(pixels) != payload_len(pixfmt, count_px):
             raise ValueError("LINE payload size mismatch")
         return ptype, Line(frame, seq, flags, line, offset_px, count_px,
                            pixfmt, mode_id, timestamp, pixels)
@@ -464,8 +481,9 @@ def parse(datagram: bytes) -> Tuple[int, object]:
 def fragment_line(hactive: int, pixfmt: int, mtu_payload: int) -> list:
     """Split a line of hactive pixels into (offset_px, count_px) fragments that fit
     in mtu_payload bytes of UDP payload (header included)."""
-    bpp = BYTES_PER_PX[pixfmt]
-    max_px = (mtu_payload - COMMON_SIZE - LINE_HDR_SIZE) // bpp
+    room = mtu_payload - COMMON_SIZE - LINE_HDR_SIZE
+    # RGBI4 は1バイト2画素。断片の境目を偶数画素にそろえる
+    max_px = room * 2 if pixfmt == PIXFMT_RGBI4 else room // BYTES_PER_PX[pixfmt]
     if max_px <= 0:
         raise ValueError("MTU too small")
     frags = []
