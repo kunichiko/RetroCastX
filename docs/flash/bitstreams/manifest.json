@@ -1,6 +1,12 @@
 {
   "bitstreams": [
     {
+      "name": "v1.7.0",
+      "file": "retrocastx_v1.7.0.bit",
+      "date": "2026-11-23",
+      "note": "gw-v1.7.0: デジタルRGB(入力4)の映像を取り込む。使っていない回路を外してロジックを空ける\n\n- デジタルRGB の取り込み(実機未確認・シミュレーションのみ)。CONFIG 0x3A video_src = 1 で\n  TVP の代わりにデジタルRGB を RGBI4(pixfmt 6)で送る。caps bit5(CAP_DRGB)。\n  1ライン = pll_divide ドット、phase でドット内の拾う位置を選ぶ(16 が中央)。\n  インターレースと 28MHz 級のドットクロックは未対応\n- ループバック試験用の生成器と測定器、OLED の表示を外した\n- 小亀基板の LED をキーフレーム表の再生から、5つの効果(消灯・固定色・点滅・呼吸・\n  レインボー)を直接作る形に変えた。設定キーは 0x98〜0x9B に変わり、表のキー\n  (0x91/0x92/0x0400〜)は廃止\n- ロジック使用率 90% → 86%\n\nViewer: デジタルRGB の表示と新しい LED の設定には、次の Viewer(main の 3d539f2 以降)が要る。\nv0.18.2 以前の Viewer でも映像はそのまま使え、LED は既定のレインボーのままになる。\n\n\n---\nビルド: seed 4 / oss-cad-suite 2026-09-03 / litex 93c8d230e"
+    },
+    {
       "name": "v1.6.1",
       "file": "retrocastx_v1.6.1.bit",
       "date": "2026-11-22",
