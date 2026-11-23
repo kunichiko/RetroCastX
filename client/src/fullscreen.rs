@@ -55,7 +55,7 @@ pub fn run(port: u16, bind: String, subscribe_to: Option<String>, target_mac: Op
     *shared.gain.lock().unwrap() = Some(params.gain);
     // 組み立ての設定も受信より前に(最初のフレームから効くように)
     shared.ycbcr.store(params.ycbcr, Ordering::Relaxed);
-    shared.rgbi16.store(params.rgbi16, Ordering::Relaxed);
+    shared.palette.store(params.palette.to_u8(), Ordering::Relaxed);
     shared.dot_a_milli.store(params.dot_a_milli, Ordering::Relaxed);
     shared.comb3d.store(params.comb3d, Ordering::Relaxed);
     shared.deint.store(params.deint.to_u8(), Ordering::Relaxed);
@@ -151,8 +151,8 @@ pub struct FsGeom {
     ///   毎フレーム `Shared` へ書いているが、全画面には UI が無いのでここで渡す。**
     ///   渡さないと Pr/Y/Pb がそのまま RGB として出て色がおかしくなった(2026-11-17)
     pub ycbcr: bool,
-    /// デジタルRGB を16色で展開するか(Session の rgbi16 と同じ)
-    pub rgbi16: bool,
+    /// デジタルRGB の色の方式(Session の palette と同じ)
+    pub palette: crate::palette::Palette,
     /// ドット復元の係数(同じく UI が書いていたもの)
     pub dot_a_milli: u32,
     /// コンポジットの3次元コム(同上)

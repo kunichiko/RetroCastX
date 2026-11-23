@@ -43,6 +43,8 @@ pub struct Source {
     pub kind: Kind,
     pub timing: Timing,
     pub color_bits: u32,
+    /// デジタルRGB の色の表(`Mode::palette`)
+    pub palette: Option<crate::palette::Palette>,
 }
 
 /// 1ラインが映像のどこに当たるか
@@ -226,13 +228,13 @@ mod tests {
         let ms = machines();
         let mc = ms.iter().find(|m| m.key == key).unwrap();
         let md = &mc.modes[mode];
-        Source { kind: mc.kind, timing: md.timing.clone(), color_bits: md.color_bits }
+        Source { kind: mc.kind, timing: md.timing.clone(), color_bits: md.color_bits, palette: md.palette }
     }
 
     fn stripes(s: &Source) -> Picture {
         let (w, h) = s.timing.picture_size();
         let o = Options { pattern: Pattern::DotStripes, moving: false, caption: String::new() };
-        pattern::render(w, h, s.color_bits, &o, 0)
+        pattern::render(w, h, s.color_bits, s.palette, &o, 0)
     }
 
     /// 1:1 で位相が合っていれば縦縞が 0/255 のまま取れる。合っていない位相では
@@ -263,7 +265,7 @@ mod tests {
         let s = src("x68000", 0);
         let o = Options { pattern: Pattern::White, moving: false, caption: String::new() };
         let (w, h) = s.timing.picture_size();
-        let pic = pattern::render(w, h, 5, &o, 0);
+        let pic = pattern::render(w, h, 5, None, &o, 0);
         let mut out = vec![[0u8; 3]; 1104];
         let mut seed = 1;
         let l = LineRef { field_line: s.timing.vstart, field: 0, abs_odd: false };
@@ -282,7 +284,7 @@ mod tests {
         let s = src("composite", 0);
         let o = Options { pattern: Pattern::Black, moving: false, caption: String::new() };
         let (w, h) = s.timing.picture_size();
-        let pic = pattern::render(w, h, 8, &o, 0);
+        let pic = pattern::render(w, h, 8, None, &o, 0);
         let mut out = vec![[0u8; 3]; 1820];
         let mut seed = 1;
         let l = LineRef { field_line: 40, field: 0, abs_odd: false };

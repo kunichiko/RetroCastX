@@ -169,8 +169,12 @@ Viewer・devsim・ゲートウェアで同じ:
 4. 縞や文字の縦線が崩れるときは位相(0x1F)を動かす。全体が左右に伸び縮みする
    ときは htotal(pll_divide)が違う(機種の予想値が外れている)
 
-★**PC-6001mkIISR の値(14.31818MHz、htotal 910、RGBI 16色、デジタルRGB 出力)は
-すべて予想**(`client/src/profiles.rs`)。外れていたら Viewer の機種の値から直す。
+★**PC-6001mkIISR の値(14.31818MHz、htotal 910、デジタルRGB 出力)はすべて予想**
+(`client/src/profiles.rs`)。外れていたら Viewer の機種の値から直す。
+色は PC-6001 系15色(`client/src/palette.rs`)。中間色の値は「Retro PC画像変換」の
+色見本から取ったが、**色相制御の線の極性(0 で中間色)は推測**。普通の色と中間色が
+入れ替わって見えたら palette.rs の Pc6001 を逆にする。ケーブルでは色相制御の線を
+ボードの I に繋ぐ(Wikipedia によれば DIN 8ピンの 3番。未確認)
 
 ### クロック再生で残っていること
 

@@ -115,9 +115,9 @@ pub struct FrameAssembler {
     /// ここで BT.601 のスタジオレンジ(Y 16〜235 / 色差 128±112)として RGB に直す。
     /// レベルの根拠は profiles.rs の REGS_COMPONENT(粗ゲイン1.2倍・粗オフセット+16)。
     pub ycbcr: bool,
-    /// デジタルRGB(RGBI4)を 16色(I を明るさに使う)で展開するか。false なら
-    /// 8色(I を見ず、各色 0/255)。UI が選んでいる機種から毎フレーム書く
-    pub rgbi16: bool,
+    /// デジタルRGB(RGBI4)の色の方式(8色 / RGBI / PC-6001 系)。
+    /// UI が選んでいる機種から毎フレーム書く
+    pub palette: crate::palette::Palette,
     /// コンポーネントの黒の基準(行ごと)。[Y, Cb, Cr] の生コード。
     ///
     /// ★**ライン先頭のバックポーチを毎ライン測って、そこを Y=16 / 色差=128 とみなす**
@@ -230,7 +230,7 @@ impl FrameAssembler {
             interlace_measured: false,
             dot_a_milli: 0,
             ycbcr: false,
-            rgbi16: false,
+            palette: Default::default(),
             ycc_ref: Vec::new(),
             ycc_ref_avg: [16 * 16, 128 * 16, 128 * 16],
             last_raw: Vec::new(),
@@ -491,7 +491,7 @@ impl FrameAssembler {
                         l.pixels = &expanded;
                     }
                     proto::PIXFMT_RGBI4 => {
-                        expanded = expand_rgbi4(l.pixels, l.count_px as usize, self.rgbi16);
+                        expanded = expand_rgbi4(l.pixels, l.count_px as usize, self.palette);
                         l.pixfmt = proto::PIXFMT_RGB888;
                         l.pixels = &expanded;
                     }
@@ -989,24 +989,15 @@ impl FrameAssembler {
 /// 色差は2画素で共有する(ボードは偶数画素の値を送っている)
 /// RGBI4(1バイト2画素、下位4bitが先。bit0=R bit1=G bit2=B bit3=I)→ RGB888。
 ///
-/// 16色は IBM CGA と同じ「色の bit で 2/3、I で 1/3」(0 / 85 / 170 / 255)。
-/// 8色の機種は I の線が無い(ボードのプルダウンで 0)ので、I を見ずに 0 / 255 にする。
+/// 4本目の線の意味は機種で違う(8色の機種には無い / RGBI の明るさ / PC-6001 系の
+/// 色相制御)。どの色にするかは `palette.rs`。
 /// ★**8色の機種を16色で見ると、白が 170 の灰色になる。** だから機種で選ぶ
-fn expand_rgbi4(px: &[u8], count: usize, rgbi16: bool) -> Vec<u8> {
+fn expand_rgbi4(px: &[u8], count: usize, palette: crate::palette::Palette) -> Vec<u8> {
+    let t = palette.table();
     let mut out = Vec::with_capacity(count * 3);
     for i in 0..count.min(px.len() * 2) {
         let v = (px[i / 2] >> ((i & 1) * 4)) & 0xF;
-        let level = |bit: u8| -> u8 {
-            let on = v >> bit & 1 != 0;
-            if rgbi16 {
-                (on as u8) * 170 + (v >> 3 & 1) * 85
-            } else if on {
-                255
-            } else {
-                0
-            }
-        };
-        out.extend_from_slice(&[level(0), level(1), level(2)]);
+        out.extend_from_slice(&t[v as usize]);
     }
     out
 }
@@ -1726,10 +1717,11 @@ mod tests {
     fn rgbi4_expands_low_nibble_first() {
         // 画素0 = 0x1(赤)、画素1 = 0xE(I+青+緑)、画素2 = 0x8(I だけ)
         let px = [0xE1, 0x08];
-        assert_eq!(expand_rgbi4(&px, 3, false), vec![255, 0, 0, 0, 255, 255, 0, 0, 0]);
-        assert_eq!(expand_rgbi4(&px, 3, true), vec![170, 0, 0, 85, 255, 255, 85, 85, 85]);
+        use crate::palette::Palette;
+        assert_eq!(expand_rgbi4(&px, 3, Palette::Rgb8), vec![255, 0, 0, 0, 255, 255, 0, 0, 0]);
+        assert_eq!(expand_rgbi4(&px, 3, Palette::Rgbi16), vec![170, 0, 0, 85, 255, 255, 85, 85, 85]);
         // count が奇数なら最後の上位4bitは使わない
-        assert_eq!(expand_rgbi4(&px, 4, false).len(), 12);
+        assert_eq!(expand_rgbi4(&px, 4, Palette::Rgb8).len(), 12);
     }
 
     #[test]

@@ -631,9 +631,9 @@ pub struct Shared {
     /// RGB888 の3チャンネルを Pr/Y/Pb として RGB に直すか(コンポーネント入力)。
     /// UI が選んでいる映像ソースから毎フレーム書く(詳細は assembler の ycbcr)。
     pub ycbcr: AtomicBool,
-    /// デジタルRGB(RGBI4)を16色で展開するか(8色なら false)。UI が選んでいる
-    /// 機種から毎フレーム書く(詳細は assembler の rgbi16)
-    pub rgbi16: AtomicBool,
+    /// デジタルRGB(RGBI4)の色の方式(`Palette::to_u8`)。UI が選んでいる
+    /// 機種から毎フレーム書く(詳細は assembler の palette)
+    pub palette: std::sync::atomic::AtomicU8,
     pub frame: Mutex<Option<CompletedFrame>>,
     /// 1フレームを何本の帯に分けて渡すか(0 = 分けない)。低遅延全画面が書く
     /// (assembler の `slices`)。帯は `slices_q` に積み、frame と同じく repaint で知らせる
@@ -1600,7 +1600,7 @@ fn run(cfg: Config, sock: UdpSocket, shared: Arc<Shared>, repaint: impl Fn()) {
         }
         asm.dot_a_milli = shared.dot_a_milli.load(Ordering::Relaxed);
         asm.ycbcr = shared.ycbcr.load(Ordering::Relaxed);
-        asm.rgbi16 = shared.rgbi16.load(Ordering::Relaxed);
+        asm.palette = crate::palette::Palette::from_u8(shared.palette.load(Ordering::Relaxed));
         asm.comb3d = shared.comb3d.load(Ordering::Relaxed);
         asm.slices = shared.slices.load(Ordering::Relaxed);
         asm.deint = crate::assembler::Deint::from_u8(shared.deint.load(Ordering::Relaxed));

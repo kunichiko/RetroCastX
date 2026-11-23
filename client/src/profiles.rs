@@ -109,9 +109,9 @@ pub struct Profile {
     /// 赤ch=Pr / 緑ch=Y / 青ch=Pb を RGB888 の枠でそのまま送り、Viewer が
     /// RGB に直す(`assembler` の `ycbcr`)。
     pub ycbcr: bool,
-    /// デジタルRGB が 16色(RGBI の I を明るさに使う)か。false は 8色(I を見ない)。
-    /// TVP を通る機種では意味が無い(`assembler` の `rgbi16`)
-    pub rgbi16: bool,
+    /// デジタルRGB の色の方式の既定(`palette.rs`)。Viewer で選び直せる。
+    /// TVP を通る機種では意味が無い
+    pub palette: crate::palette::Palette,
     /// どの端子に繋ぐ機種か。パネルでは端子を選んでから、その端子の機種を選ぶ。
     pub port: Port,
     /// 周波数帯ごとの管面と PLL の初期値。ユーザーが一度も合わせていない
@@ -632,7 +632,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(0),
         verified: true,
         ycbcr: false,
-        rgbi16: false,
+        palette: crate::palette::Palette::Rgb8,
         port: Port::Rgb15,
         // XEiJ の CRTC 表と実機(31kHz 768x512 / 512x512、24kHz、15kHz)から
         modes: &[
@@ -693,7 +693,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(1),
         verified: true,
         ycbcr: false,
-        rgbi16: false,
+        palette: crate::palette::Palette::Rgb8,
         port: Port::Rgb21,
         modes: &[
             km("256x192 / 256x212 / 512x212", 15.70, 59.92, true),
@@ -706,8 +706,10 @@ pub const PROFILES: &[Profile] = &[
         //   推定のタイミングの機種は値も推定。実機はボードが TVP の HSOUT から数えるので、
         //   横位置がその遅れのぶんずれる
         presets: &[
-            // 256x212(192 行は約 81%)
-            Preset { band: 15, fv: Some(60), mon: Some([0.8317, -0.0439, 0.8991, 0.0191]), pll: None },
+            // 256x212(192 行は約 81%)。★**2026-11-23 に実機(MSX turboR)の画面で合わせた値。**
+            //   計算値 [0.8317, -0.0439, 0.8991, 0.0191] では右下へずれて右と下がはみ出した
+            //   (ボードが TVP の HSOUT から数える遅れのぶん)
+            Preset { band: 15, fv: Some(60), mon: Some([0.87, -0.06, 0.95, -0.02]), pll: None },
         ],
     },
     Profile {
@@ -723,7 +725,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(0),
         verified: false,
         ycbcr: false,
-        rgbi16: false,
+        palette: crate::palette::Palette::Rgb8,
         port: Port::Rgb15,
         modes: &[
             km("640x480 60Hz", 31.47, 59.94, true),
@@ -772,7 +774,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(0),
         verified: false,
         ycbcr: false,
-        rgbi16: false,
+        palette: crate::palette::Palette::Rgb8,
         port: Port::Rgb15,
         // テクニカルデータブック(1993)と H98 の資料
         // (https://cf953518.cloudfree.jp/kazzez/furoku/h98pin.htm)から
@@ -840,7 +842,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(0),
         verified: false,
         ycbcr: false,
-        rgbi16: false,
+        palette: crate::palette::Palette::Rgb8,
         port: Port::Rgb15,
         // EGB の画面モード番号(Tsugaru のダンプ)を括弧に書く
         modes: &[
@@ -883,7 +885,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(3),
         verified: true,
         ycbcr: false,
-        rgbi16: false,
+        palette: crate::palette::Palette::Rgb8,
         port: Port::Video,
         modes: &[km("480i / 240p", 15.73, 59.94, true)],
         presets: &[],
@@ -902,7 +904,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(3),
         verified: false,
         ycbcr: false,
-        rgbi16: false,
+        palette: crate::palette::Palette::Rgb8,
         port: Port::Video,
         modes: &[km("480i / 240p", 15.73, 59.94, true)],
         presets: &[],
@@ -920,7 +922,7 @@ pub const PROFILES: &[Profile] = &[
         audio_src: Some(3),
         verified: false,
         ycbcr: true,
-        rgbi16: false,
+        palette: crate::palette::Palette::Rgb8,
         port: Port::Video,
         modes: &[
             km("480i / 240p", 15.73, 59.94, false),
@@ -967,19 +969,72 @@ pub const PROFILES: &[Profile] = &[
             dividers: &[1, 2],
         }],
         htotal_multiple: 1,
-        // デジタルRGB の端子(J6)には音声の線が無い。どの音声入力に繋ぐかは未定
+        // デジタルRGB の端子(J6)には音声の線が無い。「自動」なら小亀基板の RCA
+        //   (main.rs の auto_audio_src)
         audio_src: None,
         verified: false,
         ycbcr: false,
-        // ★**16色(RGBI)も予想。** mkIISR は 15色+黒の画面モードを持つので I の線が
-        //   あると見ている。8色の機種で 16色にすると白が灰色(170)になる
-        rgbi16: true,
+        // ★**PC-6001 系の15色**(4本目の線は RGBI の I ではなく、専用ディスプレイの
+        //   表を切り替える色相制御)。専用ディスプレイの無い 8色の繋ぎ方なら Viewer で
+        //   「8色」に選び直す
+        palette: crate::palette::Palette::Pc6001,
         port: Port::Digital,
         modes: &[km("640x200 / 320x200", 15.73, 60.05, false)],
         // ★**表示期間も予想**(devsim の machines.rs と同じ値)。910 中 150〜790、
         //   262 ライン中 30〜230 を管面の 90% に。320 ドット系(455 中 75〜395)も同じ比
         presets: &[
             Preset { band: 15, fv: Some(60), mon: Some([0.7814, -0.0165, 0.8482, 0.0038]), pll: None },
+        ],
+    },
+    // ★**ここから下の2機種は、色の方式の動きを確かめるために足したもの。**
+    //   どちらも実機で裏を取っていない(verified: false)。値は devsim の machines.rs と同じ
+    Profile {
+        key: "pc8801_15k",
+        label: "PC-8801 (15kHz)",
+        input_regs: &[],
+        auto_pick: false,
+        // ★**予想。** PC-8001 と同じく NTSC 副搬送波の4倍 14.31818MHz、htotal 912 と置いた
+        oscillators: &[Clock {
+            name: "14.31818MHz (予想)",
+            hz: 14.318_18e6,
+            dividers: &[1],
+        }],
+        htotal_multiple: 1,
+        audio_src: None,
+        verified: false,
+        ycbcr: false,
+        // 8色の機種(I の線が無い)
+        palette: crate::palette::Palette::Rgb8,
+        port: Port::Digital,
+        modes: &[km("640x200", 15.70, 59.9, false)],
+        // 管面の 90%(上の機種と同じ式)。912 中 140〜780、262 ライン中 30〜230
+        presets: &[
+            Preset { band: 15, fv: Some(60), mon: Some([0.7797, -0.0044, 0.8482, 0.0038]), pll: None },
+        ],
+    },
+    Profile {
+        key: "ibmcga",
+        label: "IBM PC (CGA)",
+        input_regs: &[],
+        auto_pick: false,
+        // CGA は 14.31818MHz、1ライン 912 ドット(CRTC の R0 = 113 文字 × 8)、262 ライン
+        oscillators: &[Clock {
+            name: "14.31818MHz",
+            hz: 14.318_18e6,
+            dividers: &[1],
+        }],
+        htotal_multiple: 8,
+        audio_src: None,
+        verified: false,
+        ycbcr: false,
+        // RGBI 16色(暗い黄色を茶色にするモニタもあるが、ここでは CGA の素の16色)
+        palette: crate::palette::Palette::Rgbi16,
+        port: Port::Digital,
+        modes: &[km("640x200 / 320x200", 15.70, 59.9, false)],
+        // 管面の 90%(上の機種と同じ式)。912 中 136〜776(320 ドット系は 456 中 68〜388)、
+        //   262 ライン中 30〜230
+        presets: &[
+            Preset { band: 15, fv: Some(60), mon: Some([0.7797, 0.0, 0.8482, 0.0038]), pll: None },
         ],
     },
 ];

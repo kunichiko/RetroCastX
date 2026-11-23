@@ -82,6 +82,7 @@ Mac / Windows / Linux でビルドできる(Viewer と同じ eframe)。
 - 表示遅延の計測(caps bit4)、S/PDIF は無い
 - デジタルRGB(caps bit5)は、Viewer が 0x3A を 1 にすると入力4 の機種を RGBI4 で送る。
   ドットは `pll_divide` の位置でそのまま拾うので、実機の「HSYNC からドットクロックを
-  作り直す」誤差(ゲートウェアの課題)は無い。色数は機種の階調で決まる(1bit = 8色、
-  2bit 以上 = RGBI 16色)
+  作り直す」誤差(ゲートウェアの課題)は無い。色は機種の色の表
+  (Viewer の `src/palette.rs` を共有)で信号にする。PC-6001mkIISR は PC-6001 系15色。
+  カスタムの機種は階調 1bit = 8色、2bit 以上 = RGBI 16色
 - X68000 24kHz(VSYNC 1回にフィールド2枚)の後半フィールドは半ラインずらしていない

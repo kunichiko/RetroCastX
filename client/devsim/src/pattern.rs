@@ -107,11 +107,13 @@ fn quantize(v: u8, bits: u32) -> u8 {
 }
 
 /// 絵を作る。`frame` は動く物の位置に使う
-pub fn render(w: u32, h: u32, color_bits: u32, opt: &Options, frame: u32) -> Picture {
+/// `palette` はデジタルRGB の機種の色の表。あれば階調の代わりに、表の色へ寄せる
+pub fn render(w: u32, h: u32, color_bits: u32, palette: Option<Palette16>, opt: &Options, frame: u32)
+    -> Picture {
     let mut p = Picture::new(w.max(1), h.max(1));
     match opt.pattern {
-        Pattern::Composite => composite(&mut p, color_bits),
-        Pattern::ColorBars => bars(&mut p, 0, h),
+        Pattern::Composite => composite(&mut p, color_bits, palette),
+        Pattern::ColorBars => bars(&mut p, 0, h, palette),
         Pattern::GrayRamp => ramp(&mut p, 0, h, color_bits),
         Pattern::DotStripes => stripes(&mut p, 0, h),
         Pattern::Checker => {
@@ -149,18 +151,41 @@ pub fn render(w: u32, h: u32, color_bits: u32, opt: &Options, frame: u32) -> Pic
         p.fill(x0 - pad, y0 - pad, x0 + bw + pad, y0 + 7 * scale + pad, [16, 24, 64]);
         text(&mut p, x0, y0, &opt.caption, scale, [255, 255, 255]);
     }
-    for c in p.rgb.iter_mut() {
-        for v in c.iter_mut() {
-            *v = quantize(*v, color_bits);
+    match palette {
+        // 表に無い色は出せないので、最も近い表の色にする(信号にするときと同じ規則)
+        Some(pal) => {
+            let t = pal.table();
+            for c in p.rgb.iter_mut() {
+                *c = t[pal.nearest(*c) as usize];
+            }
+        }
+        None => {
+            for c in p.rgb.iter_mut() {
+                for v in c.iter_mut() {
+                    *v = quantize(*v, color_bits);
+                }
+            }
         }
     }
     p
 }
 
-fn bars(p: &mut Picture, y0: u32, y1: u32) {
+use crate::palette::Palette as Palette16;
+
+/// カラーバー。デジタルRGB で4本目の線を使う機種(RGBI / PC-6001 系)は、上半分を
+/// 4本目=1、下半分を 4本目=0 の色にして、表の色をすべて出す。純色の 255 だけだと
+/// 8色にしかならない
+fn bars(p: &mut Picture, y0: u32, y1: u32, palette: Option<Palette16>) {
+    let mid = y0 + (y1 - y0) / 2;
+    let table = palette.filter(|p| *p != Palette16::Rgb8).map(|p| p.table());
     for x in 0..p.w {
         let c = BARS[(x * 8 / p.w) as usize];
         for y in y0..y1 {
+            let c = match &table {
+                // RGB の3bit は純色のまま、4本目を上下で変える
+                Some(t) => t[(Palette16::Rgb8.nearest(c) | if y < mid { 8 } else { 0 }) as usize],
+                None => c,
+            };
             p.set(x, y, c);
         }
     }
@@ -220,13 +245,13 @@ fn border(p: &mut Picture) {
     p.fill(w - 1, 0, w, h, [255; 3]);
 }
 
-fn composite(p: &mut Picture, bits: u32) {
+fn composite(p: &mut Picture, bits: u32, palette: Option<Palette16>) {
     let h = p.h;
     // 上 3/8 カラーバー、次の 1/4 階調、次の 1/8 縦縞、残り格子
     let a = h * 3 / 8;
     let b = a + h / 4;
     let c = b + h / 8;
-    bars(p, 0, a);
+    bars(p, 0, a, palette);
     ramp(p, a, b, bits);
     stripes(p, b, c);
     let step = (p.w.min(h) / 8).max(8);
@@ -324,12 +349,25 @@ mod tests {
         assert_eq!(quantize(200, 1), 255);
     }
 
+    /// デジタルRGB の機種のカラーバーは、色の表の色をすべて含む
+    #[test]
+    fn digital_bars_cover_palette() {
+        let o = Options { pattern: Pattern::ColorBars, moving: false, caption: String::new() };
+        for pal in Palette16::ALL {
+            let p = render(640, 200, 8, Some(pal), &o, 0);
+            let mut set: Vec<[u8; 3]> = p.rgb.clone();
+            set.sort();
+            set.dedup();
+            assert_eq!(set.len(), pal.colors(), "{pal:?} {set:?}");
+        }
+    }
+
     #[test]
     fn every_pattern_renders_at_odd_sizes() {
         for pat in Pattern::ALL {
             let o = Options { pattern: pat, moving: true, caption: "X68000 768x512".into() };
             for (w, h) in [(1, 1), (7, 3), (256, 192), (1490, 240)] {
-                let p = render(w, h, 5, &o, 123);
+                let p = render(w, h, 5, None, &o, 123);
                 assert_eq!(p.rgb.len(), (w * h) as usize);
             }
         }
