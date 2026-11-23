@@ -512,7 +512,7 @@ pub const CFG_KEY_FH_TVP: u16 = 0x0058;
 /// 出さない(CSYNC・SOG の)機種では 0(docs/composite-video-plan.md)。
 pub const CFG_KEY_FH_RAW: u16 = 0x002A;
 
-/// デジタルRGB の水平同期の実測[Hz]。読み出し専用(gateware/retrocastx_drgb.py)。
+/// デジタルRGB の水平同期の実測[Hz]。読み出し専用(gateware/retrocastx_drgb_capture.py)。
 /// TVP を通らないので、どの端子を選んでいても読める。対応していないゲートウェアは 0
 pub const CFG_KEY_DRGB_FH: u16 = 0x0070;
 

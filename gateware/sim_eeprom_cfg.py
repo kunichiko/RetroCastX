@@ -78,7 +78,7 @@ class Eeprom24AA02:
         self.busy = 0           # >0 のあいだアドレスにNACKを返す
         self.wr_buf = {}        # このトランザクションで書かれたバイト
         self.writes = []        # [(先頭アドレス, [バイト...])] 焼いた順
-        # 自分以外(OLED 0x3C / TVP 0x5C)が呼ばれた = 起動時の読み出しが終わった
+        # 自分以外(TVP 0x5C)が呼ばれた = 起動時の読み出しが終わった
         self.saw_other = False
 
     # --- 内部 ---

@@ -8,16 +8,13 @@ I2CByteMaster: START/WRITE/READ/STOP を op 単位で実行するビットバン
 
 StatusDisplay: 1本のI2Cバスを時分割し、
   - TVP7002(0x5C): RESETB解除 → 初期化数レジスタ書込 → レジスタ読出(ACK/値取得)
-  - SSD1306 OLED(0x3C): 初期化 → テキストRAMを常時再描画(ライブ値をhex整形)
+  - EEPROM(0x50/0x51): EUI-48(MAC)と個体設定ページの読み書き
+
+★以前は SSD1306 OLED(0x3C)にライブ値を描いていたが、使っていないので外した
+  (2026-11-23、ロジック使用率を下げるため。約800 LUT とフォント用の EBR 1個)。
+  名前の StatusDisplay はその名残。
 """
 from migen import *
-
-try:
-    from .oled_font import FONT8
-except ImportError:
-    import sys, os
-    sys.path.insert(0, os.path.dirname(__file__))
-    from oled_font import FONT8
 
 OP_START, OP_WRITE, OP_READ, OP_STOP = 0, 1, 2, 3
 
@@ -163,38 +160,10 @@ class I2CByteMaster(Module):
         self.comb += self.busy.eq(~fsm.ongoing("IDLE"))
 
 
-# ---- SSD1306 128x64 初期化列 + 表示範囲 ----
-OLED_INIT = [
-    0xAE, 0xD5,0x80, 0xA8,0x3F, 0xD3,0x00, 0x40, 0x8D,0x14, 0x20,0x00,
-    0xA1, 0xC8, 0xDA,0x12, 0x81,0xCF, 0xD9,0xF1, 0xDB,0x40, 0xA4, 0xA6,
-    0x2E, 0xAF, 0x21,0x00,0x7F, 0x22,0x00,0x07,
-]
-COLS, ROWS = 16, 8
-
-
-def _banner():
-    lines = [
-        "RetroCastX  i5",
-        "----------------",
-        "TVP : ---",        # ACK/NAK @ col6..8
-        "SYNC: 0x--",       # 0x14 hex @ col8,9
-        "LPF : 0x----",     # 0x37:0x38 hex @ col8..11
-        "CPL : 0x----",     # 0x39:0x3A hex @ col8..11
-        "UP  : 0x--------",  # hex @ col8..15
-        "in3 RGB  0x5C/3C",
-    ]
-    buf = []
-    for r in range(ROWS):
-        s = (lines[r] if r < len(lines) else "")
-        s = (s + " " * COLS)[:COLS]
-        buf += [ord(c) & 0x7F for c in s]
-    return buf
-
-
 class StatusDisplay(Module):
-    """共有I2C(SDA/SCL) + RESETB を使い、TVP7002の応答/レジスタを読み OLEDに表示。"""
+    """共有I2C(SDA/SCL) + RESETB を使い、TVP7002 と EEPROM を読み書きする。"""
     def __init__(self, pads=None, sys_clk_freq=45e6, i2c_freq=400e3,
-                 tvp_addr=0x5C, oled_addr=0x3C, eeprom_addr=0x50,
+                 tvp_addr=0x5C, eeprom_addr=0x50,
                  green_input=3, red_input=3, blue_input=3, pll_divide=0):
         # pll_divide: H-PLL帰還分周比(=1ライン当たりのDATACLK数)。0なら書かない
         #   (TVP既定1650)。入力の実水平トータル[ドット]に合わせると1サンプル=1ドットに
@@ -269,7 +238,7 @@ class StatusDisplay(Module):
         #     0x37 L_FRAME_STAT_LSBS / 0x38 L_FRAME_STAT_MSBS
         #     0x39 CLK_L_STAT_LSBS   / 0x3A CLK_L_STAT_MSBS
         #   MSBs側は下位4bitが値の[11:8]で、上位はステータス(bit5=P/I detect)。
-        #   OLEDの表示(lpf_lo[0:4],lpf_hi[4:8],lpf_hi[0:4])はこの並びで正しい。
+        #   12bit 値は Cat(lpf_hi, lpf_lo[0:4]) の並び。
         #   名前に釣られて MSBs/LSBs を取り違えやすいので注意(実際に踏んだ)。
         self.lpf_hi = Signal(8); self.lpf_lo = Signal(8)  # 0x37(LSBs)/0x38(MSBs)
         self.cpl_hi = Signal(8); self.cpl_lo = Signal(8)  # 0x39(LSBs)/0x3A(MSBs)
@@ -537,7 +506,6 @@ class StatusDisplay(Module):
 
         TVP_W = (tvp_addr << 1) & 0xFE       # 0xB8
         TVP_R = TVP_W | 1                    # 0xB9
-        OLED_W = (oled_addr << 1) & 0xFE     # 0x78
         # EUI-48 EEPROM(24AA025E48)。EUI-48 は 0xFA..0xFF に工場書込みされていて
         # ハードウェア保護されている。基板には ETH0=0x50 / ETH1=0x51 の2個。
         EE_A0 = (eeprom_addr << 1) & 0xFE            # 0xA0 (0x50)
@@ -545,17 +513,9 @@ class StatusDisplay(Module):
         EE_EUI_REG = 0xFA
 
         # ROM/RAM
-        self.specials.font = Memory(8, 1024, init=FONT8)
-        frd = self.font.get_port(); self.specials += frd
-        self.specials.text = Memory(8, COLS*ROWS, init=_banner())
-        trd = self.text.get_port(); twr = self.text.get_port(write_capable=True)
-        self.specials += trd, twr
 
-        init_rom = Array(Constant(v, 8) for v in OLED_INIT)
-        NINIT = len(OLED_INIT)
-
-        # uptime 秒カウンタ(hex表示用)
-        subsec = Signal(max=int(sys_clk_freq)); sec = Signal(32)
+        # 1秒の刻み
+        subsec = Signal(max=int(sys_clk_freq)); sec = Signal()   # 秒の偶奇(2秒ごとの書き直し用)
         self.sync += [
             If(subsec == int(sys_clk_freq)-1, subsec.eq(0), sec.eq(sec+1)
               ).Else(subsec.eq(subsec+1)),
@@ -564,7 +524,7 @@ class StatusDisplay(Module):
         # --- バスを動かす頻度 ---
         #
         # ★**SDA(U16)は i5 の緑LEDと同じピン。** 以前は毎周すべての TVP レジスタを
-        #   書き、OLED の全画面(1024バイト、100kHz で約92ms)を送っていたので、
+        #   書き、OLED の全画面(1024バイト、100kHz で約92ms。OLED は外した)を送っていたので、
         #   バスがほぼ休まず、緑LEDが常に高速点滅していた。必要なときだけ動かす:
         #
         #   - TVP への書き込み … CONFIG で何か書かれたとき(`cfg_touched`)と、
@@ -573,7 +533,6 @@ class StatusDisplay(Module):
         #     戻ったときの保険(以前の毎周書きが担っていた役目)
         #   - TVP の読み出し … 毎周(100ms ごと)。キャプチャがライン数と
         #     インターレース判定に使っているので減らさない(以前の約7回/秒より多い)
-        #   - OLED の全画面 … 5秒ごと(診断用の表示なので遅れても困らない)
         #
         #   ★**緑LEDの点滅は消し切れない。** 読み出しのたびに SDA が動くので、
         #     点滅の速さは変わらず暗くなるだけ(実機 2026-11-07)。1秒ごとに
@@ -581,20 +540,13 @@ class StatusDisplay(Module):
         #     完全に消すにはLEDを外すか、次の基板で SDA を U16 以外へ移す
         self.cfg_touched = Signal()
         wr_req   = Signal(reset=1)       # 次の周で TVP へ書く(起動直後は必ず書く)
-        oled_req = Signal(reset=1)       # 次の周で OLED を描き直す
         wr_take   = Signal()
-        oled_take = Signal()
-        oled_sec = Signal(3)
         tick_1s = Signal()
         self.comb += tick_1s.eq(subsec == int(sys_clk_freq)-1)
         self.sync += [
-            If(tick_1s, oled_sec.eq(Mux(oled_sec == 4, 0, oled_sec + 1))),
             If(self.cfg_touched | (tick_1s & sec[0]),                  # 2秒ごと
                 wr_req.eq(1),
             ).Elif(wr_take, wr_req.eq(0)),
-            If(tick_1s & (oled_sec == 4),                              # 5秒ごと
-                oled_req.eq(1),
-            ).Elif(oled_take, oled_req.eq(0)),
         ]
 
         # --- I2C op 発行ヘルパ(pumpパターン) ---
@@ -610,13 +562,6 @@ class StatusDisplay(Module):
 
         # フレーム用インデックス
         idx = Signal(11)
-        # OLED data 座標
-        k = Signal(11); page = Signal(3); xcol = Signal(7)
-        self.comb += [k.eq(idx-2), page.eq(k[7:10]), xcol.eq(k[0:7])]
-        self.comb += [trd.adr.eq((page<<4) + xcol[3:7]),
-                      frd.adr.eq((trd.dat_r<<3) + xcol[0:3])]
-        prefetch = Signal(2)
-        databyte = Signal(8)
 
         # 起動後リセット解除タイマ
         rst_cnt = Signal(max=int(sys_clk_freq//10)+1)
@@ -763,7 +708,6 @@ class StatusDisplay(Module):
                                 wval_b.eq(getattr(self, _sig)))
 
         # FORMAT
-        fi = Signal(5)   # 0..20 (NFMT=21)
         ee_idx = Signal(3)   # EUI-48 の読み出し位置 0..5
         # ★**2個とも読む。** 基板には LAN0=0x50 / LAN1=0x51 の2個あり、
         #   ポートごとに自分の EUI-48 を名乗る。片方しか実装していない基板でも
@@ -875,9 +819,6 @@ class StatusDisplay(Module):
         ]
         self.comb += self.save_state.eq(Mux(save_pending, 1, save_res))
 
-        def hexch(nib):
-            return Mux(nib < 10, ord('0') + nib, ord('A') - 10 + nib)
-
         self.submodules.fsm = fsm = FSM(reset_state="POR0")
 
         # 1) RESET: resetb=0 保持 -> 1 解除 -> 少し待つ
@@ -894,7 +835,7 @@ class StatusDisplay(Module):
 
         # 1.5) EUI-48 を読む: S,0xA0,0xFA,Sr,0xA1,READ×6(最後だけNACK),P
         #
-        # ★**OLED や TVP より先に読む。** MAC は Ethernet が最初のパケットを
+        # ★**TVP より先に読む。** MAC は Ethernet が最初のパケットを
         #   出すより前に確定していないと、途中で MAC が変わってスイッチの学習が
         #   おかしくなる。ここは電源投入から約1ms で終わる。
         #
@@ -998,18 +939,8 @@ class StatusDisplay(Module):
                     # magic が通ってチェックサムだけ落ちたなら「壊れている」
                     NextValue(self.cfg_err, Mux(cp_magic, 2, 1)),
                 ),
-                NextState("OI_START")))
+                NextState("TP_START")))
         fsm.act("CP_ABORT", self.resetb.eq(1), *issue(OP_STOP),
-            If(m.done, NextState("OI_START")))
-
-        # 2) OLED 初期化フレーム: START,0x78,0x00,<INIT>,STOP
-        fsm.act("OI_START", self.resetb.eq(1), *issue(OP_START),
-            If(m.done, NextValue(idx,0), NextState("OI_BODY")))
-        fsm.act("OI_BODY", self.resetb.eq(1),
-            *issue(OP_WRITE, Mux(idx==0, OLED_W, Mux(idx==1, 0x00, init_rom[idx-2]))),
-            If(m.done,
-                If(idx == 2+NINIT-1, NextState("OI_STOP")).Else(NextValue(idx, idx+1))))
-        fsm.act("OI_STOP", self.resetb.eq(1), *issue(OP_STOP),
             If(m.done, NextState("TP_START")))
 
         # 3) TVP read (reg -> r01/r02): S,0xB8,reg,Sr,0xB9,READ(nack),P
@@ -1040,75 +971,14 @@ class StatusDisplay(Module):
         fsm.act("TP_STOP", self.resetb.eq(1), *issue(OP_STOP),
             If(m.done,
                 If(step == NSTEP - 1,
-                    NextValue(step, 0), NextValue(fi, 0), NextState("FMT"),
+                    NextValue(step, 0), NextValue(rst_cnt, 0), NextState("DWELL"),
                 ).Else(
                     NextValue(step, step + 1), NextState("TP_START"),
                 )))
 
-        # 4) FORMAT: 動的21文字(ACK/SYNC/LPF/CPL/UP)をテキストRAMへ書込
-        NFMT = 21
-        faddr = Signal(7); fchar = Signal(8)
-        up = sec
-        self.comb += [
-            Case(fi, {
-                0:  [faddr.eq(38), fchar.eq(Mux(self.tvp_ack, ord('A'), ord('N')))],
-                1:  [faddr.eq(39), fchar.eq(Mux(self.tvp_ack, ord('C'), ord('A')))],
-                2:  [faddr.eq(40), fchar.eq(ord('K'))],
-                3:  [faddr.eq(56), fchar.eq(hexch(self.syncdet[4:8]))],
-                4:  [faddr.eq(57), fchar.eq(hexch(self.syncdet[0:4]))],
-                # Lines/Frame[11:0]=(0x38[3:0]<<8)|0x37 → 4桁表示 0x0NNN(上位nibは常に0)
-                5:  [faddr.eq(72), fchar.eq(ord('0'))],
-                6:  [faddr.eq(73), fchar.eq(hexch(self.lpf_lo[0:4]))],
-                7:  [faddr.eq(74), fchar.eq(hexch(self.lpf_hi[4:8]))],
-                8:  [faddr.eq(75), fchar.eq(hexch(self.lpf_hi[0:4]))],
-                # Clocks/Line[11:0]=(0x3A[3:0]<<8)|0x39 → 4桁表示 0x0NNN
-                9:  [faddr.eq(88), fchar.eq(ord('0'))],
-                10: [faddr.eq(89), fchar.eq(hexch(self.cpl_lo[0:4]))],
-                11: [faddr.eq(90), fchar.eq(hexch(self.cpl_hi[4:8]))],
-                12: [faddr.eq(91), fchar.eq(hexch(self.cpl_hi[0:4]))],
-                13: [faddr.eq(104), fchar.eq(hexch(up[28:32]))],
-                14: [faddr.eq(105), fchar.eq(hexch(up[24:28]))],
-                15: [faddr.eq(106), fchar.eq(hexch(up[20:24]))],
-                16: [faddr.eq(107), fchar.eq(hexch(up[16:20]))],
-                17: [faddr.eq(108), fchar.eq(hexch(up[12:16]))],
-                18: [faddr.eq(109), fchar.eq(hexch(up[8:12]))],
-                19: [faddr.eq(110), fchar.eq(hexch(up[4:8]))],
-                20: [faddr.eq(111), fchar.eq(hexch(up[0:4]))],
-            }),
-        ]
-        fsm.act("FMT", self.resetb.eq(1),
-            twr.adr.eq(faddr), twr.dat_w.eq(fchar), twr.we.eq(1),
-            If(fi == NFMT - 1,
-                If(oled_req,
-                    oled_take.eq(1), NextState("OD_START"),
-                ).Else(NextValue(rst_cnt, 0), NextState("DWELL")),
-            ).Else(NextValue(fi, fi+1)))
-
-        # 5) OLED data フレーム: START,0x78,0x40,<1024>,STOP
-        fsm.act("OD_START", self.resetb.eq(1), *issue(OP_START),
-            If(m.done, NextValue(idx,0), NextValue(prefetch,0), NextState("OD_BODY")))
-        fsm.act("OD_BODY", self.resetb.eq(1),
-            # idx0,1 は 0x78,0x40。idx>=2 はフォントバイト(2サイクルprefetch)
-            If(idx < 2,
-                *issue(OP_WRITE, Mux(idx==0, OLED_W, 0x40)),
-                If(m.done, NextValue(idx, idx+1)),
-            ).Else(
-                # prefetch: 0->1->2 でfrd.dat_r確定
-                If(prefetch != 2,
-                    NextValue(prefetch, prefetch+1),
-                ).Else(
-                    *issue(OP_WRITE, frd.dat_r),
-                    If(m.done,
-                        NextValue(prefetch, 0),
-                        If(idx == 2+1024-1, NextState("OD_STOP")).Else(NextValue(idx, idx+1))),
-                ),
-            ),
-        )
-        fsm.act("OD_STOP", self.resetb.eq(1), *issue(OP_STOP),
-            If(m.done, NextValue(rst_cnt,0), NextState("DWELL")))
         # 6) 次周まで待つ(100ms)。書き込みが要るかどうかはここで決める
         #
-        # ★**EEPROMへの書込みはここに割り込ませる。** I2Cバスは TVP と OLED と
+        # ★**EEPROMへの書込みはここに割り込ませる。** I2Cバスは TVP と
         #   共有なので、表示ループの合間でしか触れない。1周(100ms)以内に始まる。
         dwell = Signal(24)
         fsm.act("DWELL", self.resetb.eq(1),

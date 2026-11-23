@@ -9,8 +9,9 @@ GRB の並び・ビット順・リセット幅の取り違えもここで落ち�
 """
 from migen import *
 
-from retrocastx_led import (StatusLed, KeyframeLeds, Ws2812Chain, rainbow_table,
-                            STATE_COLORS, IDLE_KEEP, IDLE_BREATHE, IDLE_OFF)
+from retrocastx_led import (StatusLed, KokameLeds, Ws2812Chain,
+                            STATE_COLORS, IDLE_KEEP, IDLE_BREATHE, IDLE_OFF,
+                            EFF_OFF, EFF_SOLID, EFF_BLINK, EFF_BREATHE, EFF_RAINBOW)
 
 CLK = 8e6   # 1ビット10サイクル。実機(45MHz)より粗いがビット幅の比は同じ
 MS = 500    # シミュレーション上の「1ms」。実時間だと遅すぎるので縮める
@@ -74,96 +75,121 @@ def test_status():
     print("status: OK —", ", ".join(hex(x) for x in got))
 
 
-def test_keyframes():
+def hue_ref(h):
+    """KokameLeds と同じ式の色相 → 0x00RRGGBB(16bit の色相)"""
+    h6 = h * 6
+    seg, f = (h6 >> 16) & 7, (h6 >> 8) & 0xFF
+    d = 255 - f
+    r, g, b = {0: (255, f, 0), 1: (d, 255, 0), 2: (0, 255, f),
+               3: (0, d, 255), 4: (f, 0, 255)}.get(seg, (255, 0, d))
+    return (r << 16) | (g << 8) | b
+
+
+def run_kokame(setup, total_ms, marks_at, **kw):
+    """setup(dut) を最初に流し、marks_at の各時刻[ms]に受けていた最後のフレームを返す"""
     pad = Signal()
-    dut = KeyframeLeds(pad, CLK, ms_cycles=MS)
+    dut = KokameLeds(pad, CLK, ms_cycles=MS, **kw)
     frames = []
     marks = {}
 
     def drive():
-        # 既定のレインボー: 起動直後は先頭フレームの色(t=0)
-        yield dut.bright.eq(255)
-        for _ in range(15 * MS):
-            yield
-        marks["boot"] = len(frames)
-        # バンク1へ2LED・2フレームの表を書いて切り替える
-        #   f0: 赤/緑 を 20ms 保持 → 40ms で f1 へフェード
-        #   f1: 青/白 を 20ms 保持 → 切り替え(フェードなし)で f0 へ
-        tbl = [(20 | ((65536 // 40) << 16)), 0xFF0000, 0x00FF00,
-               20, 0x0000FF, 0xFFFFFF]
-        for k, w in enumerate(tbl):
-            yield dut.tbl_adr.eq(256 + k)
-            yield dut.tbl_dat_w.eq(w)
-            yield dut.tbl_we.eq(1)
-            yield
-        yield dut.tbl_we.eq(0)
+        yield from setup(dut)
+        t = 0
+        for name, at in sorted(marks_at.items(), key=lambda x: x[1]):
+            for _ in range((at - t) * MS):
+                yield
+            t = at
+            marks[name] = len(frames)
+
+    run_simulation(dut, [drive(), decode(pad, frames, total_ms * MS)])
+    return dut, frames, marks
+
+
+def test_rainbow():
+    """電源投入時の既定(レインボー、4個、明るさ64、4個で半周ずらす)。
+    各フレームの4色が「ある色相 h から spread ずつずらした色相」を明るさで
+    縮めたものと一致すること"""
+    spread = 65536 // 8
+
+    def setup(dut):
+        yield dut.rate.eq(65536 // 40)      # 40ms で1周(試験を短くする)
+        yield
+
+    _, frames, marks = run_kokame(setup, 60, {"a": 25, "b": 55})
+    for name in ("a", "b"):
+        got = frames[marks[name] - 1]
+        assert len(got) == 4, got
+        hit = None
+        for h in range(65536):
+            if all(scale(hue_ref((h + i * spread) & 0xFFFF), 64) == got[i] for i in range(4)):
+                hit = h
+                break
+        assert hit is not None, f"レインボーの色が合わない: {[hex(x) for x in got]}"
+    a, b = frames[marks["a"] - 1], frames[marks["b"] - 1]
+    assert a != b, "レインボーの色が動いていない"
+    print("rainbow: OK —", " ".join(f"{x:06x}" for x in a), "→", " ".join(f"{x:06x}" for x in b))
+
+
+def test_effects():
+    """固定色・明るさ・点滅・呼吸・消灯"""
+    def setup(dut):
         yield dut.n_led.eq(2)
-        yield dut.frames.eq(2)
-        yield dut.bank.eq(1)
-        for _ in range(12 * MS):
-            yield
-        marks["hold0"] = len(frames)
-        # 送出は10msごとなので、区間の真ん中あたりで最後に受けた色を見る
-        for _ in range(23 * MS):          # 35ms: フェード中(20〜60ms)
-            yield
-        marks["fade"] = len(frames)
-        for _ in range(35 * MS):          # 70ms: f1 の保持中(60〜80ms)
-            yield
-        marks["hold1"] = len(frames)
-        for _ in range(20 * MS):          # 90ms: f0 に戻って保持中
-            yield
-        marks["loop"] = len(frames)
+        yield dut.effect.eq(EFF_SOLID)
+        yield dut.color.eq(0xFF8040)
+        yield dut.bright.eq(255)
+        yield
 
-    n = 110 * MS
-    run_simulation(dut, [drive(), decode(pad, frames, n)])
-    words, _ = rainbow_table(4)
-    boot = frames[marks["boot"] - 1]
-    # 既定は保持0ms ですぐフェードを始めるので、先頭フレームの色から少しだけ進んでいる
-    near = lambda x, y: all(abs(((x >> s) & 0xFF) - ((y >> s) & 0xFF)) <= 16
-                            for s in (0, 8, 16))
-    assert len(boot) == 4 and all(near(x, y) for x, y in zip(boot, words[1:5])), \
-        f"既定パターンの先頭が違う: {[hex(x) for x in boot]}"
-    assert frames[marks["hold0"] - 1] == [0xFF0000, 0x00FF00], \
-        f"f0 の保持: {[hex(x) for x in frames[marks['hold0'] - 1]]}"
-    mid = frames[marks["fade"] - 1]
-    # フェード途中: 赤→青、緑→白 の中間のどこか(端点ではない)
-    r, g = mid
-    assert 0 < (r >> 16) < 0xFF and 0 < (r & 0xFF) < 0xFF and (r >> 8) & 0xFF == 0, \
-        f"フェード中の LED0 が補間されていない: {r:06x}"
-    assert (g >> 8) & 0xFF == 0xFF and 0 < (g >> 16) < 0xFF, \
-        f"フェード中の LED1 が補間されていない: {g:06x}"
-    assert frames[marks["hold1"] - 1] == [0x0000FF, 0xFFFFFF], \
-        f"f1 の保持: {[hex(x) for x in frames[marks['hold1'] - 1]]}"
-    assert frames[marks["loop"] - 1] == [0xFF0000, 0x00FF00], \
-        f"ループして f0 に戻っていない: {[hex(x) for x in frames[marks['loop'] - 1]]}"
-    print("keyframes: OK — boot", " ".join(f"{x:06x}" for x in boot),
-          "/ fade", f"{r:06x} {g:06x}")
+    _, frames, marks = run_kokame(setup, 25, {"solid": 22})
+    assert frames[marks["solid"] - 1] == [scale(0xFF8040, 255)] * 2, \
+        f"固定色: {[hex(x) for x in frames[marks['solid'] - 1]]}"
 
-
-def test_bright_and_off():
-    pad = Signal()
-    dut = KeyframeLeds(pad, CLK, ms_cycles=MS)
-    frames = []
-    marks = {}
-
-    def drive():
+    def setup(dut):
+        yield dut.n_led.eq(2)
+        yield dut.effect.eq(EFF_SOLID)
+        yield dut.color.eq(0xFF8040)
         yield dut.bright.eq(63)
-        for _ in range(15 * MS):
-            yield
-        marks["dim"] = len(frames)
-        yield dut.frames.eq(0)
-        for _ in range(25 * MS):
-            yield
-        marks["off"] = len(frames)
+        yield
 
-    run_simulation(dut, [drive(), decode(pad, frames, 42 * MS)])
-    words, _ = rainbow_table(4)
-    dim = frames[marks["dim"] - 1]
-    assert all(abs(((x >> s) & 0xFF) - ((scale(y, 63) >> s) & 0xFF)) <= 4
-               for x, y in zip(dim, words[1:5]) for s in (0, 8, 16)), \
-        f"明るさが掛かっていない: {[hex(x) for x in dim]}"
-    assert frames[marks["off"] - 1] == [0, 0, 0, 0], "frames=0 で消灯しない"
-    print("bright/off: OK")
+    _, frames, marks = run_kokame(setup, 25, {"dim": 22})
+    assert frames[marks["dim"] - 1] == [scale(0xFF8040, 63)] * 2, \
+        f"明るさ: {[hex(x) for x in frames[marks['dim'] - 1]]}"
+
+    # 点滅: 80ms 周期。前半は色、後半は消える
+    def setup(dut):
+        yield dut.n_led.eq(1)
+        yield dut.effect.eq(EFF_BLINK)
+        yield dut.color.eq(0x00FF00)
+        yield dut.bright.eq(255)
+        yield dut.rate.eq(65536 // 80)
+        yield
+
+    _, frames, marks = run_kokame(setup, 170, {"end": 165})
+    seen = {f[0] for f in frames[:marks["end"]]}
+    assert seen == {0, scale(0x00FF00, 255)}, f"点滅: {[hex(x) for x in seen]}"
+
+    # 呼吸: 200ms 周期。明るさが 0 から山まで上下する(色は変わらない)
+    def setup(dut):
+        yield dut.n_led.eq(1)
+        yield dut.effect.eq(EFF_BREATHE)
+        yield dut.color.eq(0xFF0000)
+        yield dut.bright.eq(255)
+        yield dut.rate.eq(65536 // 200)
+        yield
+
+    _, frames, marks = run_kokame(setup, 420, {"end": 415})
+    br = frames[2:marks["end"]]
+    assert all(f[0] & 0x00FFFF == 0 for f in br), "呼吸で色が変わった"
+    lv = [f[0] >> 16 for f in br]
+    assert min(lv) <= 2 and max(lv) >= 240, f"呼吸の幅: {min(lv)}〜{max(lv)}"
+
+    def setup(dut):
+        yield dut.n_led.eq(2)
+        yield dut.effect.eq(EFF_OFF)
+        yield
+
+    _, frames, marks = run_kokame(setup, 25, {"off": 22})
+    assert frames[marks["off"] - 1] == [0, 0], "消灯しない"
+    print(f"effects: OK — 固定色 / 明るさ / 点滅 / 呼吸 {min(lv)}〜{max(lv)} / 消灯")
 
 
 def test_idle():
@@ -175,7 +201,7 @@ def test_idle():
     呼吸の1段を 1ms にして、1周(510段)を 510ms に縮める
     """
     pad = Signal()
-    dut = KeyframeLeds(pad, CLK, ms_cycles=MS, breathe_step_ms=1)
+    dut = KokameLeds(pad, CLK, ms_cycles=MS, breathe_step_ms=1)
     frames = []
     marks = {}
 
@@ -184,16 +210,9 @@ def test_idle():
             yield
 
     def drive():
-        # バンク1へ 2LED・1フレーム(赤を保持)の表
-        for k, w in enumerate([1000, 0xFF0000, 0xFF0000]):
-            yield dut.tbl_adr.eq(256 + k)
-            yield dut.tbl_dat_w.eq(w)
-            yield dut.tbl_we.eq(1)
-            yield
-        yield dut.tbl_we.eq(0)
         yield dut.n_led.eq(2)
-        yield dut.frames.eq(1)
-        yield dut.bank.eq(1)
+        yield dut.effect.eq(EFF_SOLID)
+        yield dut.color.eq(0xFF0000)
         yield dut.bright.eq(255)
         yield dut.idle_mode.eq(IDLE_BREATHE)
         yield dut.streaming.eq(1)
@@ -234,7 +253,7 @@ def test_idle():
 
 if __name__ == "__main__":
     test_status()
-    test_keyframes()
-    test_bright_and_off()
+    test_rainbow()
+    test_effects()
     test_idle()
     print("all led sims passed")

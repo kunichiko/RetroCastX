@@ -6,21 +6,13 @@
 - 小亀基板のLED ×N   … SO-DIMM 154(A2)。FFC 経由。個数は CONFIG で変えられる
 
 状態LEDは**ゲートウェアが自分で色を決める**(Viewer が居なくても意味を持つ
-必要があるので)。小亀のLEDは**キーフレーム表を再生する**。表は Viewer が
-CONFIG で書き込み、FPGA は補間しながらループ再生する。固定色・点滅・呼吸・
-レインボーはすべて Viewer 側で表として作る(新しい効果のためにゲートウェアを
-更新しなくて済むように)。
+必要があるので)。小亀のLEDは**5つの効果(消灯・固定色・点滅・呼吸・
+レインボー)をゲートウェアが作る**。Viewer は効果の種類・色・周期・明るさを
+CONFIG で書くだけ(KokameLeds の説明)。
 
-表の形式(1語=32bit、バンクごとに256語):
-
-    フレーム k の先頭 = k × (1 + n_led)
-      +0          ヘッダ: [15:0]=保持[ms] / [31:16]=フェード速度
-      +1 .. +n    LED i の色 0x00RRGGBB
-
-- 保持のあと次フレームへフェードする。フェード速度は「1ms ごとに 16bit の
-  位相へ足す量」で、65536 / フェード時間[ms]。**割り算は Viewer がやる**
-  (FPGA で割らないため)。0 ならフェードせずに切り替える
-- 最後のフレームの次は先頭へ戻る(ループ)
+★以前はキーフレーム表を Viewer が書き、FPGA が補間しながら再生していた
+  (どんな効果でも作れる汎用の仕組み)。約 900 LUT と EBR 2個を使っていたので、
+  ロジック使用率を下げるため 2026-11-23 に置き換えた。
 
 **Viewer が居ないあいだ**(映像を送っていないあいだ)の動作は、表とは別に
 ゲートウェアが決める(居ないのだから Viewer は指示できない)。値は EEPROM の
@@ -40,14 +32,15 @@ from litex.gen import LiteXModule
 
 # CONFIG キー(target=0)。protocol-v0.md と揃えること
 KEY_KLED_COUNT  = 0x0090   # 小亀のLEDの個数(1〜8)
-KEY_KLED_FRAMES = 0x0091   # 再生するフレーム数(0=消灯)
-KEY_KLED_BANK   = 0x0092   # 再生するバンク(0/1)。書き換えると先頭から再生し直す
 KEY_KLED_BRIGHT = 0x0093   # 小亀のLEDの明るさ(0〜255)
 KEY_STAT_BRIGHT = 0x0094   # 状態LEDの明るさ(0〜255)
 KEY_STAT_STATE  = 0x0095   # 状態LEDの状態(読み取り専用)0=赤 1=橙 2=青
-KEY_TABLE_BASE  = 0x0400   # 表の語。0x0400〜0x05FF(バンク0=0x0400〜、バンク1=0x0500〜)
-TABLE_WORDS     = 512
+KEY_KLED_EFFECT = 0x0098   # 効果 0=消灯 1=固定色 2=点滅 3=呼吸 4=レインボー
+KEY_KLED_COLOR  = 0x0099   # 色 0x00RRGGBB(固定色・点滅・呼吸)
+KEY_KLED_RATE   = 0x009A   # 1ms ごとに16bitの位相へ足す量 = 65536 / 周期[ms]
+KEY_KLED_SPREAD = 0x009B   # レインボーで LED ごとにずらす色相(16bit で1周)
 MAX_LEDS        = 8
+EFF_OFF, EFF_SOLID, EFF_BLINK, EFF_BREATHE, EFF_RAINBOW = range(5)
 
 # 状態LEDの色(明るさを掛ける前)
 # 「Viewer が居ないあいだ」の動作(CONFIG 0x97 / EEPROM の個体設定ページ 0x09)
@@ -60,21 +53,6 @@ STATE_COLORS = {
     1: 0xFF5000,   # 橙: Viewer が見つけているが受信していない
     2: 0x0000FF,   # 青: 映像・音声を送信中
 }
-
-
-def rainbow_table(n_led=4, fade_ms=600):
-    """電源投入時の既定パターン(バンク0)。6色を LED ごとにずらして回す。
-
-    原色と二次色の間を RGB で線形補間すると、彩度最大の HSV の色相を一周するのと
-    一致する。だから6フレームで滑らかなレインボーになる。
-    """
-    palette = [0xFF0000, 0xFFFF00, 0x00FF00, 0x00FFFF, 0x0000FF, 0xFF00FF]
-    rate = 65536 // fade_ms
-    words = []
-    for k in range(len(palette)):
-        words.append(rate << 16)   # 保持 0ms、すぐにフェード
-        words += [palette[(k + i) % len(palette)] for i in range(n_led)]
-    return words, len(palette)
 
 
 class Ws2812Chain(LiteXModule):
@@ -225,37 +203,43 @@ class StatusLed(LiteXModule):
         fsm.act("SEND", chain.start.eq(1), NextState("WAIT"))
 
 
-class KeyframeLeds(LiteXModule):
-    """小亀基板のLED。キーフレーム表を補間しながらループ再生する。"""
+class KokameLeds(LiteXModule):
+    """小亀基板のLED。5つの効果(消灯・固定色・点滅・呼吸・レインボー)を自分で作る。
+
+    ★**以前はキーフレーム表(512語、EBR 2個)を補間しながら再生していた**
+      (2026-11-23 まで)。どんな効果でも作れる汎用の仕組みだったが、Viewer が
+      使うのはこの5つだけで、表の読み出し・保持・フェード・2フレームの補間で
+      約 900 LUT を使っていた。ロジック使用率を下げるため、効果を直接作る形に
+      置き換えた。
+
+    時間は **16bit の位相**で数える。1ms ごとに `rate` を足し、1周 = 65536。
+    rate は Viewer が `65536 / 周期[ms]` で計算して書く(FPGA で割らない)。
+
+    - 点滅: 位相の前半だけ光る
+    - 呼吸: 位相から三角波(0〜255〜0)を作り、2乗(ガンマ2)して明るさに掛ける
+    - レインボー: 色相 = 位相 + LED番号 × spread。色相を6区間に分け、原色と
+      二次色の間を直線でつなぐ(彩度最大の HSV の一周と同じ)
+    - 固定色・消灯: 色をそのまま / 0
+
+    Viewer が居ないあいだの呼吸(idle_mode)は、効果より優先して明るさだけを変える
+    (山は通常の明るさの1/4)。色は効果のまま。
+    """
     def __init__(self, pad, sys_clk_freq, n_max=MAX_LEDS, ms_cycles=None,
                  breathe_step_ms=BREATHE_STEP_MS):
         # ms_cycles: 1ms 相当のサイクル数。シミュレーションで時間を縮めるためだけの口
-        # (breathe_step_ms も同じ。呼吸の1周を短くする)
-        init, n_frames = rainbow_table(4)
-        # CONFIG から
-        self.n_led   = Signal(4, reset=4)
-        self.frames  = Signal(8, reset=n_frames)
-        self.bank    = Signal()
-        self.bright  = Signal(8, reset=64)
+        # (breathe_step_ms も同じ。待機中の呼吸の1周を短くする)
+        # CONFIG から(既定は電源投入時のレインボー。Viewer の LedSettings の既定と同じ)
+        self.n_led  = Signal(4, reset=4)
+        self.effect = Signal(3, reset=EFF_RAINBOW)
+        self.color  = Signal(24, reset=0x0080FF)
+        self.rate   = Signal(16, reset=65536 // 4000)          # 周期 4秒
+        self.spread = Signal(16, reset=65536 // 2 // 4)        # 4個で半周
+        self.bright = Signal(8, reset=64)
         # Viewer が居ないあいだの動作。streaming が 0 の間だけ効く
         self.streaming = Signal()
         self.idle_mode = Signal(2)
-        # 表の書き込み/読み返し(CONFIG のキー 0x0400〜)
-        self.tbl_adr   = Signal(9)
-        self.tbl_we    = Signal()
-        self.tbl_dat_w = Signal(32)
-        self.tbl_dat_r = Signal(32)
 
         # # #
-
-        self.specials.mem = mem = Memory(32, TABLE_WORDS, init=init)
-        wp = mem.get_port(write_capable=True)
-        rp = mem.get_port()
-        self.specials += wp, rp
-        self.comb += [
-            wp.adr.eq(self.tbl_adr), wp.we.eq(self.tbl_we),
-            wp.dat_w.eq(self.tbl_dat_w), self.tbl_dat_r.eq(wp.dat_r),
-        ]
 
         self.chain = chain = Ws2812Chain(pad, sys_clk_freq, n_max, with_mem=True)
         n_led = Signal(4)
@@ -268,29 +252,32 @@ class KeyframeLeds(LiteXModule):
         ms_div = ms_cycles or int(sys_clk_freq / 1000)
         ms_cnt = Signal(max=ms_div)
         ms     = Signal()
+        phase  = Signal(16)
+        refresh = Signal(4)              # 10ms ごとに LED へ送る
         self.sync += [
             ms.eq(0), ms_cnt.eq(ms_cnt + 1),
             If(ms_cnt == ms_div - 1, ms_cnt.eq(0), ms.eq(1)),
+            If(ms,
+                phase.eq(phase + self.rate),
+                refresh.eq(Mux(refresh == 9, 0, refresh + 1)),
+            ),
         ]
-        refresh = Signal(4)              # 10ms ごとに LED へ送る
 
-        # --- Viewer が居ないあいだの明るさ ---
-        # 表の色に掛ける明るさ `level` を、ここで毎回作り直しておく。呼吸は
-        # 三角波 tri(0〜255)を2乗して(ガンマ2)、明るさの1/4を山にする。
-        # 掛け算は色の計算とは別の SerialMul で行う(どちらも急がない)
+        # --- Viewer が居ないあいだの呼吸(三角波を breathe_step_ms ごとに1段)---
         idle  = Signal()
-        off   = Signal()
-        level = Signal(8)
+        idle_br = Signal()
+        idle_off = Signal()
         tri   = Signal(8, reset=255)
         down  = Signal(reset=1)
         b_cnt = Signal(max=max(breathe_step_ms, 2))
-        sq    = Signal(8)
-        b_lv  = Signal(8)
-        self.comb += idle.eq(~self.streaming &
-                             ((self.idle_mode == IDLE_BREATHE) | (self.idle_mode == IDLE_OFF)))
+        self.comb += [
+            idle.eq(~self.streaming),
+            idle_br.eq(idle & (self.idle_mode == IDLE_BREATHE)),
+            idle_off.eq(idle & (self.idle_mode == IDLE_OFF)),
+        ]
         self.sync += [
             # 映像を送っている間は山で待ち、居なくなったら山から下り始める
-            If(~idle,
+            If(~idle_br,
                 tri.eq(255), down.eq(1), b_cnt.eq(0),
             ).Elif(ms,
                 b_cnt.eq(Mux(b_cnt == breathe_step_ms - 1, 0, b_cnt + 1)),
@@ -302,150 +289,102 @@ class KeyframeLeds(LiteXModule):
                     ),
                 ),
             ),
-            off.eq(idle & (self.idle_mode == IDLE_OFF)),
-            # ★Mux の選択に ~idle を使わない。Migen のシミュレータは 1bit の ~ を
-            #   -2(真)と評価し、居ないあいだも通常の明るさのままに見えた
-            level.eq(Mux(idle, Mux(self.idle_mode == IDLE_BREATHE, b_lv, 0),
-                         self.bright)),
         ]
-        self.bmul = bmul = SerialMul()
-        self.bfsm = bfsm = FSM(reset_state="SQ")
-        # tri × tri / 256 → sq、sq × (明るさ+1) / 1024 → b_lv(山は明るさの1/4)
-        bfsm.act("SQ",
-            bmul.x.eq(tri), bmul.y.eq(tri), bmul.start.eq(1),
-            NextState("SQ_W"))
-        bfsm.act("SQ_W",
-            If(~bmul.busy, NextValue(sq, bmul.p[8:16]), NextState("LV")))
-        bfsm.act("LV",
-            bmul.x.eq(sq), bmul.y.eq(self.bright + 1), bmul.start.eq(1),
-            NextState("LV_W"))
-        bfsm.act("LV_W",
-            If(~bmul.busy, NextValue(b_lv, bmul.p[10:17]), NextState("SQ")))
+        # 効果の呼吸の三角波は位相から作る(前半で上り、後半で下る)
+        etri = Signal(8)
+        self.comb += etri.eq(Mux(phase[15], ~phase[7:15], phase[7:15]))
 
-        stride  = Signal(5)
-        self.comb += stride.eq(n_led + 1)
-        f       = Signal(8)              # いまのフレーム番号
-        ptr     = Signal(8)              # その先頭語(バンク内)
-        nptr    = Signal(8)              # 次のフレームの先頭語
-        last    = Signal()
+        # --- 色相 → いま掛け算するチャンネルの値(レインボー)---
+        #
+        # 6区間それぞれで、各チャンネルは 0 / 255 / 上り(fr)/ 下り(~fr)のどれか:
+        #
+        #   区間      0 赤→黄  1 黄→緑  2 緑→シアン  3 シアン→青  4 青→マゼンタ  5 マゼンタ→赤
+        #   R          255      下り       0           0           上り          255
+        #   G          上り     255        255         下り        0             0
+        #   B          0        0          上り        255         255           下り
+        #
+        # ★**24bit の色を作らず、掛け算するチャンネルの 8bit だけを選ぶ。** 24bit の
+        #   6択とそれを置くレジスタで約 170 LUT を使っていた
+        hue = Signal(16)
+        h6  = Signal(19)
+        seg = Signal(3)
+        fr  = Signal(8)
+        hsel = Signal(2)                 # 0=0 1=255 2=上り 3=下り
+        hch = Signal(8)
+        ch  = Signal(2)                  # 0=B 1=G 2=R
+        Z, F, U, D = 0, 1, 2, 3
+        tbl = {0: (Z, U, F), 1: (Z, F, D), 2: (U, F, Z),     # (B, G, R)
+               3: (F, D, Z), 4: (F, Z, U), 5: (D, Z, F)}
         self.comb += [
-            last.eq(f + 1 >= self.frames),
-            nptr.eq(Mux(last, 0, ptr + stride)),
+            h6.eq(Cat(C(0, 1), hue) + Cat(C(0, 2), hue)),      # hue × 6
+            seg.eq(h6[16:19]), fr.eq(h6[8:16]),
+            Case(Cat(ch, seg), {(sg << 2) | c: hsel.eq(v[c])
+                                for sg, v in tbl.items() for c in range(3)}),
+            hch.eq(Mux(hsel[1], Mux(hsel[0], ~fr, fr), Mux(hsel[0], 255, 0))),
         ]
-        hold    = Signal(16)
-        rate    = Signal(16)
-        elapsed = Signal(16)
-        fading  = Signal()
-        frac    = Signal(16)
-        i       = Signal(4)
-        a       = Signal(24)
-        b       = Signal(24)
-        ch      = Signal(2)              # いま計算しているチャンネル(0=B 1=G 2=R)
-        ph      = Signal(2)
-        p1      = Signal(17)
-        mixc    = Signal(8)
-        out     = Signal(24)
+
+        # --- 明るさと色の計算(SerialMul を順番に使う)---
+        #   SQ : tri × tri / 256 → sq
+        #   LV : sq × (明るさ+1) → level(待機中の呼吸は /1024 で山を1/4に)
+        #   各LED・各チャンネル: 色 × (level+1) / 256
         self.mul = mul = SerialMul()
-        # 表の構成が変わったら先頭から読み直す
-        cfg_now  = Signal(14)
-        cfg_prev = Signal(14)
-        self.comb += cfg_now.eq(Cat(self.frames, self.bank, n_led))
-
-        def rd(addr):
-            return rp.adr.eq(Cat(addr[0:8], self.bank))
-
-        t = Signal(8)
-        self.comb += t.eq(Mux(fading, frac[8:16], 0))
+        sq    = Signal(8)
+        level = Signal(8)
+        i     = Signal(4)
+        out   = Signal(24)
+        src   = Signal(8)
+        self.comb += src.eq(Mux(idle_br, tri, etri))
         sel = lambda w: Mux(ch == 0, w[0:8], Mux(ch == 1, w[8:16], w[16:24]))
-        self.comb += [
-            mul.x.eq(Mux(ph == 0, sel(a), Mux(ph == 1, sel(b), mixc))),
-            mul.y.eq(Mux(ph == 0, 256 - t, Mux(ph == 1, t, level + 1))),
-        ]
-
-        self.fsm = fsm = FSM(reset_state="RESTART")
-        fsm.act("RESTART",
-            NextValue(cfg_prev, cfg_now),
-            NextValue(f, 0), NextValue(ptr, 0),
-            NextState("HDR_RD"))
-        fsm.act("HDR_RD", rd(ptr), NextState("HDR"))
-        fsm.act("HDR", rd(ptr),
-            NextValue(hold, rp.dat_r[0:16]), NextValue(rate, rp.dat_r[16:32]),
-            NextValue(elapsed, 0), NextValue(fading, 0), NextValue(frac, 0),
-            NextState("IDLE"))
+        self.fsm = fsm = FSM(reset_state="IDLE")
         fsm.act("IDLE",
-            If(cfg_now != cfg_prev,
-                NextState("RESTART"),
-            ).Elif(ms,
-                NextValue(refresh, Mux(refresh == 9, 0, refresh + 1)),
-                NextState("STEP")))
-        fsm.act("STEP",
-            If(self.frames == 0,
-                NextState("PAINT"),
-            ).Elif(~fading,
-                If(elapsed >= hold,
-                    If(rate == 0,
-                        NextState("ADVANCE"),
-                    ).Else(
-                        NextValue(fading, 1), NextValue(frac, 0), NextState("PAINT"),
-                    ),
+            If(ms & (refresh == 0) & ~chain.busy, NextState("SQ")))
+        fsm.act("SQ", mul.start.eq(1), NextState("SQ_W"))
+        fsm.act("SQ_W",
+            If(~mul.busy & ~mul.start, NextValue(sq, mul.p[8:16]), NextState("LV")))
+        fsm.act("LV", mul.start.eq(1), NextState("LV_W"))
+        fsm.act("LV_W",
+            If(~mul.busy & ~mul.start,
+                If(idle_br,
+                    NextValue(level, mul.p[10:17]),
+                ).Elif(idle_off | (self.effect == EFF_OFF),
+                    NextValue(level, 0),
+                ).Elif(self.effect == EFF_BREATHE,
+                    NextValue(level, mul.p[8:16]),
+                ).Elif((self.effect == EFF_BLINK) & phase[15],
+                    NextValue(level, 0),
                 ).Else(
-                    NextValue(elapsed, elapsed + 1), NextState("PAINT"),
+                    NextValue(level, self.bright),
                 ),
-            ).Else(
-                If(frac + rate >= 0x10000,
-                    NextState("ADVANCE"),
-                ).Else(
-                    NextValue(frac, frac + rate), NextState("PAINT"),
-                ),
-            ))
-        fsm.act("ADVANCE",
-            NextValue(f, Mux(last, 0, f + 1)), NextValue(ptr, nptr),
-            NextState("ADV_RD"))
-        fsm.act("ADV_RD", rd(ptr), NextState("ADV_HDR"))
-        fsm.act("ADV_HDR", rd(ptr),
-            NextValue(hold, rp.dat_r[0:16]), NextValue(rate, rp.dat_r[16:32]),
-            NextValue(elapsed, 0), NextValue(fading, 0), NextValue(frac, 0),
-            NextState("PAINT"))
-        # 10ms に1回、送信器が空いていれば全LEDの色を作って送る
-        fsm.act("PAINT",
-            If((refresh == 0) & ~chain.busy,
-                NextValue(i, 0), NextState("A_RD"),
-            ).Else(NextState("IDLE")))
-        fsm.act("A_RD", rd(ptr + 1 + i), NextState("A"))
-        fsm.act("A", rd(nptr + 1 + i),
-            NextValue(a, rp.dat_r), NextState("B"))
-        fsm.act("B", NextValue(b, rp.dat_r),
-            NextValue(ch, 0), NextValue(ph, 0), NextState("MSTART"))
-        # 1チャンネルにつき掛け算3回(SerialMul を順番に使う):
-        #   ph0: a×(256−t)  ph1: b×t → mix = 和/256  ph2: mix×(level+1)/256
-        # 重みの和が256なので mix は a と b の間に収まり、符号付きの演算が要らない
+                NextValue(i, 0), NextValue(hue, phase), NextValue(ch, 0),
+                NextState("MSTART")))
+        # 掛け算の入力は状態で選ぶ(代入は1か所にまとめる)
+        in_sq = Signal(); in_lv = Signal()
+        self.comb += [
+            in_sq.eq(fsm.ongoing("SQ")), in_lv.eq(fsm.ongoing("LV")),
+            mul.x.eq(Mux(in_sq, src, Mux(in_lv, sq,
+                         Mux(self.effect == EFF_RAINBOW, hch, sel(self.color))))),
+            mul.y.eq(Mux(in_sq, src, Mux(in_lv, self.bright + 1, level + 1))),
+        ]
         fsm.act("MSTART", mul.start.eq(1), NextState("MWAIT"))
         fsm.act("MWAIT",
-            If(~mul.busy,
-                If(ph == 0,
-                    NextValue(p1, mul.p), NextValue(ph, 1), NextState("MSTART"),
-                ).Elif(ph == 1,
-                    NextValue(mixc, (p1 + mul.p)[8:16]), NextValue(ph, 2),
-                    NextState("MSTART"),
+            If(~mul.busy & ~mul.start,
+                *[If(ch == k, NextValue(out[8*k:8*k + 8], mul.p[8:16]))
+                  for k in range(3)],
+                If(ch == 2,
+                    NextState("STORE"),
                 ).Else(
-                    *[If(ch == k, NextValue(out[8*k:8*k + 8], mul.p[8:16]))
-                      for k in range(3)],
-                    If(ch == 2,
-                        NextState("STORE"),
-                    ).Else(
-                        NextValue(ch, ch + 1), NextValue(ph, 0), NextState("MSTART"),
-                    ),
-                ),
-            ))
+                    NextValue(ch, ch + 1), NextState("MSTART"),
+                )))
         self.comb += [
             chain.wr_adr.eq(i),
-            chain.wr_dat.eq(Mux((self.frames == 0) | off, 0, out)),
+            chain.wr_dat.eq(out),
         ]
         fsm.act("STORE",
             chain.wr_we.eq(1),
             If(i == n_led - 1,
                 NextState("SEND"),
             ).Else(
-                NextValue(i, i + 1), NextState("A_RD"),
+                NextValue(i, i + 1), NextValue(hue, hue + self.spread),
+                NextValue(ch, 0), NextState("MSTART"),
             ))
         fsm.act("SEND", chain.start.eq(1), NextState("IDLE"))

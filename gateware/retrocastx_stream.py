@@ -51,6 +51,10 @@ PIXFMT_RGB555 = 1             # 2B/px 0RRRRRGGGGGBBBBB
 PIXFMT_YC8    = 3             # 2B/px 下位=緑ch8bit(CVBS/Y) 上位=赤ch8bit(S-VideoのC)
 PIXFMT_YCC422 = 4             # 2B/px 2画素で Y0 Cb0 Y1 Cr0(コンポーネント。R=Pr G=Y B=Pb)
 PIXFMT_CVBS8  = 5             # 1B/px 緑ch8bit(コンポジットの CVBS)だけ
+PIXFMT_RGBI4  = 6             # 0.5B/px デジタルRGB。1バイト2画素、下位ニブルが先
+                              # (bit0=R 1=G 2=B 3=I)。video_src=1 のときだけ使う
+# ANNOUNCE caps bit5: デジタルRGB の映像を取り込める(CONFIG 0x3A video_src)
+CAP_DRGB = 1 << 5
 # ANNOUNCE caps bit1: YCC422 / CVBS8、送出範囲の固定(0x38/0x39)、間引きの対モード
 # (0x35 bit4)に対応している。古いゲートウェアに新しい形式を書くと絵が壊れるので、
 # 受信側はこのビットを見てから使う
@@ -278,6 +282,14 @@ class RetroCastXStreamer(LiteXModule):
         #     (eth_rx 132.57MHz / 制約125、sys 54.94MHz / 制約45)。
         fmt888 = Signal()
         self.cfg_pixfmt = pixfmt
+        # ★**デジタルRGB(video_src = 1、CONFIG 0x3A)のときは RGBI4 に固定する。**
+        #   key 0x36 は TVP の取り込みの形式なので、そのまま残しておく
+        #   (アナログの端子へ戻したときに元の形式で送れる)。以下の `pixfmt` は
+        #   実際に送る形式で、key 0x36 の値は self.cfg_pixfmt。
+        self.video_src = Signal()
+        pixfmt_reg = pixfmt
+        pixfmt = Signal(8)
+        self.comb += pixfmt.eq(Mux(self.video_src, PIXFMT_RGBI4, pixfmt_reg))
         # MODE の mflags。bit0 = MFLAG_INTERLACE。
         #
         # 実行時に変わる。織り込むと1VSYNC周期あたりのスロット数が半分になる
@@ -295,6 +307,10 @@ class RetroCastXStreamer(LiteXModule):
         # 1B/px(CVBS8)。断片長・語数・xの進み・読出アドレスが変わる
         fmt1 = Signal()
         self.comb += fmt1.eq(pixfmt == PIXFMT_CVBS8)
+        # 0.5B/px(RGBI4、デジタルRGB)。1語に8画素。断片の画素数は8の倍数
+        # (送る範囲を8の倍数へ揃えるので、断片も8の倍数になる)
+        fmt4 = Signal()
+        self.comb += fmt4.eq(pixfmt == PIXFMT_RGBI4)
 
         # --- ライン断片化(host/python の protocol.fragment_line と同一の分割) ---
         #
@@ -312,10 +328,12 @@ class RetroCastXStreamer(LiteXModule):
         FRAG_PX_555 = ((mtu_payload - 20) // 2) & ~(PX_ALIGN - 1)
         FRAG_PX_888 = ((mtu_payload - 20) // 3) & ~(PX_ALIGN - 1)
         FRAG_PX_1   = (mtu_payload - 20) & ~(PX_ALIGN - 1)
+        FRAG_PX_4   = ((mtu_payload - 20) * 2) & ~7
         assert min(FRAG_PX_555, FRAG_PX_888) >= PX_ALIGN, "MTU too small"
         FRAG_PX = Signal(16)           # 1断片の最大ピクセル数(形式で決まる)
         self.comb += FRAG_PX.eq(Mux(fmt888, FRAG_PX_888,
-                                    Mux(fmt1, FRAG_PX_1, FRAG_PX_555)))
+                                    Mux(fmt1, FRAG_PX_1,
+                                        Mux(fmt4, FRAG_PX_4, FRAG_PX_555))))
         def _nw(n):                    # パターン生成側(RGB555固定)用
             return 5 + n // 2
         # パターン生成側(cap_mode でない)は RGB555 固定。断片表はビルド時に作る
@@ -336,14 +354,17 @@ class RetroCastXStreamer(LiteXModule):
         #   RGB555/YC8: length = 20 + 2n   nwords = 5 + n/2
         #   RGB888    : length = 20 + 3n   nwords = 5 + 3n/4  (n は4の倍数)
         #   CVBS8     : length = 20 + n    nwords = 5 + n/4
+        #   RGBI4     : length = 20 + n/2  nwords = 5 + n/8  (n は8の倍数)
         def _len_expr(n):
-            # 20 + 2n / 20 + 3n / 20 + n
+            # 20 + 2n / 20 + 3n / 20 + n / 20 + n/2
             return 20 + Mux(fmt888, n + Cat(C(0, 1), n),
-                            Mux(fmt1, n, Cat(C(0, 1), n)))
+                            Mux(fmt1, n,
+                                Mux(fmt4, n[1:], Cat(C(0, 1), n))))
         def _nw_expr(n):
-            # 5 + n/2 / 5 + 3n/4 / 5 + n/4(n は4の倍数)
+            # 5 + n/2 / 5 + 3n/4 / 5 + n/4 / 5 + n/8(n は4の倍数、RGBI4 は8の倍数)
             return 5 + Mux(fmt888, n[2:] + Cat(C(0, 1), n[2:]),
-                           Mux(fmt1, n[2:], n[1:]))
+                           Mux(fmt1, n[2:],
+                               Mux(fmt4, n[3:], n[1:])))
         aud_nwords = 5 + audio_nsamples
         # ★nwords / word_idx の幅は**両方の形式の最悪値**から決める。
         #
@@ -393,6 +414,7 @@ class RetroCastXStreamer(LiteXModule):
             RGB555/YC8/YCC422: 1語=2画素なので毎語 x += 2
             RGB888    : 4画素=3語。位相を回し、群の最後(位相2)で x += 4
             CVBS8     : 1語=4画素なので毎語 x += 4
+            RGBI4     : 1語=8画素なので毎語 x += 8
             """
             return [If(fmt888,
                        If(gph == 2,
@@ -403,6 +425,8 @@ class RetroCastXStreamer(LiteXModule):
                        ),
                    ).Elif(fmt1,
                        NextValue(x, x + 4),
+                   ).Elif(fmt4,
+                       NextValue(x, x + 8),
                    ).Else(
                        NextValue(x, x + 2),
                    )]
@@ -1190,7 +1214,7 @@ class RetroCastXStreamer(LiteXModule):
         self.sync += _timer
 
         # --- 画素源(1ワード=2ピクセル)。x はライン内ピクセル位置(常に偶数)---
-        x = Signal(max=width + 2)          # +2: フラグ境界で最終+2しても飽和しない
+        x = Signal(max=width + 8)          # +8: フラグ境界で最終+8(RGBI4)しても飽和しない
         if not cap_mode:
             self.pix0 = pix0 = PatternPixel(width, height)
             self.pix1 = pix1 = PatternPixel(width, height)
@@ -1379,10 +1403,13 @@ class RetroCastXStreamer(LiteXModule):
                 Mux(pixfmt == PIXFMT_YCC422, 0x80FF80FF,     # Y=FF Cb=Cr=80
                     Mux(pixfmt == PIXFMT_RGB555, 0x7FFF7FFF, 0xFFFFFFFF)))
             self.comb += [
-                w2b.eq(Mux(raw16,
+                # RGBI4 はデジタルRGB の取り込み(retrocastx_drgb_capture.py)が
+                # 1エントリの下位32bitに8画素を詰めてあるので、そのまま語にする
+                w2b.eq(Mux(fmt4, s0,
+                       Mux(raw16,
                            Cat(s0[0:16], s1[0:16]),           # YC8 / CVBS8 はそのまま
                            Mux(pixfmt == PIXFMT_YCC422, ycc,
-                               Cat(_slot555(s0), _slot555(s1))))),
+                               Cat(_slot555(s0), _slot555(s1)))))),
                 line_pixdata.eq(Mux(lat_line_white, lat_white_word,
                                     Mux(fmt888, w3b, w2b))),
             ]
@@ -1432,8 +1459,8 @@ class RetroCastXStreamer(LiteXModule):
                 sink.valid & sink.ready & (ptype == _T_LINE) & (
                     ((word_idx >= 5) & (word_idx != nwords - 1)) |
                     ((word_idx == nwords - 1) & ~frag_last)))
-            x_next = Signal(max=width + 4)
-            self.comb += x_next.eq(x + Mux(x_adv, Mux(fmt1, 4, 2), 0))
+            x_next = Signal(max=width + 8)
+            self.comb += x_next.eq(x + Mux(x_adv, Mux(fmt4, 8, Mux(fmt1, 4, 2)), 0))
             if True:
                 # ★位相ごとに必要なエントリが違う。BRAM は1サイクル遅延なので
                 #   「次サイクルに必要なエントリ」を先出しする(2B/px と同じ流儀)。
@@ -1452,7 +1479,9 @@ class RetroCastXStreamer(LiteXModule):
                                        Mux(gph == 0, 0, 1)),
                         Mux(fmt1,
                             x_next[2:],       # CVBS8: entry = x_next/4(4画素/エントリ)
-                            x_next[1:])))     # 2B/px: entry = x_next/2
+                            Mux(fmt4,
+                                x_next[3:],   # RGBI4: entry = x_next/8(8画素/エントリ)
+                                x_next[1:]))))   # 2B/px: entry = x_next/2
                 # 位相0から前進する瞬間の rd_data が entry base。次サイクルには
                 # base+1 に変わるので、ここでラッチしておく
                 self.sync += If(fmt888 & x_adv & (gph == 0),
@@ -1533,8 +1562,20 @@ class RetroCastXStreamer(LiteXModule):
             send_full = Signal()
             self.comb += send_full.eq(self.cfg_full_line |
                                       (self.cfg_pixfmt == PIXFMT_YC8) | fmt1)
+            # RGBI4(デジタルRGB)はラインの頭(HS から数えたドット 0)から、
+            # htotal を **8の倍数へ切り上げた**ぶんを送る(1語 = 8画素で整列させる)。
+            # hs_offset は TVP の取り込みの値なので使わない
+            hi_drgb = Signal(16)
+            hi_drgb_up = Signal(16)
             self.comb += [
-                If(send_full,
+                hi_drgb_up.eq(self.cfg_pll_divide + 7),
+                hi_drgb.eq(Cat(C(0, 3), hi_drgb_up[3:])),
+            ]
+            self.comb += [
+                If(fmt4,
+                    lo_c.eq(0),
+                    hi_c.eq(hi_drgb),
+                ).Elif(send_full,
                     # 範囲を無視してラインの先頭から htotal ぶん送る。
                     # (lo_c も hs_offset に戻すこと。line_first のままだと
                     #  「範囲を無視する」はずが左端だけ内容依存で動いてしまう)
@@ -1619,10 +1660,12 @@ class RetroCastXStreamer(LiteXModule):
             lat_hi = Signal(16)
             lat_hi_up = Signal(16)
             self.comb += lat_hi_up.eq(self.cfg_pll_divide + (PX_ALIGN - 1))
+            # RGBI4 は送る範囲と同じ(ドット 0 から8の倍数へ切り上げ)
             self.sync += [
-                lat_lo.eq(Cat(C(0, ALB), self.cfg_hs_offset[ALB:])),
-                lat_hi.eq(Mux(Cat(C(0, ALB), lat_hi_up[ALB:]) > width,
-                              width, Cat(C(0, ALB), lat_hi_up[ALB:]))),
+                lat_lo.eq(Mux(fmt4, 0, Cat(C(0, ALB), self.cfg_hs_offset[ALB:]))),
+                lat_hi.eq(Mux(fmt4, Mux(hi_drgb > width, width, hi_drgb),
+                          Mux(Cat(C(0, ALB), lat_hi_up[ALB:]) > width,
+                              width, Cat(C(0, ALB), lat_hi_up[ALB:])))),
             ]
             lat_line_sub = Signal()
             line_sub = [
@@ -2074,15 +2117,15 @@ class RetroCastXStream(SoCMini):
                     Subsignal("sda",    Pins("U16")),
                     Subsignal("resetb", Pins("C18")),
                     IOStandard("LVCMOS33"), Misc("PULLMODE=UP"))]
-        # --- デジタルRGB(TTL RGBI + HS/VS)とデバッグ端子 ---
+        # --- デジタルRGB(TTL RGBI + HS/VS)---
         #
         # ボール名は hardware/adc-frontend/README.md の表と一致させること。
         # ★**入力は J13 → ESD → プルダウン → SN74LVC2G17 → FPGA。** 5V TTL を
         #   直接入れると ECP5 の保護ダイオードが導通して壊れる(5Vトレラント
         #   ではない)ので、必ずバッファを通った側に繋がっている。
-        # ★**dbg1〜6 は試験信号の出力に使う。** デジタルRGBを出せる実機が
-        #   手元に無いので、ここから J13 へジャンパで戻して**本番の経路ごと**
-        #   確かめる(retrocastx_drgb.py 冒頭)。
+        # ★以前はデバッグ端子 J4 の dbg2〜6 から試験信号を出して J13 へ戻す
+        #   ループバック用の生成器(retrocastx_drgb.py)があった。v1.0 では J4 が
+        #   未実装で使い道が無く、ロジック使用率を下げるため外した(2026-11-23)
         _drgb_io = [
             ("drgb", 0,
                 Subsignal("r",  Pins("K3")),   # SO-DIMM 146
@@ -2091,16 +2134,6 @@ class RetroCastXStream(SoCMini):
                 Subsignal("i",  Pins("H5")),   # 140
                 Subsignal("hs", Pins("H3")),   # 136
                 Subsignal("vs", Pins("F3")),   # 132
-                IOStandard("LVCMOS33")),
-            # デバッグ端子 J4 の dbg1〜dbg6(ヘッダ pin3〜8)
-            # ★**dbg1(M1)は v1.0 で状態LEDのデータ線と共用になったので外した。**
-            #   試験信号の R はもう外へ出ない(デバッグ端子 J4 は v1.0 では未実装)
-            ("dbg_out", 0,
-                Subsignal("g",  Pins("N2")),   # dbg2 / pin4
-                Subsignal("b",  Pins("N3")),   # dbg3 / pin5
-                Subsignal("i",  Pins("T2")),   # dbg4 / pin6
-                Subsignal("hs", Pins("M3")),   # dbg5 / pin7
-                Subsignal("vs", Pins("T3")),   # dbg6 / pin8
                 IOStandard("LVCMOS33")),
         ]
         # --- MagJack のリンク/通信LED(v0.9.0)---
@@ -2276,47 +2309,9 @@ class RetroCastXStream(SoCMini):
             pads1.yellow.eq(lamp.out[3]),
         ]
 
-        # --- デジタルRGB: 試験信号の生成 + 入力の測定 ---
-        from retrocastx_drgb import DigitalRgbGen, DigitalRgbProbe
+        # --- デジタルRGB の入力(取り込みは下の capture の節)---
         from migen.genlib.cdc import MultiReg
         drgb_pads = platform.request("drgb")
-        dbg_pads = platform.request("dbg_out")
-        # ★**生成器は aud(12.288MHz XO)で動かす。** 測定側は sys(25MHz由来)で、
-        #   **水晶が別**。だからループバックでも
-        #     ・本物のドリフト(2つの水晶の ppm 差)
-        #     ・1ドットが 45/12.288 = 3.662 サンプルという**分数**
-        #   が入る。sys の整数分周(45/3 = ちょうど3.000サンプル/ドット)だと
-        #   ドット境界が毎ライン同じ位相に来て、**受け側の分数アキュムレータが
-        #   一度も効かないまま「通った」ことになる**(2026-09-09 に気付いた)。
-        # ★**クロックドメインは増やしていない。** 既にある aud に載せただけ。
-        self.drgb_gen = ClockDomainsRenamer("aud")(DigitalRgbGen())
-        # bit0 = 生成器を動かす / bit1 = 同期を負極性にする。
-        # ★**既定は「出す」。** 出しっぱなしでも入力に何も繋がなければ無害で、
-        #   繋いだ瞬間に確かめられる。切りたくなったら key 0x78 で落とす。
-        # bit0=ピンを駆動 / bit1=同期を負極性 / bit2=内部カウンタを回す。
-        #
-        # ★**一度これを既定OFFにした。** 2026-09-10、この生成器を入れた
-        #   ビットストリームで映像のVSYNC誤検出(毎分1回)が起きたため。
-        #   原因は**生成器ではなく測定器の暴走**だった(`retrocastx_drgb.py` の
-        #   `stat_hlen == 0` の項)。直った後、交互試験で 900秒 0回 を確認して
-        #   既定ONに戻した。
-        drgb_gen_ctl = Signal(3, reset=0b111)
-        # sys → aud のドメイン跨ぎ。ゆっくりしか変わらない制御線なので2段で足りる
-        drgb_ctl_aud = Signal(3)
-        self.specials += MultiReg(drgb_gen_ctl, drgb_ctl_aud, "aud")
-        self.comb += [
-            self.drgb_gen.enable.eq(drgb_ctl_aud[0]),
-            self.drgb_gen.neg_sync.eq(drgb_ctl_aud[1]),
-            self.drgb_gen.run.eq(drgb_ctl_aud[2]),
-        ]
-        self.drgb = DigitalRgbProbe(drgb_pads, sys_clk_freq)
-        self.comb += [
-            dbg_pads.g.eq(self.drgb_gen.g),
-            dbg_pads.b.eq(self.drgb_gen.b),
-            dbg_pads.i.eq(self.drgb_gen.i),
-            dbg_pads.hs.eq(self.drgb_gen.hs),
-            dbg_pads.vs.eq(self.drgb_gen.vs),
-        ]
         # --- 表示遅延の計測(フォトトランジスタ)---
         # デバッグ端子 J7 の dbg7(pin9 / R3)。回路と手順は retrocastx_latency.py 冒頭。
         # ★**内蔵プルアップで受ける。** フォトトランジスタをピンとGNDの間に
@@ -2336,13 +2331,13 @@ class RetroCastXStream(SoCMini):
         # --- シリアルLED(WS2812 互換)---
         # 状態LED(メイン基板 D1)と小亀基板のLED。それぞれ別のピンの独立チェーン。
         # 色の決め方とキーフレーム表の形式は retrocastx_led.py 冒頭
-        from retrocastx_led import StatusLed, KeyframeLeds
+        from retrocastx_led import StatusLed, KokameLeds
         platform.add_extension([
             ("led_status", 0, Pins("M1"), IOStandard("LVCMOS33")),   # SO-DIMM 54
             ("led_kokame", 0, Pins("A2"), IOStandard("LVCMOS33")),   # SO-DIMM 154
         ])
         self.led_status = StatusLed(platform.request("led_status"), sys_clk_freq)
-        self.led_kokame = KeyframeLeds(platform.request("led_kokame"), sys_clk_freq)
+        self.led_kokame = KokameLeds(platform.request("led_kokame"), sys_clk_freq)
         # 小亀基板のアナログスイッチ(TS5A23159)の選択。0=コンポジット/コンポーネント
         # (小亀側の10kΩプルダウンと同じ既定) / 1=S端子(Y→FFC9, C→FFC7)。
         # CONFIG の書込みレジスタをそのままピンへ出す(組合せ出力にしない)
@@ -2417,7 +2412,17 @@ class RetroCastXStream(SoCMini):
                                       hs_total=pll_divide or 1650,
                                       sys_clk_freq=sys_clk_freq,
                                       measure=measure)
-            capture_obj = self.capture
+            # --- デジタルRGB の取り込み(retrocastx_drgb_capture.py)---
+            # CONFIG 0x3A video_src = 1 で、送出部へ渡す取り込みを TVP から
+            # こちらへ切り替える(送る形式は RGBI4 に固定)。
+            # ★**実機では未確認**(デジタルRGB を出す機種もループバックの配線も無い)
+            from retrocastx_drgb_capture import DigitalRgbCapture, CaptureSel
+            self.video_src = Signal()
+            self.drgb_cap = DigitalRgbCapture(drgb_pads, width=2048, height=2048,
+                                              sys_clk_freq=sys_clk_freq)
+            self.capture_sel = CaptureSel(self.capture, self.drgb_cap,
+                                          self.video_src)
+            capture_obj = self.capture_sel
 
         udp_port = self.ethcore.udp.crossbar.get_port(UDP_PORT, dw=32)
         # ARP学習の診断(key 0x40..0x45)。実機で「学習できていないのか」
@@ -2443,9 +2448,10 @@ class RetroCastXStream(SoCMini):
             #   これでボードを見分ける。
             mac_address=my_mac, my_ip=my_ip,
             # bit1 = CAP_COMPACT / bit2 = CAP_LED_IDLE / bit3 = CAP_FRAME_CLOCKS /
-            # bit4 = CAP_PHOTO_LAT
+            # bit4 = CAP_PHOTO_LAT / bit5 = CAP_DRGB
             caps=Cat(self.status.mac_valid, C(1, 1), C(1, 1), C(1, 1),
-                     C(1 if capture else 0, 1), C(0, 11)),
+                     C(1 if capture else 0, 1), C(1 if capture else 0, 1),
+                     C(0, 10)),
             audio_sources=[(self.i2s.sources[0], 48000),
                            (self.i2s.sources[1], 48000),
                            (self.spdif.source, self.spdif.rate_hz),
@@ -2458,38 +2464,39 @@ class RetroCastXStream(SoCMini):
             cfg_in_mux1=((2 << 6) | ((red_input - 1) << 4) |
                          ((green_input - 1) << 2) | (blue_input - 1)),
             extra_cfg={
-                # デジタルRGB(0x0078〜)。生成器の入切と、測定の覗き位置
-                0x78: drgb_gen_ctl,
-                0x79: self.drgb.cfg_htotal,
-                0x7A: self.drgb.cfg_row,
-                0x7B: self.drgb.cfg_dot,
-                0x7C: self.drgb.cfg_hstart,
-                0x7D: self.drgb.cfg_hactive,
                 # MagJack LED のランプテスト(0=通常 / 1=全消灯 / 2=全点灯)
                 0x7E: self.eth_led_force,
                 # MDIO: [4:0]PHYAD [12:8]REGAD [19:16]リンクのビット位置
                 0x6C: self.cfg_mdio_sel,
-                # シリアルLED(0x0090〜)。表そのものは 0x0400〜(下で配線)
+                # シリアルLED(0x0090〜)。小亀の効果は 0x98〜0x9B
+                # (以前のキーフレーム表 0x91/0x92/0x0400〜 は 2026-11-23 に廃止)
                 0x90: self.led_kokame.n_led,
-                0x91: self.led_kokame.frames,
-                0x92: self.led_kokame.bank,
                 0x93: self.led_kokame.bright,
                 0x94: self.led_status.bright,
+                0x98: self.led_kokame.effect,
+                0x99: self.led_kokame.color,
+                0x9A: self.led_kokame.rate,
+                0x9B: self.led_kokame.spread,
                 # 小亀基板の入力切替(0=コンポジット/コンポーネント 1=S端子)
                 0x96: self.kokame_sel,
                 # 表示遅延の計測。bit0=計測する bit1=光るとHigh
                 0xA0: self.photo_lat.cfg_ctl,
+                # 送る映像の出どころ(0=TVP / 1=デジタルRGB)。1 のときは
+                # pll_divide(0x12)= 1ラインのドット数、phase(0x1F)= ドット内の位置
+                **({0x3A: self.video_src} if capture else {}),
             },
             extra_stats={
-                # デジタルRGB の測定値(読み取り専用)
-                0x70: self.drgb.stat_fh,
-                0x71: self.drgb.stat_fv,
-                0x72: self.drgb.stat_lines,
-                0x73: self.drgb.stat_hlen,
-                0x74: self.drgb.stat_level,
-                0x75: self.drgb.stat_pol,
-                0x76: self.drgb.stat_pixel,
-                0x77: self.drgb.stat_edges,
+                # デジタルRGB の測定値(読み取り専用)。fH / fV / vtotal / 1ラインの
+                # sys クロック数 / 生レベル / 極性。0x3B は256ライン分の HS 間隔の
+                # 合計(0 = 未確定 = 絵が出ない)、0x3C は捨てたライン数
+                **({0x70: self.drgb_cap.stat_fh,
+                    0x71: self.drgb_cap.stat_fv,
+                    0x72: self.drgb_cap.stat_lines,
+                    0x73: self.drgb_cap.stat_hlen,
+                    0x74: self.drgb_cap.stat_level,
+                    0x75: self.drgb_cap.stat_pol,
+                    0x3B: self.drgb_cap.stat_hsum,
+                    0x3C: self.drgb_cap.stat_drops} if capture else {}),
                 # MagJack LED の診断。光らないときに何が0なのかを引く
                 0x7F: self.eth_link_stat,
                 # MDIO: 下位16=BMSR / 上位16=0x6C で指定した番地の値
@@ -2521,7 +2528,7 @@ class RetroCastXStream(SoCMini):
             dual.table.last_port, C(0, 3),
             self.eth_leds[0].link, self.eth_leds[1].link, C(0, 2),
             self.status.eui_valid))
-        # 状態LEDの入力と、キーフレーム表の書き込み/読み返し(キー 0x0400〜0x05FF)
+        # 状態LEDと小亀のLEDの入力
         kled = self.led_kokame
         self.comb += [
             # TVP の設定は CONFIG でしか変わらないので、SET が来たときだけ書き直す
@@ -2529,11 +2536,6 @@ class RetroCastXStream(SoCMini):
             self.led_status.host_seen.eq(self.streamer.stat_host_seen),
             self.led_status.streaming.eq(self.streamer.stat_streaming),
             kled.streaming.eq(self.streamer.stat_streaming),
-            kled.tbl_adr.eq(self.streamer.cfg_wr_key[0:9]),
-            kled.tbl_dat_w.eq(self.streamer.cfg_wr_val),
-            kled.tbl_we.eq(self.streamer.cfg_wr_stb &
-                           (self.streamer.cfg_wr_key[9:16] == 0x0400 >> 9)),
-            self.streamer.cfg_range_reply.eq(kled.tbl_dat_r),
         ]
 
         if capture:
@@ -2572,6 +2574,13 @@ class RetroCastXStream(SoCMini):
             )
             # MODE の htotal は、TVP に書いているこの値を送る(streamer の htotal_applied)
             self.comb += self.streamer.htotal_applied.eq(pll_use)
+            # デジタルRGB: 1ラインのドット数 = pll_divide、ドット内の位置 = phase。
+            # 送る形式は送出部が video_src を見て RGBI4 に固定する
+            self.comb += [
+                self.drgb_cap.cfg_htotal.eq(pll_use),
+                self.drgb_cap.cfg_phase.eq(self.streamer.cfg_phase),
+                self.streamer.video_src.eq(self.video_src),
+            ]
 
             # hs_offset は必ずラインの前半に収める。これを超えるとキャプチャ窓が
             # ライン終端より後ろから始まり、x >= hs_offset が一度も成立せずライン
@@ -2642,7 +2651,8 @@ class RetroCastXStream(SoCMini):
                 # 38h bit5 は 0=インターレース
                 # mflags bit0 = 「スロットが vtotal 個」(フレーム単位の織り込み)。
                 # フィールド単位のVSYNCでは折り返さないので 2×vtotal 個になる。
-                self.streamer.stat_interlaced.eq(self.capture.il_slot1),
+                # デジタルRGB の取り込みはインターレースに未対応(常にプログレッシブ)
+                self.streamer.stat_interlaced.eq(self.capture_sel.il_slot1),
                 self.capture.cfg_hs_total.eq(pll_use),
                 self.status.cfg_pll_divide.eq(pll_use),
                 self.status.cfg_video_bw.eq(self.streamer.cfg_video_bw),
