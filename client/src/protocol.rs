@@ -37,6 +37,16 @@ pub const PIXFMT_YCC422: u8 = 4;
 /// 変わらない。1ラインが3パケット→2パケットに減る。受信側は YC8 に展開してから
 /// 既存の復調へ渡す。ボードの caps に CAP_COMPACT があるときだけ使う
 pub const PIXFMT_CVBS8: u8 = 5;
+/// デジタルRGB(TTL RGBI)用 4bit/px。1バイトに2画素で、**下位4bitが先(偶数画素)**。
+/// 各画素は bit0=R / bit1=G / bit2=B / bit3=I。
+///
+/// デジタルRGB は1ドットが RGBI の4本の線の 0/1 でしかないので、8bit に広げて
+/// 送るのは無駄(RGB555 の 1/4)。ボードは HSYNC からドットクロックを作り直し、
+/// 1ライン = `pll_divide` ドットをライン全体で送る(YC8 と同じく「黒でない範囲」の
+/// 判定はしない)。`offset_px` と `count_px` は画素単位で、断片の境目は偶数画素。
+/// 受信側は機種の色(8色 / 16色)で RGB888 に展開してから既存の処理へ渡す。
+/// ボードの caps に CAP_DRGB があるときだけ届く
+pub const PIXFMT_RGBI4: u8 = 6;
 
 /// ANNOUNCE caps bit1: YCC422 / CVBS8、送出範囲の固定、間引きの対モードに対応
 pub const CAP_COMPACT: u16 = 1 << 1;
@@ -51,12 +61,17 @@ pub const CAP_FRAME_CLOCKS: u16 = 1 << 3;
 /// ANNOUNCE caps bit4: 表示遅延の計測(フォトトランジスタ、CONFIG 0x00A0〜0x00A6)に
 /// 対応している
 pub const CAP_PHOTO_LAT: u16 = 1 << 4;
+/// ANNOUNCE caps bit5: デジタルRGB(入力4)の映像を取り込める。CONFIG 0x003A
+/// (`video_src`)を 1 にすると、TVP の代わりにデジタルRGB を RGBI4 で送る
+pub const CAP_DRGB: u16 = 1 << 5;
 
-pub fn bytes_per_px(pixfmt: u8) -> Option<usize> {
+/// `count_px` 画素ぶんの中身のバイト数。未知の形式は None
+pub fn payload_len(pixfmt: u8, count_px: usize) -> Option<usize> {
     match pixfmt {
-        PIXFMT_RGB888 => Some(3),
-        PIXFMT_RGB555 | PIXFMT_RGB565 | PIXFMT_YC8 | PIXFMT_YCC422 => Some(2),
-        PIXFMT_CVBS8 => Some(1),
+        PIXFMT_RGB888 => Some(count_px * 3),
+        PIXFMT_RGB555 | PIXFMT_RGB565 | PIXFMT_YC8 | PIXFMT_YCC422 => Some(count_px * 2),
+        PIXFMT_CVBS8 => Some(count_px),
+        PIXFMT_RGBI4 => Some(count_px.div_ceil(2)),
         _ => None,
     }
 }
@@ -195,8 +210,8 @@ pub fn parse(d: &[u8]) -> Result<Packet<'_>, &'static str> {
             let count_px = u16le(body, 4);
             let pixfmt = body[6];
             let pixels = &body[12..];
-            let bpp = bytes_per_px(pixfmt).ok_or("unknown pixfmt")?;
-            if pixels.len() != count_px as usize * bpp {
+            let len = payload_len(pixfmt, count_px as usize).ok_or("unknown pixfmt")?;
+            if pixels.len() != len {
                 return Err("LINE payload size mismatch");
             }
             Ok(Packet::Line(Line {
@@ -369,6 +384,11 @@ pub const CFG_KEY_FRAME_SKIP: u16 = 0x0035;
 /// YC8にするとボード側で「黒でない範囲」の最適化が自動的に切れ、
 /// 1ライン=htotal画素まるごと届く(ブランキングもバーストも中身なので)。
 pub const CFG_KEY_PIXFMT: u16 = 0x0036;
+/// 取り込む映像の出どころ。0 = TVP(入力1〜3、既定)/ 1 = デジタルRGB(入力4)。
+/// 1 のときボードは HSYNC からドットクロックを作り直し、`pll_divide`(0x0012)を
+/// 1ラインのドット数、`phase`(0x001F)をドット内の位相(0..31)として使い、
+/// RGBI4 で送る(0x0036 は見ない)。caps bit5(CAP_DRGB)が要る
+pub const CFG_KEY_VIDEO_SRC: u16 = 0x003A;
 /// 非黒判定の閾値(成分の上位5bit と比較, 0..31)。既定0。
 /// ★上げると**暗い絵の中身が送出範囲から外れて送られなくなる**。
 /// 閾値2で X68000 の32階調の下2段が消えていた(2026-09-03 実測)。
@@ -577,9 +597,14 @@ pub mod testutil {
         frame: u16, seq: u16, line: u16, offset_px: u16, pixfmt: u8, mode_id: u8,
         timestamp: u32, pixels: &[u8],
     ) -> Vec<u8> {
-        let bpp = bytes_per_px(pixfmt).unwrap();
-        assert_eq!(pixels.len() % bpp, 0);
-        let count_px = (pixels.len() / bpp) as u16;
+        // RGBI4 は1バイト2画素なので、バイト数の2倍を画素数とする(奇数画素は渡さない)
+        let count_px = if pixfmt == PIXFMT_RGBI4 {
+            (pixels.len() * 2) as u16
+        } else {
+            let bpp = payload_len(pixfmt, 1).unwrap();
+            assert_eq!(pixels.len() % bpp, 0);
+            (pixels.len() / bpp) as u16
+        };
         let mut p = vec![MAGIC, VERSION, TYPE_LINE, 0x01];
         p.extend_from_slice(&frame.to_le_bytes());
         p.extend_from_slice(&seq.to_le_bytes());

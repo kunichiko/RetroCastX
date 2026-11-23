@@ -243,18 +243,21 @@ pub fn run(sock: UdpSocket, sh: Arc<Shared>) {
             let (input, cfg, opt, pic_serial, noise) = {
                 let b = sh.board.lock().unwrap();
                 let mut opt = b.picture.clone();
-                let inp = b.tvp_input().cloned();
+                let inp = b.capture_input().cloned();
                 if !opt.caption.is_empty() {
                     opt.caption = inp.as_ref().map_or(String::new(), Input::caption);
                 }
-                (inp, b.cap_cfg(), opt, b.pic_gen, b.noise)
+                let mut cfg = b.cap_cfg();
+                // デジタルRGB の色数は機種の階調で決まる(1bit なら 8色)
+                cfg.rgbi16 = inp.as_ref().is_some_and(|i| i.mode.color_bits >= 2);
+                (inp, cfg, opt, b.pic_gen, b.noise)
             };
             let id = input.as_ref().map(|i| format!("{}/{}", i.machine_key, i.mode.name));
             if id != last_input_id {
                 last_input_id = id.clone();
                 sh.board.lock().unwrap().log(match &id {
-                    Some(s) => format!("TVP の信号: {s}"),
-                    None => "TVP の信号: なし".into(),
+                    Some(s) => format!("取り込む信号: {s}"),
+                    None => "取り込む信号: なし".into(),
                 });
             }
             match input {

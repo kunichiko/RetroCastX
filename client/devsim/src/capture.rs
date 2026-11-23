@@ -43,6 +43,8 @@ pub struct CapCfg {
     pub pixfmt: u8,
     pub frame_skip: u32,
     pub field_invert: bool,
+    /// RGBI4 のとき 16色(I を使う)で量子化するか。8色なら I は 0
+    pub rgbi16: bool,
 }
 
 /// 取り込んだ1ライン
@@ -221,7 +223,10 @@ impl Capture {
 
 /// 送る範囲 [lo, hi)(絶対位置)。stream.py の規則どおり
 pub fn send_range(samples: &[[u8; 3]], cfg: &CapCfg) -> (u32, u32) {
-    let (lo, hi) = if cfg.full_line || proto::is_raw8(cfg.pixfmt) {
+    let (lo, hi) = if cfg.full_line || proto::is_raw8(cfg.pixfmt)
+        || cfg.pixfmt == proto::PIXFMT_RGBI4
+    {
+        // デジタルRGB はライン全体(1パケットに収まる。黒でない範囲の判定もしない)
         (cfg.hs_offset, cfg.pll_divide)
     } else if cfg.win_len != 0 {
         (cfg.win_start, cfg.win_start + cfg.win_len)
@@ -247,6 +252,9 @@ pub fn send_range(samples: &[[u8; 3]], cfg: &CapCfg) -> (u32, u32) {
 
 /// 1パケットに入る画素数(4の倍数)
 pub fn max_px(pixfmt: u8) -> u32 {
+    if pixfmt == proto::PIXFMT_RGBI4 {
+        return ((PAYLOAD_MAX - LINE_HDR) * 2) as u32 & !3;
+    }
     let bpp = match pixfmt {
         proto::PIXFMT_RGB888 => 3,
         proto::PIXFMT_CVBS8 => 1,
@@ -255,9 +263,35 @@ pub fn max_px(pixfmt: u8) -> u32 {
     ((PAYLOAD_MAX - LINE_HDR) / bpp) as u32 & !3
 }
 
+/// RGB を RGBI の4bit(bit0=R bit1=G bit2=B bit3=I)にする。
+///
+/// 8色は各色の上半分を 1、I は 0(8色の機種には I の線が無い)。16色は Viewer と
+/// 同じ CGA の 16 色(色の bit で 170、I で +85)のうち最も近いもの
+pub fn rgbi_of(c: [u8; 3], rgbi16: bool) -> u8 {
+    if !rgbi16 {
+        return (c[0] >= 128) as u8 | ((c[1] >= 128) as u8) << 1 | ((c[2] >= 128) as u8) << 2;
+    }
+    let dist = |v: u8| -> u32 {
+        (0..3).map(|ch| {
+            let lv = ((v >> ch & 1) as i32) * 170 + ((v >> 3) as i32) * 85;
+            let d = c[ch] as i32 - lv;
+            (d * d) as u32
+        }).sum()
+    };
+    (0..16u8).min_by_key(|&v| dist(v)).unwrap()
+}
+
 /// 画素を伝送形式に詰める
-fn pack_pixels(px: &[[u8; 3]], pixfmt: u8, out: &mut Vec<u8>) {
+fn pack_pixels(px: &[[u8; 3]], pixfmt: u8, rgbi16: bool, out: &mut Vec<u8>) {
     match pixfmt {
+        // 1バイト2画素、下位4bitが先
+        proto::PIXFMT_RGBI4 => {
+            for p in px.chunks(2) {
+                let lo = rgbi_of(p[0], rgbi16);
+                let hi = p.get(1).map_or(0, |c| rgbi_of(*c, rgbi16));
+                out.push(lo | hi << 4);
+            }
+        }
         proto::PIXFMT_RGB888 => {
             for c in px {
                 out.extend_from_slice(c);
@@ -308,7 +342,7 @@ pub fn packetize(line: &CapLine, cfg: &CapCfg, seq: &mut u16, out: &mut Vec<Vec<
         let s = &line.samples;
         let px: Vec<[u8; 3]> =
             (off..off + count).map(|x| *s.get(x as usize).unwrap_or(&[0; 3])).collect();
-        pack_pixels(&px, cfg.pixfmt, &mut p);
+        pack_pixels(&px, cfg.pixfmt, cfg.rgbi16, &mut p);
         *seq = seq.wrapping_add(1);
         out.push(p);
         off += count;
@@ -329,7 +363,7 @@ mod tests {
         CapCfg {
             pll_divide: pll, phase: 16, vbp: 0, hs_offset: 0, full_line: false, win_start: 0,
             win_len: 0, black_th: 0, pixfmt: proto::PIXFMT_RGB555, frame_skip: 0,
-            field_invert: false,
+            field_invert: false, rgbi16: false,
         }
     }
 
@@ -449,5 +483,41 @@ mod tests {
             }
             assert_eq!(total, 1820);
         }
+    }
+
+    /// デジタルRGB: PC-6001mkIISR 640x200 を pll 910 で取り込むと、1ライン 910 ドットが
+    /// RGBI4 の1パケット(455 バイト)で届き、カラーバーの白が 16色の白(0xF)になる
+    #[test]
+    fn rgbi4_one_packet_per_line() {
+        let s = src("pc6001mk2sr", "640x200");
+        let p = pic(&s, Pattern::White);
+        let mut cap = Capture::default();
+        let mut c = cfg(910);
+        c.pixfmt = proto::PIXFMT_RGBI4;
+        c.rgbi16 = true;
+        let per = cap.next_period(&s, false, &p, 1, &c, 0);
+        let row = per.rows.iter().find(|r| r.samples.iter().any(|v| v[0] > 0)).unwrap();
+        let mut seq = 0;
+        let mut pk = Vec::new();
+        packetize(row, &c, &mut seq, &mut pk);
+        assert_eq!(pk.len(), 1);
+        let Ok(Packet::Line(l)) = proto::parse(&pk[0]) else { panic!() };
+        assert_eq!((l.offset_px, l.count_px, l.pixels.len()), (0, 912, 456));
+        // 有効映像の中ほど(hstart 150 + 320)は白
+        assert_eq!(l.pixels[235], 0xFF);
+        // HSYNC の直後は黒
+        assert_eq!(l.pixels[0], 0x00);
+    }
+
+    #[test]
+    fn rgbi_quantize() {
+        // 8色: 上半分が 1、I は 0
+        assert_eq!(rgbi_of([255, 255, 255], false), 0x7);
+        assert_eq!(rgbi_of([200, 10, 0], false), 0x1);
+        // 16色: CGA で最も近いもの
+        assert_eq!(rgbi_of([255, 255, 255], true), 0xF);
+        assert_eq!(rgbi_of([170, 170, 170], true), 0x7);
+        assert_eq!(rgbi_of([85, 85, 85], true), 0x8);
+        assert_eq!(rgbi_of([0, 0, 170], true), 0x4);
     }
 }

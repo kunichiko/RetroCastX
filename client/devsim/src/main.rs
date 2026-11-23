@@ -7,7 +7,7 @@
 //! cargo run --release -p retrocastx-devsim                 # GUI
 //! cargo run --release -p retrocastx-devsim -- --headless   # GUI なし(試験用)
 //!     --input rgb15=x68000:0     端子に機種とモード(番号)を繋ぐ。複数回指定可
-//!     --cycle 5                  TVP が見ている端子のモードを5秒ごとに切り替える
+//!     --cycle 5                  取り込んでいる端子のモードを5秒ごとに切り替える
 //!     --port 34600 --name devsim
 //! ```
 //!
@@ -22,6 +22,7 @@ mod capture;
 mod engine;
 mod machines;
 mod pattern;
+mod settings;
 mod signal;
 
 /// プロトコルの定数とパーサは Viewer のものをそのまま使う(版ずれを防ぐ)
@@ -142,9 +143,19 @@ fn main() {
             (Port::Rgb15, "x68000".to_string(), 0),
             (Port::Rgb21, "msx".to_string(), 0),
             (Port::Video, "composite".to_string(), 0),
+            (Port::Digital, "pc6001mk2sr".to_string(), 0),
         ]
     } else {
         args.inputs.clone()
+    };
+    // GUI で --input が無ければ、前回の端子の選択を戻す(settings.rs)
+    let saved = if !args.headless && args.inputs.is_empty() {
+        if let Some(p) = settings::path() {
+            println!("設定: {}", p.display());
+        }
+        Some(settings::load())
+    } else {
+        None
     };
     for (port, key, idx) in &inputs {
         let Some(mc) = ms.iter().find(|m| m.key == key) else {
@@ -156,6 +167,21 @@ fn main() {
             std::process::exit(2);
         };
         b.inputs[*port as usize] = Some(make_input(mc, md));
+    }
+    let mut saved_cycles = [None; 4];
+    if let Some(m) = &saved {
+        for &port in Port::ALL.iter() {
+            let Some(v) = settings::port_of(m, port) else { continue };
+            saved_cycles[port as usize] = Some(v.cycle_s);
+            match &v.machine {
+                None => b.inputs[port as usize] = None,
+                // 今の版に無い機種は既定のまま
+                Some(key) => if let Some(mc) = ms.iter().find(|m| m.key == key) {
+                    let md = mc.modes.iter().find(|md| md.name == v.mode).unwrap_or(&mc.modes[0]);
+                    b.inputs[port as usize] = Some(make_input(mc, md));
+                },
+            }
+        }
     }
     let sh = Shared::new(b);
     let (sock, net_note) = match engine::open(args.port) {
@@ -194,7 +220,13 @@ fn main() {
             .with_inner_size([1280.0, 860.0]),
         ..Default::default()
     };
-    let app = App::new(sh.clone(), ms, net_note, args.cycle);
+    let mut app = App::new(sh.clone(), ms, net_note, args.cycle);
+    for (pi, c) in saved_cycles.iter().enumerate() {
+        if let (Some(c), None) = (c, args.cycle) {
+            app.ports[pi].cycle_s = *c;
+        }
+    }
+    app.saved = Some(app.port_saves());
     if let Err(e) = eframe::run_native("retrocastx-devsim", opts, Box::new(move |cc| {
         install_cjk_font(&cc.egui_ctx);
         Ok(Box::new(app))
@@ -214,7 +246,7 @@ fn headless(sh: &Arc<Shared>, ms: &[Machine], cycle: Option<f64>) {
             if now >= t {
                 next_cycle = Some(now + Duration::from_secs_f64(c));
                 let mut b = sh.board.lock().unwrap();
-                let p = b.tvp_port();
+                let p = b.capture_port();
                 if let Some(inp) = b.inputs[p as usize].clone() {
                     if let Some(mc) = ms.iter().find(|m| m.key == inp.machine_key) {
                         let i = mc.modes.iter().position(|m| m.name == inp.mode.name).unwrap_or(0);
@@ -232,15 +264,15 @@ fn headless(sh: &Arc<Shared>, ms: &[Machine], cycle: Option<f64>) {
             println!("  {}", e.text);
         }
         println!(
-            "購読 {:<22} TVP {:<18} pll {:4} 位相 {:2} 形式 {} | {:6} pkt/s {:7.1} Mbps 負荷 {:.2} 周回 {}/s 最長 {:.1}ms 遅れ {:.0}ms 詰まり {}",
+            "購読 {:<22} 入力 {:<18} pll {:4} 位相 {:2} 形式 {} | {:6} pkt/s {:7.1} Mbps 負荷 {:.2} 周回 {}/s 最長 {:.1}ms 遅れ {:.0}ms 詰まり {}",
             match (b.sub, b.subscribed(now)) {
                 (Some(a), true) => a.to_string(),
                 _ => "-".into(),
             },
-            b.tvp_input().map_or("信号なし".into(), |i| i.mode.name.to_string()),
+            b.capture_input().map_or("信号なし".into(), |i| i.mode.name.to_string()),
             b.reg(protocol::CFG_KEY_PLL_DIVIDE),
             b.reg(protocol::CFG_KEY_PHASE),
-            pixfmt_name(b.reg(protocol::CFG_KEY_PIXFMT) as u8),
+            pixfmt_name(b.cap_cfg().pixfmt),
             s.pkts_per_s, s.mbps, s.load, s.iters, s.worst_ms, s.lag_ms, s.would_block,
         );
     }
@@ -254,6 +286,7 @@ fn pixfmt_name(f: u8) -> &'static str {
         protocol::PIXFMT_YC8 => "YC8",
         protocol::PIXFMT_YCC422 => "YCC422",
         protocol::PIXFMT_CVBS8 => "CVBS8",
+        protocol::PIXFMT_RGBI4 => "RGBI4",
         _ => "?",
     }
 }
@@ -363,6 +396,8 @@ struct App {
     preview_gen: u64,
     preview_at: Instant,
     name_edit: String,
+    /// 最後に devsim.conf へ書いた端子の選択(変わったら書き直す)。None = 保存しない
+    saved: Option<Vec<(Port, settings::PortSave)>>,
 }
 
 impl App {
@@ -388,7 +423,31 @@ impl App {
         let name_edit = sh.board.lock().unwrap().name.clone();
         App {
             sh, ms, ports, net_err, preview_tex: None, preview_gen: 0,
-            preview_at: Instant::now(), name_edit,
+            preview_at: Instant::now(), name_edit, saved: None,
+        }
+    }
+
+    /// いまの端子の選択(保存する形)。カスタムは保存しない(未接続として残す)
+    fn port_saves(&self) -> Vec<(Port, settings::PortSave)> {
+        Port::ALL.iter().zip(&self.ports).map(|(&port, p)| {
+            let (machine, mode) = match p.machine {
+                Some(i) if i != CUSTOM => {
+                    let mc = &self.ms[i];
+                    (Some(mc.key.to_string()),
+                     mc.modes.get(p.mode).map_or(String::new(), |m| m.name.to_string()))
+                }
+                _ => (None, String::new()),
+            };
+            (port, settings::PortSave { machine, mode, cycle_s: p.cycle_s })
+        }).collect()
+    }
+
+    fn save_if_changed(&mut self) {
+        let Some(prev) = &self.saved else { return };
+        let now = self.port_saves();
+        if *prev != now {
+            settings::save(&now);
+            self.saved = Some(now);
         }
     }
 
@@ -460,13 +519,14 @@ impl App {
             ui.end_row();
             ui.label("TVP の入力");
             let port = b.tvp_port();
-            ui.monospace(format!("{}  (19h=0x{:02X})", port.label(), b.reg(protocol::CFG_KEY_IN_MUX1)));
+            ui.monospace(format!("{}  (19h=0x{:02X}){}", port.label(), b.reg(protocol::CFG_KEY_IN_MUX1),
+                                 if b.digital() { "  ※ いまはデジタルRGB を取り込み中" } else { "" }));
             ui.end_row();
             ui.label("取り込み");
             ui.monospace(format!(
                 "pll {}  位相 {}  {}  間引き {}  vbp {}{}",
                 b.reg(protocol::CFG_KEY_PLL_DIVIDE), b.reg(protocol::CFG_KEY_PHASE),
-                pixfmt_name(b.reg(protocol::CFG_KEY_PIXFMT) as u8), b.reg(protocol::CFG_KEY_FRAME_SKIP),
+                pixfmt_name(b.cap_cfg().pixfmt), b.reg(protocol::CFG_KEY_FRAME_SKIP),
                 b.reg(protocol::CFG_KEY_VBP),
                 if b.reg(protocol::CFG_KEY_FULL_LINE) != 0 { "  全ライン" } else { "" }));
             ui.end_row();
@@ -508,11 +568,11 @@ impl App {
     }
 
     fn ports_ui(&mut self, ui: &mut egui::Ui) {
-        let tvp_port = self.sh.board.lock().unwrap().tvp_port();
+        let tvp_port = self.sh.board.lock().unwrap().capture_port();
         for pi in 0..self.ports.len() {
             let port = Port::ALL[pi];
             let mut changed = false;
-            let title = format!("{}{}", port.label(), if port == tvp_port { "  ◀ TVP が見ている" } else { "" });
+            let title = format!("{}{}", port.label(), if port == tvp_port { "  ◀ 取り込んでいる" } else { "" });
             egui::CollapsingHeader::new(egui::RichText::new(title).strong())
                 .id_salt(("port", pi))
                 .default_open(self.ports[pi].machine.is_some() || port == tvp_port)
@@ -676,7 +736,7 @@ impl App {
             let w = h * size.x / size.y;
             ui.image((t.id(), egui::vec2(w, h)));
         } else {
-            ui.weak("(まだ何も取り込んでいません。TVP が見ている端子に機種を繋いでください)");
+            ui.weak("(まだ何も取り込んでいません。取り込んでいる端子に機種を繋いでください)");
         }
     }
 
@@ -764,6 +824,7 @@ fn custom_ui(ui: &mut egui::Ui, c: &mut CustomUi, pi: usize) -> bool {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.tick_cycles();
+        self.save_if_changed();
         egui::Panel::left("controls").resizable(true).default_size(470.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("ボード");

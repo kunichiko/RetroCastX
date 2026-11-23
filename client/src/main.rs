@@ -99,6 +99,7 @@ fn pixfmt_name(f: u8) -> &'static str {
         protocol::PIXFMT_YC8 => "YC8 (2B/px)",
         protocol::PIXFMT_YCC422 => "YCC422 (2B/px)",
         protocol::PIXFMT_CVBS8 => "CVBS8 (1B/px)",
+        protocol::PIXFMT_RGBI4 => "RGBI4 (4bit/px)",
         _ => "unknown",
     }
 }
@@ -285,6 +286,8 @@ fn main() -> eframe::Result {
             slices: cfg.fullscreen_slices,
             ycbcr: regs_profile_of(cfg.input_port, cfg.source_profile(), &userprof::load_all())
                 .is_some_and(|p| p.ycbcr),
+            rgbi16: base_profile_of(cfg.input_port, cfg.source_profile(), &userprof::load_all())
+                .is_some_and(|p| p.rgbi16),
             dot_a_milli: cfg.dot_a_milli,
             comb3d: cfg.ntsc_comb3d,
             deint: cfg.deint_mode,
@@ -1469,6 +1472,8 @@ struct Session {
     skip_applied_to: Option<[u8; 6]>,
     /// 送出範囲の固定を書いた相手と値(apply_send_window)
     win_applied: Option<([u8; 6], (u32, u32))>,
+    /// 映像の出どころ(0x3A、TVP / デジタルRGB)を書いた相手と値(apply_video_src)
+    vsrc_applied: Option<([u8; 6], u32)>,
     /// ボードから読み戻した間引きの値(CONFIG 0x35 の生値)。対モード(bit4)に
     /// 対応していないゲートウェアは bit4 を返さないので、その判別に使う
     board_frame_skip: Option<u32>,
@@ -1815,6 +1820,7 @@ impl Session {
             deint_tint: false,
             skip_applied_to: None,
             win_applied: None,
+            vsrc_applied: None,
             board_frame_skip: None,
             tune_phase: cfg.tune_phase,
             raw_view: false,
@@ -2324,13 +2330,13 @@ impl Session {
         }
 
         self.estimate_ui(ui, &mut send);
-        if !port.uses_tvp() {
+        if !port.uses_tvp() && self.board_lacks_drgb() {
             let fh = self.signal.drgb_fh.filter(|f| *f > 0)
                 .map_or(String::new(), |f| format!("(fH {:.2}kHz を検出)", f as f32 / 1000.0));
             ui.colored_label(
                 theme::AMBER,
-                format!("デジタルRGBの映像の取り込みはまだゲートウェアにありません。\
-                         信号の有無だけを見ています{fh}"),
+                format!("このボードのゲートウェアはデジタルRGBの映像の取り込みに\
+                         対応していません。信号の有無だけを見ています{fh}"),
             );
         }
         // ボードの伝送形式が**このソースで成立しない**ときだけ言う。
@@ -2544,7 +2550,7 @@ impl Session {
             //   機種の管面のままコンポジットの絵が映り、follow_band が新しい管面に
             //   替えるまで小さく出ていた(2026-11-10 実機)
             let now = std::time::Instant::now();
-            if port.uses_tvp() {
+            if port.uses_tvp() || self.board_drgb() {
                 self.mode_switch.restart(now);
             }
             // 1秒窓のゲートウェアでは、替えてからしばらく届く MODE は前の端子のもの
@@ -2751,9 +2757,30 @@ impl Session {
         })
     }
 
-    /// 映像を出さずに待つか(取り込みの無い端子を選んでいる)
+    /// 映像を出さずに待つか(取り込みの無い端子を選んでいる)。
+    /// デジタルRGB は、取り込めるボード(CAP_DRGB)なら待たない。
+    /// ★**ボードが見えないときは待機にしない。** devsim を閉じたりボードの電源を
+    ///   切ったりしただけで「未対応」と出ていた。未対応と言えるのは、掴んでいる
+    ///   ボードが見えていて CAP_DRGB を持たないときだけ
     fn standby(&self) -> bool {
-        !self.input_port.uses_tvp()
+        !self.input_port.uses_tvp() && self.board_lacks_drgb()
+    }
+
+    /// 掴んでいるボードが見えていて、デジタルRGB を取り込めない(CAP_DRGB 無し)か。
+    /// ボードが見えないときは分からないので false
+    fn board_lacks_drgb(&self) -> bool {
+        self.claimed().is_some_and(|mac| {
+            self.shared.boards.lock().unwrap().get(&mac)
+                .is_some_and(|b| b.caps & protocol::CAP_DRGB == 0)
+        })
+    }
+
+    /// 掴んでいるボードがデジタルRGB の映像を取り込めるか(CAP_DRGB)
+    fn board_drgb(&self) -> bool {
+        self.claimed().is_some_and(|mac| {
+            self.shared.boards.lock().unwrap().get(&mac)
+                .is_some_and(|b| b.caps & protocol::CAP_DRGB != 0)
+        })
     }
 
     /// モードのキーの表示名(31kHz・55Hz / 31kHz 帯 / NTSC)。「帯」は垂直周波数で
@@ -4157,6 +4184,26 @@ impl Session {
                 _ => (*k, *v),
             })
             .collect()
+    }
+
+    /// 映像の出どころ(0x3A)を掴んだボードへ書く。デジタルRGB を選んでいれば 1、
+    /// TVP の端子なら 0。
+    ///
+    /// ★**TVP の端子に戻したら必ず 0 に戻す。** ボードの設定は持ち主や端子が
+    ///   替わっても残るので、送出範囲と同じく掴むたび・端子を替えるたびに書く。
+    ///   CAP_DRGB の無いボードには書かない(知らないキー)
+    fn apply_video_src(&mut self) {
+        let up = self.shared.mode.lock().unwrap().is_some();
+        let own = if up { self.claimed() } else { None };
+        let Some(mac) = own.filter(|_| self.board_drgb()) else {
+            self.vsrc_applied = None;
+            return;
+        };
+        let want = (self.input_port == profiles::Port::Digital) as u32;
+        if self.vsrc_applied != Some((mac, want)) {
+            self.vsrc_applied = Some((mac, want));
+            self.send_cfg(protocol::CFG_KEY_VIDEO_SRC, want);
+        }
     }
 
     /// 送出範囲の固定(0x38/0x39)を掴んだボードへ書く。
@@ -7064,6 +7111,11 @@ impl Session {
             self.regs_profile().is_some_and(|p| p.ycbcr),
             std::sync::atomic::Ordering::Relaxed,
         );
+        // デジタルRGB は機種の色数(8色 / 16色)で RGBI4 を展開させる
+        self.shared.rgbi16.store(
+            self.base_profile().is_some_and(|p| p.rgbi16),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let t_tex = std::time::Instant::now();
         self.refresh_texture(&ctx);
         self.pace.note_upload(t_tex.elapsed());
@@ -7107,6 +7159,7 @@ impl Session {
         self.watch_auto_skip();
         // コンポーネントは送出範囲を固定して1ラインを1パケットに収める
         self.apply_send_window();
+        self.apply_video_src();
         // 同じくパネルの外。映像が「自動」のときの音声はボードの入力系統に従う
         self.follow_board_input_audio();
         // 端子ボタンの信号表示と機種の推定に使う。パネルを開いた瞬間に分かっているように

@@ -116,7 +116,7 @@ impl Board {
             // gw-v1.6.1 と同じ (major<<12)|(minor<<6)|patch
             fw_version: (1 << 12) | (6 << 6) | 1,
             caps: CAP_EEPROM_MAC | proto::CAP_COMPACT | proto::CAP_LED_IDLE
-                | proto::CAP_FRAME_CLOCKS,
+                | proto::CAP_FRAME_CLOCKS | proto::CAP_DRGB,
             regs: HashMap::new(),
             inputs: [None, None, None, None],
             picture: Options { pattern: crate::pattern::Pattern::Composite, moving: true, caption: String::new() },
@@ -163,18 +163,37 @@ impl Board {
         if p == Port::Digital { None } else { self.input(p) }
     }
 
+    /// デジタルRGB を取り込んでいるか(0x3A = 1。CAP_DRGB を外したボードでは常に TVP)
+    pub fn digital(&self) -> bool {
+        self.caps & proto::CAP_DRGB != 0 && self.reg(proto::CFG_KEY_VIDEO_SRC) == 1
+    }
+
+    /// 取り込んでいる端子(デジタルRGB を選んでいれば入力4、でなければ TVP の端子)
+    pub fn capture_port(&self) -> Port {
+        if self.digital() { Port::Digital } else { self.tvp_port() }
+    }
+
+    /// 取り込んで送っている信号。デジタルRGB を選んでいれば入力4、でなければ TVP の端子
+    pub fn capture_input(&self) -> Option<&Input> {
+        if self.digital() { self.input(Port::Digital) } else { self.tvp_input() }
+    }
+
     pub fn cap_cfg(&self) -> CapCfg {
         let r = |k| self.reg(k);
         CapCfg {
             pll_divide: r(proto::CFG_KEY_PLL_DIVIDE),
             phase: r(proto::CFG_KEY_PHASE),
             vbp: r(proto::CFG_KEY_VBP),
-            hs_offset: r(proto::CFG_KEY_HS_OFFSET),
+            // デジタルRGB は TVP を通らないので、TVP の HSYNC 直後の捨てを効かせない
+            hs_offset: if self.digital() { 0 } else { r(proto::CFG_KEY_HS_OFFSET) },
             full_line: r(proto::CFG_KEY_FULL_LINE) != 0,
             win_start: r(proto::CFG_KEY_WIN_START),
             win_len: r(proto::CFG_KEY_WIN_LEN),
             black_th: r(proto::CFG_KEY_BLACK_TH),
-            pixfmt: r(proto::CFG_KEY_PIXFMT) as u8,
+            // デジタルRGB は 0x36 を見ず、いつも RGBI4
+            pixfmt: if self.digital() { proto::PIXFMT_RGBI4 } else { r(proto::CFG_KEY_PIXFMT) as u8 },
+            // 色数は機種で決まる(engine が入力から入れる)
+            rgbi16: false,
             frame_skip: r(proto::CFG_KEY_FRAME_SKIP),
             field_invert: r(proto::CFG_KEY_FIELD_INVERT) != 0,
         }
@@ -424,7 +443,7 @@ impl Board {
         p.extend_from_slice(&seq.to_le_bytes());
         *seq = seq.wrapping_add(1);
         p.push(MODE_ID);
-        p.push(self.reg(proto::CFG_KEY_PIXFMT) as u8);
+        p.push(self.cap_cfg().pixfmt);
         p.extend_from_slice(&(m.il_frame as u16).to_le_bytes());
         p.extend_from_slice(&(LINE_BUFFER_W as u16).to_le_bytes());
         p.extend_from_slice(&(htotal as u16).to_le_bytes());
@@ -502,7 +521,8 @@ fn width_mask(key: u16) -> u32 {
         proto::CFG_KEY_VBP | proto::CFG_KEY_HS_OFFSET => 0x1FFF,
         proto::CFG_KEY_PHASE | proto::CFG_KEY_FRAME_SKIP | proto::CFG_KEY_BLACK_TH
         | proto::CFG_KEY_SOG_THRESH => 0x1F,
-        proto::CFG_KEY_FULL_LINE | proto::CFG_KEY_FIELD_INVERT | proto::CFG_KEY_NO_RAW_PHASE => 1,
+        proto::CFG_KEY_FULL_LINE | proto::CFG_KEY_FIELD_INVERT | proto::CFG_KEY_NO_RAW_PHASE
+        | proto::CFG_KEY_VIDEO_SRC => 1,
         proto::CFG_KEY_PIXFMT => 0xFF,
         proto::CFG_KEY_WIN_START | proto::CFG_KEY_WIN_LEN => 0xFFFF,
         proto::CFG_KEY_CLAMP_SEL => 0x7,
@@ -533,6 +553,7 @@ pub fn key_name(key: u16) -> &'static str {
         proto::CFG_KEY_FULL_LINE => "full_line",
         proto::CFG_KEY_FRAME_SKIP => "frame_skip",
         proto::CFG_KEY_PIXFMT => "pixfmt",
+        proto::CFG_KEY_VIDEO_SRC => "video_src",
         proto::CFG_KEY_BLACK_TH => "black_th",
         proto::CFG_KEY_WIN_START => "win_start",
         proto::CFG_KEY_WIN_LEN => "win_len",
