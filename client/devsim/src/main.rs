@@ -30,6 +30,11 @@ mod signal;
 #[path = "../../src/protocol.rs"]
 mod protocol;
 
+/// デジタルRGB の色の表も Viewer のものを使う(Viewer の展開と1対1にするため)
+#[allow(dead_code)]
+#[path = "../../src/palette.rs"]
+mod palette;
+
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -461,8 +466,12 @@ impl App {
                 Some(Input {
                     machine_key: "custom".into(),
                     kind: c.kind,
+                    // デジタルRGB は階調 1bit を 8色、2bit 以上を RGBI 16色とみなす
                     mode: Mode { name: "custom", timing: c.t.clone(), color_bits: c.color_bits,
-                                 verified: false, note: "" },
+                                 verified: false, note: "",
+                                 palette: (Port::ALL[pi] == Port::Digital).then_some(
+                                     if c.color_bits >= 2 { palette::Palette::Rgbi16 }
+                                     else { palette::Palette::Rgb8 }) },
                 })
             }
             Some(i) => {

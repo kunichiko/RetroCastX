@@ -45,6 +45,8 @@ pub struct UserProfile {
     pub note: String,
     pub mon: BTreeMap<u32, [f32; 4]>,
     pub pll: BTreeMap<u32, [u32; 2]>,
+    /// デジタルRGB の色の方式(書いていなければ借りている機種の既定)
+    pub palette: Option<crate::palette::Palette>,
 }
 
 impl UserProfile {
@@ -65,6 +67,7 @@ impl UserProfile {
             note: String::new(),
             mon: BTreeMap::new(),
             pll: BTreeMap::new(),
+            palette: None,
         };
         let mut has_port = false;
         for line in text.lines() {
@@ -85,6 +88,7 @@ impl UserProfile {
                 "base" => u.base = v.to_string(),
                 "author" => u.author = v.to_string(),
                 "note" => u.note = v.to_string(),
+                "palette" => u.palette = crate::palette::Palette::from_key(v),
                 k if k.starts_with("mon.") => {
                     if let (Some(b), Some(m)) = (key_from_str(&k[4..]), settings::parse_mon(v)) {
                         u.mon.insert(b, m);
@@ -111,6 +115,9 @@ impl UserProfile {
         s.push_str(&format!("base = {}\n", self.base));
         s.push_str(&format!("author = {}\n", self.author));
         s.push_str(&format!("note = {}\n", self.note));
+        if let Some(p) = self.palette {
+            s.push_str(&format!("palette = {}\n", p.key()));
+        }
         for (b, m) in &self.mon {
             s.push_str(&format!("mon.{} = {:.4},{:.4},{:.4},{:.4}\n", key_to_str(*b), m[0], m[1], m[2], m[3]));
         }
@@ -309,6 +316,8 @@ mod tests {
             note: "31kHz の 640x480 で合わせた".into(),
             mon: BTreeMap::new(),
             pll: BTreeMap::new(),
+            // 色の方式も書き出して読み直せること(端子とは関係なく読む)
+            palette: Some(crate::palette::Palette::Pc6001),
         };
         u.mon.insert(31, [0.92, -0.06, 0.95, 0.0]);
         u.pll.insert(31, [800, 12]);

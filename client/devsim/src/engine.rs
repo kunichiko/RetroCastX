@@ -248,8 +248,8 @@ pub fn run(sock: UdpSocket, sh: Arc<Shared>) {
                     opt.caption = inp.as_ref().map_or(String::new(), Input::caption);
                 }
                 let mut cfg = b.cap_cfg();
-                // デジタルRGB の色数は機種の階調で決まる(1bit なら 8色)
-                cfg.rgbi16 = inp.as_ref().is_some_and(|i| i.mode.color_bits >= 2);
+                // デジタルRGB の色の表は機種で決まる(Viewer で選ぶ色の方式と合わせて見る)
+                cfg.palette = inp.as_ref().and_then(|i| i.mode.palette).unwrap_or_default();
                 (inp, cfg, opt, b.pic_gen, b.noise)
             };
             let id = input.as_ref().map(|i| format!("{}/{}", i.machine_key, i.mode.name));
@@ -268,7 +268,7 @@ pub fn run(sock: UdpSocket, sh: Arc<Shared>) {
                     let anim = if opt.moving { cap_frame_hint(frame) } else { 0 };
                     let key = pic_serial.wrapping_mul(1_000_003) ^ anim ^ hash_str(id.as_deref().unwrap_or(""));
                     if pic.as_ref().is_none_or(|(k, _)| *k != key) {
-                        pic = Some((key, pattern::render(w, h, src.color_bits, &opt, anim as u32)));
+                        pic = Some((key, pattern::render(w, h, src.color_bits, src.palette, &opt, anim as u32)));
                     }
                     let p = &pic.as_ref().unwrap().1;
                     let native = capture::native_invert(&inp.machine_key);

@@ -160,6 +160,15 @@ pub struct Mode {
     /// 実機または一次資料で確かめてあるか
     pub verified: bool,
     pub note: &'static str,
+    /// デジタルRGB の色の表(どの色をどの RGBI4 の値で出すか)。アナログの機種は None
+    pub palette: Option<crate::palette::Palette>,
+}
+
+impl Mode {
+    fn pal(mut self, p: crate::palette::Palette) -> Mode {
+        self.palette = Some(p);
+        self
+    }
 }
 
 /// 1つの機種
@@ -188,7 +197,7 @@ fn rep(mut tm: Timing, n: u32) -> Timing {
 }
 
 fn m(name: &'static str, timing: Timing, color_bits: u32, verified: bool, note: &'static str) -> Mode {
-    Mode { name, timing, color_bits, verified, note }
+    Mode { name, timing, color_bits, verified, note, palette: None }
 }
 
 /// 組み込みの機種一覧
@@ -408,11 +417,39 @@ pub fn machines() -> Vec<Machine> {
             port: Port::Digital,
             kind: Kind::Rgb,
             modes: vec![
-                // 階調 2bit = RGBI の 16色(Viewer の profiles.rs の rgbi16 と合わせる)
+                // 色は PC-6001 系の15色(Viewer の profiles.rs の palette と合わせる)
                 m("640x200", t(14.318_18, 910, 68, 150, 640, 262, 3, 30, 200, Progressive),
-                  2, false, "予想(Viewer の profiles.rs と同じ推論)。RGBI 16色"),
+                  8, false, "予想(Viewer の profiles.rs と同じ推論)。PC-6001 系15色")
+                    .pal(crate::palette::Palette::Pc6001),
                 m("320x200", t(14.318_18 / 2.0, 455, 34, 75, 320, 262, 3, 30, 200, Progressive),
-                  2, false, "予想。RGBI 16色"),
+                  8, false, "予想。PC-6001 系15色")
+                    .pal(crate::palette::Palette::Pc6001),
+            ],
+        },
+        // ★色の方式の動きを確かめるための2機種。値は予想(Viewer の profiles.rs と同じ)
+        Machine {
+            key: "pc8801_15k",
+            label: "PC-8801 (15kHz)",
+            port: Port::Digital,
+            kind: Kind::Rgb,
+            modes: vec![
+                m("640x200", t(14.318_18, 912, 64, 140, 640, 262, 3, 30, 200, Progressive),
+                  1, false, "予想。8色")
+                    .pal(crate::palette::Palette::Rgb8),
+            ],
+        },
+        Machine {
+            key: "ibmcga",
+            label: "IBM PC (CGA)",
+            port: Port::Digital,
+            kind: Kind::Rgb,
+            modes: vec![
+                m("640x200", t(14.318_18, 912, 64, 136, 640, 262, 3, 30, 200, Progressive),
+                  8, false, "14.31818MHz・912 ドット・262 ライン。同期の位置はおおよそ。RGBI 16色")
+                    .pal(crate::palette::Palette::Rgbi16),
+                m("320x200", t(14.318_18 / 2.0, 456, 32, 68, 320, 262, 3, 30, 200, Progressive),
+                  8, false, "同上の半分のドットクロック。RGBI 16色")
+                    .pal(crate::palette::Palette::Rgbi16),
             ],
         },
     ]

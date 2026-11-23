@@ -289,6 +289,9 @@ pub struct Settings {
     /// 同じ遅延が別の目盛りになる)。1つだけ持つと帯域を切り替えるたびに合わせ直しに
     /// なるので、帯域ごとに覚える。
     pub band_pll: BTreeMap<(String, u32), [u32; 2]>,
+    /// 機種ごとに Viewer で選んだデジタルRGB の色の方式(キーは `profiles::geo_key`)。
+    /// 選んでいなければプロファイルの既定(main.rs の palette_of)
+    pub palettes: BTreeMap<String, crate::palette::Palette>,
     /// 機種ごとに、ユーザーが Viewer で変えた入力設定(伝送形式・ゲインなど)。
     /// キーは (機種のキー, CONFIG キー)。プロファイルの値と同じものは持たない。
     ///
@@ -395,6 +398,7 @@ impl Default for Settings {
             mon: [1.0, 0.0, 1.0, 0.0],
             mon_bands: BTreeMap::new(),
             band_pll: BTreeMap::new(),
+            palettes: BTreeMap::new(),
             reg_overrides: BTreeMap::new(),
             modes: BTreeMap::new(),
             // ★**既定は 4:3。** 0(有効映像の比のまま)だと、初めて開いたボードの
@@ -644,6 +648,12 @@ impl Settings {
                         }
                     } else if let Some(p) = parse_pll(v) {
                         s.band_pll.insert((geo.to_string(), khz), p);
+                    }
+                }
+                // 機種ごとのデジタルRGB の色の方式: `palette@pc6001mk2sr = pc6001`
+                k if k.starts_with("palette@") => {
+                    if let Some(p) = crate::palette::Palette::from_key(v) {
+                        s.palettes.insert(k[8..].to_string(), p);
                     }
                 }
                 // 機種ごとの入力設定の変更: `reg@x68000.0x0036 = 0`
@@ -956,6 +966,9 @@ impl Settings {
         }
         for ((prof, key), v) in &self.reg_overrides {
             body.push_str(&format!("reg@{prof}.0x{key:04x} = {v}\n"));
+        }
+        for (geo, p) in &self.palettes {
+            body.push_str(&format!("palette@{geo} = {}\n", p.key()));
         }
         for ((geo, khz), v) in &self.mon_bands {
             body.push_str(&format!(

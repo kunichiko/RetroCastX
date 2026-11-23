@@ -52,6 +52,7 @@ mod link;
 mod metal_present;
 mod netcheck;
 mod ntsc;
+mod palette;
 mod perf_hint;
 mod photo_lat;
 mod rtt;
@@ -286,8 +287,8 @@ fn main() -> eframe::Result {
             slices: cfg.fullscreen_slices,
             ycbcr: regs_profile_of(cfg.input_port, cfg.source_profile(), &userprof::load_all())
                 .is_some_and(|p| p.ycbcr),
-            rgbi16: base_profile_of(cfg.input_port, cfg.source_profile(), &userprof::load_all())
-                .is_some_and(|p| p.rgbi16),
+            palette: palette_of(cfg.input_port, cfg.source_profile(), &userprof::load_all(),
+                                &cfg.palettes),
             dot_a_milli: cfg.dot_a_milli,
             comb3d: cfg.ntsc_comb3d,
             deint: cfg.deint_mode,
@@ -761,6 +762,23 @@ fn base_profile_of(port: profiles::Port, key: &str, users: &[userprof::UserProfi
     }
     profiles::by_key(key).filter(|p| p.port == port)
 }
+
+/// デジタルRGB の色の方式。Viewer で選び直したもの(`palettes`、機種のキーごと)→
+/// 自作のプロファイルに書いたもの → 組み込みの機種の既定 → 8色 の順
+fn palette_of(port: profiles::Port, key: &str, users: &[userprof::UserProfile],
+              chosen: &std::collections::BTreeMap<String, palette::Palette>) -> palette::Palette {
+    let geo = profiles::geo_key(port, key);
+    if let Some(p) = chosen.get(&geo) {
+        return *p;
+    }
+    if let Some(p) = users.iter().find(|u| u.key == key).and_then(|u| u.palette) {
+        return p;
+    }
+    base_profile_of(port, key, users).map_or_else(Default::default, |p| p.palette)
+}
+
+/// 音声入力の番号のうち、小亀基板の RCA(コンポジット/S端子の音声)
+const AUDIO_SRC_COMPOSITE: u8 = 3;
 
 /// `Session::regs_profile` の本体(同上)
 fn regs_profile_of(port: profiles::Port, key: &str, users: &[userprof::UserProfile])
@@ -1683,6 +1701,8 @@ struct Session {
     mon_bands: std::collections::BTreeMap<(String, u32), [f32; 4]>,
     /// 機種 × 帯域ごとの [pll_divide, 位相]
     band_pll: std::collections::BTreeMap<(String, u32), [u32; 2]>,
+    /// 機種ごとに選び直したデジタルRGB の色の方式(`settings::Config::palettes`)
+    palettes: std::collections::BTreeMap<String, palette::Palette>,
     /// `mon` / `tune_pll_divide` / `tune_phase` がどの機種の値か(`profiles::geo_key`)。
     /// 機種を切り替えたら、いまの値をこの機種の側へしまってから新しい機種の値を出す。
     /// 空は未確定(起動直後)
@@ -1918,6 +1938,7 @@ impl Session {
             mon: cfg.mon,
             mon_bands: cfg.mon_bands.clone(),
             band_pll: cfg.band_pll.clone(),
+            palettes: cfg.palettes.clone(),
             band_khz: 0,
             pll_key: 0,
             mon_loaded: [1.0, 0.0, 1.0, 0.0],
@@ -2195,6 +2216,7 @@ impl Session {
             mon: self.mon,
             mon_bands: self.mon_bands.clone(),
             band_pll: self.band_pll.clone(),
+            palettes: self.palettes.clone(),
             reg_overrides: self.reg_overrides.clone(),
             modes: self.modes.clone(),
             crop_x: self.crop[0],
@@ -2307,6 +2329,25 @@ impl Session {
                 self.prof_ui.add_open = !self.prof_ui.add_open;
             }
         });
+        // デジタルRGB は4本目の線の意味が機種で違うので、色の方式を選べるようにする。
+        // 選んだものは機種ごとに覚え、プロファイルの既定より優先する
+        if port == profiles::Port::Digital {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("色の方式")
+                .size(11.0).color(egui::Color32::from_rgb(0x7F, 0x90, 0x8F)));
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                let cur = self.palette();
+                for p in palette::Palette::ALL {
+                    if panel::seg_button(ui, p.label(), "", cur == p).on_hover_text(p.hint()).clicked()
+                        && cur != p
+                    {
+                        self.palettes.insert(self.geo(), p);
+                        self.mark_settings_dirty();
+                    }
+                }
+            });
+        }
         if self.prof_ui.add_open {
             ui.horizontal_wrapped(|ui| {
                 if ui.button("いまの機種を元に作る").clicked() {
@@ -2429,6 +2470,11 @@ impl Session {
     /// ユーザーの機種は借りている機種(`base`)
     fn base_profile(&self) -> Option<&'static profiles::Profile> {
         base_profile_of(self.input_port, &self.source_profile, &self.user_profiles)
+    }
+
+    /// いまの機種のデジタルRGB の色の方式
+    fn palette(&self) -> palette::Palette {
+        palette_of(self.input_port, &self.source_profile, &self.user_profiles, &self.palettes)
     }
 
     /// 入力設定(と、それに付いてくる伝送形式・音声・色空間)を決める機種。
@@ -2824,9 +2870,13 @@ impl Session {
             note: String::new(),
             mon: Default::default(),
             pll: Default::default(),
+            palette: None,
         });
         u.mon.extend(mon);
         u.pll.extend(pll);
+        if self.input_port == profiles::Port::Digital {
+            u.palette = Some(self.palette());
+        }
         u
     }
 
@@ -2924,6 +2974,7 @@ impl Session {
             note: String::new(),
             mon,
             pll,
+            palette: (self.input_port == profiles::Port::Digital).then(|| self.palette()),
         };
         if let Err(e) = userprof::save(&u) {
             self.toasts.notice(format!("作れませんでした: {e}"));
@@ -3269,10 +3320,22 @@ impl Session {
         if !self.audio_auto {
             return;
         }
-        match self.regs_profile().and_then(|p| p.audio_src) {
+        match self.auto_audio_src() {
             Some(want) => self.set_audio_source(Some(want)),
             None => self.follow_board_input_audio(),
         }
+    }
+
+    /// 「自動」のときの音声入力。機種の `audio_src`、無ければ None(ボードの入力MUX から決める)。
+    ///
+    /// ★**デジタルRGB は小亀基板の RCA(コンポジットの音声)。** デジタルRGB の端子には
+    ///   音声の線が無く、TVP の入力MUX はデジタルRGB と関係ないので MUX からは決められない。
+    ///   レトロPC の音声は RCA で出ていることが多いので、そこにする
+    fn auto_audio_src(&self) -> Option<u8> {
+        if self.input_port == profiles::Port::Digital {
+            return Some(self.base_profile().and_then(|p| p.audio_src).unwrap_or(AUDIO_SRC_COMPOSITE));
+        }
+        self.regs_profile().and_then(|p| p.audio_src)
     }
 
     /// 映像も音声も「自動」のとき、ボードがいま見ている系統の音声に合わせる。
@@ -3282,7 +3345,7 @@ impl Session {
     /// 2秒おきに問い合わせ、応答(`config_state`)が来たら合わせる。
     /// `set_audio_source` は同じ値なら何もしないので、再生器を開き直すことはない。
     fn follow_board_input_audio(&mut self) {
-        if !self.audio_auto || self.regs_profile().and_then(|p| p.audio_src).is_some() {
+        if !self.audio_auto || self.auto_audio_src().is_some() {
             return;
         }
         let mux = self
@@ -7111,11 +7174,8 @@ impl Session {
             self.regs_profile().is_some_and(|p| p.ycbcr),
             std::sync::atomic::Ordering::Relaxed,
         );
-        // デジタルRGB は機種の色数(8色 / 16色)で RGBI4 を展開させる
-        self.shared.rgbi16.store(
-            self.base_profile().is_some_and(|p| p.rgbi16),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        // デジタルRGB は機種の色の方式(8色 / RGBI / PC-6001 系)で RGBI4 を展開させる
+        self.shared.palette.store(self.palette().to_u8(), std::sync::atomic::Ordering::Relaxed);
         let t_tex = std::time::Instant::now();
         self.refresh_texture(&ctx);
         self.pace.note_upload(t_tex.elapsed());

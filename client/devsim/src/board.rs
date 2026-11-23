@@ -35,7 +35,8 @@ pub struct Input {
 
 impl Input {
     pub fn source(&self) -> Source {
-        Source { kind: self.kind, timing: self.mode.timing.clone(), color_bits: self.mode.color_bits }
+        Source { kind: self.kind, timing: self.mode.timing.clone(), color_bits: self.mode.color_bits,
+                 palette: self.mode.palette }
     }
 
     /// HSYNC/VSYNC が別線で来るか(D-SUB15 の RGB 機)。来ればボードが生のまま数える
@@ -193,7 +194,7 @@ impl Board {
             // デジタルRGB は 0x36 を見ず、いつも RGBI4
             pixfmt: if self.digital() { proto::PIXFMT_RGBI4 } else { r(proto::CFG_KEY_PIXFMT) as u8 },
             // 色数は機種で決まる(engine が入力から入れる)
-            rgbi16: false,
+            palette: Default::default(),
             frame_skip: r(proto::CFG_KEY_FRAME_SKIP),
             field_invert: r(proto::CFG_KEY_FIELD_INVERT) != 0,
         }
