@@ -862,6 +862,7 @@ fn push_audio(shared: &Shared, pkt: &[u8]) {
     let feed = shared.audio_feed.lock().unwrap();
     let Some(feed) = feed.as_ref() else { return };
     if a.source == feed.source {
+        crate::audio_dump::push(shared as *const Shared as usize, a.samples, a.rate_hz);
         feed.push(a.samples, a.rate_hz);
     } else if a.source == AUX_SOURCE && shared.aux.on.load(Ordering::Relaxed) {
         // ★S/PDIF は**主系統を選び直さずに混ぜる**。ボードは
