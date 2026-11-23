@@ -1159,6 +1159,14 @@ enum AutoMode {
     /// フル: プロファイルを使わず、絵のスペクトルだけから範囲を割り出して
     /// 8刻みで舐める。プロファイルに無いモードや、未知の機種で使う
     Full,
+    /// 位相だけ: pll_divide が規格で決まっているコンポーネント用。
+    ///
+    /// ★**pll_divide は動かせないが、位相は効く。** BT.601 の 13.5MHz で取ると、
+    ///   横 640 ドットの PS2 は1ドット=1サンプルになる。位相がドットの境目に
+    ///   来ると全部の縦線が隣と半々に混ざる。実測(2026-11-23、PS2 の文字画面、
+    ///   輪郭の段差の上位0.1%): 位相 16(それまでの既定)で 108、7〜9 で 175。
+    ///   既定がちょうど最悪の点だった
+    PhaseOnly,
 }
 
 struct AutoTune {
@@ -4604,6 +4612,10 @@ impl Session {
 
     /// フルスキャンを開始する。上限まで過剰サンプルするところから始める
     fn auto_start(&mut self) {
+        if self.phase_only_scan() {
+            self.auto_start_phase();
+            return;
+        }
         // YC8 は pll_divide が規格で決まっているので探索してはいけない
         if self.pll_locked_by_format() {
             self.auto_done = Some("YC8では pll_divide は規格値。自動調整しません".into());
@@ -4659,6 +4671,10 @@ impl Session {
     /// 降りるには「位相を振っても鮮鋭度が変わらない」= 過剰サンプルという
     /// 積極的な証拠を要求する。証拠が無ければその場に留まる。
     fn auto_start_quick(&mut self) {
+        if self.phase_only_scan() {
+            self.auto_start_phase();
+            return;
+        }
         if self.pll_locked_by_format() {
             self.auto_done = Some("YC8では pll_divide は規格値。自動調整しません".into());
             return;
@@ -4698,6 +4714,33 @@ impl Session {
             worst: 0.0,
             attempt: 0,
             over: first.oversample,
+            report: String::new(),
+        });
+    }
+
+    /// 位相だけを合わせるソースか(コンポーネント)。
+    ///
+    /// pll_divide は規格値(BT.601 の 858)で動かせないが、1ドット=1サンプルに
+    /// なりうるので位相は効く。コンポジット/S端子(YC8)は 8fsc で過剰サンプルして
+    /// 復調するので位相は関係なく、こちらには入らない
+    fn phase_only_scan(&self) -> bool {
+        !self.standby() && self.regs_profile().is_some_and(|p| p.ycbcr)
+    }
+
+    /// 位相だけのスキャンを開始する(`AutoMode::PhaseOnly`)。
+    /// 0〜30 を2刻みで振り、最良点の±2を1刻みで詰める(15秒ほど)
+    fn auto_start_phase(&mut self) {
+        self.send_cfg(protocol::CFG_KEY_PHASE, 0);
+        self.tune_phase = 0;
+        self.auto = Some(AutoTune {
+            mode: AutoMode::PhaseOnly,
+            phase: AutoPhase::PhaseCoarse { i: 0, best: (0, 0.0), all: Vec::new() },
+            wait_until: std::time::Instant::now() + std::time::Duration::from_millis(900),
+            base_n: self.shared.stats.lock().unwrap().tune_n,
+            note: "pll_divide は規格値。位相 1/16".into(),
+            worst: 0.0,
+            attempt: 0,
+            over: 1,
             report: String::new(),
         });
     }
@@ -5001,6 +5044,26 @@ impl Session {
                     );
                     let over = self.auto.as_ref().map_or(1, |a| a.over);
                     let report = self.auto.as_ref().map_or(String::new(), |a| a.report.clone());
+                    // ★**位相だけのスキャンは pll_divide に触らない。** 下の「半分にして
+                    //   測り直す」は 480p(31.5kHz)だと 858/2 が TVP の下限を超えるので
+                    //   通ってしまい、規格値の pll_divide を壊す
+                    if matches!(self.auto.as_ref().map(|a| &a.mode),
+                                Some(AutoMode::PhaseOnly)) {
+                        self.send_cfg(protocol::CFG_KEY_PHASE, best.0 as u32);
+                        self.tune_phase = best.0;
+                        self.auto = None;
+                        let judge = if rel <= PHASE_SENSITIVE {
+                            "1ドット=1サンプル"
+                        } else {
+                            // 横 512 ドットのゲームなどは1ドットが 1.25 サンプルで、
+                            // 位相をどこに置いても境目が混ざる。異常ではない
+                            "位相で差が出ない絵(1ドットが1サンプルに揃わないモード)"
+                        };
+                        self.auto_done = Some(format!(
+                            "位相 {} で完了({judge}: 最悪の位相は {:.0}%)",
+                            best.0, rel * 100.0));
+                        return;
+                    }
                     if !quick && rel > 0.85 && attempt < 2 && pll / 2 >= self.pll_min_hw() {
                         if let Some(a) = self.auto.as_mut() {
                             a.attempt = attempt + 1;
