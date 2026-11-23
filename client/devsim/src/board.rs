@@ -489,10 +489,14 @@ const DEFAULTS: &[(u16, u32)] = &[
     (proto::CFG_KEY_COARSE_OFF_R, 0x10),
     (proto::CFG_KEY_IN_MUX1, 0xAA),
     (proto::CFG_KEY_SOG_VTH, 400),
+    // 小亀のLED(gateware/retrocastx_led.py の KokameLeds の既定 = レインボー)
     (0x0090, 4),
-    (0x0091, 6),
     (0x0093, 64),
     (0x0094, 32),
+    (0x0098, 4),
+    (0x0099, 0x0080FF),
+    (0x009A, 65536 / 4000),
+    (0x009B, 65536 / 2 / 4),
 ];
 
 /// protocol.py に名前はあるがゲートウェアに実装の無いキー(0 を返し、SET は捨てる)
@@ -526,6 +530,10 @@ fn width_mask(key: u16) -> u32 {
         proto::CFG_KEY_PIXFMT => 0xFF,
         proto::CFG_KEY_WIN_START | proto::CFG_KEY_WIN_LEN => 0xFFFF,
         proto::CFG_KEY_CLAMP_SEL => 0x7,
+        // 小亀のLED(KokameLeds の effect / color / rate / spread の幅)
+        0x0098 => 0x7,
+        0x0099 => 0xFF_FFFF,
+        0x009A | 0x009B => 0xFFFF,
         _ => u32::MAX,
     }
 }
@@ -580,8 +588,7 @@ pub fn key_name(key: u16) -> &'static str {
         proto::CFG_KEY_NO_RAW_PHASE => "no_raw_phase",
         proto::CFG_KEY_DRGB_FH => "drgb_fh",
         proto::CFG_KEY_KOKAME_SEL => "kokame_sel",
-        0x0090..=0x0095 | 0x0097 => "led",
-        0x0400..=0x05FF => "led_table",
+        0x0090 | 0x0093..=0x0095 | 0x0097..=0x009B => "led",
         proto::CFG_KEY_PLAT_CTL..=proto::CFG_KEY_PLAT_SUM => "photo_lat",
         _ => "",
     }
