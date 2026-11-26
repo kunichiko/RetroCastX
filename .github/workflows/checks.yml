@@ -7,7 +7,8 @@ name: Checks
 #   実際 build_closed.sh の `$s。` は CI(bash 5)では再現しないので、
 #   誰も回さないまま「シードを見つけたのに ecppack せず終わる」状態が残っていた。
 #
-# ツールチェーンも依存も要らないので毎PRで回す(数秒)。
+# ほとんどはツールチェーンも依存も要らないので毎PRで回す(数秒)。Viewer の
+# ライセンス一覧だけは cargo metadata で依存の取得が要る(数十秒)。
 on:
   pull_request:
   push:
@@ -32,3 +33,8 @@ jobs:
 
       - name: 既定値が各所で揃っているか
         run: python3 gateware/tools/check_gain_defaults.py
+
+      # About 画面のライセンス一覧(client/assets/third-party-licenses.txt)が
+      # Cargo.lock と合っているか。依存を変えたら gen_licenses.py で作り直す
+      - name: Viewer のライセンス一覧が依存と合っているか
+        run: python3 client/tools/gen_licenses.py --check

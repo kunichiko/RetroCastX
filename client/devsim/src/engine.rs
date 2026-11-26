@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use crate::board::{Board, Input, SYS_CLK_HZ};
 use crate::capture::{self, CapCfg, Capture, Period};
 use crate::machines::Port;
+use crate::music::{Tune, Voice};
 use crate::pattern::{self, Picture};
 use crate::protocol as proto;
 
@@ -80,26 +81,28 @@ impl Shared {
 ///   こちらに届く(SO_REUSEADDR が要る)。Viewer は `--board 127.0.0.1` で繋ぐ。
 ///   ブロードキャストは受けられないので、発見(ボード一覧)には出ない
 pub fn open(port: u16) -> std::io::Result<(UdpSocket, bool)> {
-    use socket2::{Domain, Protocol, Socket, Type};
-    let mk = |ip: [u8; 4], reuse: bool| -> std::io::Result<UdpSocket> {
-        let s = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-        let _ = s.set_send_buffer_size(8 << 20);
-        let _ = s.set_recv_buffer_size(1 << 20);
-        if reuse {
-            s.set_reuse_address(true)?;
-        }
-        s.bind(&SocketAddr::from((ip, port)).into())?;
-        s.set_broadcast(true)?;
-        s.set_nonblocking(true)?;
-        Ok(s.into())
-    };
-    match mk([0, 0, 0, 0], false) {
+    match bind([0, 0, 0, 0], port, false) {
         Ok(s) => Ok((s, false)),
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            mk([127, 0, 0, 1], true).map(|s| (s, true)).map_err(|_| e)
+            bind([127, 0, 0, 1], port, true).map(|s| (s, true)).map_err(|_| e)
         }
         Err(e) => Err(e),
     }
+}
+
+/// 送受信のソケットを開く(`open` と、アプリに埋め込むときの `embed`)
+pub(crate) fn bind(ip: [u8; 4], port: u16, reuse: bool) -> std::io::Result<UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let s = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    let _ = s.set_send_buffer_size(8 << 20);
+    let _ = s.set_recv_buffer_size(1 << 20);
+    if reuse {
+        s.set_reuse_address(true)?;
+    }
+    s.bind(&SocketAddr::from((ip, port)).into())?;
+    s.set_broadcast(true)?;
+    s.set_nonblocking(true)?;
+    Ok(s.into())
 }
 
 /// 測定の窓
@@ -126,8 +129,9 @@ struct Current {
     cfg: CapCfg,
 }
 
-const AUDIO_SOURCES: [(u8, Port, f64); 3] =
-    [(0, Port::Rgb15, 440.0), (1, Port::Rgb21, 554.37), (3, Port::Video, 659.25)];
+/// 音声の系統と、その端子・音色(music.rs。系統ごとに音色を変えて聞き分ける)
+const AUDIO_SOURCES: [(u8, Port, Voice); 3] =
+    [(0, Port::Rgb15, Voice::Square), (1, Port::Rgb21, Voice::Triangle), (3, Port::Video, Voice::Pulse)];
 const AUDIO_N: usize = 240;
 const AUDIO_RATE: u32 = 48_000;
 
@@ -146,7 +150,7 @@ pub fn run(sock: UdpSocket, sh: Arc<Shared>) {
     let mut mode_at = Instant::now();
     let mut mode_sent: Option<(u32, u32)> = None;
     let mut audio_at = Instant::now();
-    let mut audio_phase = [0.0f64; 3];
+    let mut tunes = AUDIO_SOURCES.map(|s| Tune::new(s.2));
     let mut buf = vec![0u8; 2048];
     let mut out_pkts: Vec<Vec<u8>> = Vec::new();
     // 1秒ごとの統計
@@ -335,12 +339,12 @@ pub fn run(sock: UdpSocket, sh: Arc<Shared>) {
                 let ports: Vec<bool> = AUDIO_SOURCES.iter().map(|s| b.input(s.1).is_some()).collect();
                 (b.reg(0x0001), b.tone, ports)
             };
-            for (i, &(src, _, hz)) in AUDIO_SOURCES.iter().enumerate() {
+            for (i, &(src, _, _)) in AUDIO_SOURCES.iter().enumerate() {
                 if mask & (1 << src) == 0 {
                     continue;
                 }
                 let on = tone && ports[i];
-                let p = audio_packet(src, frame, &mut seq, &mut audio_phase[i], hz, on);
+                let p = audio_packet(src, frame, &mut seq, &mut tunes[i], on);
                 send(&sock, &sh, &p, dest.unwrap(), &mut st_pkts, &mut st_bytes);
             }
         }
@@ -537,7 +541,7 @@ fn update_preview(sh: &Shared, period: &Period, cfg: &CapCfg) {
     pv.serial += 1;
 }
 
-fn audio_packet(src: u8, frame: u16, seq: &mut u16, phase: &mut f64, hz: f64, on: bool) -> Vec<u8> {
+fn audio_packet(src: u8, frame: u16, seq: &mut u16, tune: &mut Tune, on: bool) -> Vec<u8> {
     let mut p = vec![proto::MAGIC, proto::VERSION, proto::TYPE_AUDIO, 0];
     p.extend_from_slice(&frame.to_le_bytes());
     p.extend_from_slice(&seq.to_le_bytes());
@@ -547,10 +551,10 @@ fn audio_packet(src: u8, frame: u16, seq: &mut u16, phase: &mut f64, hz: f64, on
     p.extend_from_slice(&(AUDIO_N as u16).to_le_bytes());
     p.extend_from_slice(&AUDIO_RATE.to_le_bytes());
     p.extend_from_slice(&0u32.to_le_bytes());
-    let step = 2.0 * std::f64::consts::PI * hz / AUDIO_RATE as f64;
     for _ in 0..AUDIO_N {
-        let v = if on { (phase.sin() * 6000.0) as i16 } else { 0 };
-        *phase = (*phase + step) % (2.0 * std::f64::consts::PI);
+        // 曲は止めずに進める(切った端子を戻したとき、途中から鳴る)
+        let s = tune.next(AUDIO_RATE);
+        let v = if on { (s * 7000.0) as i16 } else { 0 };
         p.extend_from_slice(&v.to_le_bytes());
         p.extend_from_slice(&v.to_le_bytes());
     }
@@ -565,8 +569,8 @@ mod tests {
     #[test]
     fn audio_packet_parses() {
         let mut seq = 0;
-        let mut ph = 0.0;
-        let p = audio_packet(1, 3, &mut seq, &mut ph, 440.0, true);
+        let mut tune = Tune::new(Voice::Triangle);
+        let p = audio_packet(1, 3, &mut seq, &mut tune, true);
         let Ok(Packet::Audio(a)) = proto::parse(&p) else { panic!() };
         assert_eq!((a.source, a.nsamples, a.rate_hz), (1, 240, 48_000));
     }

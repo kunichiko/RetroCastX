@@ -19,7 +19,7 @@ use resvg::tiny_skia;
 const PNG: &[u8] = include_bytes!("../packaging/AppIcon-256.png");
 
 /// (RGBA, 幅, 高さ)。デコードできなければ None(アイコンが付かないだけで動作する)。
-fn rgba() -> Option<(Vec<u8>, u32, u32)> {
+pub(crate) fn rgba() -> Option<(Vec<u8>, u32, u32)> {
     let pixmap = tiny_skia::Pixmap::decode_png(PNG).ok()?;
     let (w, h) = (pixmap.width(), pixmap.height());
     // tiny-skia は乗算済みアルファで持つ。アイコンは不透明なので実際は同じ値だが、

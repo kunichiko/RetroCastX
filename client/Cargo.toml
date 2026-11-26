@@ -52,6 +52,8 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
 # NSDictionary で渡す。src/metal_present.rs)
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std", "NSDictionary", "NSString",
+    # About 画面のビルド番号(Info.plist の CFBundleVersion。src/about.rs)
+    "NSBundle",
 ] }
 
 # プロファイルのファイルの保存・開くダイアログ(src/userprof.rs)。iOS / Android には
@@ -67,6 +69,10 @@ objc2 = "0.6"
 objc2-avf-audio = { version = "0.3", default-features = false, features = [
     "std", "AVAudioSession", "AVAudioSessionTypes",
 ] }
+# About 画面のビルド番号(Info.plist の CFBundleVersion。src/about.rs)
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std", "NSBundle", "NSString",
+] }
 
 [dependencies]
 cpal.workspace = true
@@ -78,6 +84,9 @@ eframe = { workspace = true, features = [
 pollster.workspace = true
 resvg.workspace = true
 socket2.workspace = true
+# アプリ内デモ(launcher.rs)。ダミーデバイスの信号生成をそのまま端末内で動かす。
+# GUI(gui 機能)は要らない
+retrocastx-devsim = { path = "devsim", default-features = false }
 # macOSのスケジューラにQoSを伝えるためだけに使う(pthread_set_qos_class_self_np)
 libc.workspace = true
 winit.workspace = true

@@ -8,6 +8,10 @@
 # プロトコルの定数とパーサは Viewer の ../src/protocol.rs をそのまま使う
 # (`#[path]`)。送る側の組み立てはこちらで書き、Viewer のパーサで読めることを
 # テストで確かめる。
+#
+# 信号を作って送る部分はライブラリ(src/lib.rs)で、Viewer のアプリ内デモも使う。
+# 単体の GUI(src/main.rs)が要る eframe は `gui` 機能に分け、Viewer(とくに
+# Android 版。eframe の機能の組み合わせが違う)には持ち込まない。
 [package]
 name = "retrocastx-devsim"
 version = "0.1.0"
@@ -17,9 +21,14 @@ publish = false
 [[bin]]
 name = "retrocastx-devsim"
 path = "src/main.rs"
+required-features = ["gui"]
+
+[features]
+default = ["gui"]
+gui = ["dep:eframe"]
 
 [dependencies]
-eframe = { workspace = true, features = ["accesskit", "default_fonts", "wgpu", "wayland", "x11"] }
+eframe = { workspace = true, optional = true, features = ["accesskit", "default_fonts", "wgpu", "wayland", "x11"] }
 socket2.workspace = true
 
 # 送出スレッドの優先度(engine.rs の raise_thread_priority)
