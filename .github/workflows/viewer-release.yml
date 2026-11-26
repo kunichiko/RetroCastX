@@ -178,7 +178,10 @@ jobs:
 
   macos:
     name: Build macOS
-    runs-on: macos-15
+    # Xcode 27(iOS 27 / macOS 27 SDK)でビルドする。xcode-27 は GitHub の
+    # Xcode 27 用イメージ(macOS 27 上、既定の Xcode が 27.x)。macOS と iOS で
+    # 揃え、どちらも Toolchain info に xcodebuild -version を出す
+    runs-on: xcode-27
     needs: [prepare, release]
     if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform == 'all' || github.event.inputs.platform == 'macos'
     permissions:
@@ -212,6 +215,7 @@ jobs:
         run: |
           rustc --version
           cargo --version
+          xcodebuild -version
           rustup target add x86_64-apple-darwin
 
       # ★**`--release` に揃える案は実測で否定した**(2026-09-06)。
@@ -537,7 +541,8 @@ jobs:
   #       macOS の公証と共通
   ios:
     name: Build iOS
-    runs-on: macos-26
+    # macOS のジョブと同じ Xcode 27 のイメージ(理由は macOS のジョブ)
+    runs-on: xcode-27
     needs: [prepare, release]
     if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform == 'all' || github.event.inputs.platform == 'ios'
     permissions:
