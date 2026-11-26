@@ -1051,17 +1051,6 @@ impl PaceMeter {
     }
 }
 
-/// 実測タイミングから「まともな映像が来ているか」を判定する。
-/// 無信号だとTVPのH-PLLがロックを失い、DATACLKが低速で自走してADCが浮いた入力の
-/// ノイズを拾うため、砂嵐が表示される。実測値が現実的な範囲を外れたら無信号とみなす。
-fn signal_is_valid(m: &protocol::Mode) -> bool {
-    let fh_hz = m.hfreq_mhz_x1000 as f64 / 1000.0;
-    // 15kHz系(≒15.98k)〜31kHz系(≒31.5k)を含む余裕のある範囲
-    (12_000.0..80_000.0).contains(&fh_hz)
-        && (100..1500).contains(&m.vtotal)
-        && m.dotclk_hz > 5_000_000
-}
-
 /// pll_divide と位相を自動で決める処理の進行状態。
 ///
 /// 原理は host/python/retrocastx/pll_tune.py の autotune と同じ。要点だけ:
@@ -2153,7 +2142,8 @@ impl Session {
             redecorate: self.clean_undecorated != self.clean_undecorated_applied,
             aspect: cleanout::display_aspect(
                 self.frame_size, self.crop, self.tube_aspect_eff(), self.rotate),
-            has_video: self.frame_size.0 > 0,
+            // 配信出力にも無信号の絵を流さない(`no_signal`)
+            has_video: self.frame_size.0 > 0 && !self.no_signal(),
         };
         let keep = cleanout::show(ctx, &opts, |ui, rect| self.paint_tube(ui, rect));
         self.clean_size_applied = self.clean_size;
@@ -2828,6 +2818,20 @@ impl Session {
             self.shared.boards.lock().unwrap().get(&mac)
                 .is_some_and(|b| b.caps & protocol::CAP_DRGB == 0)
         })
+    }
+
+    /// 選んでいる端子に信号が無いと分かっているか。届いたフレームを描かない。
+    ///
+    /// ★**無信号でもボードはフレームを送ってくることがある。** TVP は入力が
+    ///   無いと H-PLL が外れたまま HSOUT を低い周波数(実測 837Hz)で出し続け、
+    ///   ゲートウェアは前の信号で覚えた vtotal 行ごとにフレームを区切る
+    ///   (VSOUT 無しの自走)。中身は浮いた入力を ADC で読んだ値なので、緑がかった
+    ///   絵が 1〜3 枚/秒で届く。信号のある端子から切り替えたときに出て、電源投入
+    ///   直後から無信号ならフレームが来ないので出ない(2026-11-25 入力3で実機)。
+    ///   以前はモードの実測値で NO SIGNAL にしていたが、管面の描画を作り直した
+    ///   ときに判定が抜けていた。
+    fn no_signal(&self) -> bool {
+        !self.standby() && self.signal_of(self.input_port) == Sig::No
     }
 
     /// 掴んでいるボードがデジタルRGB の映像を取り込めるか(CAP_DRGB)
@@ -7503,8 +7507,12 @@ impl Session {
                     }
                     None => (hole, tube),
                 };
+                // 無信号の端子から届いたフレームは描かない(`no_signal`)。
+                // 管面の形は最後の絵のまま残し、待機表示と同じく中に状態を出す
+                let no_signal = has_video && self.no_signal();
+                let shown = has_video && !no_signal;
                 // 余白。枠ありなら目盛りは枠に重なるので打たない
-                let info = self.letterbox_info(area, tube, has_video,
+                let info = self.letterbox_info(area, tube, shown,
                                                ui.ctx().pixels_per_point());
                 letterbox::paint(ui.painter(), area, hole, bez.is_none().then_some(tube),
                                  self.letterbox, &info);
@@ -7513,7 +7521,7 @@ impl Session {
                 // ★**取り込みの無い端子(デジタルRGB)では前の端子の絵を出さない。**
                 //   TVP は前の系統を見続けているので、そのまま描くと「入力4 を
                 //   選んだのに X68000 が映っている」ことになる
-                if has_video && !lifecycle::paused() && !self.standby() {
+                if shown && !lifecycle::paused() && !self.standby() {
                     self.paint_tube(ui, tube);
                 } else {
                     ui.painter().rect_filled(tube, 0.0, egui::Color32::BLACK);
@@ -7525,6 +7533,16 @@ impl Session {
                         format!("入力{} {} {}\n待機中(映像の取り込みは未対応)",
                                 self.input_port.number(), self.input_port.jack(),
                                 self.profile_label(&self.source_profile)),
+                        egui::FontId::proportional(16.0),
+                        egui::Color32::from_gray(150),
+                    );
+                }
+                if no_signal {
+                    ui.painter().text(
+                        tube.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("入力{} {}\n信号がありません",
+                                self.input_port.number(), self.input_port.jack()),
                         egui::FontId::proportional(16.0),
                         egui::Color32::from_gray(150),
                     );
@@ -7682,7 +7700,20 @@ mod tests {
         assert_eq!(w[1], u32::from_le_bytes(*b"EFGH"));
         assert_eq!(w[2], 0);
     }
-    use super::{quick_pick, PHASE_SENSITIVE};
+    use super::{quick_pick, sig_from_pair, Sig, PHASE_SENSITIVE};
+
+    /// 無信号の TVP の fH は**安定して**範囲外にいる。2026-11-25 に入力3(何も
+    /// 繋いでいない D-SUB15)で読んだ値は 836 → 837Hz で、差は許容(4Hz)に収まる。
+    /// 「漂うかどうか」だけで決めると信号ありに倒れ、届いた緑がかった絵を描いて
+    /// しまう(`no_signal`)。範囲も見ること
+    #[test]
+    fn sig_from_pair_rejects_a_steady_free_running_tvp() {
+        assert_eq!(sig_from_pair([Some(836), Some(837)]), Sig::No);
+        // 本物(X68000 31kHz)と、漂う未接続(SOG)
+        assert_eq!(sig_from_pair([Some(31_388), Some(31_389)]), Sig::Yes);
+        assert_eq!(sig_from_pair([Some(40_120), Some(57_310)]), Sig::No);
+        assert_eq!(sig_from_pair([None, Some(837)]), Sig::Unknown);
+    }
 
     /// ★**実機で測った値をそのまま固定する。**
     ///
