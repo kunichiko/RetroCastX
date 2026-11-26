@@ -197,7 +197,10 @@ impl FsGeom {
             rotate: self.rotate, tube, filter: self.filter, window: self.window,
             time_based: self.time_based, mon, vbp,
         });
-        (p, g::display_aspect(frame, tube, self.rotate))
+        // 管面の形はシェーダと同じ計算で決める(render::tube_aspect。テクスチャの
+        // 画素数の比は htotal に絞った幅なので使えない)
+        let a = render::tube_aspect(&p, frame.0 as u32, frame.1 as u32);
+        (p, g::display_aspect(frame, a, self.rotate))
     }
 }
 

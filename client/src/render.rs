@@ -193,6 +193,27 @@ pub fn screen_axes(range: [f32; 4], rotate: u32) -> [(f32, f32); 2] {
     }
 }
 
+/// 管面の縦横比(幅/高さ。回転前)。
+///
+/// ★**シェーダと画面の枠(管面の矩形・配信窓)は必ずこれで揃える。** 以前は枠の側が
+///   「そのまま」のときテクスチャの画素数の比を使っていた。テクスチャの幅は
+///   htotal に絞ってある(assembler.rs の want_w)ので、X68000 の 31kHz では
+///   1104×1136 ≒ 1:1 になり、シェーダが 4:3 で描く絵の周りに正方形の管面が出た。
+/// 管面は物理的な形なので、時間ベースのときは指定が無ければ 4:3 にする(時間窓の比を
+/// 使うとモードごとに管面の形が変わってしまう)。時間ベースでなければ、映している
+/// 範囲(`shown_range`)の比
+pub fn tube_aspect(p: &Params, tex_w: u32, tex_h: u32) -> f32 {
+    let geom = p.htotal > 0 && p.vtotal > 0.0;
+    if p.tube > 0.0 {
+        p.tube
+    } else if p.time_based && geom {
+        4.0 / 3.0
+    } else {
+        let r = shown_range(p, tex_w, tex_h);
+        r[1] / r[3].max(1.0)
+    }
+}
+
 /// シェーダへ渡す値。16バイト境界に合わせて4つのvec4にまとめる。
 ///
 /// 幾何は時間で決まる。バッファのサンプルkはラインの (hs_offset + k)/htotal の
@@ -201,17 +222,8 @@ pub fn screen_axes(range: [f32; 4], rotate: u32) -> [(f32, f32); 2] {
 fn uniforms(p: &Params, tex_w: u32, tex_h: u32, dst_w: f32, dst_h: f32) -> [u8; 64] {
     let (tw, th) = (tex_w.max(1) as f32, tex_h.max(1) as f32);
     // htotal/vtotal が無い(MODE未受信など)ときはバッファ全体をそのまま出す
-    let geom = p.htotal > 0 && p.vtotal > 0.0;
     let [left, span_x, top, span_y] = shown_range(p, tex_w, tex_h);
-    // 管面の縦横比。管面は物理的な形なので、時間ベースのときは指定が無ければ 4:3
-    // にする(時間窓の比を使うとモードごとに管面の形が変わってしまう)。
-    let aspect = if p.tube > 0.0 {
-        p.tube
-    } else if p.time_based && geom {
-        4.0 / 3.0
-    } else {
-        span_x / span_y.max(1.0)
-    };
+    let aspect = tube_aspect(p, tex_w, tex_h);
     let (fw, fh) = if p.rotate % 2 == 1 { (1.0, aspect) } else { (aspect, 1.0) };
     let sc = (dst_w / fw).min(dst_h / fh);
     let (draw_w, draw_h) = (fw * sc, fh * sc);
@@ -628,6 +640,27 @@ mod tests {
 
     /// ★**目盛りがつまみで動くこと。** 以前はバッファの画素数を等分していて、
     ///   H位置/V幅を回しても数字が変わらなかった。
+    #[test]
+    fn tube_aspect_same_as_shader_not_texture() {
+        // X68000 31kHz: テクスチャは htotal に絞って 1104×1136(ほぼ正方形)
+        let p = Params {
+            htotal: 1104, vtotal: 1136.0, time_based: true, tube: 0.0,
+            ..Default::default()
+        };
+        // 「そのまま」でも時間ベースなら 4:3(テクスチャの比ではない)
+        assert!((tube_aspect(&p, 1104, 1136) - 4.0 / 3.0).abs() < 1e-6);
+        // 指定があればそれ
+        let q = Params { tube: 16.0 / 9.0, ..p };
+        assert!((tube_aspect(&q, 1104, 1136) - 16.0 / 9.0).abs() < 1e-6);
+        // 時間ベースでなければ映している範囲の比
+        let r = Params { time_based: false, ..p };
+        let s = shown_range(&r, 1104, 1136);
+        assert!((tube_aspect(&r, 1104, 1136) - s[1] / s[3]).abs() < 1e-6);
+        // MODE が無ければバッファ全体
+        let none = Params { htotal: 0, vtotal: 0.0, time_based: true, ..Default::default() };
+        assert!((tube_aspect(&none, 640, 480) - 640.0 / 480.0).abs() < 1e-6);
+    }
+
     #[test]
     fn shown_range_follows_knobs() {
         let base = Params {
