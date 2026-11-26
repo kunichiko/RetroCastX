@@ -25,6 +25,9 @@ eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-nativ
 pollster.workspace = true
 resvg.workspace = true
 socket2.workspace = true
+# アプリ内デモ(launcher.rs)。ダミーデバイスの信号生成をそのまま端末内で動かす。
+# GUI(gui 機能)は要らない
+retrocastx-devsim = { path = "../devsim", default-features = false }
 libc.workspace = true
 winit.workspace = true
 if-addrs.workspace = true

@@ -36,7 +36,7 @@ Mac / Windows / Linux でビルドできる(Viewer と同じ eframe)。
   - SUBSCRIBE / RENEW / 10秒の失効、ANNOUNCE の STREAMING / YOURS、CONFIG の応答と
     読み取り専用の測定値(fH_TVP・生同期・stat_il・SOG など)
   - 音声は 48kHz・240サンプル/パケットで系統 0/1/3 を送る(繋いだ端子の系統に
-    テスト音)
+    「さくらさくら」を矩形波の音色で流す。系統ごとに音色が違う。`src/music.rs`)
 
 **端子は4つ持っていて、TVP が見る端子は Viewer が書く入力MUX(19h)で決まる。**
 入力3(D-SUB15)の RGB 機は生同期として 0x2A でも fH が読める。

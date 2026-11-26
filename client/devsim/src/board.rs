@@ -92,7 +92,7 @@ pub struct Board {
     pub noise: u8,
     /// LINE を捨てる割合[%]
     pub loss_pct: f32,
-    /// 音声にテスト音を乗せる(切ると無音のパケットだけ送る。実機の ADC は常に送る)
+    /// 音声に曲(music.rs)を流す(切ると無音のパケットだけ送る。実機の ADC は常に送る)
     pub tone: bool,
     /// 映像の送り先と失効時刻。期限が切れても送り先は覚えている(RENEW の判定)
     pub sub: Option<SocketAddr>,

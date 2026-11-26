@@ -1052,7 +1052,13 @@ pub(crate) fn send_all(
     let mut ok = 0usize;
     let extra = extra.filter(|e| !targets.iter().any(|t| t == e));
     for t in targets.iter().map(String::as_str).chain(extra) {
-        if sock.send_to(pkt, (t, port)).is_ok() {
+        // 「IP:ポート」ならそのポートへ(アプリ内デモのボードは 127.0.0.1 の空きポートに
+        // いる。launcher.rs)。ふつうは IP だけで、ボードの既定のポートへ送る
+        let sent = match t.parse::<std::net::SocketAddr>() {
+            Ok(a) => sock.send_to(pkt, a),
+            Err(_) => sock.send_to(pkt, (t, port)),
+        };
+        if sent.is_ok() {
             ok += 1;
         }
     }

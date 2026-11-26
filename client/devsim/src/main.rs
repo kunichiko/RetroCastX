@@ -17,23 +17,10 @@
 
 #![windows_subsystem = "windows"]
 
-mod board;
-mod capture;
-mod engine;
-mod machines;
-mod pattern;
 mod settings;
-mod signal;
 
-/// プロトコルの定数とパーサは Viewer のものをそのまま使う(版ずれを防ぐ)
-#[allow(dead_code)]
-#[path = "../../src/protocol.rs"]
-mod protocol;
-
-/// デジタルRGB の色の表も Viewer のものを使う(Viewer の展開と1対1にするため)
-#[allow(dead_code)]
-#[path = "../../src/palette.rs"]
-mod palette;
+// 信号を作って送る部分はライブラリ(lib.rs)にある。Viewer のアプリ内デモも同じものを使う
+use retrocastx_devsim::{board, engine, machines, palette, pattern, protocol};
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -683,7 +670,7 @@ impl App {
             ui.add(egui::Slider::new(&mut b.loss_pct, 0.0..=20.0).suffix(" %").logarithmic(true))
                 .on_hover_text("LINE をラインごと(断片ごと全部)捨てる");
         });
-        ui.checkbox(&mut b.tone, "音声にテスト音を乗せる(機種が繋がった端子の系統だけ)");
+        ui.checkbox(&mut b.tone, "音声に曲を流す(機種が繋がった端子の系統だけ)");
         ui.label("ANNOUNCE の caps(古いゲートウェアを装う)");
         ui.horizontal_wrapped(|ui| {
             for (bit, name) in [

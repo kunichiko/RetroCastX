@@ -27,6 +27,7 @@
 
 #[cfg(target_os = "android")]
 mod android_log;
+mod about;
 mod appicon;
 mod assembler;
 mod auto_skip;
@@ -486,6 +487,8 @@ fn run_gui(l: GuiLaunch, tweak: impl FnOnce(&mut eframe::NativeOptions)) -> efra
                 launcher_geom: launcher::GeomTracker::new(launcher::Geom::load()),
                 awake: awake::KeepAwake::new(),
                 touch: touch::TouchGesture::default(),
+                demo: None,
+                demo_at_start: std::env::var("RCX_DEMO").is_ok_and(|v| v == "1"),
             };
             if no_subscribe {
                 // `--no-subscribe`(sender_sim 相手)はボードを選べないので、すぐ開く
@@ -6953,6 +6956,11 @@ struct App {
     awake: awake::KeepAwake,
     /// タッチの身振りの振り分け(モバイル。touch.rs)
     touch: touch::TouchGesture,
+    /// アプリ内デモのボード。デモを開いている間だけ動かす(launcher::DEMO_MAC)
+    demo: Option<retrocastx_devsim::embed::Embedded>,
+    /// 起動したらデモを開く(環境変数 RCX_DEMO=1)。シミュレータはタップを
+    /// 自動化できないので、動作確認やスクリーンショットはこれで開く
+    demo_at_start: bool,
 }
 
 /// Viewer の窓の識別子(番号ごと)
@@ -6983,6 +6991,13 @@ impl App {
         //   仕掛けると同じキーが何度も実機へ飛ぶ。最初に開いた窓が持つ
         if !self.sessions.iter().any(|s| s.keytap.is_some()) {
             s.keytap = Some(keytap::KeyTap::install(ctx));
+        }
+        // デモのボードは 127.0.0.1 の空きポートにいる。ブロードキャストでは
+        // 見つからないので、そこを宛先に足す(「ボードのIP」の代わり)
+        if mac == Some(launcher::DEMO_MAC) {
+            if let Some(d) = &self.demo {
+                *s.shared.extra_dest.lock().unwrap() = Some(d.addr.to_string());
+            }
         }
         // 番号の設定ファイルに接続先を残す(次にこのボードを開く番号になる)
         s.mark_settings_dirty();
@@ -7039,6 +7054,12 @@ impl App {
             }
             false
         });
+        // デモを閉じたらダミーも止める(信号を作り続けると電池を食う)
+        let demo_open = self.sessions.iter()
+            .any(|s| s.board_sel == settings::BoardSel::Mac(launcher::DEMO_MAC));
+        if !demo_open {
+            self.demo = None;
+        }
         // キー横取りを持っていた窓が閉じたら、残っている窓へ渡す
         if !self.sessions.iter().any(|s| s.keytap.is_some()) {
             if let Some(s) = self.sessions.first_mut() {
@@ -7075,6 +7096,20 @@ impl App {
         }
         if let Some(m) = out.open {
             self.open_board(&ctx, m, None);
+        }
+        if out.open_demo || std::mem::take(&mut self.demo_at_start) {
+            if self.demo.is_none() {
+                match retrocastx_devsim::embed::Embedded::start(launcher::DEMO_NAME, launcher::DEMO_MAC) {
+                    Ok(d) => {
+                        eprintln!("デモのボードを {} で動かします", d.addr);
+                        self.demo = Some(d);
+                    }
+                    Err(e) => eprintln!("デモのボードを動かせません: {e}"),
+                }
+            }
+            if self.demo.is_some() {
+                self.open_board(&ctx, launcher::DEMO_MAC, None);
+            }
         }
     }
 }

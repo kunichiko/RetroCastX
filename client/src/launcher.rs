@@ -25,6 +25,17 @@ const MUTED: egui::Color32 = egui::Color32::from_rgb(0x8A, 0x9A, 0x99);
 const CARD_BG: egui::Color32 = egui::Color32::from_rgb(0x15, 0x1B, 0x1D);
 const CARD_EDGE: egui::Color32 = egui::Color32::from_rgb(0x2B, 0x37, 0x39);
 
+/// アプリ内デモのボード(ダミーデバイスを端末内で動かす。retrocastx_devsim::embed)。
+///
+/// ★**ボードが無くても一通り試せるようにする。** モバイルは LAN のボードを見る
+///   だけのアプリなので、ボードが無いと何も映らない(App Store の審査もこれでは
+///   機能を確かめられない)。デモを選ぶと 127.0.0.1 の空きポートでダミーが動き、
+///   Viewer はそこへ普通のボードとして繋ぐ。LAN には何も出さない。
+/// MAC は実機のフォールバック(02:52:43:58:00:01)とも単体のダミー(…:D5:01)とも
+/// 違うローカル管理アドレスにする
+pub const DEMO_MAC: [u8; 6] = [0x02, 0x52, 0x43, 0x58, 0xDE, 0x30];
+pub const DEMO_NAME: &str = "デモ";
+
 /// 設定ファイルと claim のロックを覗き直す間隔。毎フレーム開くほどのものではない
 const PEEK_EVERY: Duration = Duration::from_millis(1500);
 
@@ -49,6 +60,8 @@ pub struct Launcher {
     peeked: Option<Instant>,
     /// 「デバイスシミュレータを起動」の結果(一覧の下に出す)
     devsim_msg: Option<String>,
+    /// 「このアプリについて」を開いている(src/about.rs)。None なら一覧
+    about: Option<crate::about::About>,
 }
 
 /// ランチャーで起きたこと
@@ -58,12 +71,14 @@ pub struct Out {
     pub open: Option<[u8; 6]>,
     /// ボードIP の欄が変わった(App が保存して発見へ渡す)
     pub ip_changed: bool,
+    /// デモを開く(App がダミーを動かしてから DEMO_MAC を開く)
+    pub open_demo: bool,
 }
 
 impl Launcher {
     pub fn new(disc: Arc<Discovery>, board_ip: String) -> Self {
         Self { disc, board_ip, hints: HashMap::new(), busy: HashSet::new(), peeked: None,
-               devsim_msg: None }
+               devsim_msg: None, about: about_at_start() }
     }
 
     /// 前に選んでいた入力と、他の Viewer の使用状況を覗き直す
@@ -94,6 +109,12 @@ impl Launcher {
 
     pub fn ui(&mut self, ui: &mut egui::Ui, here: &HashSet<[u8; 6]>) -> Out {
         let mut out = Out::default();
+        if let Some(a) = self.about.as_mut() {
+            if a.ui(ui) {
+                self.about = None;
+            }
+            return out;
+        }
         let list = self.disc.list();
         self.peek(&list, here);
         // 一覧は ANNOUNCE が来たときに描き直されるが、使用状況はファイルなので
@@ -106,8 +127,15 @@ impl Launcher {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("RetroCast X").size(20.0).color(theme::ACCENT));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new(env!("CARGO_PKG_VERSION"))
-                            .size(10.5).color(MUTED));
+                        // 版を押すと「このアプリについて」(版・ライセンス)
+                        let r = ui.add(egui::Button::new(
+                            egui::RichText::new(format!("ⓘ {}", env!("CARGO_PKG_VERSION")))
+                                .size(if MOBILE { 13.0 } else { 10.5 }).color(MUTED))
+                            .frame(false))
+                            .on_hover_text("このアプリについて(バージョン・オープンソースライセンス)");
+                        if r.clicked() {
+                            self.about = Some(crate::about::About::default());
+                        }
                     });
                 });
                 ui.label(egui::RichText::new(if list.is_empty() {
@@ -137,6 +165,14 @@ impl Launcher {
                                 out.open = Some(b.mac);
                             }
                             ui.add_space(8.0);
+                        }
+                        if MOBILE {
+                            if list.is_empty() {
+                                ui.add_space(16.0);
+                            }
+                            if demo_card(ui, here.contains(&DEMO_MAC)).clicked() {
+                                out.open_demo = true;
+                            }
                         }
                     });
                 self.foot(ui, &mut out);
@@ -267,6 +303,70 @@ impl Launcher {
             });
         }
     }
+}
+
+/// 起動したら「このアプリについて」を開く(環境変数 RCX_ABOUT=1、ライセンスの
+/// 一覧なら RCX_ABOUT=licenses)。シミュレータでの確認とスクリーンショット用
+fn about_at_start() -> Option<crate::about::About> {
+    let v = std::env::var("RCX_ABOUT").ok()?;
+    let mut a = crate::about::About::default();
+    match v.as_str() {
+        "1" => {}
+        "licenses" => a.page = crate::about::Page::Licenses,
+        _ => return None,
+    }
+    Some(a)
+}
+
+/// デモの札。ボードの札と同じ大きさで、点線の枠にして実機と見分ける
+fn demo_card(ui: &mut egui::Ui, open: bool) -> egui::Response {
+    let w = ui.available_width();
+    let h = if MOBILE { 84.0 } else { 72.0 };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return resp;
+    }
+    let p = ui.painter();
+    let edge = if resp.hovered() || open { theme::ACCENT_EDGE } else { CARD_EDGE };
+    p.rect_filled(rect, 8.0, if open { theme::ACCENT_BG } else { CARD_BG });
+    let r = rect.shrink(0.5);
+    let corners = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+    for seg in corners.windows(2) {
+        p.extend(egui::Shape::dashed_line(&[seg[0], seg[1]], egui::Stroke::new(1.0, edge), 6.0, 4.0));
+    }
+
+    // 左の「画面」に色の帯(テスト柄)を描く
+    let scr = egui::Rect::from_min_size(
+        rect.left_top() + egui::vec2(14.0, (h - 34.0) / 2.0), egui::vec2(46.0, 34.0));
+    let bars = [
+        egui::Color32::from_rgb(0xC0, 0xC0, 0xC0), egui::Color32::from_rgb(0xC0, 0xC0, 0x00),
+        egui::Color32::from_rgb(0x00, 0xC0, 0xC0), egui::Color32::from_rgb(0x00, 0xC0, 0x00),
+        egui::Color32::from_rgb(0xC0, 0x00, 0xC0), egui::Color32::from_rgb(0xC0, 0x00, 0x00),
+        egui::Color32::from_rgb(0x00, 0x00, 0xC0),
+    ];
+    let bw = (scr.width() - 6.0) / bars.len() as f32;
+    for (i, c) in bars.iter().enumerate() {
+        let x0 = scr.left() + 3.0 + bw * i as f32;
+        p.rect_filled(egui::Rect::from_min_max(egui::pos2(x0, scr.top() + 3.0),
+                                               egui::pos2(x0 + bw, scr.bottom() - 3.0)), 0.0, *c);
+    }
+    p.rect_stroke(scr, 4.0, egui::Stroke::new(1.5, if open { theme::ACCENT } else { CARD_EDGE }),
+                  egui::StrokeKind::Inside);
+
+    let x = scr.right() + 14.0;
+    p.text(egui::pos2(x, rect.top() + 20.0), egui::Align2::LEFT_CENTER, DEMO_NAME,
+           egui::FontId::proportional(16.0), INK);
+    p.text(egui::pos2(x, rect.top() + 40.0), egui::Align2::LEFT_CENTER,
+           "ボードが無くても試せます",
+           egui::FontId::proportional(12.0), MUTED);
+    p.text(egui::pos2(x, rect.top() + 57.0), egui::Align2::LEFT_CENTER,
+           "端末の中で作ったレトロ機の映像",
+           egui::FontId::proportional(10.5), egui::Color32::from_gray(100));
+    let (tag, col) = if open { ("表示中", theme::ACCENT) } else { ("開く ›", INK) };
+    p.text(egui::pos2(rect.right() - 14.0, rect.center().y), egui::Align2::RIGHT_CENTER,
+           tag, egui::FontId::proportional(12.5), col);
+    resp.on_hover_text("ボードの代わりに、端末の中で信号を作って映します(LAN には何も出しません)")
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// ダミーデバイス(devsim)の実行ファイルを、Viewer と同じフォルダから探して起動する。
