@@ -2143,8 +2143,7 @@ impl Session {
             resize: self.clean_size != self.clean_size_applied,
             undecorated: self.clean_undecorated,
             redecorate: self.clean_undecorated != self.clean_undecorated_applied,
-            aspect: cleanout::display_aspect(
-                self.frame_size, self.crop, self.tube_aspect_eff(), self.rotate),
+            aspect: cleanout::display_aspect(self.shown_tube_aspect(), self.rotate),
             // 配信出力にも無信号の絵を流さない(`no_signal`)
             has_video: self.frame_size.0 > 0 && !self.no_signal(),
         };
@@ -3794,6 +3793,11 @@ impl Session {
 }
 
 impl Session {
+    /// 枠なしの管面の比(回転前)。シェーダが絵を描く比と同じもの(render::tube_aspect)
+    fn shown_tube_aspect(&self) -> f32 {
+        render::tube_aspect(&self.render_params(), self.frame_size.0, self.frame_size.1)
+    }
+
     fn render_params(&self) -> render::Params {
         let m = self.shared.mode.lock().unwrap().clone();
         // 実測した有効映像の外接矩形。MODEの hactive はラインバッファの幅(定数 2048)で
@@ -7453,24 +7457,17 @@ impl Session {
                 // 映像が無くても枠は描く。実機のCRTは映像が無くても筐体があるので、
                 // 待機中に枠だけ消えるのは不自然。開口部は黒にして待機表示を中に出す。
                 let has_video = self.frame_size.0 > 0;
-                let tex_size = egui::vec2(self.frame_size.0 as f32, self.frame_size.1 as f32);
                 let avail = ui.available_size();
                 let (area, _r) = ui.allocate_exact_size(avail, egui::Sense::hover());
-                // 有効映像(切り出し)を「管面」いっぱいに引き伸ばして表示する。
                 // 実際のCRTと同じ考え方で、ドット数ではなく管面の形が表示を決める。
-                let (cw, ch) = if self.crop[2] > 0 && self.crop[3] > 0 {
-                    (self.crop[2] as f32, self.crop[3] as f32)
-                } else {
-                    (tex_size.x, tex_size.y)
-                };
+                // 枠なしの形はシェーダと同じ計算(shown_tube_aspect)で決める
                 let bez = self.active_bezel();
                 // 枠ありなら管面の形は開口部が決める。枠は実在モニタの寸法なので、
                 // tube_aspect(4:3など)ではなく開口部の比に従うのが筋。
                 // 映像が無く管面の比も「そのまま」なら形が決まらないので 4:3 で待つ。
                 let aspect = match bez {
                     Some(b) => b.screen_aspect(),
-                    None if self.tube_aspect_eff() > 0.0 => self.tube_aspect_eff(),
-                    None if has_video => cw / ch.max(1.0),
+                    None if self.tube_aspect_eff() > 0.0 || has_video => self.shown_tube_aspect(),
                     None => 4.0 / 3.0,
                 };
                 let disp = if self.rotate % 2 == 1 {

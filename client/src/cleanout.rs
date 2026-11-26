@@ -39,25 +39,9 @@ fn viewport_id(session: u32) -> egui::ViewportId {
 
 /// 映像の表示比を決める。**ベゼルは使わない**(クリーン出力の趣旨なので)。
 ///
-/// 本体の「枠なし」表示と同じ考え方: 切り出しがあればその比、無ければ
-/// テクスチャの比。`tube_aspect` が指定されていればそちらが優先される
-/// (実機の管面の形はドット数では決まらないため)。
-pub fn display_aspect(
-    frame_size: (u32, u32),
-    crop: [u32; 4],
-    tube_aspect: f32,
-    rotate: u32,
-) -> egui::Vec2 {
-    let (cw, ch) = if crop[2] > 0 && crop[3] > 0 {
-        (crop[2] as f32, crop[3] as f32)
-    } else {
-        (frame_size.0 as f32, frame_size.1 as f32)
-    };
-    let aspect = if tube_aspect > 0.0 {
-        tube_aspect
-    } else {
-        cw / ch.max(1.0)
-    };
+/// `aspect` は本体の「枠なし」表示と同じ管面の比(render::tube_aspect)。
+/// テクスチャの画素数から決めると、幅を htotal に絞ってあるので形が崩れる
+pub fn display_aspect(aspect: f32, rotate: u32) -> egui::Vec2 {
     if rotate % 2 == 1 {
         egui::vec2(1.0, aspect)
     } else {
@@ -192,34 +176,17 @@ mod tests {
     #[test]
     fn window_area_is_independent_of_source_resolution() {
         let area = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 720.0));
-        for (w, h) in [(768u32, 512u32), (640, 480), (320, 240)] {
-            let a = display_aspect((w, h), [0; 4], 0.0, 0);
+        for aspect in [1.5f32, 4.0 / 3.0, 1.0, 16.0 / 9.0] {
+            let a = display_aspect(aspect, 0);
             let r = fit_centered(area, a);
-            assert!(area.contains_rect(r), "{}x{} が領域からはみ出した: {r:?}", w, h);
+            assert!(area.contains_rect(r), "{aspect} が領域からはみ出した: {r:?}");
         }
-    }
-
-    /// tube_aspect が指定されていればドット数より優先されること。
-    /// (X68000 の 768x512 は 1.5 だが、管面は 4:3 で見せたい場合がある)
-    #[test]
-    fn tube_aspect_overrides_pixel_ratio() {
-        let by_pixels = display_aspect((768, 512), [0; 4], 0.0, 0);
-        assert!((by_pixels.x - 1.5).abs() < 0.001, "{by_pixels:?}");
-        let forced = display_aspect((768, 512), [0; 4], 4.0 / 3.0, 0);
-        assert!((forced.x - 4.0 / 3.0).abs() < 0.001, "{forced:?}");
-    }
-
-    /// 切り出しが有効なら、切り出し後の比で決まること。
-    #[test]
-    fn crop_decides_the_ratio() {
-        let a = display_aspect((768, 512), [0, 0, 640, 480], 0.0, 0);
-        assert!((a.x - 640.0 / 480.0).abs() < 0.001, "{a:?}");
     }
 
     /// 90度回転では縦横が入れ替わること。
     #[test]
     fn rotation_swaps_the_ratio() {
-        let a = display_aspect((640, 480), [0; 4], 0.0, 1);
+        let a = display_aspect(640.0 / 480.0, 1);
         assert!((a.x - 1.0).abs() < 0.001 && (a.y - 640.0 / 480.0).abs() < 0.001, "{a:?}");
     }
 }
