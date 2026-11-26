@@ -488,6 +488,17 @@ pub fn video_tex_format(target: wgpu::TextureFormat) -> wgpu::TextureFormat {
     }
 }
 
+/// この寸法の映像テクスチャを作れるか。
+///
+/// ★**作れない寸法で `create_texture` を呼ぶと wgpu が panic してアプリごと落ちる。**
+///   ボード(やアプリ内デモ)の MODE が vactive 0 を言うと高さ 0 のフレームが組み上がる。
+///   デモはダミーが測り終える前の最初の MODE が 0 で、繋いだ直後にまれに iOS で落ちた。
+///   どんなパケットが来ても落ちないよう、描く側で弾いて前の絵のままにする
+pub fn texture_fits(device: &wgpu::Device, rgba: &[u8], w: u32, h: u32) -> bool {
+    let max = device.limits().max_texture_dimension_2d;
+    w > 0 && h > 0 && w <= max && h <= max && rgba.len() >= w as usize * h as usize * 4
+}
+
 impl EguiBlit {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let pipeline = Pipeline::new(device, format);
@@ -502,6 +513,9 @@ impl EguiBlit {
         &mut self, device: &wgpu::Device, queue: &wgpu::Queue,
         rgba: &[u8], w: u32, h: u32,
     ) {
+        if !texture_fits(device, rgba, w, h) {
+            return;
+        }
         let need = self.tex.as_ref().map(|t| (t.3, t.4)) != Some((w, h));
         if need {
             let tex = device.create_texture(&wgpu::TextureDescriptor {

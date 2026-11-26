@@ -719,7 +719,11 @@ fn render_thread(
         let mut picked: Option<(crate::latency::FrameStamps, Instant)> = None;
         if fresh {
             let guard = shared.frame.lock().unwrap();
-            if let Some(frame) = guard.as_ref() {
+            // 作れない寸法(高さ 0 など)のフレームは描かない(render::texture_fits)
+            let frame = guard.as_ref().filter(|f| {
+                render::texture_fits(&gpu.device, &f.rgba, f.width as u32, f.height as u32)
+            });
+            if let Some(frame) = frame {
                 picked = frame.stamps.map(|st| (st, Instant::now()));
                 let (w, h) = (frame.width as u32, frame.height as u32);
                 if texture.as_ref().map(|t| (t.2, t.3)) != Some((w, h)) {
